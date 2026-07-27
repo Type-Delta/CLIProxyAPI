@@ -120,6 +120,22 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 - 通过配置接入上游 OpenAI 兼容提供商（例如 OpenRouter）
 - 可复用的 Go SDK（见 `docs/sdk-usage_CN.md`）
 
+## 按 API Key 限制使用量
+
+顶层 `api-keys` 中的入站客户端 Key 可以选择配置使用量限制：
+
+```yaml
+api-keys:
+  - "plain-key-stays-unlimited"
+  - key: "team-a-key"
+    limits:
+      max-requests: 1000
+      max-tokens-m: 20        # 2000 万 Token；允许小数（0.5 = 50 万）
+      resets: "weekly"        # 省略表示永不重置的 lifetime 限制
+```
+
+完整字段说明、管理端点和响应行为请参阅 [docs/sdk-access_CN.md](docs/sdk-access_CN.md)。计数器会持久化，但仍按进程实例独立计算：负载均衡器后的 `N` 个副本实际有效限制大约是配置值的 `N` 倍。
+
 ## 新手入门
 
 CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)

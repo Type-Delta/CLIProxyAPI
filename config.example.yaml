@@ -40,6 +40,11 @@ api-keys:
   - "your-api-key-1"
   - "your-api-key-2"
   - "your-api-key-3"
+  # - key: "limited-api-key"
+  #   limits:
+  #     max-requests: 1000
+  #     max-tokens-m: 20
+  #     resets: "weekly"
 
 # Enable debug logging
 debug: false

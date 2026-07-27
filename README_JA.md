@@ -119,6 +119,22 @@ PackyCodeは当ソフトウェアのユーザーに特別割引を提供して�
 - 設定によるOpenAI互換アップストリームプロバイダー（例：OpenRouter）
 - プロキシ埋め込み用の再利用可能なGo SDK（`docs/sdk-usage.md`を参照）
 
+## APIキーごとの使用量制限
+
+トップレベルの `api-keys` にあるインバウンドクライアントキーには、使用量制限を任意で設定できます。
+
+```yaml
+api-keys:
+  - "plain-key-stays-unlimited"
+  - key: "team-a-key"
+    limits:
+      max-requests: 1000
+      max-tokens-m: 20        # 2,000万トークン。小数も指定可能（0.5 = 500,000）
+      resets: "weekly"        # 省略するとリセットされない lifetime 制限
+```
+
+全フィールドの説明、管理エンドポイント、レスポンス動作については [docs/sdk-access.md](docs/sdk-access.md) を参照してください。カウンターは永続化されますが、プロセスインスタンスごとに独立しています。ロードバランサーの背後で `N` 個のレプリカを実行すると、実効的な制限は設定値の約 `N` 倍になります。
+
 ## はじめに
 
 CLIProxyAPIガイド：[https://help.router-for.me/](https://help.router-for.me/)

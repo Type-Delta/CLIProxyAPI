@@ -249,9 +249,30 @@ func (c *Client) GetAPIKeys() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []string
-	if err := json.Unmarshal(raw, &result); err != nil {
+	// Each entry is either a bare string (no usage limits configured) or an
+	// object carrying the key plus its limits, so decode elements permissively.
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
 		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var key string
+		if errKey := json.Unmarshal(entry, &key); errKey != nil {
+			var object struct {
+				Key string `json:"key"`
+			}
+			if errObject := json.Unmarshal(entry, &object); errObject != nil {
+				return nil, errObject
+			}
+			key = object.Key
+		}
+		// Skip blanks, JSON nulls (which decode into an empty string) and
+		// objects without a usable key rather than surfacing phantom rows.
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		result = append(result, key)
 	}
 	return result, nil
 }

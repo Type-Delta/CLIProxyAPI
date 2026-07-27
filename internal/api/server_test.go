@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagelimit"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
@@ -376,7 +377,7 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
-			APIKeys: []string{"test-key"},
+			APIKeys: []proxyconfig.APIKeyEntry{{Key: "test-key"}},
 		},
 		Port:                   0,
 		AuthDir:                authDir,
@@ -390,6 +391,45 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	return NewServer(cfg, authManager, accessManager, configPath, opts...)
+}
+
+func TestUsageLimitCountersPersistThroughServerPath(t *testing.T) {
+	server := newTestServer(t)
+	limits := map[string]usagelimit.Limits{
+		"test-key": {MaxRequests: 10, MaxTokens: 100, Resets: usagelimit.PeriodDaily},
+	}
+	server.usageLimitTracker.SetLimits(limits)
+	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	if decision := server.usageLimitTracker.Allow("test-key", now); !decision.Allowed {
+		t.Fatalf("Allow() = %+v, want allowed", decision)
+	}
+	server.usageLimitTracker.AddTokens("test-key", 25, now)
+	server.flushUsageLimits()
+
+	restored := usagelimit.NewTracker()
+	if errLoad := restored.LoadFrom(server.usageLimitPath); errLoad != nil {
+		t.Fatalf("LoadFrom() error = %v", errLoad)
+	}
+	restored.SetLimits(limits)
+	snapshot := restored.Snapshot("test-key", now)
+	if snapshot == nil || snapshot.RequestsUsed != 1 || snapshot.TokensUsed != 25 {
+		t.Fatalf("restored snapshot = %+v, want one request and 25 tokens", snapshot)
+	}
+}
+
+func TestUsageLimitPersistenceStopsTicker(t *testing.T) {
+	server := &Server{
+		usageLimitTracker: usagelimit.NewTracker(),
+		usageLimitPath:    filepath.Join(t.TempDir(), "usage-limits.json"),
+	}
+	server.startUsageLimitPersistence()
+	server.stopUsageLimitPersistence()
+
+	select {
+	case <-server.usageLimitDone:
+	default:
+		t.Fatal("usage limit persistence ticker did not stop")
+	}
 }
 
 func TestHealthz(t *testing.T) {
@@ -1205,7 +1245,7 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 
 	server := newTestServerWithOptions(t, WithExampleAPIKeySafeMode())
 	cfg := *server.cfg
-	cfg.APIKeys = []string{"your-api-key-1"}
+	cfg.APIKeys = []proxyconfig.APIKeyEntry{{Key: "your-api-key-1"}}
 	server.UpdateClients(&cfg)
 
 	t.Run("root warning page includes management link", func(t *testing.T) {
@@ -1301,7 +1341,7 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 
 	t.Run("safe mode clears after key update", func(t *testing.T) {
 		nextCfg := cfg
-		nextCfg.APIKeys = []string{"real-key"}
+		nextCfg.APIKeys = []proxyconfig.APIKeyEntry{{Key: "real-key"}}
 		server.UpdateClients(&nextCfg)
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

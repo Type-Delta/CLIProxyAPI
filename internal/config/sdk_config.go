@@ -46,7 +46,7 @@ type SDKConfig struct {
 	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
 
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
-	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+	APIKeys []APIKeyEntry `yaml:"api-keys" json:"api-keys"`
 
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).

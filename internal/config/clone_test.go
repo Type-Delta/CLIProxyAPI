@@ -31,8 +31,11 @@ func TestCloneForRuntimeDeepCopiesConfig(t *testing.T) {
 	if clone.Home.Host != "home.local" {
 		t.Fatalf("clone.Home.Host = %q, want home.local", clone.Home.Host)
 	}
-	if clone.APIKeys[0] != "client-key" {
-		t.Fatalf("clone.APIKeys[0] = %q, want client-key", clone.APIKeys[0])
+	if clone.APIKeys[0].Key != "client-key" {
+		t.Fatalf("clone.APIKeys[0].Key = %q, want client-key", clone.APIKeys[0].Key)
+	}
+	if clone.APIKeys[0].Limits == nil || clone.APIKeys[0].Limits.MaxRequests != 10 {
+		t.Fatalf("clone.APIKeys[0].Limits = %#v, want max-requests 10", clone.APIKeys[0].Limits)
 	}
 	if clone.OAuthExcludedModels["codex"][0] != "hidden-model" {
 		t.Fatalf("clone.OAuthExcludedModels[codex][0] = %q, want hidden-model", clone.OAuthExcludedModels["codex"][0])
@@ -50,7 +53,8 @@ func TestCloneForRuntimeDeepCopiesConfig(t *testing.T) {
 		t.Fatalf("clone payload object key = %#v, want value", got)
 	}
 
-	clone.APIKeys[0] = "clone-client-key"
+	clone.APIKeys[0].Key = "clone-client-key"
+	clone.APIKeys[0].Limits.MaxTokensM = 0.5
 	clone.OAuthExcludedModels["codex"][0] = "clone-hidden-model"
 	clone.OAuthModelAlias["codex"][0].Alias = "clone-client-model"
 	clone.OpenAICompatibility[0].Models[0].Thinking.Levels[0] = "clone-low"
@@ -59,8 +63,11 @@ func TestCloneForRuntimeDeepCopiesConfig(t *testing.T) {
 	setPluginRawScalar(t, &plugin.Raw, "mode", "third")
 	clone.Plugins.Configs["sample"] = plugin
 
-	if cfg.APIKeys[0] != "mutated-client-key" {
-		t.Fatalf("cfg.APIKeys[0] = %q, want mutated-client-key", cfg.APIKeys[0])
+	if cfg.APIKeys[0].Key != "mutated-client-key" {
+		t.Fatalf("cfg.APIKeys[0].Key = %q, want mutated-client-key", cfg.APIKeys[0].Key)
+	}
+	if cfg.APIKeys[0].Limits.MaxTokensM != 20 {
+		t.Fatalf("cfg.APIKeys[0].Limits.MaxTokensM = %v, want 20", cfg.APIKeys[0].Limits.MaxTokensM)
 	}
 	if cfg.OAuthExcludedModels["codex"][0] != "mutated-hidden-model" {
 		t.Fatalf("cfg.OAuthExcludedModels[codex][0] = %q, want mutated-hidden-model", cfg.OAuthExcludedModels["codex"][0])
@@ -94,7 +101,7 @@ func sampleCloneRuntimeConfig() *Config {
 
 	return &Config{
 		SDKConfig: SDKConfig{
-			APIKeys: []string{"client-key"},
+			APIKeys: []APIKeyEntry{{Key: "client-key", Limits: &KeyLimits{MaxRequests: 10, MaxTokensM: 20, Resets: "daily"}}},
 			Streaming: StreamingConfig{
 				KeepAliveSeconds: 3,
 				BootstrapRetries: 2,
@@ -194,7 +201,8 @@ func sampleCloneRuntimeConfig() *Config {
 
 func mutateOriginalConfig(cfg *Config) {
 	cfg.Home.Host = "mutated-home.local"
-	cfg.APIKeys[0] = "mutated-client-key"
+	cfg.APIKeys[0].Key = "mutated-client-key"
+	cfg.APIKeys[0].Limits.MaxRequests = 20
 	cfg.OAuthExcludedModels["codex"][0] = "mutated-hidden-model"
 	cfg.OAuthModelAlias["codex"][0].Alias = "mutated-client-model"
 	cfg.OpenAICompatibility[0].Models[0].Thinking.Levels[0] = "mutated-low"

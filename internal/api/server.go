@@ -40,6 +40,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -49,6 +50,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
@@ -247,6 +249,12 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
+	usageLimitTracker  *usagelimit.Tracker
+	usageLimitPath     string
+	usageLimitStop     chan struct{}
+	usageLimitDone     chan struct{}
+	usageLimitStopOnce sync.Once
+
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -327,6 +335,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if err != nil {
 		wd = configFilePath
 	}
+	usageLimitAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir)
+	usageLimitPath := ""
+	if errResolveAuthDir != nil {
+		log.WithError(errResolveAuthDir).Warn("failed to resolve auth directory for usage limit persistence")
+	} else {
+		cfg.AuthDir = usageLimitAuthDir
+		usageLimitPath = usageLimitSnapshotPath(usageLimitAuthDir)
+	}
 
 	envAdminPassword, envAdminPasswordSet := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
@@ -345,9 +361,18 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		usageLimitTracker:   usagelimit.NewTracker(),
+		usageLimitPath:      usageLimitPath,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
+	if s.usageLimitPath != "" {
+		if errLoad := s.usageLimitTracker.LoadFrom(s.usageLimitPath); errLoad != nil {
+			log.WithError(errLoad).Warn("failed to load usage limit snapshot")
+		}
+	}
+	s.usageLimitTracker.SetLimits(usageLimitsFromConfig(cfg.APIKeyLimits()))
+	coreusage.RegisterNamedPlugin("api-key-usage-limits", &usageLimitPlugin{tracker: s.usageLimitTracker})
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)
@@ -367,6 +392,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -442,7 +468,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) exampleAPIKeySafeModeRequired(cfg *config.Config) bool {
-	return s != nil && s.exampleAPIKeySafeModeEnabled && cfg != nil && safemode.HasExampleAPIKeys(cfg.APIKeys)
+	return s != nil && s.exampleAPIKeySafeModeEnabled && cfg != nil && safemode.HasExampleAPIKeys(cfg.APIKeyStrings())
 }
 
 func (s *Server) exampleAPIKeySafeModeMiddleware() gin.HandlerFunc {
@@ -478,7 +504,7 @@ func (s *Server) serveExampleAPIKeyWarningPage(c *gin.Context) {
 	cfg := s.cfg
 	var keys []string
 	if cfg != nil {
-		keys = safemode.ExampleAPIKeys(cfg.APIKeys)
+		keys = safemode.ExampleAPIKeys(cfg.APIKeyStrings())
 	}
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
@@ -530,6 +556,7 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolOpenAI))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -556,6 +583,7 @@ func (s *Server) setupRoutes() {
 
 	openaiV1 := s.engine.Group("/openai/v1")
 	openaiV1.Use(AuthMiddleware(s.accessManager))
+	openaiV1.Use(middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolOpenAI))
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -565,6 +593,7 @@ func (s *Server) setupRoutes() {
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolOpenAI))
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -575,6 +604,7 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolGemini))
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)
@@ -1003,6 +1033,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
+		mgmt.GET("/api-key-limits", s.mgmt.GetAPIKeyLimits)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
@@ -1759,6 +1790,11 @@ func (s *Server) Start() error {
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
+	s.startUsageLimitPersistence()
+	defer func() {
+		s.stopUsageLimitPersistence()
+		s.flushUsageLimits()
+	}()
 
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
@@ -1858,6 +1894,8 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	s.stopUsageLimitPersistence()
+	defer s.flushUsageLimits()
 
 	if s.keepAliveEnabled {
 		select {
@@ -1886,6 +1924,45 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Debug("API server stopped")
 	return nil
+}
+
+func (s *Server) startUsageLimitPersistence() {
+	if s == nil || s.usageLimitTracker == nil || s.usageLimitPath == "" {
+		return
+	}
+
+	s.usageLimitStop = make(chan struct{})
+	s.usageLimitDone = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		defer close(s.usageLimitDone)
+		for {
+			select {
+			case <-ticker.C:
+				s.flushUsageLimits()
+			case <-s.usageLimitStop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) stopUsageLimitPersistence() {
+	if s == nil || s.usageLimitStop == nil || s.usageLimitDone == nil {
+		return
+	}
+	s.usageLimitStopOnce.Do(func() { close(s.usageLimitStop) })
+	<-s.usageLimitDone
+}
+
+func (s *Server) flushUsageLimits() {
+	if s == nil || s.usageLimitTracker == nil || s.usageLimitPath == "" {
+		return
+	}
+	if errFlush := s.usageLimitTracker.Flush(s.usageLimitPath); errFlush != nil {
+		log.WithError(errFlush).Warn("failed to flush usage limit snapshot")
+	}
 }
 
 // corsMiddleware returns a Gin middleware handler that adds CORS headers
@@ -2053,6 +2130,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
 	}
 	s.cfg = cfg
+	if s.usageLimitTracker != nil {
+		s.usageLimitTracker.SetLimits(usageLimitsFromConfig(cfg.APIKeyLimits()))
+	}
 	if s.codexLiveHandler != nil {
 		if errUpdate := s.codexLiveHandler.UpdateConfig(cfg); errUpdate != nil {
 			log.WithError(errUpdate).Error("failed to update Codex Live media relay configuration")

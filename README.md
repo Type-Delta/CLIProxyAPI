@@ -120,6 +120,22 @@ PackyCode provides special discounts for our software users: register using <a h
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 
+## Per-API-key usage limits
+
+Inbound client keys in the top-level `api-keys` list can optionally define limits:
+
+```yaml
+api-keys:
+  - "plain-key-stays-unlimited"
+  - key: "team-a-key"
+    limits:
+      max-requests: 1000
+      max-tokens-m: 20        # 20 million tokens; fractional allowed (0.5 = 500k)
+      resets: "weekly"        # omit for a lifetime limit that never resets
+```
+
+See [docs/sdk-access.md](docs/sdk-access.md) for the full field reference, management endpoint, and response behavior. Counters are persisted, but remain per process instance: `N` replicas behind a load balancer provide an effective limit of roughly `N` times the configured value.
+
 ## Getting Started
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)

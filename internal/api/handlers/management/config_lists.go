@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -107,15 +108,143 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 // api-keys
 func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
 func (h *Handler) PutAPIKeys(c *gin.Context) {
-	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = append([]string(nil), v...)
-	}, nil)
+	data, errRead := c.GetRawData()
+	if errRead != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entries, errEntries := decodeAPIKeyEntries(data, h.cfg.APIKeys)
+	if errEntries != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	// Structured entries can carry limits, so validate before persisting.
+	// Otherwise an invalid cadence or an out-of-range cap is written to disk
+	// behind a 200 and only surfaces as a failure on the next config load.
+	candidate := config.SDKConfig{APIKeys: entries}
+	if errValidate := candidate.ValidateAPIKeyLimits(); errValidate != nil {
+		c.JSON(400, gin.H{"error": errValidate.Error()})
+		return
+	}
+	h.cfg.APIKeys = entries
+	h.persistLocked(c)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, &h.cfg.APIKeys, func() {})
+	var body struct {
+		Old   *string `json:"old"`
+		New   *string `json:"new"`
+		Index *int    `json:"index"`
+		Value *string `json:"value"`
+	}
+	if errBind := c.ShouldBindJSON(&body); errBind != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(h.cfg.APIKeys) {
+		h.cfg.APIKeys[*body.Index] = apiKeyEntryReplacing(*body.Value, h.cfg.APIKeys[*body.Index])
+		h.persistLocked(c)
+		return
+	}
+	if body.Old != nil && body.New != nil {
+		for i := range h.cfg.APIKeys {
+			if h.cfg.APIKeys[i].Key == *body.Old {
+				h.cfg.APIKeys[i] = apiKeyEntryReplacing(*body.New, h.cfg.APIKeys[i])
+				h.persistLocked(c)
+				return
+			}
+		}
+		h.cfg.APIKeys = append(h.cfg.APIKeys, config.APIKeyEntry{Key: *body.New})
+		h.persistLocked(c)
+		return
+	}
+	c.JSON(400, gin.H{"error": "missing fields"})
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, errScan := fmt.Sscanf(idxStr, "%d", &idx); errScan == nil && idx >= 0 && idx < len(h.cfg.APIKeys) {
+			h.cfg.APIKeys = append(h.cfg.APIKeys[:idx], h.cfg.APIKeys[idx+1:]...)
+			h.persistLocked(c)
+			return
+		}
+	}
+	if value := strings.TrimSpace(c.Query("value")); value != "" {
+		entries := make([]config.APIKeyEntry, 0, len(h.cfg.APIKeys))
+		for _, entry := range h.cfg.APIKeys {
+			if strings.TrimSpace(entry.Key) != value {
+				entries = append(entries, entry)
+			}
+		}
+		h.cfg.APIKeys = entries
+		h.persistLocked(c)
+		return
+	}
+	c.JSON(400, gin.H{"error": "missing index or value"})
+}
+
+func decodeAPIKeyEntries(data []byte, existing []config.APIKeyEntry) ([]config.APIKeyEntry, error) {
+	var rawEntries []json.RawMessage
+	if err := json.Unmarshal(data, &rawEntries); err != nil {
+		var wrapper struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if errWrapper := json.Unmarshal(data, &wrapper); errWrapper != nil || len(wrapper.Items) == 0 {
+			return nil, fmt.Errorf("invalid api key list")
+		}
+		rawEntries = wrapper.Items
+	}
+
+	entries := make([]config.APIKeyEntry, 0, len(rawEntries))
+	for _, rawEntry := range rawEntries {
+		dataEntry := bytes.TrimSpace(rawEntry)
+		if len(dataEntry) > 0 && dataEntry[0] == '"' {
+			var key string
+			if err := json.Unmarshal(dataEntry, &key); err != nil {
+				return nil, err
+			}
+			entries = append(entries, apiKeyEntryForString(key, existing))
+			continue
+		}
+		var entry config.APIKeyEntry
+		if err := json.Unmarshal(dataEntry, &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// apiKeyEntryReplacing returns an entry for key that inherits previous's limits.
+// PATCH replaces an entry in place, so the limits belong to that slot rather
+// than to the old key string: rotating a limited key must keep its limits.
+func apiKeyEntryReplacing(key string, previous config.APIKeyEntry) config.APIKeyEntry {
+	entry := config.APIKeyEntry{Key: key}
+	if previous.Limits != nil {
+		limits := *previous.Limits
+		entry.Limits = &limits
+	}
+	return entry
+}
+
+func apiKeyEntryForString(key string, existing []config.APIKeyEntry) config.APIKeyEntry {
+	entry := config.APIKeyEntry{Key: key}
+	for _, current := range existing {
+		if current.Key != key || current.Limits == nil {
+			continue
+		}
+		limits := *current.Limits
+		entry.Limits = &limits
+		break
+	}
+	return entry
 }
 
 // gemini-api-key: []GeminiKey

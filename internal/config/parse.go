@@ -42,6 +42,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := cfg.ValidateAPIKeyLimits(); errValidate != nil {
+		return nil, errValidate
+	}
 
 	// Hash remote management key if plaintext is detected (nested), but do NOT persist.
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
