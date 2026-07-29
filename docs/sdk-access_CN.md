@@ -140,6 +140,14 @@ Lifetime 限制不会返回 `Retry-After` 或 `X-RateLimit-Reset`，因为没有
 
 响应按 Key 排序，并省略未配置限制的 Key。`max_tokens` 是绝对 Token 上限，`max_requests`、`requests_used` 和 `tokens_used` 是计数值。对于 lifetime 限制，`resets` 为 `"lifetime"`，并省略 `reset_at`。
 
+通过 `POST /v0/management/api-key-limits/reset` 重置一个受限 Key 的计数器：
+
+```json
+{"key": "..."}
+```
+
+成功时返回 `{"status":"ok"}`。请求体格式错误或 Key 为空时返回 HTTP `400`，Key 未配置限制时返回 `404`，使用量跟踪器不可用时返回 `503`。
+
 配置热更新会立即应用限制变化，且不会重置已有计数器；但修改某个 Key 的 `resets` 周期会重置该 Key 的计数器。如果将限制调低到当前用量以下，该 Key 会一直被阻止，直到窗口滚动结束。
 
 ## 引入外部 Go 模块提供者

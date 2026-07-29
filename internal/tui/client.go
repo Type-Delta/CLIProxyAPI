@@ -18,6 +18,22 @@ type Client struct {
 	http      *http.Client
 }
 
+// APIKeyLimit is the current usage and configured limits for one access key.
+type APIKeyLimit struct {
+	MaxRequests  int64      `json:"max_requests"`
+	RequestsUsed int64      `json:"requests_used"`
+	MaxTokens    int64      `json:"max_tokens"`
+	TokensUsed   int64      `json:"tokens_used"`
+	Resets       string     `json:"resets"`
+	ResetAt      *time.Time `json:"reset_at"`
+}
+
+// APIKeyLimitSnapshot identifies one limited access key and its current usage.
+type APIKeyLimitSnapshot struct {
+	Key    string       `json:"key"`
+	Limits *APIKeyLimit `json:"limits"`
+}
+
 // NewClient creates a new management API client.
 func NewClient(port int, secretKey string) *Client {
 	return &Client{
@@ -272,7 +288,7 @@ func (c *Client) GetAPIKeys() ([]string, error) {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		result = append(result, key)
+		result = append(result, strings.TrimSpace(key))
 	}
 	return result, nil
 }
@@ -303,6 +319,26 @@ func (c *Client) DeleteAPIKey(index int) error {
 		return fmt.Errorf("delete failed (HTTP %d)", code)
 	}
 	return nil
+}
+
+// GetAPIKeyLimits fetches configured access-key limits and current usage.
+func (c *Client) GetAPIKeyLimits() ([]APIKeyLimitSnapshot, error) {
+	data, err := c.get("/v0/management/api-key-limits")
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Limits []APIKeyLimitSnapshot `json:"api-key-limits"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, err
+	}
+	return response.Limits, nil
+}
+
+// ResetAPIKeyLimits resets recorded usage for one limited access key.
+func (c *Client) ResetAPIKeyLimits(key string) error {
+	return c.postJSON("/v0/management/api-key-limits/reset", map[string]string{"key": key})
 }
 
 // GetGeminiKeys fetches Gemini API keys.

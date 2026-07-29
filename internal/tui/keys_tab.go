@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -16,6 +18,8 @@ type keysTabModel struct {
 	client       *Client
 	viewport     viewport.Model
 	keys         []string
+	limits       map[string]APIKeyLimit
+	limitsErr    error
 	gemini       []map[string]any
 	interactions []map[string]any
 	claude       []map[string]any
@@ -29,6 +33,7 @@ type keysTabModel struct {
 	ready        bool
 	cursor       int
 	confirm      int // -1 = no deletion pending
+	resetConfirm int // -1 = no usage reset pending
 	status       string
 
 	// Editing / Adding
@@ -40,6 +45,8 @@ type keysTabModel struct {
 
 type keysDataMsg struct {
 	apiKeys      []string
+	limits       map[string]APIKeyLimit
+	limitsErr    error
 	gemini       []map[string]any
 	interactions []map[string]any
 	claude       []map[string]any
@@ -60,9 +67,10 @@ func newKeysTabModel(client *Client) keysTabModel {
 	ti.CharLimit = 512
 	ti.Prompt = "  Key: "
 	return keysTabModel{
-		client:    client,
-		confirm:   -1,
-		editInput: ti,
+		client:       client,
+		confirm:      -1,
+		resetConfirm: -1,
+		editInput:    ti,
 	}
 }
 
@@ -78,6 +86,17 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 		return result
 	}
 	result.apiKeys = apiKeys
+	limitSnapshots, errLimits := m.client.GetAPIKeyLimits()
+	if errLimits != nil {
+		result.limitsErr = errLimits
+	} else {
+		result.limits = make(map[string]APIKeyLimit, len(limitSnapshots))
+		for _, snapshot := range limitSnapshots {
+			if strings.TrimSpace(snapshot.Key) != "" && snapshot.Limits != nil {
+				result.limits[strings.TrimSpace(snapshot.Key)] = *snapshot.Limits
+			}
+		}
+	}
 	result.gemini, _ = m.client.GetGeminiKeys()
 	result.interactions, _ = m.client.GetInteractionsKeys()
 	result.claude, _ = m.client.GetClaudeKeys()
@@ -99,6 +118,10 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.keys = msg.apiKeys
+			m.limits = msg.limits
+			m.limitsErr = msg.limitsErr
+			m.confirm = -1
+			m.resetConfirm = -1
 			m.gemini = msg.gemini
 			m.interactions = msg.interactions
 			m.claude = msg.claude
@@ -120,6 +143,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			m.status = successStyle.Render("✓ " + msg.action)
 		}
 		m.confirm = -1
+		m.resetConfirm = -1
 		m.viewport.SetContent(m.renderContent())
 		return m, m.fetchKeys
 
@@ -169,6 +193,32 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				m.viewport.SetContent(m.renderContent())
 				return m, cmd
 			}
+		}
+
+		// ---- Usage reset confirmation ----
+		if m.resetConfirm >= 0 {
+			switch msg.String() {
+			case "y", "Y":
+				idx := m.resetConfirm
+				m.resetConfirm = -1
+				if idx < len(m.keys) {
+					key := m.keys[idx]
+					return m, func() tea.Msg {
+						err := m.client.ResetAPIKeyLimits(key)
+						if err != nil {
+							return keyActionMsg{err: err}
+						}
+						return keyActionMsg{action: T("key_usage_reset")}
+					}
+				}
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			case "n", "N", "esc":
+				m.resetConfirm = -1
+				m.viewport.SetContent(m.renderContent())
+				return m, nil
+			}
+			return m, nil
 		}
 
 		// ---- Delete confirmation ----
@@ -233,6 +283,14 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			if m.cursor < len(m.keys) {
 				m.confirm = m.cursor
 				m.viewport.SetContent(m.renderContent())
+			}
+			return m, nil
+		case "x":
+			if m.cursor < len(m.keys) {
+				if _, ok := m.limits[m.keys[m.cursor]]; ok {
+					m.resetConfirm = m.cursor
+					m.viewport.SetContent(m.renderContent())
+				}
 			}
 			return m, nil
 		case "c":
@@ -302,6 +360,10 @@ func (m keysTabModel) renderContent() string {
 	// ━━━ Access API Keys (interactive) ━━━
 	sb.WriteString(tableHeaderStyle.Render(fmt.Sprintf("  %s (%d)", T("access_keys"), len(m.keys))))
 	sb.WriteString("\n")
+	if m.limitsErr != nil {
+		sb.WriteString(warningStyle.Render(fmt.Sprintf("  "+T("limits_unavailable"), m.limitsErr)))
+		sb.WriteString("\n")
+	}
 
 	if len(m.keys) == 0 {
 		sb.WriteString(subtitleStyle.Render(T("no_keys")))
@@ -317,12 +379,19 @@ func (m keysTabModel) renderContent() string {
 		}
 
 		row := fmt.Sprintf("%s%d. %s", cursor, i+1, maskKey(key))
+		if limits, ok := m.limits[key]; ok {
+			row += "  " + formatAPIKeyLimit(limits)
+		}
 		sb.WriteString(rowStyle.Render(row))
 		sb.WriteString("\n")
 
 		// Delete confirmation
 		if m.confirm == i {
 			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_delete_key"), maskKey(key))))
+			sb.WriteString("\n")
+		}
+		if m.resetConfirm == i {
+			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_reset_key_usage"), maskKey(key))))
 			sb.WriteString("\n")
 		}
 
@@ -412,4 +481,35 @@ func maskKey(key string) string {
 		return strings.Repeat("*", len(key))
 	}
 	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
+}
+
+func formatAPIKeyLimit(limits APIKeyLimit) string {
+	resetAt := T("limit_never")
+	if limits.ResetAt != nil {
+		resetAt = limits.ResetAt.Format(time.RFC3339)
+	}
+	return fmt.Sprintf(
+		T("key_limit_usage"),
+		formatAPIKeyLimitValue(limits.RequestsUsed, limits.MaxRequests),
+		formatAPIKeyLimitValue(limits.TokensUsed, limits.MaxTokens),
+		formatAPIKeyLimitCadence(limits.Resets),
+		resetAt,
+	)
+}
+
+func formatAPIKeyLimitValue(used, limit int64) string {
+	limitText := T("unlimited")
+	if limit > 0 {
+		limitText = strconv.FormatInt(limit, 10)
+	}
+	return strconv.FormatInt(used, 10) + "/" + limitText
+}
+
+func formatAPIKeyLimitCadence(cadence string) string {
+	switch cadence {
+	case "hourly", "daily", "weekly", "monthly", "lifetime":
+		return T("limit_" + cadence)
+	default:
+		return cadence
+	}
 }

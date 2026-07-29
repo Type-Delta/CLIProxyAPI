@@ -233,6 +233,21 @@ func (t *Tracker) AddTokens(key string, tokens int64, now time.Time) {
 	}
 }
 
+// Reset clears the current usage for a configured, limited key.
+func (t *Tracker) Reset(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	limits, exists := t.limits[key]
+	if !exists || limits.IsZero() {
+		return false
+	}
+	delete(t.counters, key)
+	delete(t.persisted, keyHash(key))
+	t.dirty = true
+	return true
+}
+
 // Snapshot returns current consumption for key, or nil when it is unlimited or
 // not configured.
 func (t *Tracker) Snapshot(key string, now time.Time) *Snapshot {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,5 +64,58 @@ func TestGetAPIKeyLimitsReturnsSortedSnapshots(t *testing.T) {
 	}
 	if _, exists := payload.APIKeyLimits[1].Limits["reset_at"]; exists {
 		t.Fatalf("lifetime reset_at = %#v, want omitted", payload.APIKeyLimits[1].Limits["reset_at"])
+	}
+}
+
+func TestResetAPIKeyLimits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantReset  bool
+	}{
+		{name: "success", body: `{"key":"limited"}`, wantStatus: http.StatusOK, wantReset: true},
+		{name: "malformed", body: `{"key":`, wantStatus: http.StatusBadRequest},
+		{name: "blank", body: `{"key":"  "}`, wantStatus: http.StatusBadRequest},
+		{name: "unconfigured", body: `{"key":"missing"}`, wantStatus: http.StatusNotFound},
+		{name: "unlimited", body: `{"key":"unlimited"}`, wantStatus: http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := usagelimit.NewTracker()
+			tracker.SetLimits(map[string]usagelimit.Limits{
+				"limited":   {MaxRequests: 2},
+				"unlimited": {},
+			})
+			tracker.Allow("limited", time.Now())
+			handler := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+			handler.SetUsageLimitTracker(tracker)
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			context.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-key-limits/reset", strings.NewReader(tt.body))
+			context.Request.Header.Set("Content-Type", "application/json")
+
+			handler.ResetAPIKeyLimits(context)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.wantReset {
+				var response struct {
+					Status string `json:"status"`
+				}
+				if errDecode := json.Unmarshal(recorder.Body.Bytes(), &response); errDecode != nil {
+					t.Fatalf("decode response: %v", errDecode)
+				}
+				if response.Status != "ok" {
+					t.Fatalf("status response = %q, want ok", response.Status)
+				}
+				if got := tracker.Snapshot("limited", time.Now()).RequestsUsed; got != 0 {
+					t.Fatalf("RequestsUsed after reset = %d, want 0", got)
+				}
+			}
+		})
 	}
 }

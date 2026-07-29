@@ -378,6 +378,41 @@ func TestAddTokensSaturatesAndIgnoresNonPositive(t *testing.T) {
 	}
 }
 
+func TestResetClearsConfiguredKeyUsage(t *testing.T) {
+	tracker := NewTracker()
+	tracker.SetLimits(map[string]Limits{
+		"limited":   {MaxRequests: 2, MaxTokens: 10, Resets: PeriodDaily},
+		"unlimited": {},
+	})
+	now := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
+	tracker.Allow("limited", now)
+	tracker.AddTokens("limited", 3, now)
+	tracker.persisted[keyHash("limited")] = counter{initialized: true}
+	tracker.dirty = false
+
+	if !tracker.Reset("limited") {
+		t.Fatal("Reset(limited) = false, want true")
+	}
+	if _, exists := tracker.counters["limited"]; exists {
+		t.Fatal("Reset(limited) retained active counter")
+	}
+	if _, exists := tracker.persisted[keyHash("limited")]; exists {
+		t.Fatal("Reset(limited) retained persisted counter")
+	}
+	if !tracker.dirty {
+		t.Fatal("Reset(limited) did not mark tracker dirty")
+	}
+	if snapshot := tracker.Snapshot("limited", now); snapshot.RequestsUsed != 0 || snapshot.TokensUsed != 0 {
+		t.Fatalf("Snapshot after Reset = %+v, want zero usage", snapshot)
+	}
+	if tracker.Reset("missing") {
+		t.Fatal("Reset(missing) = true, want false")
+	}
+	if tracker.Reset("unlimited") {
+		t.Fatal("Reset(unlimited) = true, want false")
+	}
+}
+
 func TestKeysSorted(t *testing.T) {
 	tracker := NewTracker()
 	tracker.SetLimits(map[string]Limits{"zebra": {}, "alpha": {}, "middle": {}})

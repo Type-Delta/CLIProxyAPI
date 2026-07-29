@@ -140,6 +140,14 @@ Read current consumption with `GET /v0/management/api-key-limits`:
 
 The response is sorted by key and omits keys without limits. `max_tokens` is the absolute token limit, while `max_requests`, `requests_used`, and `tokens_used` are counts. For a lifetime limit, `resets` is `"lifetime"` and `reset_at` is omitted.
 
+Reset one limited key's counters with `POST /v0/management/api-key-limits/reset`:
+
+```json
+{"key": "..."}
+```
+
+Success returns `{"status":"ok"}`. The endpoint returns HTTP `400` for a malformed or blank key, `404` when the key has no configured limits, and `503` when the usage tracker is unavailable.
+
 Config hot-reload applies limit changes immediately and does not reset existing counters, except that changing a key's `resets` cadence resets that key's counters. Lowering a limit below current usage blocks the key until the window rolls over.
 
 ## Loading Providers from External Go Modules

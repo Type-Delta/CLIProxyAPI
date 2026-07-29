@@ -2,6 +2,7 @@ package management
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,4 +43,33 @@ func (h *Handler) GetAPIKeyLimits(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"api-key-limits": entries})
+}
+
+// ResetAPIKeyLimits clears the current usage for one configured inbound API key.
+func (h *Handler) ResetAPIKeyLimits(c *gin.Context) {
+	if h == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if errBind := c.ShouldBindJSON(&body); errBind != nil || strings.TrimSpace(body.Key) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	tracker := h.usageLimitTracker
+	h.mu.Unlock()
+	if tracker == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "usage limit tracker unavailable"})
+		return
+	}
+	if !tracker.Reset(strings.TrimSpace(body.Key)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "API key limit not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
