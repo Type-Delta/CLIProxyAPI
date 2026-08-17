@@ -16,9 +16,9 @@ The proxy enforces limits across the OpenAI-, Anthropic-, and Gemini-compatible 
 
 Usage counters persist under the authentication directory at `state/usage-limits.json`. Persisted entries identify keys only by SHA-256 hash, survive restarts, and remain local to each proxy instance. Configuration hot reload applies limit changes immediately, preserves counters unless the reset cadence changes, and removes counters for deleted or unlimited keys.
 
-The management API exposes current limited-key consumption through `GET /v0/management/api-key-limits`. Existing API-key management operations preserve structured limits, and the TUI continues to accept mixed bare and structured key representations.
+The management API exposes current limited-key consumption through `GET /v0/management/api-key-limits` and resets one limited key through `POST /v0/management/api-key-limits/reset`. Existing API-key management operations preserve structured limits. The TUI API Keys tab accepts mixed bare and structured key representations, displays each limited key's request and token usage, reset cadence, and reset time, and provides a confirmed per-key usage reset action while keeping keys masked.
 
-**Implementation evidence:** `internal/config/api_key_entry.go`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/server.go`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/client.go`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`.
+**Implementation evidence:** `internal/config/api_key_entry.go`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/server.go`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`.
 
 **Recorded validation:** focused config, usage-limit tracker, middleware, management API, server API, TUI, and server-entrypoint Go test suites; required `cmd/server` compile check.
 
