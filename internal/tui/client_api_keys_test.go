@@ -2,8 +2,10 @@ package tui
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +72,119 @@ func TestGetAPIKeysMixedEntries(t *testing.T) {
 				t.Fatalf("GetAPIKeys() = %s, want %s", gotJSON, wantJSON)
 			}
 		})
+	}
+}
+
+// TestGetAPIKeyEntriesDecodesLimits checks that the configured limit block is
+// carried through for object entries and stays nil for bare strings.
+func TestGetAPIKeyEntriesDecodesLimits(t *testing.T) {
+	body := `{"api-keys":["a",null,{},{"key":"b","limits":{"max-requests":100,"max-tokens-m":1.5,"resets":"daily"}},{"key":"c"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, errWrite := w.Write([]byte(body)); errWrite != nil {
+			t.Errorf("write response: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, http: server.Client()}
+	entries, err := client.GetAPIKeyEntries()
+	if err != nil {
+		t.Fatalf("GetAPIKeyEntries() error = %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	if entries[0].Key != "a" || entries[0].Limits != nil {
+		t.Fatalf("entry 0 = %#v", entries[0])
+	}
+	if entries[1].Key != "b" || entries[1].Limits == nil {
+		t.Fatalf("entry 1 = %#v", entries[1])
+	}
+	if got := *entries[1].Limits; got.MaxRequests != 100 || got.MaxTokensM != 1.5 || got.Resets != "daily" {
+		t.Fatalf("entry 1 limits = %#v", got)
+	}
+	if entries[2].Key != "c" || entries[2].Limits != nil {
+		t.Fatalf("entry 2 = %#v", entries[2])
+	}
+}
+
+// TestAPIKeyPatchBodies pins the exact PATCH payloads for create, edit with
+// limits and edit clearing limits.
+func TestAPIKeyPatchBodies(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(c *Client) error
+		want string
+	}{
+		{
+			name: "create without limits omits the field",
+			call: func(c *Client) error { return c.AddAPIKey("new-key", nil) },
+			want: `{"new":"new-key"}`,
+		},
+		{
+			name: "create with limits sends the object",
+			call: func(c *Client) error {
+				return c.AddAPIKey("new-key", &APIKeyLimitConfig{MaxRequests: 100, MaxTokensM: 1.5, Resets: "daily"})
+			},
+			want: `{"limits":{"max-requests":100,"max-tokens-m":1.5,"resets":"daily"},"new":"new-key"}`,
+		},
+		{
+			name: "edit with limits sends index and object",
+			call: func(c *Client) error {
+				return c.EditAPIKey(2, "edited", &APIKeyLimitConfig{MaxTokensM: 0.5, Resets: "weekly"})
+			},
+			want: `{"index":2,"limits":{"max-tokens-m":0.5,"resets":"weekly"},"new":"edited"}`,
+		},
+		{
+			name: "edit clearing limits sends explicit null",
+			call: func(c *Client) error { return c.EditAPIKey(0, "edited", nil) },
+			want: `{"index":0,"limits":null,"new":"edited"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ""
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				raw, errRead := io.ReadAll(r.Body)
+				if errRead != nil {
+					t.Errorf("read body: %v", errRead)
+				}
+				got = strings.TrimSpace(string(raw))
+			}))
+			defer server.Close()
+
+			client := &Client{baseURL: server.URL, http: server.Client()}
+			if err := tt.call(client); err != nil {
+				t.Fatalf("request error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("body = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAPIKeyPatchSurfacesServerError checks that the server message replaces the
+// raw JSON payload in the returned error.
+func TestAPIKeyPatchSurfacesServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		if _, errWrite := w.Write([]byte(`{"error":"invalid resets value: yearly"}`)); errWrite != nil {
+			t.Errorf("write response: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, http: server.Client()}
+	err := client.AddAPIKey("key", &APIKeyLimitConfig{Resets: "yearly"})
+	if err == nil || err.Error() != "invalid resets value: yearly" {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -148,7 +148,7 @@ var zhStrings = map[string]string{
 
 	// ── API Keys ──
 	"keys_title":              "🔐 API 密钥",
-	"keys_help":               " [↑↓/jk] 导航 • [a] 添加 • [e] 编辑 • [d] 删除 • [x] 重置用量 • [c] 复制 • [r] 刷新",
+	"keys_help":               " [↑↓/jk] 导航 • [a] 添加 • [e] 编辑(含用量限制) • [d] 删除 • [x] 重置用量 • [c] 复制 • [r] 刷新",
 	"no_keys":                 "  无 API Key，按 [a] 添加",
 	"access_keys":             "Access API Keys",
 	"confirm_delete_key":      "⚠ 确认删除 %s? [y/n]",
@@ -161,6 +161,7 @@ var zhStrings = map[string]string{
 	"key_limit_usage":         "请求 %s • Tokens %s • %s • 重置 %s",
 	"unlimited":               "无限制",
 	"limit_never":             "从不",
+	"limit_reset_pending":     "待首次使用",
 	"limit_lifetime":          "永久",
 	"limit_hourly":            "每小时",
 	"limit_daily":             "每天",
@@ -172,6 +173,22 @@ var zhStrings = map[string]string{
 	"edit_key_prompt":         "  Edit Key: ",
 	"enter_add":               "    Enter: 添加 • Esc: 取消",
 	"enter_save_esc":          "    Enter: 保存 • Esc: 取消",
+
+	// ── API Key form ──
+	"key_form_title_add":       "添加密钥",
+	"key_form_title_edit":      "编辑密钥",
+	"key_form_key":             "密钥",
+	"key_form_max_requests":    "最大请求数",
+	"key_form_max_tokens":      "最大 Tokens (百万)",
+	"key_form_resets":          "重置周期",
+	"key_form_blank_unlimited": "(留空 / 0 = 无限制)",
+	"key_form_cadences":        "从不·每小时·每天·每周·每月",
+	"key_form_help":            "tab/↑↓ 切换字段 • ←→ 选择周期 • Enter 保存 • Esc 取消",
+	"key_form_key_required":    "密钥不能为空",
+	"key_form_invalid_number":  "请输入有效数字",
+	"key_form_negative":        "数值不能为负",
+
+	"key_form_cadence_needs_cap": "设置重置周期时必须填写请求或令牌上限",
 
 	// ── OAuth ──
 	"oauth_title":          "🔐 OAuth 登录",
@@ -314,7 +331,7 @@ var enStrings = map[string]string{
 
 	// ── API Keys ──
 	"keys_title":              "🔐 API Keys",
-	"keys_help":               " [↑↓/jk] Navigate • [a] Add • [e] Edit • [d] Delete • [x] Reset usage • [c] Copy • [r] Refresh",
+	"keys_help":               " [↑↓/jk] Navigate • [a] Add • [e] Edit + limits • [d] Delete • [x] Reset usage • [c] Copy • [r] Refresh",
 	"no_keys":                 "  No API Keys. Press [a] to add",
 	"access_keys":             "Access API Keys",
 	"confirm_delete_key":      "⚠ Delete %s? [y/n]",
@@ -327,6 +344,7 @@ var enStrings = map[string]string{
 	"key_limit_usage":         "requests %s • tokens %s • %s • reset %s",
 	"unlimited":               "unlimited",
 	"limit_never":             "never",
+	"limit_reset_pending":     "on first use",
 	"limit_lifetime":          "lifetime",
 	"limit_hourly":            "hourly",
 	"limit_daily":             "daily",
@@ -338,6 +356,22 @@ var enStrings = map[string]string{
 	"edit_key_prompt":         "  Edit Key: ",
 	"enter_add":               "    Enter: Add • Esc: Cancel",
 	"enter_save_esc":          "    Enter: Save • Esc: Cancel",
+
+	// ── API Key form ──
+	"key_form_title_add":       "Add key",
+	"key_form_title_edit":      "Edit key",
+	"key_form_key":             "Key",
+	"key_form_max_requests":    "Max requests",
+	"key_form_max_tokens":      "Max tokens (M)",
+	"key_form_resets":          "Resets",
+	"key_form_blank_unlimited": "(blank / 0 = unlimited)",
+	"key_form_cadences":        "never·hourly·daily·weekly·monthly",
+	"key_form_help":            "tab/↑↓ field • ←→ cadence • enter save • esc cancel",
+	"key_form_key_required":    "key must not be empty",
+	"key_form_invalid_number":  "enter a valid number",
+	"key_form_negative":        "value must not be negative",
+
+	"key_form_cadence_needs_cap": "set a request or token cap to use a reset cadence",
 
 	// ── OAuth ──
 	"oauth_title":          "🔐 OAuth Login",

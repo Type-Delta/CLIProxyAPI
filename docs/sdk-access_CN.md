@@ -146,7 +146,38 @@ Lifetime 限制不会返回 `Retry-After` 或 `X-RateLimit-Reset`，因为没有
 {"key": "..."}
 ```
 
-成功时返回 `{"status":"ok"}`。请求体格式错误或 Key 为空时返回 HTTP `400`，Key 未配置限制时返回 `404`，使用量跟踪器不可用时返回 `503`。
+成功时返回 `{"status":"ok"}`。请求体格式错误或 Key 为空时返回 HTTP `400`，Key 不在 `api-keys` 中时返回 `404`，使用量跟踪器不可用时返回 `503`。重置一个尚无使用记录的已配置 Key 会作为空操作成功返回。
+
+#### 通过管理 API 管理 Key 与限制
+
+`PATCH /v0/management/api-keys` 可以新建一个 Key、轮换一个 Key，或修改某个 Key 的限制：
+
+```json
+{
+  "index": 0,
+  "old": "existing-key",
+  "new": "key-value",
+  "limits": {"max-requests": 1000, "max-tokens-m": 20, "resets": "weekly"}
+}
+```
+
+目标按以下顺序解析：先取范围内的 `index`，否则取第一个 Key 等于 `old` 的条目（`match` 为其别名），否则该请求将新建一个条目。`new` 用于设置 Key 字符串（`value` 为其别名）；更新时可以省略以保留当前 Key，新建时则必须提供非空 Key。
+
+`limits` 字段有三种不同状态：
+
+| `limits` | 效果 |
+| --- | --- |
+| 省略 | 更新时保留原有限制；新建的 Key 没有限制 |
+| `null` | 清除限制，该 Key 变为无限制 |
+| 对象 | 整体替换限制；对象中未出现的字段按无限制处理 |
+
+如果对象最终没有任何上限，则按完全没有限制存储，该 Key 会以裸字符串形式写回 `config.yaml`。只设置 `resets` 而没有任何上限同样视为没有上限，因为只有周期而没有上限不会产生任何约束。
+
+当 `index` 越界、新建时 Key 为空、上限为负数或非有限数值、`resets` 不属于 `hourly`、`daily`、`weekly`、`monthly` 和空值，或 `limits` 既不是对象也不是 `null` 时，该端点返回 HTTP `400` 并附带说明信息。被拒绝的请求不会改动配置。
+
+`old` 和 `match` 会与去除首尾空白后的已存 Key 比较，因此带首尾空白保存的条目仍可被选中。
+
+`PUT /v0/management/api-keys` 替换整个列表，同一数组中可以混用裸字符串和映射条目。裸字符串会保留该 Key 已配置的限制。
 
 配置热更新会立即应用限制变化，且不会重置已有计数器；但修改某个 Key 的 `resets` 周期会重置该 Key 的计数器。如果将限制调低到当前用量以下，该 Key 会一直被阻止，直到窗口滚动结束。
 

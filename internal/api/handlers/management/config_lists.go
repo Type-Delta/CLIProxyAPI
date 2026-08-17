@@ -133,37 +133,140 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.persistLocked(c)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	var body struct {
-		Old   *string `json:"old"`
-		New   *string `json:"new"`
-		Index *int    `json:"index"`
-		Value *string `json:"value"`
+	data, errRead := c.GetRawData()
+	if errRead != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
 	}
-	if errBind := c.ShouldBindJSON(&body); errBind != nil {
+	var fields map[string]json.RawMessage
+	if errDecode := json.Unmarshal(data, &fields); errDecode != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
+	}
+	index, errIndex := decodeAPIKeyPatchIndex(fields)
+	old, errOld := decodeAPIKeyPatchString(fields, "old")
+	match, errMatch := decodeAPIKeyPatchString(fields, "match")
+	newKey, errNew := decodeAPIKeyPatchString(fields, "new")
+	value, errValue := decodeAPIKeyPatchString(fields, "value")
+	limits, limitsPresent, errLimits := decodeAPIKeyPatchLimits(fields)
+	if errIndex != nil || errOld != nil || errMatch != nil || errNew != nil || errValue != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	if errLimits != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("invalid limits: %v", errLimits)})
+		return
+	}
+	if newKey == nil {
+		newKey = value
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(h.cfg.APIKeys) {
-		h.cfg.APIKeys[*body.Index] = apiKeyEntryReplacing(*body.Value, h.cfg.APIKeys[*body.Index])
-		h.persistLocked(c)
-		return
-	}
-	if body.Old != nil && body.New != nil {
-		for i := range h.cfg.APIKeys {
-			if h.cfg.APIKeys[i].Key == *body.Old {
-				h.cfg.APIKeys[i] = apiKeyEntryReplacing(*body.New, h.cfg.APIKeys[i])
-				h.persistLocked(c)
-				return
+	entries := append([]config.APIKeyEntry(nil), h.cfg.APIKeys...)
+	target := -1
+	if index != nil {
+		if *index < 0 || *index >= len(entries) {
+			c.JSON(400, gin.H{"error": "index out of range"})
+			return
+		}
+		target = *index
+	} else {
+		lookup := ""
+		if old != nil {
+			lookup = strings.TrimSpace(*old)
+		}
+		if lookup == "" && match != nil {
+			lookup = strings.TrimSpace(*match)
+		}
+		if lookup != "" {
+			for i := range entries {
+				if strings.TrimSpace(entries[i].Key) == lookup {
+					target = i
+					break
+				}
 			}
 		}
-		h.cfg.APIKeys = append(h.cfg.APIKeys, config.APIKeyEntry{Key: *body.New})
-		h.persistLocked(c)
+	}
+
+	if target >= 0 {
+		key := entries[target].Key
+		if newKey != nil {
+			key = *newKey
+		}
+		entries[target] = apiKeyEntryReplacing(key, entries[target])
+		if limitsPresent {
+			entries[target].Limits = limits
+		}
+	} else {
+		if newKey == nil || strings.TrimSpace(*newKey) == "" {
+			c.JSON(400, gin.H{"error": "missing fields"})
+			return
+		}
+		entry := config.APIKeyEntry{Key: *newKey}
+		if limitsPresent {
+			entry.Limits = limits
+		}
+		entries = append(entries, entry)
+	}
+
+	candidate := config.SDKConfig{APIKeys: entries}
+	if errValidate := candidate.ValidateAPIKeyLimits(); errValidate != nil {
+		c.JSON(400, gin.H{"error": errValidate.Error()})
 		return
 	}
-	c.JSON(400, gin.H{"error": "missing fields"})
+	h.cfg.APIKeys = entries
+	h.persistLocked(c)
+}
+
+func decodeAPIKeyPatchString(fields map[string]json.RawMessage, field string) (*string, error) {
+	raw, exists := fields[field]
+	if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func decodeAPIKeyPatchIndex(fields map[string]json.RawMessage) (*int, error) {
+	raw, exists := fields["index"]
+	if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var index int
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return nil, err
+	}
+	return &index, nil
+}
+
+func decodeAPIKeyPatchLimits(fields map[string]json.RawMessage) (*config.KeyLimits, bool, error) {
+	raw, exists := fields["limits"]
+	if !exists {
+		return nil, false, nil
+	}
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("null")) {
+		return nil, true, nil
+	}
+	if len(raw) == 0 || raw[0] != '{' {
+		return nil, true, fmt.Errorf("api key limits must be an object or null")
+	}
+	var limits config.KeyLimits
+	if err := json.Unmarshal(raw, &limits); err != nil {
+		return nil, true, err
+	}
+	return normalizeAPIKeyLimits(&limits), true, nil
+}
+
+func normalizeAPIKeyLimits(limits *config.KeyLimits) *config.KeyLimits {
+	if limits == nil || (limits.MaxRequests == 0 && limits.MaxTokensM == 0) {
+		return nil
+	}
+	return limits
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.mu.Lock()
@@ -217,6 +320,7 @@ func decodeAPIKeyEntries(data []byte, existing []config.APIKeyEntry) ([]config.A
 		if err := json.Unmarshal(dataEntry, &entry); err != nil {
 			return nil, err
 		}
+		entry.Limits = normalizeAPIKeyLimits(entry.Limits)
 		entries = append(entries, entry)
 	}
 	return entries, nil
@@ -229,7 +333,7 @@ func apiKeyEntryReplacing(key string, previous config.APIKeyEntry) config.APIKey
 	entry := config.APIKeyEntry{Key: key}
 	if previous.Limits != nil {
 		limits := *previous.Limits
-		entry.Limits = &limits
+		entry.Limits = normalizeAPIKeyLimits(&limits)
 	}
 	return entry
 }
@@ -241,7 +345,7 @@ func apiKeyEntryForString(key string, existing []config.APIKeyEntry) config.APIK
 			continue
 		}
 		limits := *current.Limits
-		entry.Limits = &limits
+		entry.Limits = normalizeAPIKeyLimits(&limits)
 		break
 	}
 	return entry

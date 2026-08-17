@@ -79,7 +79,7 @@ func TestResetAPIKeyLimits(t *testing.T) {
 		{name: "malformed", body: `{"key":`, wantStatus: http.StatusBadRequest},
 		{name: "blank", body: `{"key":"  "}`, wantStatus: http.StatusBadRequest},
 		{name: "unconfigured", body: `{"key":"missing"}`, wantStatus: http.StatusNotFound},
-		{name: "unlimited", body: `{"key":"unlimited"}`, wantStatus: http.StatusNotFound},
+		{name: "configured unlimited", body: `{"key":"unlimited"}`, wantStatus: http.StatusOK},
 	}
 
 	for _, tt := range tests {
@@ -90,7 +90,9 @@ func TestResetAPIKeyLimits(t *testing.T) {
 				"unlimited": {},
 			})
 			tracker.Allow("limited", time.Now())
-			handler := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+			handler := NewHandlerWithoutConfigFilePath(&config.Config{SDKConfig: config.SDKConfig{
+				APIKeys: []config.APIKeyEntry{{Key: "limited"}, {Key: "unlimited"}},
+			}}, nil)
 			handler.SetUsageLimitTracker(tracker)
 			recorder := httptest.NewRecorder()
 			context, _ := gin.CreateTestContext(recorder)
@@ -117,5 +119,32 @@ func TestResetAPIKeyLimits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResetAPIKeyLimitsDoesNotResetUnconfiguredTrackerKey(t *testing.T) {
+	tracker := usagelimit.NewTracker()
+	tracker.SetLimits(map[string]usagelimit.Limits{"deleted": {MaxRequests: 2}})
+	tracker.Allow("deleted", time.Now())
+
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []config.APIKeyEntry{{Key: "current"}},
+	}}, nil)
+	handler.SetUsageLimitTracker(tracker)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-key-limits/reset", strings.NewReader(`{"key":"deleted"}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ResetAPIKeyLimits(context)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if got, want := recorder.Body.String(), `{"error":"API key limit not found"}`; got != want {
+		t.Fatalf("response = %s, want %s", got, want)
+	}
+	if snapshot := tracker.Snapshot("deleted", time.Now()); snapshot == nil || snapshot.RequestsUsed != 1 {
+		t.Fatalf("deleted tracker snapshot = %#v, want one request retained", snapshot)
 	}
 }

@@ -62,14 +62,25 @@ func (h *Handler) ResetAPIKeyLimits(c *gin.Context) {
 
 	h.mu.Lock()
 	tracker := h.usageLimitTracker
+	configured := false
+	key := strings.TrimSpace(body.Key)
+	if h.cfg != nil {
+		for _, entry := range h.cfg.APIKeys {
+			if strings.TrimSpace(entry.Key) == key {
+				configured = true
+				break
+			}
+		}
+	}
 	h.mu.Unlock()
+	if !configured {
+		c.JSON(http.StatusNotFound, gin.H{"error": "API key limit not found"})
+		return
+	}
 	if tracker == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "usage limit tracker unavailable"})
 		return
 	}
-	if !tracker.Reset(strings.TrimSpace(body.Key)) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "API key limit not found"})
-		return
-	}
+	tracker.Reset(key)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

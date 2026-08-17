@@ -146,7 +146,38 @@ Reset one limited key's counters with `POST /v0/management/api-key-limits/reset`
 {"key": "..."}
 ```
 
-Success returns `{"status":"ok"}`. The endpoint returns HTTP `400` for a malformed or blank key, `404` when the key has no configured limits, and `503` when the usage tracker is unavailable.
+Success returns `{"status":"ok"}`. The endpoint returns HTTP `400` for a malformed or blank key, `404` when the key is not present in `api-keys`, and `503` when the usage tracker is unavailable. Resetting a configured key that has no recorded usage yet succeeds as a no-op.
+
+#### Managing keys and limits through the management API
+
+`PATCH /v0/management/api-keys` creates one key, rotates one key, or changes one key's limits:
+
+```json
+{
+  "index": 0,
+  "old": "existing-key",
+  "new": "key-value",
+  "limits": {"max-requests": 1000, "max-tokens-m": 20, "resets": "weekly"}
+}
+```
+
+The target is resolved in this order: an in-range `index`, otherwise the first entry whose key equals `old` (`match` is accepted as an alias), otherwise the request creates a new entry. `new` sets the key string (`value` is accepted as an alias); an update may omit it to keep the current key, while a create requires a non-blank key.
+
+The `limits` field has three distinct states:
+
+| `limits` | Effect |
+| --- | --- |
+| omitted | Existing limits are preserved on update; a created key has no limits |
+| `null` | Limits are cleared, and the key becomes unlimited |
+| object | Limits are replaced as a whole; fields absent from the object fall back to unlimited |
+
+An object that resolves to no caps is stored as no limits at all, so the key is written back to `config.yaml` as a bare string. A `resets` cadence without a cap counts as no caps, because a cadence alone enforces nothing.
+
+The endpoint returns HTTP `400` with a descriptive message for an out-of-range `index`, a blank key on create, a negative or non-finite cap, a `resets` value outside `hourly`, `daily`, `weekly`, `monthly`, and empty, or a `limits` value that is neither an object nor `null`. A rejected request leaves the configuration unchanged.
+
+`old` and `match` are compared against the trimmed stored key, so an entry saved with surrounding whitespace is still selectable.
+
+`PUT /v0/management/api-keys` replaces the whole list and accepts bare strings and mapping entries in the same array. A bare string keeps the limits already configured for that key.
 
 Config hot-reload applies limit changes immediately and does not reset existing counters, except that changing a key's `resets` cadence resets that key's counters. Lowering a limit below current usage blocks the key until the window rolls over.
 

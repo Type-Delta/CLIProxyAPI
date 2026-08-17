@@ -34,6 +34,22 @@ type APIKeyLimitSnapshot struct {
 	Limits *APIKeyLimit `json:"limits"`
 }
 
+// APIKeyLimitConfig is the configured (not runtime) limit block of one access key.
+type APIKeyLimitConfig struct {
+	MaxRequests int64   `json:"max-requests,omitempty"`
+	MaxTokensM  float64 `json:"max-tokens-m,omitempty"`
+	Resets      string  `json:"resets,omitempty"`
+}
+
+// APIKeyEntry is one configured access key with its optional limit block.
+// Index is the position of the entry in the server-side api-keys array, which
+// stays stable even when blank or keyless entries are filtered out of the list.
+type APIKeyEntry struct {
+	Key    string
+	Index  int
+	Limits *APIKeyLimitConfig
+}
+
 // NewClient creates a new management API client.
 func NewClient(port int, secretKey string) *Client {
 	return &Client{
@@ -250,9 +266,22 @@ func (c *Client) GetLogs(after int64, limit int) ([]string, int64, error) {
 	return lines, latest, nil
 }
 
-// GetAPIKeys fetches the list of API keys.
-// API returns {"api-keys": [...]}.
+// GetAPIKeys fetches the list of API key strings.
 func (c *Client) GetAPIKeys() ([]string, error) {
+	entries, err := c.GetAPIKeyEntries()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.Key)
+	}
+	return result, nil
+}
+
+// GetAPIKeyEntries fetches the configured API keys together with their limits.
+// API returns {"api-keys": [...]}.
+func (c *Client) GetAPIKeyEntries() ([]APIKeyEntry, error) {
 	wrapper, err := c.getJSON("/v0/management/api-keys")
 	if err != nil {
 		return nil, err
@@ -271,42 +300,90 @@ func (c *Client) GetAPIKeys() ([]string, error) {
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return nil, err
 	}
-	result := make([]string, 0, len(entries))
-	for _, entry := range entries {
+	result := make([]APIKeyEntry, 0, len(entries))
+	for index, entry := range entries {
 		var key string
+		var limits *APIKeyLimitConfig
 		if errKey := json.Unmarshal(entry, &key); errKey != nil {
 			var object struct {
-				Key string `json:"key"`
+				Key    string             `json:"key"`
+				Limits *APIKeyLimitConfig `json:"limits"`
 			}
 			if errObject := json.Unmarshal(entry, &object); errObject != nil {
 				return nil, errObject
 			}
 			key = object.Key
+			limits = object.Limits
 		}
 		// Skip blanks, JSON nulls (which decode into an empty string) and
-		// objects without a usable key rather than surfacing phantom rows.
+		// objects without a usable key rather than surfacing phantom rows. The
+		// original array position is kept so edits and deletes still address the
+		// entry the server knows.
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		result = append(result, strings.TrimSpace(key))
+		result = append(result, APIKeyEntry{Key: strings.TrimSpace(key), Index: index, Limits: limits})
 	}
 	return result, nil
 }
 
-// AddAPIKey adds a new API key by sending old=nil, new=key which appends.
-func (c *Client) AddAPIKey(key string) error {
-	body := map[string]any{"old": nil, "new": key}
-	jsonBody, _ := json.Marshal(body)
-	_, err := c.patch("/v0/management/api-keys", strings.NewReader(string(jsonBody)))
-	return err
+// AddAPIKey appends a new API key. Limits are sent only when configured, so a
+// plain key stays a bare string on the server side.
+func (c *Client) AddAPIKey(key string, limits *APIKeyLimitConfig) error {
+	body := map[string]any{"new": key}
+	if limits != nil {
+		body["limits"] = limits
+	}
+	return c.patchAPIKeys(body)
 }
 
-// EditAPIKey replaces an API key at the given index.
-func (c *Client) EditAPIKey(index int, newValue string) error {
-	body := map[string]any{"index": index, "value": newValue}
-	jsonBody, _ := json.Marshal(body)
-	_, err := c.patch("/v0/management/api-keys", strings.NewReader(string(jsonBody)))
-	return err
+// EditAPIKey replaces the API key at the given index. A nil limits value clears
+// the configured limits by sending an explicit JSON null.
+func (c *Client) EditAPIKey(index int, key string, limits *APIKeyLimitConfig) error {
+	body := map[string]any{"index": index, "new": key}
+	if limits != nil {
+		body["limits"] = limits
+	} else {
+		body["limits"] = json.RawMessage("null")
+	}
+	return c.patchAPIKeys(body)
+}
+
+// patchAPIKeys sends one api-keys PATCH and surfaces the server error message.
+func (c *Client) patchAPIKeys(body map[string]any) error {
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	data, code, err := c.doRequest("PATCH", "/v0/management/api-keys", strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return err
+	}
+	if code >= 400 {
+		return apiError(code, data)
+	}
+	return nil
+}
+
+// apiError turns an error response into the server-provided message when the
+// body carries one, falling back to the raw payload.
+func apiError(code int, data []byte) error {
+	var payload struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(data, &payload) == nil && len(payload.Error) > 0 {
+		var message string
+		if json.Unmarshal(payload.Error, &message) == nil && strings.TrimSpace(message) != "" {
+			return fmt.Errorf("%s", strings.TrimSpace(message))
+		}
+		var object struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(payload.Error, &object) == nil && strings.TrimSpace(object.Message) != "" {
+			return fmt.Errorf("%s", strings.TrimSpace(object.Message))
+		}
+	}
+	return fmt.Errorf("HTTP %d: %s", code, strings.TrimSpace(string(data)))
 }
 
 // DeleteAPIKey deletes an API key by index.

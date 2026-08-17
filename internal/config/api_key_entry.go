@@ -70,7 +70,7 @@ func (e *APIKeyEntry) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func (e APIKeyEntry) MarshalYAML() (any, error) {
-	if e.Limits == nil || e.Limits.IsZero() {
+	if e.hasNoLimits() {
 		return e.Key, nil
 	}
 	type rawAPIKeyEntry APIKeyEntry
@@ -105,11 +105,16 @@ func (e *APIKeyEntry) UnmarshalJSON(data []byte) error {
 }
 
 func (e APIKeyEntry) MarshalJSON() ([]byte, error) {
-	if e.Limits == nil || e.Limits.IsZero() {
+	if e.hasNoLimits() {
 		return json.Marshal(e.Key)
 	}
 	type rawAPIKeyEntry APIKeyEntry
 	return json.Marshal(rawAPIKeyEntry(e))
+}
+
+func (e APIKeyEntry) hasNoLimits() bool {
+	// A reset cadence without a cap is inert, so serialize it as a bare key.
+	return e.Limits == nil || e.Limits.IsZero()
 }
 
 // APIKeyStrings returns just the key strings, in order, trimmed, skipping empties.

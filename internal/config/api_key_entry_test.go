@@ -51,6 +51,14 @@ limits: {}`,
 			wantBare: true,
 		},
 		{
+			name: "mapping with resets only",
+			input: `key: plain-key
+limits:
+  resets: daily`,
+			want:     APIKeyEntry{Key: "plain-key", Limits: &KeyLimits{Resets: "daily"}},
+			wantBare: true,
+		},
+		{
 			name:     "bare string round trip",
 			input:    "round-trip-key",
 			want:     APIKeyEntry{Key: "round-trip-key"},
@@ -111,6 +119,12 @@ func TestAPIKeyEntryJSON(t *testing.T) {
 			name:     "mapping with zero limits",
 			input:    `{"key":"plain-key","limits":{}}`,
 			want:     APIKeyEntry{Key: "plain-key", Limits: &KeyLimits{}},
+			wantBare: true,
+		},
+		{
+			name:     "mapping with resets only",
+			input:    `{"key":"plain-key","limits":{"resets":"daily"}}`,
+			want:     APIKeyEntry{Key: "plain-key", Limits: &KeyLimits{Resets: "daily"}},
 			wantBare: true,
 		},
 		{
@@ -238,7 +252,7 @@ func TestAPIKeyLimitValidationOnConfigLoad(t *testing.T) {
 		{name: "monthly resets", limits: "resets: monthly"},
 		{name: "empty resets", limits: `resets: ""`},
 		{name: "omitted resets", limits: "max-requests: 1"},
-		{name: "unknown resets", limits: "resets: yearly", wantErr: "invalid resets", wantEntryIndex: true},
+		{name: "unknown resets with cap", limits: "max-requests: 1\n      resets: yearly", wantErr: "invalid resets", wantEntryIndex: true},
 		{name: "negative requests", limits: "max-requests: -1", wantErr: "max-requests", wantEntryIndex: true},
 		{name: "negative tokens", limits: "max-tokens-m: -0.5", wantErr: "max-tokens-m", wantEntryIndex: true},
 	}
