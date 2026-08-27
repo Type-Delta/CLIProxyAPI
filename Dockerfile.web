@@ -1,0 +1,18 @@
+FROM oven/bun:1.4.0-alpine AS builder
+
+ARG MANAGEMENT_CENTER_REF=main
+
+WORKDIR /app
+
+RUN apk add --no-cache git \
+    && git clone --depth 1 --branch "${MANAGEMENT_CENTER_REF}" \
+        https://github.com/router-for-me/Cli-Proxy-API-Management-Center.git .
+
+RUN bun install --frozen-lockfile && bun run build
+
+FROM nginx:1.31.4-alpine
+
+COPY nginx-web.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/dist/index.html /usr/share/nginx/html/index.html
+
+EXPOSE 80

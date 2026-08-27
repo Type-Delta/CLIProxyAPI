@@ -1,6 +1,6 @@
 # CLIProxyAPI Fork
 
-This fork keeps per-API-key request and token usage limits that are not supplied by the shared base.
+This fork keeps per-API-key request and token usage limits and an optional web-console Docker deployment that are not supplied by the shared base.
 
 ## Divergence Log
 
@@ -27,6 +27,18 @@ The TUI API Keys tab accepts mixed bare and structured key representations and d
 **Recorded validation:** focused config, usage-limit tracker, middleware, management API, server API, TUI, and server-entrypoint Go test suites; required `cmd/server` compile check; live management-API run against a server started from a temporary config, covering create, rotate, limit edit, limit clear, rejected limit values, out-of-range index, usage reset, and the resulting `config.yaml`.
 
 **Last updated:** 2026-08-17
+
+### DL002 - Two-service web-console Docker deployment
+
+`docker-compose-web.yml` runs CLIProxyAPI behind an Nginx service on port `8317`. Nginx serves a current Cli-Proxy-API-Management-Center build at `/` and proxies every other path to CLIProxyAPI, including streaming and WebSocket traffic. The Management Center ref and public web port can be selected through `MANAGEMENT_CENTER_REF` and `CLI_PROXY_WEB_PORT`.
+
+`Dockerfile.web` builds the Management Center from its GitHub repository with the Bun version declared by that project, then copies its single-file production output into an Nginx image. The deployment retains the existing CLIProxyAPI configuration, auth, log, plugin, and OAuth callback mounts and ports.
+
+**Implementation evidence:** `docker-compose-web.yml`, `Dockerfile.web`, and `nginx-web.conf`.
+
+**Recorded validation:** Docker Compose configuration rendering, both image builds, and a live two-container request check covering the Management Center at `/`, the proxied health endpoint at `/healthz`, and the authenticated Management API.
+
+**Last updated:** 2026-08-27
 
 ## Merge History
 
