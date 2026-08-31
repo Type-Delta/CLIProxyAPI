@@ -195,6 +195,12 @@ func TestPionMediaRelayBridgesAudioAndDataChannel(t *testing.T) {
 	if errRelay != nil {
 		t.Fatalf("create media relay: %v", errRelay)
 	}
+	relayAPI, errAPI := newPionAPIWithOptions(relayConfig, false, true)
+	if errAPI != nil {
+		t.Fatalf("create loopback relay API: %v", errAPI)
+	}
+	relay.downstreamAPI = relayAPI
+	relay.upstreamAPI = relayAPI
 	session, relayOffer, errSession := relay.NewSession(context.Background(), clientOffer, mediaSessionRoute{
 		credential: "Voice credential",
 		authIndex:  "auth-index",

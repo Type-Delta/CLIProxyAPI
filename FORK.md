@@ -6,7 +6,7 @@ This fork keeps per-API-key request and token usage limits and an optional web-c
 
 This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `81e1b5374f99c212f196f34956eeed964a46b8fa`. The 2026-08-31 integration merged that upstream commit without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
 
-After the integration, `git rev-list --left-right --count HEAD...upstream/main` reports `7 0`: the local branch contains the six published fork commits and the merge commit, and contains all commits through the recorded upstream base. `origin/main` still points to `53866c01` because the integration was committed locally but not pushed.
+After the integration, `git rev-list --left-right --count aeea06fd...upstream/main` reports `7 0`: the fork contains the six published fork commits and the merge commit, and contains all commits through the recorded upstream base. The merge commit was pushed to `origin/main` on 2026-08-31.
 
 Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
 
@@ -41,6 +41,16 @@ The TUI API Keys tab accepts mixed bare and structured key representations and d
 **Recorded validation:** Docker Compose configuration rendering, both image builds, and a live two-container request check covering the Management Center at `/`, the proxied health endpoint at `/healthz`, and the authenticated Management API.
 
 **Last updated:** 2026-08-27
+
+### DL003 - Hermetic Codex Live media relay test
+
+The Codex Live audio and data-channel bridge integration test creates every test peer on loopback. This keeps the test independent of host and container interface routing while leaving production ICE candidate selection unchanged.
+
+**Implementation evidence:** `internal/client/codex/live/media_test.go`.
+
+**Recorded validation:** `go test -count=3 -run TestPionMediaRelayBridgesAudioAndDataChannel ./internal/client/codex/live` passes on a runner where the unmodified test failed three consecutive times while every peer remained in the WebRTC `connecting` state.
+
+**Last updated:** 2026-08-31
 
 ## Merge History
 
