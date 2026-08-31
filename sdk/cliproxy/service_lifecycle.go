@@ -345,7 +345,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		usage.StopDefault()
+		if errCloseUsage := usage.CloseDefault(ctx); errCloseUsage != nil {
+			log.Errorf("failed to drain usage observers: %v", errCloseUsage)
+			if shutdownErr == nil {
+				shutdownErr = errCloseUsage
+			}
+		}
 	})
 	return shutdownErr
 }

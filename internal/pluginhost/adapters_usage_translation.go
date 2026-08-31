@@ -20,16 +20,45 @@ func (h *Host) RegisterUsagePlugins() {
 		return
 	}
 
+	active := make(map[string]struct{})
 	for _, record := range h.activeRecords() {
 		plugin := record.plugin.Capabilities.UsagePlugin
 		if plugin == nil || h.isPluginFused(record.id) {
 			continue
 		}
-		coreusage.RegisterNamedPlugin("plugin:"+record.id, &usageAdapter{
+		name := "plugin:" + record.id
+		unregister, errRegister := coreusage.RegisterNamedPlugin(name, &usageAdapter{
 			host:     h,
 			pluginID: record.id,
 			plugin:   plugin,
 		})
+		if errRegister != nil {
+			log.WithError(errRegister).WithField("plugin_id", record.id).Warn("pluginhost: failed to register usage observer")
+			continue
+		}
+		active[name] = struct{}{}
+		h.mu.Lock()
+		h.usageUnregister[name] = unregister
+		h.mu.Unlock()
+	}
+
+	h.mu.Lock()
+	stale := make(map[string]coreusage.UnregisterFunc)
+	for name, unregister := range h.usageUnregister {
+		if _, ok := active[name]; ok {
+			continue
+		}
+		stale[name] = unregister
+		delete(h.usageUnregister, name)
+	}
+	h.mu.Unlock()
+	for name, unregister := range stale {
+		ctx, cancel := context.WithTimeout(context.Background(), coreusage.DefaultObserverDrainTimeout)
+		errUnregister := unregister(ctx)
+		cancel()
+		if errUnregister != nil {
+			log.WithError(errUnregister).WithField("observer", name).Warn("pluginhost: failed to drain removed usage observer")
+		}
 	}
 }
 

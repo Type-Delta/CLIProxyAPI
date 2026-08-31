@@ -91,6 +91,14 @@ type usageLimitPlugin struct {
 	tracker *usagelimit.Tracker
 }
 
+const usageLimitAccountingName = "api-key-usage-limits"
+
+// registerUsageLimitAccounting installs token accounting on the trusted inline
+// path. The server integration must use this instead of generic observer registration.
+func registerUsageLimitAccounting(tracker *usagelimit.Tracker) (coreusage.UnregisterFunc, error) {
+	return coreusage.RegisterAccountingNamedPlugin(usageLimitAccountingName, &usageLimitPlugin{tracker: tracker})
+}
+
 func (p *usageLimitPlugin) HandleUsage(_ context.Context, record coreusage.Record) {
 	if p == nil || p.tracker == nil {
 		return

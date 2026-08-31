@@ -8,11 +8,16 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagecontext"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 func init() {
-	coreusage.RegisterPlugin(&usageQueuePlugin{})
+	usagecontext.Install()
+	if _, errRegister := coreusage.RegisterNamedPlugin("redis-usage-queue", &usageQueuePlugin{}); errRegister != nil {
+		log.WithError(errRegister).Error("failed to register Redis usage queue observer")
+	}
 }
 
 type usageQueuePlugin struct{}

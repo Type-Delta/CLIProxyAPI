@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -82,6 +83,7 @@ type Host struct {
 	commandLineHits        map[string]struct{}
 	managementRoutes       map[string]managementRouteRecord
 	resourceRoutes         map[string]resourceRouteRecord
+	usageUnregister        map[string]coreusage.UnregisterFunc
 	streams                *streamBridge
 	httpStreams            *hostHTTPStreamBridge
 	modelStreams           *modelStreamBridge
@@ -112,6 +114,7 @@ func New() *Host {
 		commandLineHits:        make(map[string]struct{}),
 		managementRoutes:       make(map[string]managementRouteRecord),
 		resourceRoutes:         make(map[string]resourceRouteRecord),
+		usageUnregister:        make(map[string]coreusage.UnregisterFunc),
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
@@ -928,17 +931,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-			id:       lp.id,
-			path:     lp.path,
-			version:  lp.version,
-			priority: item.Priority,
-			meta:     plugin.Metadata,
-			plugin:   plugin,
-		}, pluginFile{
-			ID:      lp.id,
-			Path:    lp.path,
-			Version: lp.version,
-		}, true
+		id:       lp.id,
+		path:     lp.path,
+		version:  lp.version,
+		priority: item.Priority,
+		meta:     plugin.Metadata,
+		plugin:   plugin,
+	}, pluginFile{
+		ID:      lp.id,
+		Path:    lp.path,
+		Version: lp.version,
+	}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

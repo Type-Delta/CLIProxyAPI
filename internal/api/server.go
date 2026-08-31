@@ -90,6 +90,7 @@ type Server struct {
 	usageLimitStop     chan struct{}
 	usageLimitDone     chan struct{}
 	usageLimitStopOnce sync.Once
+	usageLimitDetach   coreusage.UnregisterFunc
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -146,6 +147,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
+	engine.Use(ProxyRequestIDMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -208,7 +210,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 	s.usageLimitTracker.SetLimits(usageLimitsFromConfig(cfg.APIKeyLimits()))
-	coreusage.RegisterNamedPlugin("api-key-usage-limits", &usageLimitPlugin{tracker: s.usageLimitTracker})
+	usageLimitDetach, errRegisterAccounting := registerUsageLimitAccounting(s.usageLimitTracker)
+	if errRegisterAccounting != nil {
+		log.WithError(errRegisterAccounting).Error("failed to register API key usage accounting")
+	} else {
+		s.usageLimitDetach = usageLimitDetach
+	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)
@@ -421,6 +428,15 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Shutdown the HTTP server.
 	errShutdown := s.server.Shutdown(ctx)
+	if s.usageLimitDetach != nil {
+		if errDetach := s.usageLimitDetach(ctx); errDetach != nil {
+			log.WithError(errDetach).Warn("failed to detach API key usage accounting")
+			if errShutdown == nil {
+				errShutdown = errDetach
+			}
+		}
+		s.usageLimitDetach = nil
+	}
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}

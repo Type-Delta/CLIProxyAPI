@@ -2624,10 +2624,16 @@ func TestRegisterUsagePluginsStaleAdapterSkipsRemovedCapability(t *testing.T) {
 		plugin:   plugin,
 	}
 	setHostSnapshotForTest(host, true)
+	host.RegisterUsagePlugins()
 	adapter.HandleUsage(context.Background(), coreusage.Record{Provider: "provider"})
 
 	if calls != 0 {
 		t.Fatalf("usage plugin calls = %d, want 0 after capability removal", calls)
+	}
+	for _, lane := range coreusage.DefaultManager().Stats().Lanes {
+		if lane.Name == "plugin:usage-active" && lane.Registered {
+			t.Fatal("removed plugin usage observer remains registered")
+		}
 	}
 }
 

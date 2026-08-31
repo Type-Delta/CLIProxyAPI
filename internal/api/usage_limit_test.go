@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,48 @@ func TestUsageLimitPluginAddsNormalizedTokenUsage(t *testing.T) {
 	snapshot := tracker.Snapshot("client-key", time.Now())
 	if snapshot == nil || snapshot.TokensUsed != 130 {
 		t.Fatalf("token usage = %+v, want 130", snapshot)
+	}
+}
+
+type usageOrderPlugin struct {
+	tracker *usagelimit.Tracker
+	mu      sync.Mutex
+	seen    int64
+}
+
+func (p *usageOrderPlugin) HandleUsage(_ context.Context, _ coreusage.Record) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	snapshot := p.tracker.Snapshot("client-key", time.Now())
+	if snapshot != nil {
+		p.seen = snapshot.TokensUsed
+	}
+}
+
+func TestUsageLimitAccountingRunsBeforeLossyObservers(t *testing.T) {
+	tracker := usagelimit.NewTracker()
+	tracker.SetLimits(map[string]usagelimit.Limits{"client-key": {MaxTokens: 200}})
+	manager := coreusage.NewManager(1)
+	if _, errRegister := manager.RegisterAccountingNamed(usageLimitAccountingName, &usageLimitPlugin{tracker: tracker}); errRegister != nil {
+		t.Fatalf("register accounting: %v", errRegister)
+	}
+	observer := &usageOrderPlugin{tracker: tracker}
+	if _, errRegister := manager.RegisterNamed("observer", observer); errRegister != nil {
+		t.Fatalf("register observer: %v", errRegister)
+	}
+	manager.Publish(context.Background(), coreusage.Record{
+		APIKey: "client-key", Provider: "openai", Detail: coreusage.Detail{InputTokens: 7, OutputTokens: 5},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if errClose := manager.Close(ctx); errClose != nil {
+		t.Fatalf("close manager: %v", errClose)
+	}
+	observer.mu.Lock()
+	seen := observer.seen
+	observer.mu.Unlock()
+	if seen != 12 {
+		t.Fatalf("observer saw tokens = %d, want synchronous accounting value 12", seen)
 	}
 }
 

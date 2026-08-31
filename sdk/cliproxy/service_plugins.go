@@ -54,7 +54,9 @@ var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Mana
 // Parameters:
 //   - plugin: The usage plugin to register
 func (s *Service) RegisterUsagePlugin(plugin usage.Plugin) {
-	usage.RegisterPlugin(plugin)
+	if _, errRegister := usage.RegisterPlugin(plugin); errRegister != nil {
+		log.WithError(errRegister).Warn("failed to register usage plugin")
+	}
 }
 
 func (s *Service) registerPluginAuthParser() {
