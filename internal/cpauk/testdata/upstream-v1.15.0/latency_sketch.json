@@ -1,0 +1,15 @@
+{
+  "format_version": "relative-error-0.01-v1",
+  "relative_error": "0.01",
+  "sampling_priority": "attempt_id_bytes_ascending",
+  "vectors": [
+    {"name": "five_values", "values_ms": [10, 20, 30, 40, 50], "bins": [{"index": 231, "count": 1}, {"index": 266, "count": 1}, {"index": 286, "count": 1}, {"index": 300, "count": 1}, {"index": 311, "count": 1}], "p50_ms": 30, "p90_ms": 50, "p95_ms": 50, "p99_ms": 50, "serialized_hex": "0105e70101a30a01b31e01c32c01d73601"},
+    {"name": "tail_values", "values_ms": [3, 3, 3, 800, 1200, 1600], "bins": [{"index": 145, "count": 3}, {"index": 434, "count": 1}, {"index": 454, "count": 1}, {"index": 469, "count": 1}], "p50_ms": 3, "p90_ms": 1600, "p95_ms": 1600, "p99_ms": 1600, "serialized_hex": "0104910103b20301c60301d50301"},
+    {"name": "empty", "values_ms": [], "bins": [], "p50_ms": null, "p90_ms": null, "p95_ms": null, "p99_ms": null, "serialized_hex": "0100"}
+  ],
+  "sampling": {
+    "capacity": 2,
+    "attempt_ids": ["91a83fb43b38e8770e7648440a89fc48", "e41e3038624a354609461cbc273a4df8", "4fc38261f7c8e37e681d8d9909259e41"],
+    "selected_attempt_ids": ["4fc38261f7c8e37e681d8d9909259e41", "91a83fb43b38e8770e7648440a89fc48"]
+  }
+}

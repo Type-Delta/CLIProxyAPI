@@ -1,0 +1,7 @@
+{
+  "create": {"source_kind": "cpauk-v1.15.0", "dry_run": true, "checkpoint": null},
+  "dry_run_result": {"batch_id": "batch-3e71d28f9ac4", "dry_run": true, "rows_read": 1200, "transformed": 1170, "inserted": 0, "skipped": 20, "rejected": 10, "reconciled": true},
+  "commit_result": {"batch_id": "batch-3e71d28f9ac4", "dry_run": false, "rows_read": 1200, "transformed": 1170, "inserted": 1170, "skipped": 20, "rejected": 10, "reconciled": true},
+  "checkpoint": {"batch_id": "batch-3e71d28f9ac4", "chunk": 12, "source_offset": 1200, "digest": "0c8a10d289c87081ed962910e3d684e58a82d7b1aa9fbdd28ac34bfb17244535"},
+  "rollback": {"batch_id": "batch-3e71d28f9ac4", "removed_rows": 1170, "reconciled": true}
+}

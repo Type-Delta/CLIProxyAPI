@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"status": 404, "body": {"error": {"code": "analytics_disabled", "message": "Analytics is disabled.", "request_id": "d1371f43e6b8362d05d7567ed5fcc2ad"}}},
+    {"status": 503, "body": {"error": {"code": "analytics_unavailable", "message": "Analytics is unavailable.", "request_id": "e41e3038624a354609461cbc273a4df8"}}},
+    {"status": 503, "body": {"error": {"code": "analytics_maintenance", "message": "Analytics maintenance is in progress.", "request_id": "4fc38261f7c8e37e681d8d9909259e41"}}},
+    {"status": 400, "body": {"error": {"code": "analytics_invalid_query", "message": "The analytics query is invalid.", "request_id": "cfd874664bf967fb28c134b37be80e63", "details": [{"field": "operation", "reason": "unsupported value"}]}}},
+    {"status": 413, "body": {"error": {"code": "analytics_export_too_large", "message": "The analytics export exceeds the row limit.", "request_id": "7a2cbf71f6ee28401d96fd6f49299ac1"}}},
+    {"status": 429, "body": {"error": {"code": "analytics_throttled", "message": "The analytics request was throttled.", "request_id": "85bf389d51d7acc552f67cce0fb1ea2b"}}},
+    {"status": 409, "body": {"error": {"code": "analytics_backup_invalid", "message": "The analytics backup failed verification.", "request_id": "0a849d376b09f77541c4ae56d928a307"}}},
+    {"status": 409, "body": {"error": {"code": "structured_api_keys_required", "message": "This API-key update requires the structured contract.", "request_id": "c5a7fb81ef9bbed3b4eac95b80860e85"}}},
+    {"status": 500, "body": {"error": {"code": "analytics_internal", "message": "The analytics request failed.", "request_id": "3116d2ef245c1741196485fc6bb26514"}}}
+  ]
+}

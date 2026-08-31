@@ -1,0 +1,8 @@
+{
+  "bounds": {"max_body_bytes": 65536, "max_range_days": 400, "max_buckets": 10000, "max_page_size": 500, "default_page_size": 100, "max_key_filters": 100, "max_filter_values": 50, "max_cursor_bytes": 2048, "max_export_rows": 100000},
+  "operations": ["summary", "timeseries", "dimensions", "events", "leaderboard"],
+  "leaderboard_sorts": ["tokens", "cost"],
+  "single_key_query": {"schema_version": 1, "operation": "summary", "start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "UTC", "key_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7"]},
+  "multi_key_query": {"schema_version": 1, "operation": "leaderboard", "start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "UTC", "key_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de"], "filters": {"provider": ["provider-a17c92", "provider-5d90e8"]}, "page_size": 50, "sort_by": "cost"},
+  "event_cursor_input": {"version": 1, "operation": "events", "selection": "d0568cd351648fd2ba65ab6401aeaedd6fc02f4418fe35d33d1547e92957662c", "requested_at": "2026-08-31T04:06:00Z", "attempt_id": "4fc38261f7c8e37e681d8d9909259e41"}
+}

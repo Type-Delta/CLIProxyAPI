@@ -1,0 +1,10 @@
+{
+  "minimum_prefix_length": 12,
+  "prefix_step": 2,
+  "vectors": [
+    {"name": "ordinary", "full_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de"], "display_ids": ["19fcf81df957", "347a11cc6637"]},
+    {"name": "prefix_collision", "full_ids": ["aaaaaaaaaaaaaa11000000000000000000000000000000000000000000000000", "aaaaaaaaaaaaaa22000000000000000000000000000000000000000000000000"], "display_ids": ["aaaaaaaaaaaaaa11", "aaaaaaaaaaaaaa22"]},
+    {"name": "exact_duplicate", "full_ids": ["bbbbbbbbbbbb0000000000000000000000000000000000000000000000000000", "bbbbbbbbbbbb0000000000000000000000000000000000000000000000000000"], "display_ids": ["bbbbbbbbbbbb", "bbbbbbbbbbbb"], "one_identity": true},
+    {"name": "simulated_full_digest_conflict", "full_ids": ["cccccccccccc0000000000000000000000000000000000000000000000000000", "cccccccccccc0000000000000000000000000000000000000000000000000000"], "distinct_source_fingerprints": ["50623144f3ad59cd201dd1c8514955a89c66faef4598a865f9b46c362ae3655e", "793872311334b266a480743417125904eef4937d5ab82355ecbaad2788dcc2e29"], "status": "identity_conflict", "required_action": "rotate"}
+  ]
+}

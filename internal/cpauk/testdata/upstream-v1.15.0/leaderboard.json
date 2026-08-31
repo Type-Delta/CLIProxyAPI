@@ -1,0 +1,25 @@
+{
+  "range": {"start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "UTC"},
+  "tokens": [
+    {"rank": 1, "key_id": "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c", "short_key_id": "8d91ab2bd3c0", "total_tokens": 200, "known_cost_usd": "0", "unpriced_tokens": 200, "percent_of_total": "50"},
+    {"rank": 2, "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "short_key_id": "19fcf81df957", "total_tokens": 100, "known_cost_usd": "0.001053675", "unpriced_tokens": 0, "percent_of_total": "25"},
+    {"rank": 3, "key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de", "short_key_id": "347a11cc6637", "total_tokens": 100, "known_cost_usd": "0.00110385", "unpriced_tokens": 0, "percent_of_total": "25"}
+  ],
+  "cost": [
+    {"rank": 1, "key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de", "short_key_id": "347a11cc6637", "total_tokens": 100, "known_cost_usd": "0.00110385", "unpriced_tokens": 0, "percent_of_total": "51.162790698"},
+    {"rank": 2, "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "short_key_id": "19fcf81df957", "total_tokens": 100, "known_cost_usd": "0.001053675", "unpriced_tokens": 0, "percent_of_total": "48.837209302"},
+    {"rank": 3, "key_id": "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c", "short_key_id": "8d91ab2bd3c0", "total_tokens": 200, "known_cost_usd": "0", "unpriced_tokens": 200, "percent_of_total": "0"}
+  ],
+  "tie_rule": "metric_desc_then_full_key_id_asc",
+  "pagination": {
+    "page_size": 2,
+    "tokens_page_1": [
+      {"rank": 1, "key_id": "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c"},
+      {"rank": 2, "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7"}
+    ],
+    "tokens_cursor_input": {"version": 1, "operation": "leaderboard", "sort_by": "tokens", "selection": "087a875503a0322ae98a492d063c51af2ef8caece6c80ec6fc2b8cdbee39c77c", "metric": "100", "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "rank": 2},
+    "tokens_page_2": [
+      {"rank": 3, "key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de"}
+    ]
+  }
+}

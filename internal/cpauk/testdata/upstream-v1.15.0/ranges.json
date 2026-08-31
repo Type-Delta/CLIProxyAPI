@@ -1,0 +1,13 @@
+{
+  "week_starts_on": "Monday",
+  "semantics": "start_inclusive_end_exclusive",
+  "cases": [
+    {"name": "today_bangkok", "kind": "calendar_day", "now": "2026-08-31T04:05:06Z", "time_zone": "Asia/Bangkok", "start": "2026-08-30T17:00:00Z", "end": "2026-08-31T17:00:00Z"},
+    {"name": "yesterday_bangkok", "kind": "calendar_day", "now": "2026-08-31T04:05:06Z", "time_zone": "Asia/Bangkok", "start": "2026-08-29T17:00:00Z", "end": "2026-08-30T17:00:00Z"},
+    {"name": "monday_week_new_york", "kind": "calendar_week", "now": "2026-03-12T16:00:00Z", "time_zone": "America/New_York", "start": "2026-03-09T04:00:00Z", "end": "2026-03-16T04:00:00Z"},
+    {"name": "dst_spring_day_new_york", "kind": "calendar_day", "now": "2026-03-08T16:00:00Z", "time_zone": "America/New_York", "start": "2026-03-08T05:00:00Z", "end": "2026-03-09T04:00:00Z", "elapsed_hours": 23},
+    {"name": "dst_fall_day_new_york", "kind": "calendar_day", "now": "2026-11-01T16:00:00Z", "time_zone": "America/New_York", "start": "2026-11-01T04:00:00Z", "end": "2026-11-02T05:00:00Z", "elapsed_hours": 25},
+    {"name": "rolling_24h", "kind": "rolling", "now": "2026-08-31T04:05:06Z", "time_zone": "UTC", "start": "2026-08-30T04:05:06Z", "end": "2026-08-31T04:05:06Z", "elapsed_hours": 24},
+    {"name": "custom", "kind": "custom", "now": "2026-08-31T04:05:06Z", "time_zone": "Europe/Berlin", "start": "2026-08-01T00:00:00Z", "end": "2026-08-15T12:00:00Z"}
+  ]
+}

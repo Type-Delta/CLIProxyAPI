@@ -1,0 +1,25 @@
+{
+  "fixture_schema_version": 1,
+  "source": "upstream-cpauk-v1.15.0",
+  "source_sha": "696a4659ce1d5d6f2d2d0530e3205eb51fbce889",
+  "hash_algorithm": "sha256",
+  "manifest_excludes_self": true,
+  "files": {
+    "capabilities.json": "5d0a4bf9e847dc4e0fa968cf999a4d1e20bb9697562373cd44f9a7ffb3c06bc2",
+    "credential_identity.json": "bd5dd66dc2c7ed9886b984befb45df34330ec46bf9571fda67d69f195439fb78",
+    "errors.json": "83b04f1a5d3037cee272752470142050e9d792ae940e6763a0b64d14a3427a9a",
+    "events.json": "04472e8ce4ce212768ce16f05415d1da26a64475ed77c72aeea805c40323e186",
+    "imports.json": "c15c43853c32508327ae42f512fedbc8bddd8439eb3e2da0fc236830bbcc93a5",
+    "key_identity.json": "347f5f73fcee54db64e12b89dd6f5caf630ec62e6194a3078460e1d4b746fc1c",
+    "keys_limits.json": "e1bf78cd52e8e58b7f98ad11a686b85e0861d56f27ca9129c5f3c867893a5f8d",
+    "latency_sketch.json": "89231a3ffc14cbe63273cf5ede5f8ee69a7f56aa831dc4d5e47201ff0c7e52ba",
+    "leaderboard.json": "12d5d06f00e0a9ac677bac6209d8c1af72ca5e8bf741dc70ffb5f8247d7abb05",
+    "maintenance.json": "60bd9cc87f7cf9a31bda95dad15ee82b1fac19d58657382ed39f034ae6ae1341",
+    "pricing.json": "0fb56874a1a42e5ca3fd377830e206b32ccbb22238e1f5dd9a2a1dc3f69a79f4",
+    "query_contracts.json": "bcda474b43224f6b5a8a0d84d6d0aae8bec1dcf1893edd03b12d706a9d38b520",
+    "ranges.json": "e3031254475dc57dd6bb8d40b259d8812828b932184346385c8f8f517f4dbe00",
+    "reconciliation.json": "40468f058a384c77b13f480f4418dc135bc9c418514e8bb4d02e6bcda9766eaf",
+    "token_categories.json": "a856b17828f355d521782944ed279bdf0248c668c77b359eff1a6cd1f3e70b0e",
+    "viewer_scope.json": "9e5489c1c058d7a91915a45a1388d02e5ec57a71812b73caa46245028e2fb0e3"
+  }
+}

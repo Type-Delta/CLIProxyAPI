@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-31",
+  "cpa": {
+    "fork": "https://github.com/Type-Delta/CLIProxyAPI",
+    "fork_sha": "dae4267c70c835d323b00bfd9b2baaeb8386e92e",
+    "upstream": "https://github.com/router-for-me/CLIProxyAPI",
+    "upstream_sha": "81e1b5374f99c212f196f34956eeed964a46b8fa"
+  },
+  "cpamc": {
+    "fork": "https://github.com/Type-Delta/Cli-Proxy-API-Management-Center",
+    "initial_fork_sha": "d249ff008e0bc2803deb23fb3e2c62418a1e8d17",
+    "fork_sha": "1f77aaeb126c44e69ff51ccbcac6b2d5ebde9ee3",
+    "upstream": "https://github.com/router-for-me/Cli-Proxy-API-Management-Center",
+    "upstream_sha": "e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0"
+  },
+  "cpauk": {
+    "upstream": "https://github.com/Willxup/cpa-usage-keeper",
+    "tag": "v1.15.0",
+    "sha": "696a4659ce1d5d6f2d2d0530e3205eb51fbce889",
+    "license_sha256": "8bd33c6ab9b46bff98548757e25c869db1ce93611947fc16a47a5165f850b04b"
+  }
+}

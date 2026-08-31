@@ -1,0 +1,24 @@
+{
+  "currency_unit": "nano_usd",
+  "rounding": "half_away_from_zero_once_per_event",
+  "cache_rule": "subtract_cache_read_and_creation_from_input_without_going_below_zero",
+  "retry_rule": "charge_each_attempt_that_reports_usage",
+  "precedence": "exact_model_before_exact_alias",
+  "rules": [
+    {"rule_id": "price-04e81c", "match": {"model": "model-f93b"}, "input_per_million_usd": "10.035", "output_per_million_usd": "15.0525", "cache_read_multiplier": "0", "cache_creation_multiplier": "0", "source": "fixture-9a70e2"},
+    {"rule_id": "price-1f70a4", "match": {"alias": "alias-53b1"}, "input_per_million_usd": "20", "output_per_million_usd": "30", "cache_read_multiplier": "0", "cache_creation_multiplier": "0", "source": "fixture-9a70e2"},
+    {"rule_id": "price-5d107b", "match": {"model": "model-2c18"}, "input_per_million_usd": null, "output_per_million_usd": null, "source": "fixture-9a70e2"}
+  ],
+  "vectors": [
+    {"name": "one_million_input", "tokens": 1000000, "price_per_million_usd": "10.035", "multiplier": "1", "cost_usd": "10.035"},
+    {"name": "one_output_token_half", "tokens": 1, "price_per_million_usd": "15.0525", "multiplier": "1", "cost_usd": "0.000015053"},
+    {"name": "cache_subtraction_event_1", "input": 70, "cache_read": 5, "cache_creation": 0, "charged_input": 65, "output": 30, "cost_usd": "0.00110385"},
+    {"name": "cache_subtraction_event_2", "input": 70, "cache_read": 5, "cache_creation": 5, "charged_input": 60, "output": 30, "cost_usd": "0.001053675"},
+    {"name": "model_before_alias", "model": "model-f93b", "alias": "alias-53b1", "selected_rule_id": "price-04e81c", "cost_usd": "0.00110385"},
+    {"name": "multiplier_half", "tokens": 1000000, "price_per_million_usd": "10.035", "multiplier": "0.5", "cost_usd": "5.0175"},
+    {"name": "two_retry_attempts", "attempt_costs_usd": ["0.00110385", "0.001053675"], "aggregate_cost_usd": "0.002157525"},
+    {"name": "mixed_missing_prices", "known_cost_usd": "0.002157525", "unpriced_tokens": 200},
+    {"name": "unpriced", "tokens": 200, "price_per_million_usd": null, "cost_usd": null, "unpriced_tokens": 200},
+    {"name": "overflow", "tokens": 9223372036854775807, "price_per_million_usd": "9223372036.854775807", "error_code": "cost_overflow"}
+  ]
+}

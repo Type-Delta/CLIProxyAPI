@@ -6,7 +6,7 @@ This fork keeps per-API-key request and token usage limits and an optional web-c
 
 This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `81e1b5374f99c212f196f34956eeed964a46b8fa`. The 2026-08-31 integration merged that upstream commit without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
 
-After the integration, `git rev-list --left-right --count aeea06fd...upstream/main` reports `7 0`: the fork contains the six published fork commits and the merge commit, and contains all commits through the recorded upstream base. The merge commit was pushed to `origin/main` on 2026-08-31.
+At the Gate 0 control-plane baseline, `git rev-list --left-right --count HEAD...upstream/main` reports `10 0`. The fork contains all commits through the recorded upstream base, the six original fork commits, the upstream merge, the hermetic media test, and two CPAMC submodule commits. `HEAD...origin/main` reports `0 0` at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`.
 
 Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
 
@@ -49,6 +49,30 @@ The Codex Live audio and data-channel bridge integration test creates every test
 **Implementation evidence:** `internal/client/codex/live/media_test.go`.
 
 **Recorded validation:** `go test -count=3 -run TestPionMediaRelayBridgesAudioAndDataChannel ./internal/client/codex/live` passes on a runner where the unmodified test failed three consecutive times while every peer remained in the WebRTC `connecting` state.
+
+**Last updated:** 2026-08-31
+
+### DL004 - Pinned Type-Delta management client
+
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the synchronized gitlink pins pushed commit `1f77aaeb126c44e69ff51ccbcac6b2d5ebde9ee3`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0`.
+
+The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
+
+**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044` and `1f77aaeb`.
+
+**Recorded validation:** exact Bun 1.3.14 verification passed 424 tests, ESLint, TypeScript compilation, and the Vite production build. After the push, `git rev-list --left-right --count origin/main...upstream/main` in CPAMC returned `2 0`, and the submodule worktree matched `origin/main` without changes.
+
+**Last updated:** 2026-08-31
+
+### DL005 - Embedded CPA Usage Keeper contracts and load gate
+
+CPA carries the CPAUK analytics implementation behind the `internal/cpauk` package boundary. Its first frozen contract imports the observable behavior needed from upstream CPA Usage Keeper v1.15.0 at commit `696a4659ce1d5d6f2d2d0530e3205eb51fbce889` without importing its GORM, CGO SQLite, HTTP server, authentication, or process-lifecycle architecture. Attribution, source mapping, rejected designs, exact nano-USD arithmetic, privacy-safe key identity, encrypted pagination cursors, and fixture provenance are recorded beside the package.
+
+The versioned fixtures define events, token categories, deterministic credential identities, key display identities, ranges, pricing, limit windows, viewer isolation, maintenance envelopes, imports, reconciliation, and stable leaderboard ordering. `test/perf` defines the analytics load-gate contract and median-of-five aggregation; the production adapter and dedicated-runner result are release-gate work and are not claimed by this contract commit.
+
+**Implementation evidence:** `internal/cpauk/model`, `internal/cpauk/testdata/upstream-v1.15.0`, `internal/cpauk/LICENSE.upstream`, `internal/cpauk/UPSTREAM.md`, `internal/cpauk/provenance.json`, and `test/perf`.
+
+**Recorded validation:** focused contract and fixture tests passed normally and under the race detector; focused load-contract and aggregation tests passed for five runs and under the race detector; `go vet` and the fixture provenance/hash checks passed. The full production-adapter load profile remains open until the runtime implementation is present.
 
 **Last updated:** 2026-08-31
 

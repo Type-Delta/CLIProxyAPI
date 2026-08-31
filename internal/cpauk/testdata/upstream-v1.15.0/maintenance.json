@@ -1,0 +1,8 @@
+{
+  "create": {"kind": "integrity_check", "options": {"verify_backup": true}},
+  "queued": {"job_id": "job-5b94e8c13f20", "kind": "integrity_check", "state": "queued", "created_at": "2026-08-31T04:05:06Z", "started_at": null, "finished_at": null, "progress_percent": 0, "cancelable": true},
+  "running": {"job_id": "job-5b94e8c13f20", "kind": "integrity_check", "state": "running", "created_at": "2026-08-31T04:05:06Z", "started_at": "2026-08-31T04:05:07Z", "finished_at": null, "progress_percent": 60, "checkpoint": "phase-4a71d9", "cancelable": true},
+  "succeeded": {"job_id": "job-5b94e8c13f20", "kind": "integrity_check", "state": "succeeded", "created_at": "2026-08-31T04:05:06Z", "started_at": "2026-08-31T04:05:07Z", "finished_at": "2026-08-31T04:05:12Z", "progress_percent": 100, "result": {"integrity": "ok", "backup_id": "backup-920db54e18cf"}, "cancelable": false},
+  "canceled": {"job_id": "job-18e4a602f7d1", "kind": "reindex", "state": "canceled", "created_at": "2026-08-31T05:00:00Z", "started_at": "2026-08-31T05:00:01Z", "finished_at": "2026-08-31T05:00:02Z", "progress_percent": 25, "cancelable": false},
+  "failed": {"job_id": "job-7c81d3594ab0", "kind": "restore", "state": "failed", "created_at": "2026-08-31T06:00:00Z", "started_at": "2026-08-31T06:00:01Z", "finished_at": "2026-08-31T06:00:03Z", "progress_percent": 20, "error": {"code": "analytics_backup_invalid", "message": "The backup failed verification."}, "cancelable": false}
+}

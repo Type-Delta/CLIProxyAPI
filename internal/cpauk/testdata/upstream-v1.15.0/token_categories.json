@@ -1,0 +1,8 @@
+{
+  "accounting_schema": "normalized-v1",
+  "cases": [
+    {"name": "all_categories", "input": 270, "output": 130, "reasoning": 50, "cached": 35, "cache_read": 25, "cache_creation": 10, "total": 400, "quality": "exact"},
+    {"name": "estimated_without_cache_split", "input": 80, "output": 20, "reasoning": 0, "cached": 0, "cache_read": 0, "cache_creation": 0, "total": 100, "quality": "estimated"},
+    {"name": "missing_usage", "input": 0, "output": 0, "reasoning": 0, "cached": 0, "cache_read": 0, "cache_creation": 0, "total": 0, "quality": "missing"}
+  ]
+}

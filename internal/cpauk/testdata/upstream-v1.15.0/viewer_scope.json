@@ -1,0 +1,48 @@
+{
+  "capabilities": {
+    "api_schema_version": 1,
+    "allowed_views": ["summary", "timeseries", "events"],
+    "label": "shared-scope-71f0c9",
+    "expires_at": "2026-09-07T04:05:06Z"
+  },
+  "summary": {
+    "meta": {
+      "schema_version": 1,
+      "range": {"start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "Asia/Bangkok"},
+      "degraded": false,
+      "dropped_events": 0,
+      "last_successful_write_at": "2026-08-31T04:05:06Z"
+    },
+    "label": "shared-scope-71f0c9",
+    "proxy_requests": 1,
+    "upstream_attempts": 1,
+    "tokens": {"input": 70, "output": 30, "reasoning": 10, "cached": 5, "cache_read": 5, "cache_creation": 0, "total": 100, "accounting_schema": "normalized-v1", "quality": "exact"},
+    "known_cost_usd": "0.00110385",
+    "unpriced_tokens": 0
+  },
+  "events": {
+    "meta": {
+      "schema_version": 1,
+      "range": {"start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "Asia/Bangkok"},
+      "degraded": false,
+      "dropped_events": 0,
+      "last_successful_write_at": "2026-08-31T04:05:06Z"
+    },
+    "label": "shared-scope-71f0c9",
+    "events": [{
+      "attempt_id": "91a83fb43b38e8770e7648440a89fc48",
+      "proxy_request_id": "d1371f43e6b8362d05d7567ed5fcc2ad",
+      "requested_at": "2026-08-31T04:05:06Z",
+      "provider": "provider-a17c92",
+      "model": "model-f93b",
+      "endpoint_class": "responses",
+      "succeeded": false,
+      "upstream_status_code": 503,
+      "error_class": "upstream_unavailable",
+      "latency_ms": 91,
+      "tokens": {"input": 70, "output": 30, "reasoning": 10, "cached": 5, "cache_read": 5, "cache_creation": 0, "total": 100, "accounting_schema": "normalized-v1", "quality": "exact"},
+      "known_cost_usd": "0.00110385",
+      "unpriced_tokens": 0
+    }]
+  }
+}

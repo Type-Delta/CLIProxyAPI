@@ -1,0 +1,35 @@
+{
+  "range": {"start": "2026-08-01T00:00:00Z", "end": "2026-09-01T00:00:00Z", "time_zone": "UTC"},
+  "overall": {"proxy_requests": 2, "upstream_attempts": 3, "total_tokens": 400, "known_cost_usd": "0.002157525", "unpriced_tokens": 200},
+  "per_key": [
+    {"key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "status": "configured", "proxy_requests": 1, "upstream_attempts": 1, "total_tokens": 100, "known_cost_usd": "0.001053675", "unpriced_tokens": 0},
+    {"key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de", "status": "rotated", "proxy_requests": 1, "upstream_attempts": 1, "total_tokens": 100, "known_cost_usd": "0.00110385", "unpriced_tokens": 0},
+    {"key_id": "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c", "status": "historical", "proxy_requests": 1, "upstream_attempts": 1, "total_tokens": 200, "known_cost_usd": "0", "unpriced_tokens": 200}
+  ],
+  "multi_key": {
+    "key_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de", "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c"],
+    "proxy_requests": 2,
+    "upstream_attempts": 3,
+    "total_tokens": 400,
+    "known_cost_usd": "0.002157525",
+    "unpriced_tokens": 200
+  },
+  "view_reconciliation": [
+    {
+      "name": "single_key_19fc",
+      "key_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7"],
+      "summary": {"proxy_requests": 1, "upstream_attempts": 1, "tokens": {"input": 70, "output": 30, "reasoning": 10, "cached": 10, "cache_read": 5, "cache_creation": 5, "total": 100}, "known_cost_usd": "0.001053675", "unpriced_tokens": 0},
+      "timeseries": [{"start": "2026-08-31T04:00:00Z", "end": "2026-08-31T05:00:00Z", "proxy_requests": 1, "upstream_attempts": 1, "total_tokens": 100, "known_cost_usd": "0.001053675", "unpriced_tokens": 0}],
+      "dimensions": [{"dimension": "provider", "value": "provider-a17c92", "total_tokens": 100, "known_cost_usd": "0.001053675", "unpriced_tokens": 0}],
+      "events": ["e41e3038624a354609461cbc273a4df8"]
+    },
+    {
+      "name": "multi_key_a_b",
+      "key_ids": ["19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7", "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de"],
+      "summary": {"proxy_requests": 1, "upstream_attempts": 2, "tokens": {"input": 140, "output": 60, "reasoning": 20, "cached": 15, "cache_read": 10, "cache_creation": 5, "total": 200}, "known_cost_usd": "0.002157525", "unpriced_tokens": 0},
+      "timeseries": [{"start": "2026-08-31T04:00:00Z", "end": "2026-08-31T05:00:00Z", "proxy_requests": 1, "upstream_attempts": 2, "total_tokens": 200, "known_cost_usd": "0.002157525", "unpriced_tokens": 0}],
+      "dimensions": [{"dimension": "provider", "value": "provider-a17c92", "total_tokens": 200, "known_cost_usd": "0.002157525", "unpriced_tokens": 0}],
+      "events": ["91a83fb43b38e8770e7648440a89fc48", "e41e3038624a354609461cbc273a4df8"]
+    }
+  ]
+}

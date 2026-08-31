@@ -2,8 +2,16 @@
 
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
+## Glossary
+
+- **CPA**: This CLIProxyAPI fork, including the Go proxy, its management API, and its release packaging.
+- **CPAUK**: CPA Usage Keeper. In this repository, the name normally means the embedded analytics module ported from the upstream `cpa-usage-keeper` project. Use "upstream CPAUK" for the standalone source project.
+- **CPAMC**: Cli-Proxy-API-Management-Center, the web management client shipped with CPA from the Type-Delta fork.
+
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+
+- Fork: https://github.com/Type-Delta/CLIProxyAPI
+- Upstream: https://github.com/router-for-me/CLIProxyAPI
 
 ## Commands
 ```bash
@@ -12,7 +20,7 @@ go build -o cli-proxy-api ./cmd/server # Build
 go run ./cmd/server # Run dev server
 go test ./... # Run all tests
 go test -v -run TestName ./path/to/pkg # Run single test
-go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
+go build -o test-output ./cmd/server && unlink test-output # Verify compile (REQUIRED after changes)
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 

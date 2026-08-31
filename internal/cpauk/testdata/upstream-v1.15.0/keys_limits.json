@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "catalog": [
+    {
+      "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7",
+      "short_key_id": "19fcf81df957",
+      "label": "tenant-7b1c94f2",
+      "status": "configured",
+      "config_indexes": [0, 2],
+      "first_activity_at": "2026-08-31T04:05:07Z",
+      "last_activity_at": "2026-08-31T04:05:07Z",
+      "total_tokens": 100,
+      "known_cost_usd": "0.001053675",
+      "unpriced_tokens": 0
+    },
+    {
+      "key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de",
+      "short_key_id": "347a11cc6637",
+      "label": "tenant-c4208e6a",
+      "status": "rotated",
+      "config_indexes": [],
+      "first_activity_at": "2026-08-31T04:05:06Z",
+      "last_activity_at": "2026-08-31T04:05:06Z",
+      "total_tokens": 100,
+      "known_cost_usd": "0.00110385",
+      "unpriced_tokens": 0
+    },
+    {
+      "key_id": "8d91ab2bd3c06d69eaf4facf7b2ec7621981d5a8e38df3b6c321fdf10d72e55c",
+      "short_key_id": "8d91ab2bd3c0",
+      "label": "tenant-0a57d36e",
+      "status": "historical",
+      "config_indexes": [],
+      "first_activity_at": "2026-08-31T04:06:00Z",
+      "last_activity_at": "2026-08-31T04:06:00Z",
+      "total_tokens": 200,
+      "known_cost_usd": "0",
+      "unpriced_tokens": 200
+    }
+  ],
+  "limits": [
+    {
+      "key_id": "19fcf81df9578ec9d87eb62b6dffdd5ab6a7be6e373cc725ae33c1f7884e97e7",
+      "request_limit": 1000,
+      "token_limit": 1000000,
+      "window": "day",
+      "requests_consumed": 1,
+      "tokens_consumed": 100,
+      "next_reset_at": "2026-09-01T00:00:00Z",
+      "config_index": 0,
+      "config_revision": "rev-8f71c29d4a60"
+    },
+    {
+      "key_id": "347a11cc66379718b57489d5bc951fdc3d47f150449c028cb5dff4f27fac23de",
+      "request_limit": null,
+      "token_limit": 2500000,
+      "window": "lifetime",
+      "requests_consumed": 1,
+      "tokens_consumed": 100,
+      "next_reset_at": null,
+      "config_index": 1,
+      "config_revision": "rev-8f71c29d4a60"
+    }
+  ]
+}
