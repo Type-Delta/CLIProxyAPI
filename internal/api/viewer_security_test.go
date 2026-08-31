@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,6 +48,60 @@ func TestViewerCORSPreservesSameOriginCredentials(t *testing.T) {
 	}
 	if value := response.Header().Get("Access-Control-Allow-Credentials"); value != "true" {
 		t.Fatalf("credentials header = %q", value)
+	}
+}
+
+func TestViewerCORSPreservesLoopbackHTTPWithPortOverTCP(t *testing.T) {
+	security, err := newAnalyticsViewerSecurity(AnalyticsViewerSecurityOptions{AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	engine.Use(corsMiddlewareWithViewerSecurity(security))
+	engine.POST("/v0/analytics/viewer/session", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpListener := newMuxListener(listener.Addr(), 16)
+	apiServer := &Server{}
+	serveErrors := make(chan error, 2)
+	go func() { serveErrors <- apiServer.acceptMuxConnections(listener, httpListener) }()
+	server := &http.Server{Handler: engine}
+	go func() { serveErrors <- server.Serve(httpListener) }()
+	t.Cleanup(func() {
+		if errClose := server.Close(); errClose != nil && !errors.Is(errClose, http.ErrServerClosed) {
+			t.Errorf("close HTTP server: %v", errClose)
+		}
+		if errClose := httpListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close HTTP listener: %v", errClose)
+		}
+		if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close base listener: %v", errClose)
+		}
+	})
+	serverURL := "http://" + listener.Addr().String()
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/v0/analytics/viewer/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", serverURL)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if errClose := response.Body.Close(); errClose != nil {
+			t.Errorf("close response body: %v", errClose)
+		}
+	}()
+
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNoContent)
+	}
+	if value := response.Header.Get("Access-Control-Allow-Origin"); value != serverURL {
+		t.Fatalf("same-origin CORS value = %q, want %q", value, serverURL)
 	}
 }
 
