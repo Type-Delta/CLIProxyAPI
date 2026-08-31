@@ -243,8 +243,14 @@ func TestGetAPIKeysSerializesResetsOnlyLimitAsBareKey(t *testing.T) {
 
 	h.GetAPIKeys(ctx)
 
-	if got, want := recorder.Body.String(), `{"api-keys":["key"]}`; got != want {
-		t.Fatalf("GET response = %s, want %s", got, want)
+	var response struct {
+		APIKeys []json.RawMessage `json:"api-keys"`
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &response); errDecode != nil {
+		t.Fatalf("decode GET response: %v", errDecode)
+	}
+	if len(response.APIKeys) != 1 || string(response.APIKeys[0]) != `"key"` {
+		t.Fatalf("GET response = %s, want a bare key entry", recorder.Body.String())
 	}
 }
 

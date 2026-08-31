@@ -46,6 +46,12 @@ func TestGetAPIKeyLimitsReturnsSortedSnapshots(t *testing.T) {
 	if response.APIKeyLimits[0].Key != "a-key" || response.APIKeyLimits[1].Key != "z-key" {
 		t.Fatalf("keys = %#v, want sorted keys", response.APIKeyLimits)
 	}
+	if response.APIKeyLimits[0].KeyID != config.APIKeyID("a-key") || response.APIKeyLimits[1].KeyID != config.APIKeyID("z-key") {
+		t.Fatalf("key IDs = %#v", response.APIKeyLimits)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("limit response security headers = %#v", recorder.Header())
+	}
 	if got := response.APIKeyLimits[0].Limits; got == nil || got.Resets != "daily" || got.MaxTokens != 10 || got.TokensUsed != 3 || got.ResetAt == nil {
 		t.Fatalf("a-key limits = %#v", got)
 	}
@@ -146,5 +152,32 @@ func TestResetAPIKeyLimitsDoesNotResetUnconfiguredTrackerKey(t *testing.T) {
 	}
 	if snapshot := tracker.Snapshot("deleted", time.Now()); snapshot == nil || snapshot.RequestsUsed != 1 {
 		t.Fatalf("deleted tracker snapshot = %#v, want one request retained", snapshot)
+	}
+}
+
+func TestResetAPIKeyLimitsByKeyID(t *testing.T) {
+	tracker := usagelimit.NewTracker()
+	tracker.SetLimits(map[string]usagelimit.Limits{"limited": {MaxRequests: 2}})
+	tracker.Allow("limited", time.Now())
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []config.APIKeyEntry{{Key: " limited "}},
+	}}, nil)
+	handler.SetUsageLimitTracker(tracker)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	body := `{"key_id":"` + config.APIKeyID("limited") + `"}`
+	context.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-key-limits/reset", strings.NewReader(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ResetAPIKeyLimits(context)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if snapshot := tracker.Snapshot("limited", time.Now()); snapshot == nil || snapshot.RequestsUsed != 0 {
+		t.Fatalf("snapshot after key ID reset = %#v", snapshot)
+	}
+	if !strings.Contains(recorder.Body.String(), config.APIKeyID("limited")) {
+		t.Fatalf("response omitted key ID: %s", recorder.Body.String())
 	}
 }

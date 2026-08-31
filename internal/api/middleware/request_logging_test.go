@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,48 @@ func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 		if got != tests[i].skip {
 			t.Fatalf("%s: got skip=%t, want %t", tests[i].name, got, tests[i].skip)
 		}
+	}
+}
+
+func TestViewerRoutesNeverEnterRequestCapture(t *testing.T) {
+	for _, path := range []string{
+		"/v0/analytics/viewer/session",
+		"/v0/analytics/viewer/summary",
+		"/v0/analytics/viewer/events",
+	} {
+		if shouldLogRequest(path) {
+			t.Fatalf("viewer path %q entered request capture", path)
+		}
+	}
+	if !shouldLogRequest("/v1/responses") {
+		t.Fatal("ordinary proxy path unexpectedly skipped request capture")
+	}
+}
+
+func TestViewerRoutesBypassRequestCaptureInBothLoggingModes(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			logsDir := t.TempDir()
+			logger := logging.NewFileRequestLogger(enabled, logsDir, "", 10)
+			router := gin.New()
+			router.Use(RequestLoggingMiddleware(logger))
+			router.POST("/v0/analytics/viewer/session", func(c *gin.Context) {
+				_, _ = io.ReadAll(c.Request.Body)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "response-secret"})
+			})
+			request := httptest.NewRequest(http.MethodPost, "/v0/analytics/viewer/session", strings.NewReader(`{"credential":"viewer-secret"}`))
+			request.Header.Set("Cookie", "cpa_analytics_viewer=session-secret")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			entries, err := os.ReadDir(logsDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("viewer request produced %d capture files", len(entries))
+			}
+		})
 	}
 }
 

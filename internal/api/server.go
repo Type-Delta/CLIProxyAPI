@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -91,6 +93,8 @@ type Server struct {
 	usageLimitDone     chan struct{}
 	usageLimitStopOnce sync.Once
 	usageLimitDetach   coreusage.UnregisterFunc
+	analytics          cpauk.Service
+	analyticsDetach    coreusage.UnregisterFunc
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -168,7 +172,14 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 
-	engine.Use(corsMiddleware())
+	viewerSecurity, errViewerSecurity := newAnalyticsViewerSecurity(AnalyticsViewerSecurityOptions{
+		TrustedProxyCIDRs: cfg.Analytics.Viewer.TrustedProxyCIDRs,
+		AllowLoopbackHTTP: cfg.Analytics.Viewer.AllowLoopbackHTTP,
+	})
+	if errViewerSecurity != nil {
+		log.WithError(errViewerSecurity).Warn("analytics viewer security configuration is invalid")
+	}
+	engine.Use(corsMiddlewareWithViewerSecurity(viewerSecurity))
 	wd, err := os.Getwd()
 	if err != nil {
 		wd = configFilePath
@@ -204,6 +215,17 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
+	s.analytics = newAnalyticsService(context.Background(), cfg)
+	go func() {
+		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(context.Background(), s.analytics, nil, cfg.APIKeys); errAnalyticsKeys != nil && !errors.Is(errAnalyticsKeys, cpauk.ErrClosed) {
+			log.WithError(errAnalyticsKeys).Warn("failed to initialize analytics key lifecycle")
+		}
+	}()
+	if detachAnalytics, errRegisterAnalytics := coreusage.RegisterSanitizerTapNamedPlugin("cpauk-analytics", s.analytics.Observer()); errRegisterAnalytics != nil {
+		log.WithError(errRegisterAnalytics).Error("failed to register analytics sanitizer tap")
+	} else {
+		s.analyticsDetach = detachAnalytics
+	}
 	if s.usageLimitPath != "" {
 		if errLoad := s.usageLimitTracker.LoadFrom(s.usageLimitPath); errLoad != nil {
 			log.WithError(errLoad).Warn("failed to load usage limit snapshot")
@@ -236,6 +258,21 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
+	s.mgmt.SetAnalyticsService(s.analytics)
+	viewerPath := filepath.Join(filepath.Dir(analyticsModuleConfig(cfg).Path), "viewers.json")
+	if viewerStore, errViewerStore := managementHandlers.NewAnalyticsViewerStore(viewerPath); errViewerStore != nil {
+		log.WithError(errViewerStore).Warn("analytics viewer credentials are unavailable")
+	} else {
+		s.mgmt.SetAnalyticsViewerStore(viewerStore)
+		if errViewerRoutes := s.RegisterAnalyticsViewerRoutes(viewerStore, AnalyticsViewerSecurityOptions{
+			TrustedProxyCIDRs: cfg.Analytics.Viewer.TrustedProxyCIDRs,
+			AllowLoopbackHTTP: cfg.Analytics.Viewer.AllowLoopbackHTTP,
+		}); errViewerRoutes != nil {
+			log.WithError(errViewerRoutes).Warn("analytics viewer routes are unavailable")
+		} else {
+			s.mgmt.SetAnalyticsViewerAvailable(true)
+		}
+	}
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -428,6 +465,23 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Shutdown the HTTP server.
 	errShutdown := s.server.Shutdown(ctx)
+	if s.analyticsDetach != nil {
+		if errDetach := s.analyticsDetach(ctx); errDetach != nil {
+			log.WithError(errDetach).Warn("failed to detach analytics intake")
+			if errShutdown == nil {
+				errShutdown = errDetach
+			}
+		}
+		s.analyticsDetach = nil
+	}
+	if s.analytics != nil {
+		if errCloseAnalytics := s.analytics.Close(ctx); errCloseAnalytics != nil {
+			log.WithError(errCloseAnalytics).Warn("failed to close analytics service")
+			if errShutdown == nil {
+				errShutdown = errCloseAnalytics
+			}
+		}
+	}
 	if s.usageLimitDetach != nil {
 		if errDetach := s.usageLimitDetach(ctx); errDetach != nil {
 			log.WithError(errDetach).Warn("failed to detach API key usage accounting")

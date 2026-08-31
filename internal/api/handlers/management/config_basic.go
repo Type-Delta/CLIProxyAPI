@@ -24,6 +24,8 @@ const (
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	if h == nil || h.cfg == nil {
 		c.JSON(200, gin.H{})
 		return
@@ -155,6 +157,9 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.GuardConfigYAMLAPIKeyMutationLocked(c, body) {
+		return
+	}
 	if WriteConfig(h.configFilePath, body) != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return
@@ -166,6 +171,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.cfg = newCfg
+	setAPIKeyRevisionHeaders(c, apiKeyRevision(newCfg.APIKeys), false)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
@@ -183,6 +189,7 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	c.Header("X-Content-Type-Options", "nosniff")
 	// Write raw bytes as-is
 	_, _ = c.Writer.Write(data)

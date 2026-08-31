@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,9 @@ type Client struct {
 	baseURL   string
 	secretKey string
 	http      *http.Client
+
+	apiKeyRevisionMu sync.RWMutex
+	apiKeyRevision   string
 }
 
 // APIKeyLimit is the current usage and configured limits for one access key.
@@ -67,10 +71,15 @@ func (c *Client) SetSecretKey(secretKey string) {
 }
 
 func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, error) {
+	data, code, _, err := c.doRequestWithHeaders(method, path, body, nil)
+	return data, code, err
+}
+
+func (c *Client) doRequestWithHeaders(method, path string, body io.Reader, headers http.Header) ([]byte, int, http.Header, error) {
 	url := c.baseURL + path
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	if c.secretKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.secretKey)
@@ -78,16 +87,21 @@ func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, er
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, resp.Header.Clone(), err
 	}
-	return data, resp.StatusCode, nil
+	return data, resp.StatusCode, resp.Header.Clone(), nil
 }
 
 func (c *Client) get(path string) ([]byte, error) {
@@ -286,6 +300,8 @@ func (c *Client) GetAPIKeyEntries() ([]APIKeyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	revision, _ := wrapper["config_revision"].(string)
+	c.setAPIKeyRevision(revision)
 	arr, ok := wrapper["api-keys"]
 	if !ok {
 		return nil, nil
@@ -388,14 +404,40 @@ func apiError(code int, data []byte) error {
 
 // DeleteAPIKey deletes an API key by index.
 func (c *Client) DeleteAPIKey(index int) error {
-	_, code, err := c.doRequest("DELETE", fmt.Sprintf("/v0/management/api-keys?index=%d", index), nil)
+	revision := c.currentAPIKeyRevision()
+	if revision == "" {
+		return fmt.Errorf("delete failed: API-key configuration revision unavailable; refresh keys")
+	}
+	headers := make(http.Header)
+	headers.Set("If-Match", `"`+revision+`"`)
+	headers.Set("X-CPA-API-Key-Contract", "1")
+	_, code, responseHeaders, err := c.doRequestWithHeaders("DELETE", fmt.Sprintf("/v0/management/api-keys?index=%d", index), nil, headers)
 	if err != nil {
 		return err
 	}
 	if code >= 400 {
 		return fmt.Errorf("delete failed (HTTP %d)", code)
 	}
+	c.setAPIKeyRevision(responseHeaders.Get("X-CPA-Config-Revision"))
 	return nil
+}
+
+func (c *Client) currentAPIKeyRevision() string {
+	if c == nil {
+		return ""
+	}
+	c.apiKeyRevisionMu.RLock()
+	defer c.apiKeyRevisionMu.RUnlock()
+	return c.apiKeyRevision
+}
+
+func (c *Client) setAPIKeyRevision(revision string) {
+	if c == nil {
+		return
+	}
+	c.apiKeyRevisionMu.Lock()
+	c.apiKeyRevision = strings.TrimSpace(revision)
+	c.apiKeyRevisionMu.Unlock()
 }
 
 // GetAPIKeyLimits fetches configured access-key limits and current usage.

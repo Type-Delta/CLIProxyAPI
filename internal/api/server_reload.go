@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -54,6 +56,12 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	var oldCfg *config.Config
 	if len(s.oldConfigYaml) > 0 {
 		_ = yaml.Unmarshal(s.oldConfigYaml, &oldCfg)
+	}
+	if oldCfg != nil && s.mgmt != nil {
+		if errInvalidate := s.mgmt.InvalidateAnalyticsViewerSessions(); errInvalidate != nil {
+			log.WithError(errInvalidate).Warn("configuration reload rejected because viewer sessions could not be revoked")
+			return false
+		}
 	}
 
 	// Update request logger enabled state if it has changed
@@ -110,6 +118,34 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 
 	applySignatureCacheConfig(oldCfg, cfg)
+	if s.analytics != nil {
+		analyticsConfig := analyticsModuleConfig(cfg)
+		problem := cfg.Analytics.Problem()
+		if problem != nil {
+			analyticsConfig.QueueCapacity = -1
+		}
+		result := s.analytics.Reconfigure(analyticsConfig)
+		if result.Error != nil {
+			log.WithError(result.Error).Warn("analytics configuration update was rejected; keeping the previous generation")
+			if problem != nil {
+				if marker, ok := s.analytics.(interface{ MarkConfigProblem(string, string) }); ok {
+					marker.MarkConfigProblem(problem.Category, problem.Field)
+				}
+			}
+		} else if len(result.RestartRequired) != 0 {
+			log.WithField("fields", result.RestartRequired).Warn("analytics configuration update requires a restart")
+		}
+		if fields := markAnalyticsViewerRestartRequired(s.analytics, oldCfg, cfg); len(fields) != 0 {
+			log.WithField("fields", fields).Warn("analytics viewer security update requires a restart")
+		}
+		var previousKeys []config.APIKeyEntry
+		if oldCfg != nil {
+			previousKeys = oldCfg.APIKeys
+		}
+		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(ctx, s.analytics, previousKeys, cfg.APIKeys); errAnalyticsKeys != nil {
+			log.WithError(errAnalyticsKeys).Warn("failed to update analytics key lifecycle")
+		}
+	}
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
@@ -235,6 +271,19 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		openAICompatCount,
 	)
 	return ctx.Err() == nil
+}
+
+func markAnalyticsViewerRestartRequired(service cpauk.Service, oldCfg, newCfg *config.Config) []string {
+	if service == nil || oldCfg == nil || newCfg == nil ||
+		slices.Equal(oldCfg.Analytics.Viewer.TrustedProxyCIDRs, newCfg.Analytics.Viewer.TrustedProxyCIDRs) &&
+			oldCfg.Analytics.Viewer.AllowLoopbackHTTP == newCfg.Analytics.Viewer.AllowLoopbackHTTP {
+		return nil
+	}
+	fields := []string{"viewer.trusted-proxy-cidrs", "viewer.allow-loopback-http"}
+	if marker, ok := service.(interface{ MarkRestartRequired([]string) }); ok {
+		marker.MarkRestartRequired(fields)
+	}
+	return fields
 }
 
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {

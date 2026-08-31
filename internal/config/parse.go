@@ -27,6 +27,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.Analytics = DefaultAnalyticsConfig()
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.SaveCooldownStatus = false

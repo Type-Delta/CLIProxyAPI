@@ -57,6 +57,10 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// Analytics configures the independent CPAUK analytics module. Invalid
+	// analytics values are isolated from the rest of CPA configuration.
+	Analytics AnalyticsConfig `yaml:"analytics" json:"analytics"`
+
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
 	// Default: 60. Max: 3600.

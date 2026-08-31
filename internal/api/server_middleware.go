@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -130,7 +131,16 @@ func isExampleAPIKeySafeModeProxyPath(path string) bool {
 // Returns:
 //   - gin.HandlerFunc: The CORS middleware handler
 func corsMiddleware() gin.HandlerFunc {
+	return corsMiddlewareWithViewerSecurity(analyticsViewerSecurity{})
+}
+
+func corsMiddlewareWithViewerSecurity(viewerSecurity analyticsViewerSecurity) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isAnalyticsViewerPath(c.Request.URL.Path) {
+			logging.SkipGinRequestLogging(c)
+			applyViewerSameOriginPolicy(c, viewerSecurity)
+			return
+		}
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")
@@ -143,6 +153,41 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func isAnalyticsViewerPath(path string) bool {
+	return path == "/v0/analytics/viewer" || strings.HasPrefix(path, "/v0/analytics/viewer/")
+}
+
+func applyViewerSameOriginPolicy(c *gin.Context, security analyticsViewerSecurity) {
+	origins := c.Request.Header.Values("Origin")
+	if len(origins) > 1 {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+	origin := ""
+	if len(origins) == 1 {
+		origin = strings.TrimSpace(origins[0])
+	}
+	if origin != "" {
+		parsed, err := url.Parse(origin)
+		scheme := security.requestScheme(c.Request)
+		if err != nil || parsed.Scheme != scheme || !strings.EqualFold(parsed.Host, c.Request.Host) || parsed.User != nil ||
+			parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+	}
+	if c.Request.Method == http.MethodOptions {
+		c.AbortWithStatus(http.StatusNoContent)
+		return
+	}
+	c.Next()
 }
 
 // AuthMiddleware returns a Gin middleware handler that authenticates requests

@@ -108,6 +108,62 @@ func TestGetAPIKeyEntriesDecodesLimits(t *testing.T) {
 	}
 }
 
+func TestDeleteAPIKeyUsesRevisionWithoutRawKeyURL(t *testing.T) {
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"api-keys":["raw-key"],"config_revision":"rev-current"}`))
+		case http.MethodDelete:
+			requested = true
+			if got := r.URL.RawQuery; got != "index=0" {
+				t.Errorf("DELETE query = %q, want index only", got)
+			}
+			if got := r.Header.Get("If-Match"); got != `"rev-current"` {
+				t.Errorf("If-Match = %q", got)
+			}
+			if got := r.Header.Get("X-CPA-API-Key-Contract"); got != "1" {
+				t.Errorf("contract header = %q", got)
+			}
+			w.Header().Set("X-CPA-Config-Revision", "rev-next")
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, http: server.Client()}
+	if _, err := client.GetAPIKeyEntries(); err != nil {
+		t.Fatalf("GetAPIKeyEntries() error = %v", err)
+	}
+	if err := client.DeleteAPIKey(0); err != nil {
+		t.Fatalf("DeleteAPIKey() error = %v", err)
+	}
+	if !requested {
+		t.Fatal("DELETE request was not sent")
+	}
+	if got := client.currentAPIKeyRevision(); got != "rev-next" {
+		t.Fatalf("stored revision = %q, want rev-next", got)
+	}
+}
+
+func TestDeleteAPIKeyWithoutRevisionDoesNotSendRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, http: server.Client()}
+	errDelete := client.DeleteAPIKey(0)
+	if errDelete == nil || !strings.Contains(errDelete.Error(), "revision unavailable") {
+		t.Fatalf("DeleteAPIKey() error = %v", errDelete)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
 // TestAPIKeyPatchBodies pins the exact PATCH payloads for create, edit with
 // limits and edit clearing limits.
 func TestAPIKeyPatchBodies(t *testing.T) {

@@ -329,10 +329,11 @@ func TestKeysTabEditAndDeleteUseOriginalServerIndex(t *testing.T) {
 
 	patchBody := ""
 	deleteQuery := ""
+	deleteRevision := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v0/management/api-keys":
-			if _, errWrite := w.Write([]byte(`{"api-keys":["",{"key":"real-key"}]}`)); errWrite != nil {
+			if _, errWrite := w.Write([]byte(`{"api-keys":["",{"key":"real-key"}],"config_revision":"rev-current"}`)); errWrite != nil {
 				t.Errorf("write api-keys: %v", errWrite)
 			}
 		case r.Method == http.MethodPatch && r.URL.Path == "/v0/management/api-keys":
@@ -343,6 +344,8 @@ func TestKeysTabEditAndDeleteUseOriginalServerIndex(t *testing.T) {
 			patchBody = strings.TrimSpace(string(raw))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v0/management/api-keys":
 			deleteQuery = r.URL.RawQuery
+			deleteRevision = r.Header.Get("If-Match")
+			w.Header().Set("X-CPA-Config-Revision", "rev-after-delete")
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -386,6 +389,9 @@ func TestKeysTabEditAndDeleteUseOriginalServerIndex(t *testing.T) {
 	}
 	if deleteQuery != "index=1" {
 		t.Fatalf("delete query = %q, want index=1", deleteQuery)
+	}
+	if deleteRevision != `"rev-current"` {
+		t.Fatalf("delete If-Match = %q, want quoted revision", deleteRevision)
 	}
 }
 

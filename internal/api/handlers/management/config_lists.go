@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func parseCredentialWeightPatch(raw json.RawMessage) (*int, error) {
@@ -143,7 +144,100 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+type apiKeyIdentityEntry struct {
+	KeyID         string `json:"key_id"`
+	Status        string `json:"status"`
+	ConfigIndexes []int  `json:"config_indexes"`
+	Duplicate     bool   `json:"duplicate,omitempty"`
+}
+
+type apiKeyDuplicateWarning struct {
+	Code          string `json:"code"`
+	ConfigIndexes []int  `json:"config_indexes"`
+}
+
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	if h == nil {
+		c.JSON(500, gin.H{"error": "handler not initialized"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(500, gin.H{"error": "handler not initialized"})
+		return
+	}
+	entries := h.cfg.APIKeys
+	revision := apiKeyRevision(entries)
+	duplicateIndexes := config.DuplicateAPIKeyIndexes(entries)
+	warnings := make([]apiKeyDuplicateWarning, 0, len(duplicateIndexes))
+	for _, indexes := range duplicateIndexes {
+		warnings = append(warnings, apiKeyDuplicateWarning{Code: "duplicate_trimmed_key", ConfigIndexes: indexes})
+	}
+	for _, index := range config.WeakAPIKeyIndexes(entries) {
+		warnings = append(warnings, apiKeyDuplicateWarning{Code: "weak_api_key", ConfigIndexes: []int{index}})
+	}
+	identities, conflictWarnings := buildAPIKeyIdentityCatalog(entries, config.APIKeyID)
+	for _, indexes := range conflictWarnings {
+		warnings = append(warnings, apiKeyDuplicateWarning{Code: "identity_conflict", ConfigIndexes: indexes})
+	}
+	setAPIKeyRevisionHeaders(c, revision, true)
+	c.JSON(200, gin.H{
+		"api-keys":        entries,
+		"key-identities":  identities,
+		"config_revision": revision,
+		"warnings":        warnings,
+	})
+}
+
+type apiKeyIdentityGroup struct {
+	identity apiKeyIdentityEntry
+	sources  map[string]struct{}
+}
+
+func buildAPIKeyIdentityCatalog(entries []config.APIKeyEntry, digest func(string) string) ([]apiKeyIdentityEntry, [][]int) {
+	if digest == nil {
+		digest = config.APIKeyID
+	}
+	groups := make([]apiKeyIdentityGroup, 0, len(entries))
+	byID := make(map[string]int, len(entries))
+	for index, entry := range entries {
+		raw := strings.TrimSpace(entry.Key)
+		if raw == "" {
+			continue
+		}
+		keyID := digest(raw)
+		groupIndex, exists := byID[keyID]
+		if !exists {
+			byID[keyID] = len(groups)
+			groups = append(groups, apiKeyIdentityGroup{
+				identity: apiKeyIdentityEntry{
+					KeyID:         keyID,
+					Status:        "configured",
+					ConfigIndexes: []int{index},
+				},
+				sources: map[string]struct{}{raw: {}},
+			})
+			continue
+		}
+		group := &groups[groupIndex]
+		group.identity.ConfigIndexes = append(group.identity.ConfigIndexes, index)
+		group.sources[raw] = struct{}{}
+	}
+
+	catalog := make([]apiKeyIdentityEntry, 0, len(groups))
+	conflicts := make([][]int, 0)
+	for _, group := range groups {
+		if len(group.sources) > 1 {
+			group.identity.Status = "identity_conflict"
+			conflicts = append(conflicts, append([]int(nil), group.identity.ConfigIndexes...))
+		} else if len(group.identity.ConfigIndexes) > 1 {
+			group.identity.Duplicate = true
+		}
+		catalog = append(catalog, group.identity)
+	}
+	return catalog, conflicts
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
 	if errRead != nil {
@@ -158,6 +252,16 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
+	if guardLegacyStructuredAPIKeyMutation(c, h.cfg.APIKeys, entries) {
+		return
+	}
+	if guardAPIKeyRevision(c, h.cfg.APIKeys, decodeAPIKeyRequestRevision(data)) {
+		return
+	}
+	if errDuplicate := config.ValidateAPIKeyMutation(h.cfg.APIKeys, entries); errDuplicate != nil {
+		c.JSON(409, gin.H{"error": "duplicate_api_key", "message": errDuplicate.Error()})
+		return
+	}
 	// Structured entries can carry limits, so validate before persisting.
 	// Otherwise an invalid cadence or an out-of-range cap is written to disk
 	// behind a 200 and only surfaces as a failure on the next config load.
@@ -167,6 +271,7 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		return
 	}
 	h.cfg.APIKeys = entries
+	setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
 	h.persistLocked(c)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
@@ -186,6 +291,7 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	newKey, errNew := decodeAPIKeyPatchString(fields, "new")
 	value, errValue := decodeAPIKeyPatchString(fields, "value")
 	limits, limitsPresent, errLimits := decodeAPIKeyPatchLimits(fields)
+	configRevision, errRevision := decodeAPIKeyPatchString(fields, "config_revision")
 	if errIndex != nil || errOld != nil || errMatch != nil || errNew != nil || errValue != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
@@ -194,12 +300,19 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		c.JSON(400, gin.H{"error": fmt.Sprintf("invalid limits: %v", errLimits)})
 		return
 	}
+	if errRevision != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
 	if newKey == nil {
 		newKey = value
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if guardAPIKeyRevision(c, h.cfg.APIKeys, apiKeyStringValue(configRevision)) {
+		return
+	}
 	entries := append([]config.APIKeyEntry(nil), h.cfg.APIKeys...)
 	target := -1
 	if index != nil {
@@ -227,12 +340,30 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	}
 
 	if target >= 0 {
+		previous := entries[target]
 		key := entries[target].Key
 		if newKey != nil {
 			key = *newKey
 		}
 		entries[target] = apiKeyEntryReplacing(key, entries[target])
 		if limitsPresent {
+			if !apiKeyContractEnabled(c) && previous.Limits != nil && previous.Limits.HasExtensionFields() {
+				if limits == nil {
+					c.JSON(409, gin.H{
+						"error":   "structured_api_keys_required",
+						"message": "This API-key update requires the structured contract.",
+					})
+					return
+				}
+				if limits.ExtensionFields == nil {
+					limits.ExtensionFields = make(map[string]yaml.Node)
+				}
+				for name, value := range previous.Limits.ExtensionFields {
+					if _, exists := limits.ExtensionFields[name]; !exists {
+						limits.ExtensionFields[name] = value
+					}
+				}
+			}
 			entries[target].Limits = limits
 		}
 	} else {
@@ -248,12 +379,24 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	}
 
 	candidate := config.SDKConfig{APIKeys: entries}
+	if errDuplicate := config.ValidateAPIKeyMutation(h.cfg.APIKeys, entries); errDuplicate != nil {
+		c.JSON(409, gin.H{"error": "duplicate_api_key", "message": errDuplicate.Error()})
+		return
+	}
 	if errValidate := candidate.ValidateAPIKeyLimits(); errValidate != nil {
 		c.JSON(400, gin.H{"error": errValidate.Error()})
 		return
 	}
 	h.cfg.APIKeys = entries
+	setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
 	h.persistLocked(c)
+}
+
+func apiKeyStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func decodeAPIKeyPatchString(fields map[string]json.RawMessage, field string) (*string, error) {
@@ -300,7 +443,7 @@ func decodeAPIKeyPatchLimits(fields map[string]json.RawMessage) (*config.KeyLimi
 }
 
 func normalizeAPIKeyLimits(limits *config.KeyLimits) *config.KeyLimits {
-	if limits == nil || (limits.MaxRequests == 0 && limits.MaxTokensM == 0) {
+	if limits == nil || (limits.MaxRequests == 0 && limits.MaxTokensM == 0 && !limits.HasExtensionFields()) {
 		return nil
 	}
 	return limits
@@ -308,38 +451,40 @@ func normalizeAPIKeyLimits(limits *config.KeyLimits) *config.KeyLimits {
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if idxStr := c.Query("index"); idxStr != "" {
-		var idx int
-		if _, errScan := fmt.Sscanf(idxStr, "%d", &idx); errScan == nil && idx >= 0 && idx < len(h.cfg.APIKeys) {
-			h.cfg.APIKeys = append(h.cfg.APIKeys[:idx], h.cfg.APIKeys[idx+1:]...)
-			h.persistLocked(c)
-			return
-		}
+	if guardRequiredAPIKeyRevision(c, h.cfg.APIKeys, "") {
+		return
 	}
-	if value := strings.TrimSpace(c.Query("value")); value != "" {
-		entries := make([]config.APIKeyEntry, 0, len(h.cfg.APIKeys))
-		for _, entry := range h.cfg.APIKeys {
-			if strings.TrimSpace(entry.Key) != value {
-				entries = append(entries, entry)
-			}
-		}
-		h.cfg.APIKeys = entries
+	idxStr := c.Query("index")
+	var idx int
+	if _, errScan := fmt.Sscanf(idxStr, "%d", &idx); errScan == nil && idx >= 0 && idx < len(h.cfg.APIKeys) {
+		h.cfg.APIKeys = append(h.cfg.APIKeys[:idx], h.cfg.APIKeys[idx+1:]...)
+		setAPIKeyRevisionHeaders(c, apiKeyRevision(h.cfg.APIKeys), false)
 		h.persistLocked(c)
 		return
 	}
-	c.JSON(400, gin.H{"error": "missing index or value"})
+	c.JSON(400, gin.H{"error": "missing or invalid index"})
+}
+
+func decodeAPIKeyRequestRevision(data []byte) string {
+	var wrapper struct {
+		ConfigRevision string `json:"config_revision"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return ""
+	}
+	return wrapper.ConfigRevision
 }
 
 func decodeAPIKeyEntries(data []byte, existing []config.APIKeyEntry) ([]config.APIKeyEntry, error) {
 	var rawEntries []json.RawMessage
 	if err := json.Unmarshal(data, &rawEntries); err != nil {
 		var wrapper struct {
-			Items []json.RawMessage `json:"items"`
+			Items *[]json.RawMessage `json:"items"`
 		}
-		if errWrapper := json.Unmarshal(data, &wrapper); errWrapper != nil || len(wrapper.Items) == 0 {
+		if errWrapper := json.Unmarshal(data, &wrapper); errWrapper != nil || wrapper.Items == nil {
 			return nil, fmt.Errorf("invalid api key list")
 		}
-		rawEntries = wrapper.Items
+		rawEntries = *wrapper.Items
 	}
 
 	entries := make([]config.APIKeyEntry, 0, len(rawEntries))
@@ -367,7 +512,7 @@ func decodeAPIKeyEntries(data []byte, existing []config.APIKeyEntry) ([]config.A
 // PATCH replaces an entry in place, so the limits belong to that slot rather
 // than to the old key string: rotating a limited key must keep its limits.
 func apiKeyEntryReplacing(key string, previous config.APIKeyEntry) config.APIKeyEntry {
-	entry := config.APIKeyEntry{Key: key}
+	entry := config.APIKeyEntry{Key: key, ExtensionFields: previous.ExtensionFields}
 	if previous.Limits != nil {
 		limits := *previous.Limits
 		entry.Limits = normalizeAPIKeyLimits(&limits)

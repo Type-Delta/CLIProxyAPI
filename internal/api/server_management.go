@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -26,6 +27,35 @@ func (s *Server) registerManagementRoutes() {
 	mgmt := s.engine.Group("/v0/management")
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
+		mgmt.GET("/capabilities", s.mgmt.GetCapabilities)
+		analytics := mgmt.Group("/analytics")
+		analytics.Use(analyticsRecoveryMiddleware(), rejectAnalyticsKeyIdentityInURL(), s.mgmt.AnalyticsRateLimitMiddleware())
+		analytics.GET("/health", s.mgmt.GetAnalyticsHealth)
+		analytics.GET("/summary", s.mgmt.GetAnalyticsSummary)
+		analytics.GET("/timeseries", s.mgmt.GetAnalyticsTimeseries)
+		analytics.GET("/dimensions", s.mgmt.GetAnalyticsDimensions)
+		analytics.GET("/events", s.mgmt.GetAnalyticsEvents)
+		analytics.GET("/events/:attempt_id", s.mgmt.GetAnalyticsEvent)
+		analytics.GET("/pricing", s.mgmt.GetAnalyticsPricing)
+		analytics.PUT("/pricing", s.mgmt.PutAnalyticsPricing)
+		analytics.GET("/providers", s.mgmt.GetAnalyticsProviders)
+		analytics.GET("/quotas", s.mgmt.GetAnalyticsQuotas)
+		analytics.GET("/keys", s.mgmt.GetAnalyticsKeys)
+		analytics.GET("/leaderboard", s.mgmt.GetAnalyticsLeaderboard)
+		analytics.POST("/query", s.mgmt.PostAnalyticsQuery)
+		analytics.POST("/exports", s.mgmt.CreateAnalyticsExport)
+		analytics.POST("/backups", s.mgmt.CreateAnalyticsBackup)
+		analytics.POST("/backups/:id/restore", s.mgmt.RestoreAnalyticsBackup)
+		analytics.POST("/imports/cpauk", s.mgmt.ImportCPAUKAnalytics)
+		analytics.POST("/imports/:batch_id/rollback", s.mgmt.RollbackAnalyticsImport)
+		analytics.POST("/purges/key", s.mgmt.PurgeAnalyticsKey)
+		analytics.POST("/repairs", s.mgmt.RepairAnalytics)
+		analytics.GET("/jobs/:job_id", s.mgmt.GetAnalyticsJob)
+		analytics.DELETE("/jobs/:job_id", s.mgmt.CancelAnalyticsJob)
+		analytics.POST("/viewers", s.mgmt.CreateAnalyticsViewer)
+		analytics.GET("/viewers", s.mgmt.ListAnalyticsViewers)
+		analytics.DELETE("/viewers/:id", s.mgmt.DeleteAnalyticsViewer)
+
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
@@ -181,6 +211,20 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
+	}
+}
+
+func rejectAnalyticsKeyIdentityInURL() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		for name := range c.Request.URL.Query() {
+			normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), "[]")
+			if normalized == "key_id" || normalized == "key_ids" {
+				managementHandlers.WriteAnalyticsInvalidQuery(c)
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
 	}
 }
 

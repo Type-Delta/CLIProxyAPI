@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagelimit"
@@ -39,29 +40,33 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                     *config.Config
-	configFilePath          string
-	mu                      sync.Mutex
-	reloadMu                sync.Mutex
-	reloadGeneration        uint64
-	appliedReloadGeneration uint64
-	attemptsMu              sync.Mutex
-	failedAttempts          map[string]*attemptInfo // keyed by client IP
-	authManager             *coreauth.Manager
-	tokenStore              coreauth.Store
-	localPassword           string
-	allowRemoteOverride     bool
-	envSecret               string
-	logDir                  string
-	postAuthHook            coreauth.PostAuthHook
-	postAuthPersistHook     coreauth.PostAuthHook
-	pluginHost              *pluginhost.Host
-	usageLimitTracker       *usagelimit.Tracker
-	configReloadHook        func(context.Context, *config.Config)
-	pluginStoreRegistryURL  string
-	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginReleaseCacheMu    sync.Mutex
-	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	cfg                      *config.Config
+	configFilePath           string
+	mu                       sync.Mutex
+	reloadMu                 sync.Mutex
+	reloadGeneration         uint64
+	appliedReloadGeneration  uint64
+	attemptsMu               sync.Mutex
+	failedAttempts           map[string]*attemptInfo // keyed by client IP
+	authManager              *coreauth.Manager
+	tokenStore               coreauth.Store
+	localPassword            string
+	allowRemoteOverride      bool
+	envSecret                string
+	logDir                   string
+	postAuthHook             coreauth.PostAuthHook
+	postAuthPersistHook      coreauth.PostAuthHook
+	pluginHost               *pluginhost.Host
+	usageLimitTracker        *usagelimit.Tracker
+	analytics                cpauk.Service
+	analyticsViewers         *AnalyticsViewerStore
+	analyticsViewerAvailable bool
+	analyticsAdminLimiter    *analyticsAdminRateLimiter
+	configReloadHook         func(context.Context, *config.Config)
+	pluginStoreRegistryURL   string
+	pluginStoreHTTPClient    pluginstore.HTTPDoer
+	pluginReleaseCacheMu     sync.Mutex
+	pluginReleaseCache       map[string]pluginReleaseCacheEntry
 }
 
 type configReloadSnapshot struct {
@@ -75,13 +80,14 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg,
-		configFilePath:      configFilePath,
-		failedAttempts:      make(map[string]*attemptInfo),
-		authManager:         manager,
-		tokenStore:          sdkAuth.GetTokenStore(),
-		allowRemoteOverride: envSecret != "",
-		envSecret:           envSecret,
+		cfg:                   cfg,
+		configFilePath:        configFilePath,
+		failedAttempts:        make(map[string]*attemptInfo),
+		analyticsAdminLimiter: newAnalyticsAdminRateLimiter(),
+		authManager:           manager,
+		tokenStore:            sdkAuth.GetTokenStore(),
+		allowRemoteOverride:   envSecret != "",
+		envSecret:             envSecret,
 	}
 	h.startAttemptCleanup()
 	return h
@@ -130,6 +136,26 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	h.mu.Lock()
 	h.cfg = cfg
 	h.mu.Unlock()
+
+}
+
+// InvalidateAnalyticsViewerSessions durably revokes viewer cookies before a
+// configuration reload is published. A persistence failure rejects the reload
+// so existing sessions cannot retain a scope from a configuration that CPA has
+// already applied.
+func (h *Handler) InvalidateAnalyticsViewerSessions() error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	viewerStore := h.analyticsViewers
+	h.mu.Unlock()
+	if viewerStore != nil {
+		if errInvalidate := viewerStore.InvalidateSessions(); errInvalidate != nil {
+			return fmt.Errorf("invalidate analytics viewer sessions: %w", errInvalidate)
+		}
+	}
+	return nil
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -159,6 +185,37 @@ func (h *Handler) SetUsageLimitTracker(tracker *usagelimit.Tracker) {
 	}
 	h.mu.Lock()
 	h.usageLimitTracker = tracker
+	h.mu.Unlock()
+}
+
+// SetAnalyticsService updates the failure-isolated analytics facade used by
+// management handlers. The service remains optional and never gates CPA.
+func (h *Handler) SetAnalyticsService(service cpauk.Service) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.analytics = service
+	h.mu.Unlock()
+}
+
+// SetAnalyticsViewerStore installs the durable hash-only viewer credential
+// store used by management and scoped-viewer routes.
+func (h *Handler) SetAnalyticsViewerStore(store *AnalyticsViewerStore) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.analyticsViewers = store
+	h.mu.Unlock()
+}
+
+func (h *Handler) SetAnalyticsViewerAvailable(available bool) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.analyticsViewerAvailable = available
 	h.mu.Unlock()
 }
 
