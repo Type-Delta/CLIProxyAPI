@@ -13,33 +13,39 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider            string
+	executorType        string
+	model               string
+	alias               string
+	authID              string
+	authIndex           string
+	authMu              sync.RWMutex
+	accessTokenHash     string
+	authType            string
+	apiKey              string
+	source              string
+	reasoning           string
+	serviceTier         string
+	generate            bool
+	requestedAt         time.Time
+	ttftMu              sync.RWMutex
+	ttft                time.Duration
+	firstPacketDuration time.Duration
+	firstPacketSet      bool
+	ttftStart           time.Time
+	ttftSet             bool
+	once                sync.Once
 }
 
 type usageExecutor interface {
@@ -77,8 +83,28 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
+		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	return reporter
+}
+
+// UpdateAccessTokenFingerprint records the token version actually used upstream.
+func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
+	if r == nil {
+		return
+	}
+	r.authMu.Lock()
+	r.accessTokenHash = authAccessTokenSHA256(auth)
+	r.authMu.Unlock()
+}
+
+func (r *UsageReporter) accessTokenFingerprint() string {
+	if r == nil {
+		return ""
+	}
+	r.authMu.RLock()
+	defer r.authMu.RUnlock()
+	return r.accessTokenHash
 }
 
 func ExecutorTypeName(executor any) string {
@@ -112,6 +138,19 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
+	return r.trackHTTPClient(client, false)
+}
+
+// TrackHTTPClientRoundTripOnly records the TTFT start time upon sending the request
+// and captures first-packet arrival fallback on initial body reads, while keeping
+// effective TTFT unset. This allows protocol-aware streaming executors (like Codex SSE)
+// to mark effective TTFT explicitly upon receiving substantive token events, while
+// preserving first-packet fallback metrics for non-2xx error bodies or keepalive streams.
+func (r *UsageReporter) TrackHTTPClientRoundTripOnly(client *http.Client) *http.Client {
+	return r.trackHTTPClient(client, true)
+}
+
+func (r *UsageReporter) trackHTTPClient(client *http.Client, packetOnly bool) *http.Client {
 	if r == nil || client == nil {
 		return client
 	}
@@ -121,8 +160,9 @@ func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
 		transport = http.DefaultTransport
 	}
 	tracked.Transport = usageTTFTRoundTripper{
-		base:     transport,
-		reporter: r,
+		base:       transport,
+		reporter:   r,
+		packetOnly: packetOnly,
 	}
 	return &tracked
 }
@@ -140,6 +180,19 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 	}
 }
 
+func (r *UsageReporter) ObserveResponsePacketOnly(resp *http.Response) {
+	if r == nil || resp == nil || resp.Body == nil {
+		return
+	}
+	r.StartResponseTTFT()
+	resp.Body = &usageTTFTReadCloser{
+		ReadCloser: resp.Body,
+		mark: func() {
+			r.RecordFirstPacket()
+		},
+	}
+}
+
 func (r *UsageReporter) StartResponseTTFT() {
 	if r == nil {
 		return
@@ -149,6 +202,70 @@ func (r *UsageReporter) StartResponseTTFT() {
 		r.ttftStart = time.Now()
 	}
 	r.ttftMu.Unlock()
+}
+
+func (r *UsageReporter) IsTTFTSet() bool {
+	if r == nil {
+		return false
+	}
+	r.ttftMu.RLock()
+	defer r.ttftMu.RUnlock()
+	return r.ttftSet
+}
+
+func (r *UsageReporter) IsFirstPacketSet() bool {
+	if r == nil {
+		return false
+	}
+	r.ttftMu.RLock()
+	defer r.ttftMu.RUnlock()
+	return r.firstPacketSet
+}
+
+// RecordFirstPacket records the arrival time of the first packet/chunk from upstream as a fallback.
+func (r *UsageReporter) RecordFirstPacket() {
+	r.ObserveTokenEvent(false)
+}
+
+// ObserveTokenEvent records the first packet fallback time on the first frame,
+// and if isToken is true, records the effective TTFT. It uses a fast-path
+// read check to return immediately with zero write lock contention once TTFT is set
+// or when subsequent non-token metadata frames arrive after the first packet.
+func (r *UsageReporter) ObserveTokenEvent(isToken bool) {
+	if r == nil {
+		return
+	}
+	r.ttftMu.RLock()
+	if r.ttftSet {
+		r.ttftMu.RUnlock()
+		return
+	}
+	start := r.ttftStart
+	alreadyRecordedPacket := r.firstPacketSet
+	r.ttftMu.RUnlock()
+
+	if start.IsZero() {
+		return
+	}
+
+	if !isToken && alreadyRecordedPacket {
+		return
+	}
+
+	r.ttftMu.Lock()
+	defer r.ttftMu.Unlock()
+	if r.ttftSet {
+		return
+	}
+	if !r.firstPacketSet {
+		r.firstPacketDuration = time.Since(start)
+		r.firstPacketSet = true
+	}
+	if isToken {
+		r.ttft = time.Since(start)
+		r.ttftSet = true
+		r.ttftStart = time.Time{}
+	}
 }
 
 func (r *UsageReporter) MarkFirstResponseByte() {
@@ -186,6 +303,10 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 
 func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
 	r.publishWithOutcome(ctx, usage.Detail{}, true, failFromErrors(errs...))
+}
+
+func (r *UsageReporter) PublishFailureWithDetail(ctx context.Context, detail usage.Detail, errs ...error) {
+	r.publishWithOutcome(ctx, detail, true, failFromErrors(errs...))
 }
 
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
@@ -264,6 +385,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
+		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
@@ -283,14 +405,20 @@ func failFromErrors(errs ...error) usage.Failure {
 		if err == nil {
 			continue
 		}
-		fail := usage.Failure{
-			Body: strings.TrimSpace(err.Error()),
+		body := strings.TrimSpace(err.Error())
+		type responseBodyProvider interface {
+			ResponseBody() []byte
 		}
-		var se interface{ StatusCode() int }
-		if errors.As(err, &se) && se != nil {
-			fail.StatusCode = se.StatusCode()
+		var responseErr responseBodyProvider
+		if errors.As(err, &responseErr) && responseErr != nil {
+			if responseBody := responseErr.ResponseBody(); len(responseBody) > 0 {
+				body = string(responseBody)
+			}
 		}
-		return fail
+		return usage.Failure{
+			Body:       body,
+			StatusCode: clienterror.HTTPStatusFromError(err),
+		}
 	}
 	return usage.Failure{}
 }
@@ -330,21 +458,33 @@ func (r *UsageReporter) ttftDuration() time.Duration {
 	}
 	r.ttftMu.RLock()
 	defer r.ttftMu.RUnlock()
-	return r.ttft
+	if r.ttftSet {
+		return r.ttft
+	}
+	if r.firstPacketSet {
+		return r.firstPacketDuration
+	}
+	return 0
 }
 
 type usageTTFTRoundTripper struct {
-	base     http.RoundTripper
-	reporter *UsageReporter
+	base       http.RoundTripper
+	reporter   *UsageReporter
+	packetOnly bool
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.StartResponseTTFT()
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
-	t.reporter.ObserveResponse(resp)
+	if t.packetOnly {
+		t.reporter.ObserveResponsePacketOnly(resp)
+	} else {
+		t.reporter.ObserveResponse(resp)
+	}
 	return resp, nil
 }
 
@@ -503,6 +643,15 @@ func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter
 		return false
 	}
 	reporter.Publish(ctx, b.detail)
+	return true
+}
+
+// PublishFailure emits the latest observed usage detail together with failure details.
+func (b *StreamUsageBuffer) PublishFailure(ctx context.Context, reporter *UsageReporter, errs ...error) bool {
+	if b == nil || reporter == nil {
+		return false
+	}
+	reporter.PublishFailureWithDetail(ctx, b.detail, errs...)
 	return true
 }
 
@@ -688,9 +837,32 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	cacheReadTokens := usageNode.Get("cache_read_input_tokens").Int()
 	cacheCreationTokens := usageNode.Get("cache_creation_input_tokens").Int()
+	rawOutputTokens := usageNode.Get("output_tokens").Int()
+	// Anthropic reports thinking as a subset of output_tokens. Prefer the official
+	// nested field, then fall back to legacy aliases used by some gateways.
+	reasoningNode := firstExistingUsageNode(
+		usageNode,
+		"output_tokens_details.thinking_tokens",
+		"output_tokens_details.reasoning_tokens",
+		"thinking_tokens",
+	)
+	reasoningTokens := reasoningNode.Int()
+	if reasoningTokens < 0 {
+		reasoningTokens = 0
+	}
+	nonReasoningOutput := rawOutputTokens
+	if reasoningTokens > 0 && reasoningTokens <= rawOutputTokens {
+		nonReasoningOutput = rawOutputTokens - reasoningTokens
+	} else if reasoningTokens > rawOutputTokens {
+		// Keep Detail.OutputTokens authoritative for keeper subset checks and
+		// avoid inventing extra non-reasoning output when the upstream payload
+		// is inconsistent.
+		nonReasoningOutput = 0
+	}
 	detail := usage.Detail{
 		InputTokens:         usageNode.Get("input_tokens").Int(),
-		OutputTokens:        usageNode.Get("output_tokens").Int(),
+		OutputTokens:        rawOutputTokens,
+		ReasoningTokens:     reasoningTokens,
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
@@ -698,12 +870,14 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+	// raw output_tokens already includes thinking; cache fields are independent
+	// from input_tokens in the Messages API.
+	detail.TotalTokens = detail.InputTokens + rawOutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
 	detail.TokenBreakdown = usage.NewIndependentTokenBreakdown(
 		detail.InputTokens,
 		detail.CacheReadTokens,
 		detail.CacheCreationTokens,
-		detail.OutputTokens,
+		nonReasoningOutput,
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
@@ -864,7 +1038,11 @@ func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	if !hasNonZeroTokenUsage(detail) {
+		return usage.Detail{}, false
+	}
+	return detail, true
 }
 
 func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {
@@ -1040,14 +1218,14 @@ func StripUsageMetadataFromJSON(rawJSON []byte) ([]byte, bool) {
 	var changed bool
 
 	if usageMetadata = gjson.GetBytes(cleaned, "usageMetadata"); usageMetadata.Exists() {
-		// Rename usageMetadata to cpaUsageMetadata in the message_start event of Claude
+		// Rename usageMetadata to cpaUsageMetadata
 		cleaned, _ = sjson.SetRawBytes(cleaned, "cpaUsageMetadata", []byte(usageMetadata.Raw))
 		cleaned, _ = sjson.DeleteBytes(cleaned, "usageMetadata")
 		changed = true
 	}
 
 	if usageMetadata = gjson.GetBytes(cleaned, "response.usageMetadata"); usageMetadata.Exists() {
-		// Rename usageMetadata to cpaUsageMetadata in the message_start event of Claude
+		// Rename usageMetadata to cpaUsageMetadata
 		cleaned, _ = sjson.SetRawBytes(cleaned, "response.cpaUsageMetadata", []byte(usageMetadata.Raw))
 		cleaned, _ = sjson.DeleteBytes(cleaned, "response.usageMetadata")
 		changed = true

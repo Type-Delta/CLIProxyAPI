@@ -1,10 +1,12 @@
 # CLIProxyAPI Fork
 
-This fork keeps per-API-key request and token usage limits and an optional web-console Docker deployment that are not supplied by the shared base.
+This fork keeps per-API-key request and token usage limits and an optional web-console Docker deployment that are not supplied by upstream.
 
 ## Divergence Log
 
-This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the latest shared base. The sole fork commit is `2037ab99973e15f50685ba84d75785659c55a83b`; its parent, `a14dfc779f43aed588e68b31fb34ab5ced700851`, is the current shared base. This checkout has no `upstream` remote or `base` tag, so update the recorded base explicitly when upstream is integrated.
+This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `81e1b5374f99c212f196f34956eeed964a46b8fa`. The 2026-08-31 integration merged that upstream commit without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
+
+After the integration, `git rev-list --left-right --count HEAD...upstream/main` reports `7 0`: the local branch contains the six published fork commits and the merge commit, and contains all commits through the recorded upstream base. `origin/main` still points to `53866c01` because the integration was committed locally but not pushed.
 
 Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
 
@@ -12,7 +14,7 @@ Keep stable IDs when updating this section; gaps are intentional. When upstream 
 
 Inbound client API keys may be configured as structured entries with optional request and token caps while bare-string keys remain compatible and unlimited. A key can use a lifetime window or a UTC hourly, daily, weekly, or monthly reset cadence; request and token limits share that window.
 
-The proxy enforces limits across the OpenAI-, Anthropic-, and Gemini-compatible API surfaces, returning protocol-appropriate HTTP `429` bodies and rate-limit headers. Model discovery, token counting, and asynchronous video status or content routes do not consume quota. Requests count when admitted, while tokens are recorded from normalized response usage after completion.
+The proxy enforces limits across the OpenAI-, Anthropic-, and Gemini-compatible API surfaces, including the direct OpenAI Realtime routes. The `/v1`, `/openai/v1`, and `/backend-api/codex` groups use the OpenAI HTTP `429` envelope, while `/v1beta` uses the Gemini envelope; all include rate-limit headers. Model discovery, token counting, and asynchronous video status or content routes do not consume quota. Requests count when admitted, while tokens are recorded from normalized response usage after completion.
 
 Usage counters persist under the authentication directory at `state/usage-limits.json`. Persisted entries identify keys only by SHA-256 hash, survive restarts, and remain local to each proxy instance. Configuration hot reload applies limit changes immediately, preserves counters unless the reset cadence changes, and removes counters for deleted or unlimited keys.
 
@@ -22,11 +24,11 @@ The management API exposes current limited-key consumption through `GET /v0/mana
 
 The TUI API Keys tab accepts mixed bare and structured key representations and displays each limited key's request and token usage, reset cadence, and reset time, including keys that have configured limits but no recorded usage. Adding and editing a key use a four-field form covering the key, the request cap, the token cap in millions, and a reset-cadence selector; limits stay optional, and blank caps with a cadence of never clear the limits, while a cadence without a cap is rejected in the form. Rows carry their original position in the configured list, so editing or deleting a row targets that entry even when the list contains blank entries. The tab keeps keys masked and keeps the confirmed per-key usage reset action, which is now available for every key with configured limits.
 
-**Implementation evidence:** `internal/config/api_key_entry.go`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/server.go`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go,i18n.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`.
+**Implementation evidence:** `internal/config/{api_key_entry.go,config_load.go,parse.go,sdk_config.go}`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/{server.go,server_routes.go,server_reload.go,server_management.go,server_middleware.go}`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go,i18n.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`.
 
-**Recorded validation:** focused config, usage-limit tracker, middleware, management API, server API, TUI, and server-entrypoint Go test suites; required `cmd/server` compile check; live management-API run against a server started from a temporary config, covering create, rotate, limit edit, limit clear, rejected limit values, out-of-range index, usage reset, and the resulting `config.yaml`.
+**Recorded validation:** the 2026-08-31 sync ran focused config, usage-limit tracker, middleware, management API, server API, TUI, and server-entrypoint Go tests; `go test ./...`; and the required disposable `cmd/server` compile check. Earlier validation also includes a live management-API run against a temporary config covering create, rotate, limit edit, limit clear, rejected limit values, out-of-range index, usage reset, and the resulting `config.yaml`.
 
-**Last updated:** 2026-08-17
+**Last updated:** 2026-08-31
 
 ### DL002 - Two-service web-console Docker deployment
 
@@ -44,4 +46,8 @@ The TUI API Keys tab accepts mixed bare and structured key representations and d
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
 
-No upstream integration has been recorded for this fork.
+### 2026-08-31 - Merge upstream `main` at `81e1b537`
+
+Merged upstream `main` into the fork without rebasing or rewriting the six published fork commits. The merge resolved upstream's server and configuration file splits by moving DL001 hooks into the new route, reload, management, middleware, and config-load files instead of restoring the pre-refactor monoliths. Direct OpenAI Realtime routes receive the limiter after authentication. DL002 files remain unchanged from `53866c01`.
+
+The integration resolved content conflicts in `internal/api/server.go`, `internal/config/config.go`, and `internal/config/parse.go`. It kept upstream's refactored `server.go` and `config.go`, then reapplied the fork behavior in the split files listed under DL001.

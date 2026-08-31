@@ -48,6 +48,45 @@ func usageLimitsFromConfig(limits map[string]config.KeyLimits) map[string]usagel
 	return converted
 }
 
+func (s *Server) startUsageLimitPersistence() {
+	if s == nil || s.usageLimitTracker == nil || s.usageLimitPath == "" {
+		return
+	}
+
+	s.usageLimitStop = make(chan struct{})
+	s.usageLimitDone = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		defer close(s.usageLimitDone)
+		for {
+			select {
+			case <-ticker.C:
+				s.flushUsageLimits()
+			case <-s.usageLimitStop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) stopUsageLimitPersistence() {
+	if s == nil || s.usageLimitStop == nil || s.usageLimitDone == nil {
+		return
+	}
+	s.usageLimitStopOnce.Do(func() { close(s.usageLimitStop) })
+	<-s.usageLimitDone
+}
+
+func (s *Server) flushUsageLimits() {
+	if s == nil || s.usageLimitTracker == nil || s.usageLimitPath == "" {
+		return
+	}
+	if errFlush := s.usageLimitTracker.Flush(s.usageLimitPath); errFlush != nil {
+		log.WithError(errFlush).Warn("failed to flush usage limit snapshot")
+	}
+}
+
 type usageLimitPlugin struct {
 	tracker *usagelimit.Tracker
 }

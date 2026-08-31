@@ -17,6 +17,7 @@ import (
 	vertexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/vertex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -331,7 +332,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, false)
 		body = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false)
 
-		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 		if err != nil {
 			return resp, err
 		}
@@ -342,6 +343,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 		body = helps.SetStringIfDifferent(body, "model", baseModel)
 		body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+		body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
 	}
 
 	action := getVertexAction(baseModel, false)
@@ -350,6 +352,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 			action = "countTokens"
 		}
 	}
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	if opts.Alt != "" && action != "countTokens" {
@@ -369,12 +372,12 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		log.Errorf("vertex executor: access token error: %v", errTok)
 		return resp, statusErr{code: 500, msg: "internal server error"}
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -433,6 +436,9 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 	to := sdktranslator.FromString("gemini")
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, data, &param)
+	if responseFormat == sdktranslator.FormatOpenAIResponse {
+		out = helps.EnsureResponsesUsageDetails(out)
+	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -456,7 +462,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, false)
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
@@ -467,6 +473,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
 
 	action := getVertexAction(baseModel, false)
 	if req.Metadata != nil {
@@ -474,6 +481,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 			action = "countTokens"
 		}
 	}
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
@@ -494,12 +502,12 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	if apiKey != "" {
 		httpReq.Header.Set("x-goog-api-key", apiKey)
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -548,6 +556,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, data, &param)
+	if responseFormat == sdktranslator.FormatOpenAIResponse {
+		out = helps.EnsureResponsesUsageDetails(out)
+	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -571,7 +582,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
@@ -582,8 +593,10 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
 
 	action := getVertexAction(baseModel, true)
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
@@ -608,12 +621,12 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		log.Errorf("vertex executor: access token error: %v", errTok)
 		return nil, statusErr{code: 500, msg: "internal server error"}
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -654,6 +667,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		defer reporter.EnsurePublished(ctx)
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("vertex executor: close response body error: %v", errClose)
@@ -717,7 +731,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
@@ -728,8 +742,10 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
 
 	action := getVertexAction(baseModel, true)
+	body = helps.EnsureGeminiLeadingUserContent(body, "contents")
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
 		baseURL = "https://aiplatform.googleapis.com"
@@ -754,12 +770,12 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	if apiKey != "" {
 		httpReq.Header.Set("x-goog-api-key", apiKey)
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -800,6 +816,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		defer reporter.EnsurePublished(ctx)
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("vertex executor: close response body error: %v", errClose)
@@ -854,7 +871,7 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 
 	translatedReq := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false)
 
-	translatedReq, err := thinking.ApplyThinking(translatedReq, req.Model, from.String(), to.String(), e.Identifier())
+	translatedReq, err := helps.ApplyRequestThinking(translatedReq, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -866,6 +883,8 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
+	translatedReq = internalsignature.SanitizeGeminiRequestThoughtSignatures(translatedReq, "contents")
+	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
 
 	baseURL := vertexBaseURL(location)
 	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, "countTokens")
@@ -881,12 +900,12 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 		log.Errorf("vertex executor: access token error: %v", errTok)
 		return cliproxyexecutor.Response{}, statusErr{code: 500, msg: "internal server error"}
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -907,6 +926,7 @@ func (e *GeminiVertexExecutor) countTokensWithServiceAccount(ctx context.Context
 	})
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
@@ -945,7 +965,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 
 	translatedReq := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false)
 
-	translatedReq, err := thinking.ApplyThinking(translatedReq, req.Model, from.String(), to.String(), e.Identifier())
+	translatedReq, err := helps.ApplyRequestThinking(translatedReq, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -957,6 +977,8 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
+	translatedReq = internalsignature.SanitizeGeminiRequestThoughtSignatures(translatedReq, "contents")
+	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
 
 	// For API key auth, use simpler URL format without project/location
 	if baseURL == "" {
@@ -972,12 +994,12 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	if apiKey != "" {
 		httpReq.Header.Set("x-goog-api-key", apiKey)
 	}
-	applyGeminiHeaders(httpReq, auth)
+	applyGeminiHeaders(httpReq, auth, opts.Headers)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -998,6 +1020,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	})
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
