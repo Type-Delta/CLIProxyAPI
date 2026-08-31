@@ -44,6 +44,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
@@ -86,6 +88,8 @@ jobs:
           context: .
           platforms: linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}

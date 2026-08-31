@@ -1,12 +1,12 @@
 # CLIProxyAPI Fork
 
-This fork keeps per-API-key request and token usage limits and an optional web-console Docker deployment that are not supplied by upstream.
+This fork keeps per-API-key request and token usage limits, failure-isolated CPAUK analytics, a pinned CPAMC client, and reproducible web-console packaging that are not supplied by upstream.
 
 ## Divergence Log
 
 This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `81e1b5374f99c212f196f34956eeed964a46b8fa`. The 2026-08-31 integration merged that upstream commit without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
 
-At the Gate 0 control-plane baseline, `git rev-list --left-right --count HEAD...upstream/main` reports `10 0`. The fork contains all commits through the recorded upstream base, the six original fork commits, the upstream merge, the hermetic media test, and two CPAMC submodule commits. `HEAD...origin/main` reports `0 0` at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`.
+Gate 0 ended at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`, where the fork was 10 commits ahead and zero behind the recorded upstream base. The implementation commits after that baseline add the CPAUK package, control plane, CPAMC analytics workspace, runtime fixes, and reproducible release packaging described below. Release validation must confirm zero missing upstream commits, an exact `HEAD`/`origin/main` match, and a CPAMC gitlink that resolves from its pushed `origin/main`.
 
 Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
 
@@ -34,15 +34,15 @@ The TUI API Keys tab accepts mixed bare and structured key representations and d
 
 ### DL002 - Two-service web-console Docker deployment
 
-`docker-compose-web.yml` runs CLIProxyAPI behind an Nginx service on port `8317`. Nginx serves a current Cli-Proxy-API-Management-Center build at `/` and proxies every other path to CLIProxyAPI, including streaming and WebSocket traffic. The Management Center ref and public web port can be selected through `MANAGEMENT_CENTER_REF` and `CLI_PROXY_WEB_PORT`.
+`docker-compose-web.yml` runs CLIProxyAPI behind an Nginx service on port `8317`. Nginx serves the pinned Cli-Proxy-API-Management-Center artifact at `/` and proxies every other path to CLIProxyAPI, including streaming and WebSocket traffic. The public web port can be selected through `CLI_PROXY_WEB_PORT`; `CPA_WEB_NETWORK_SUBNET` selects the narrow bridge CIDR when the default overlaps another Docker network.
 
-`Dockerfile.web` builds the Management Center from its GitHub repository with the Bun version declared by that project, then copies its single-file production output into an Nginx image. The deployment retains the existing CLIProxyAPI configuration, auth, log, plugin, and OAuth callback mounts and ports.
+`Dockerfile.web` builds the initialized Management Center submodule with digest-pinned Bun 1.3.14, verifies it byte-for-byte against CPA's canonical artifact, then copies the single-file output into a digest-pinned Nginx image. The deployment retains the existing CLIProxyAPI configuration, auth, log, plugin, and OAuth callback mounts and ports. An optional forwarding override trusts `X-Forwarded-Proto` only from an explicitly configured immediate TLS-proxy CIDR; the default configuration overwrites spoofed forwarding headers.
 
-**Implementation evidence:** `docker-compose-web.yml`, `Dockerfile.web`, and `nginx-web.conf`.
+**Implementation evidence:** `docker-compose-web.yml`, `docker-compose-web-forwarded.yml`, `Dockerfile.web`, `nginx-web.conf`, `nginx-web-forwarded.conf.template`, and `docs/analytics-operations.md`.
 
-**Recorded validation:** Docker Compose configuration rendering, both image builds, and a live two-container request check covering the Management Center at `/`, the proxied health endpoint at `/healthz`, and the authenticated Management API.
+**Recorded validation:** both Compose configurations render; both digest-pinned images build from the initialized submodule; and a live two-container run serves artifact SHA-256 `611be17bd701e8626a48ed2ea5dfcfb32f6cdbea710faaa8143520b8479577e8`, proxies health and authenticated analytics, preserves a durable viewer across restart, rejects spoofed forwarded HTTPS by default, and accepts verified forwarding only through the explicit override. A configurable bridge subnet was exercised after the default correctly reported a host-network overlap.
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-31
 
 ### DL003 - Hermetic Codex Live media relay test
 
@@ -56,13 +56,13 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the synchronized gitlink pins pushed commit `1f77aaeb126c44e69ff51ccbcac6b2d5ebde9ee3`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0`.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the shipped gitlink pins pushed commit `69e7ab6f7fcfb3e9e4c4c3391e033e070022216d`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, and a settled failed-viewer state.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
-**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044` and `1f77aaeb`.
+**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044`, `1f77aae`, `0cb4790`, `a7a342a`, and `69e7ab6`.
 
-**Recorded validation:** exact Bun 1.3.14 verification passed 424 tests, ESLint, TypeScript compilation, and the Vite production build. After the push, `git rev-list --left-right --count origin/main...upstream/main` in CPAMC returned `2 0`, and the submodule worktree matched `origin/main` without changes.
+**Recorded validation:** exact Bun 1.3.14 verification passed 436 tests, ESLint, TypeScript compilation, and the Vite production build. An independent clean clone confirmed final `HEAD` equals `origin/main`, the fork is five commits ahead and zero behind `upstream/main`, both remotes follow the documented convention, and the worktree stays clean after verification. Raw-CDP desktop and mobile journeys passed every Analytics route plus successful and failed viewer exchange, URL/history scrubbing, storage and raw-key checks, focus order, overflow, alerts, and runtime diagnostics.
 
 **Last updated:** 2026-08-31
 
@@ -82,13 +82,13 @@ Versioned fixtures record events, token categories, deterministic credential ide
 
 ### DL006 - Reproducible embedded CPAMC artifact
 
-CPA builds CPAMC from the pinned `web/management-center` checkout with Bun 1.3.14 and embeds the resulting single-file application in the Go binary. The main and Nginx images verify their panel build byte-for-byte against that canonical artifact; release archives carry the same HTML, compatibility manifest, and CPAUK/CPAMC license notices. No product build clones or floats on a remote CPAMC branch.
+CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.3.14 container and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. The main and Nginx images verify their panel build byte-for-byte against that canonical artifact; release archives carry the same HTML, compatibility manifest, and CPAUK/CPAMC license notices. No product build clones or floats on a remote CPAMC branch.
 
 Mutable and downloaded panels require an adjacent `management-artifact.json` whose Management API range accepts this CPA build and whose SHA-256 matches the exact HTML bytes. An invalid, missing, incompatible, or tampered mutable panel falls back to the immutable bundled artifact. The former undigested network fallback is removed, and updates default to the Type-Delta CPAMC fork.
 
-**Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, both Dockerfiles, `nginx-web.conf`, release workflows, and `docs/management-center.md`.
+**Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
 
-**Recorded validation:** the exact Bun 1.3.14 Docker build reproduced SHA-256 `bcd83e9c326e948e74d459c3a64257d5328a969df19f76666e219ff73a125433`; the Nginx image served those identical bytes from `/` and `/management.html`, with `no-store` and `no-referrer` headers on the management route. Mutable artifact validation and bundled fallback passed focused Go tests.
+**Recorded validation:** the exact Bun 1.3.14 canonical, main-image, Nginx-image, and cached `--network=none` builds reproduce SHA-256 `611be17bd701e8626a48ed2ea5dfcfb32f6cdbea710faaa8143520b8479577e8`; the Nginx image serves those identical bytes from `/` and `/management.html`. Mutable artifact validation and bundled fallback pass focused Go tests. Actionlint 1.7.7 reports no genuine workflow errors, and independent pure-Go cross-builds pass for every documented release OS/architecture and no-plugin target; CI remains authoritative for native CGO and plugin builds.
 
 **Last updated:** 2026-08-31
 
@@ -98,9 +98,21 @@ CPA exposes capability-gated analytics management routes for health, summary, ti
 
 Shared viewers are stored in a separate bounded, atomic JSON document containing only credential and session hashes plus fixed key scope. The file and its parent-directory rename are synchronized before success. An administrator receives a viewer credential once, can list durable non-secret viewer metadata after a restart, and can selectively revoke the viewer and all its sessions. Viewer exchange requires direct HTTPS or verified forwarded HTTPS from a configured immediate proxy, issues a short-lived `HttpOnly`, `Secure`, `SameSite=Strict` cookie, and removes credentials from request logging. Viewer routes have a fixed CORS allowlist, cannot accept a management credential, and cannot select another key ID. Configuration reload invalidates active sessions and reports restart-required trust changes without taking proxying down.
 
+Plain HTTP development remains available only through the explicit loopback option. The protocol multiplexer no longer advertises an empty TLS connection state on ordinary buffered TCP connections, so same-origin loopback requests with ports are classified as HTTP. After protocol sniffing, TLS-backed HTTP retains the real connection state, including for clients that omit ALPN, while Redis RESP over the same no-ALPN TLS listener keeps its existing route.
+
 **Implementation evidence:** `internal/api/analytics_*`, `internal/api/handlers/management/analytics*`, `internal/api/server*.go`, `internal/api/middleware/request_logging.go`, `internal/config/analytics.go`, `internal/util/provider.go`, and `config.example.yaml`.
 
-**Recorded validation:** management/viewer authorization matrices, CORS, TLS and trusted-proxy cases, normal and error-only logging, low-entropy key fixtures, reload failure and recovery, viewer persistence and revocation, URL identity rejection, cursor/error mapping, indexed retained-event handling, CSV injection, throttling, and maintenance API tests pass normally and in the focused race suite.
+**Recorded validation:** management/viewer authorization matrices, production-mux loopback CORS, TLS with and without ALPN, no-ALPN Redis/TLS, trusted-proxy cases, normal and error-only logging, low-entropy key fixtures, reload failure and recovery, viewer persistence and revocation, URL identity rejection, cursor/error mapping, indexed retained-event handling, CSV injection, throttling, and maintenance API tests pass normally and in the focused race suite. Raw CDP verifies both successful and failed viewer exchanges against a live server.
+
+**Last updated:** 2026-08-31
+
+### DL008 - Fresh graceful-shutdown budget
+
+The 30-second graceful-shutdown budget begins when `Service.Run` exits, not when the service starts. Long-running processes therefore give HTTP, analytics, usage observers, and other background components their intended bounded drain instead of receiving an already expired context.
+
+**Implementation evidence:** `sdk/cliproxy/service_lifecycle.go` and `sdk/cliproxy/service_lifecycle_shutdown_test.go`.
+
+**Recorded validation:** the focused regression waits beyond its short synthetic budget before invoking the deferred shutdown and confirms that the callback still receives a live context with a future deadline. Fresh-context CPAUK close tests pass repeatedly; live shutdown validation is part of the final container gate.
 
 **Last updated:** 2026-08-31
 

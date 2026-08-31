@@ -25,7 +25,7 @@ Observed on 2026-08-31 in the current checkout:
 | RAM | 16,711,749,632 bytes, about 15.56 GiB |
 | Power mode | `powersave` scaling governor |
 
-This machine is reference metadata, not yet a certified dedicated CI runner. Record the chosen dedicated runner under one stable `CPA_PERF_RUNNER_CLASS` value before using results as release evidence. The full performance gate remains open until the production adapter exists and five runs pass on that dedicated runner.
+This machine is reference metadata, not yet a certified dedicated CI runner. Record the chosen dedicated runner under one stable `CPA_PERF_RUNNER_CLASS` value before using results as release evidence. The production adapter is implemented; the full performance gate remains open until five runs pass on that dedicated runner.
 
 ## Full run
 

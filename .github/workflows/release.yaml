@@ -225,12 +225,12 @@ jobs:
             runner: ubuntu-latest
             goarch: amd64
             asset_arch: amd64
-            manylinux_image: quay.io/pypa/manylinux2014_x86_64
+            manylinux_image: quay.io/pypa/manylinux2014_x86_64@sha256:42116048e6568c83796535fc1698beb9d7dc328c2ae3b3d098678ea595845b8d
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             goarch: arm64
             asset_arch: aarch64
-            manylinux_image: quay.io/pypa/manylinux2014_aarch64
+            manylinux_image: quay.io/pypa/manylinux2014_aarch64@sha256:453975655a3a250d894fd68956117690d4508337e6415aa5fbe98674d8b9cad6
     steps:
       - uses: actions/checkout@v6
         with:
@@ -559,11 +559,60 @@ jobs:
       - build-linux-no-plugin
       - build-freebsd
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Publish final checksums
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: Build release inventories and SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          go list -m -f '{{if not .Main}}{{.Path}} {{.Version}} {{.Sum}}{{end}}' all \
+            | sed '/^[[:space:]]*$/d' \
+            | LC_ALL=C sort > dist/go-modules.txt
+          cp web/management-center/bun.lock dist/cpamc-bun.lock
+          cp DEPENDENCY_NOTICES.md dist/DEPENDENCY_NOTICES.md
+
+          panel_sha256="$(sha256sum internal/managementasset/bundled/management.html | cut -d' ' -f1)"
+          cpamc_commit="$(git -C web/management-center rev-parse HEAD)"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg commit "$GITHUB_SHA" \
+            --arg cpamc_commit "$cpamc_commit" \
+            --arg panel_sha256 "$panel_sha256" \
+            --arg go_version "$GO_VERSION" \
+            --arg bun_version "1.3.14" \
+            '{schema_version:1, repository:$repository, ref:$ref, commit:$commit, submodules:{"web/management-center":$cpamc_commit}, artifacts:{"management.html":{sha256:$panel_sha256}}, toolchain:{go:$go_version,bun:$bun_version}, source_date_epoch:(env.SOURCE_DATE_EPOCH // "")}' \
+            > dist/source-provenance.json
+
+          syft scan dir:web/management-center -o spdx-json=dist/cpamc.spdx.json
+          shopt -s nullglob
+          archives=(dist/CLIProxyAPI_*.tar.gz dist/CLIProxyAPI_*.zip)
+          for archive in "${archives[@]}"; do
+            name="$(basename "$archive")"
+            name="${name%.tar.gz}"
+            name="${name%.zip}"
+            unpack="$(mktemp -d)"
+            case "$archive" in
+              *.tar.gz) tar -C "$unpack" -xzf "$archive" ;;
+              *.zip) unzip -q "$archive" -d "$unpack" ;;
+            esac
+            syft scan "dir:$unpack" -o "spdx-json=dist/${name}.spdx.json"
+            find "$unpack" -depth -type f -exec unlink {} \;
+            find "$unpack" -depth -type l -exec unlink {} \;
+            find "$unpack" -depth -type d -exec rmdir {} \;
+          done
+      - name: Publish release metadata and final checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -575,6 +624,7 @@ jobs:
             echo "No release archives found" >&2
             exit 1
           fi
-          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-          gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
+          metadata=(DEPENDENCY_NOTICES.md go-modules.txt cpamc-bun.lock source-provenance.json *.spdx.json)
+          sha256sum "${archives[@]}" "${metadata[@]}" | sort -k2 > checksums.txt
+          gh release upload "$GITHUB_REF_NAME" checksums.txt "${metadata[@]}" --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false

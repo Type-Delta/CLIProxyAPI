@@ -148,11 +148,13 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 ## 使用量统计
 
-自v6.10.0版本以后，CLIProxyAPI及 [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 项目不再预置数据统计功能，如果有数据统计需求的请使用以下项目：
+本分支内置可选且故障隔离的 CPAUK 分析模块，并在随附的 CPAMC 管理面板中提供对应页面。分析功能默认关闭，使用独立的 SQLite 数据库；采集或数据库故障不会影响代理就绪状态或单密钥限额。请在 `config.yaml` 中启用 `analytics` 配置，然后打开 CPAMC 的 Analytics 分组。存储、备份、恢复、导入和回滚流程请参阅 [Analytics operations](docs/analytics-operations.md)（英文）。
+
+如需独立进程部署，仍可使用上游项目：
 
 ### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
 
-独立的 CLIProxyAPI 使用量持久化与可视化服务，定期同步 CLIProxyAPI 数据，存储到 SQLite，提供聚合 API，并内置使用量分析与统计仪表盘。
+独立的 CLIProxyAPI 使用量持久化与可视化服务，定期同步 CLIProxyAPI 数据，存储到 SQLite，提供聚合 API，并内置使用量分析与统计仪表盘。本分支只在独立的 `internal/cpauk` 模块边界内移植兼容的分析契约，不嵌入上游服务器或进程生命周期架构。
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 

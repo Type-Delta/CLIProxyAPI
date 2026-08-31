@@ -152,11 +152,13 @@ see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
 ## Usage Statistics
 
-Since v6.10.0, CLIProxyAPI and [CPAMC](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) no longer ship built-in usage statistics. If you need usage statistics, use:
+This fork includes optional, failure-isolated CPAUK analytics and matching views in the bundled CPAMC dashboard. Analytics are disabled by default and use a separate SQLite database; collection or database failures do not affect proxy readiness or per-key limits. Enable the `analytics` block in `config.yaml`, then open the Analytics group in CPAMC. See [Analytics operations](docs/analytics-operations.md) for storage, backup, restore, import, and rollback procedures.
+
+The standalone upstream project remains available for deployments that prefer a separate process:
 
 ### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
 
-Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics.
+Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics. This fork ports its compatible analytics contracts behind the in-process `internal/cpauk` module boundary; it does not embed the upstream server or lifecycle architecture.
 
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 

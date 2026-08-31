@@ -3,12 +3,17 @@ FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b4
 WORKDIR /panel
 
 COPY web/management-center/package.json web/management-center/bun.lock ./
-RUN bun install --frozen-lockfile
+RUN --mount=type=cache,id=cpamc-bun-1.3.14,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
 COPY web/management-center/ ./
 COPY internal/managementasset/bundled/management.html /expected/management.html
-RUN bun run build && cmp dist/index.html /expected/management.html
+COPY internal/managementasset/bundled/management-artifact.json /expected/management-artifact.json
+RUN cpamc_commit="$(sed -n 's/.*"cpamc_commit": "\([^"]*\)".*/\1/p' /expected/management-artifact.json)" \
+    && test -n "$cpamc_commit" \
+    && VERSION="$cpamc_commit" bun run build \
+    && cmp dist/index.html /expected/management.html
 
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS builder
 
 WORKDIR /app
 
@@ -29,7 +34,7 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-FROM debian:bookworm
+FROM debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata ca-certificates \

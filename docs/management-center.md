@@ -23,13 +23,19 @@ scripts/verify-submodules.sh
 
 Make and validate CPAMC changes inside `web/management-center`, commit and push them to the Type-Delta CPAMC fork, and only then advance the CPA gitlink. Never commit a gitlink that refers only to an unpushed local commit.
 
-The canonical single-file artifact is generated with Bun 1.3.14:
+The canonical single-file artifact is generated in the digest-pinned Bun 1.3.14
+builder image so native Rolldown differences on the host cannot change release
+bytes:
 
 ```bash
 scripts/build-management-center.sh
 ```
 
-That command replaces `internal/managementasset/bundled/management.html` and its compatibility manifest. Commit those bytes with the later CPA gitlink commit. Docker builds rebuild the submodule and compare the result byte-for-byte with the bundled artifact.
+That command replaces `internal/managementasset/bundled/management.html` and its
+compatibility manifest. Commit those bytes with the later CPA gitlink commit.
+Docker builds rebuild the submodule with the same pinned builder and compare the
+result byte-for-byte with the bundled artifact. After the package cache is
+primed, `Dockerfile.management` can rebuild with BuildKit networking disabled.
 
 ## Runtime selection and rollback
 

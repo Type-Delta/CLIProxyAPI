@@ -1,0 +1,6 @@
+services:
+  web:
+    environment:
+      CPA_WEB_TLS_PROXY_CIDR: ${CPA_WEB_TLS_PROXY_CIDR:?set CPA_WEB_TLS_PROXY_CIDR to the immediate TLS proxy network}
+    volumes:
+      - ./nginx-web-forwarded.conf.template:/etc/nginx/templates/default.conf.template:ro
