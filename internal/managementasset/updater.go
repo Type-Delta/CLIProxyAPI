@@ -26,13 +26,12 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
-	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
-	managementAssetName          = "management.html"
-	httpUserAgent                = "CLIProxyAPI-management-updater"
-	managementSyncMinInterval    = 30 * time.Second
-	updateCheckInterval          = 3 * time.Hour
-	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
+	defaultManagementReleaseURL = "https://api.github.com/repos/Type-Delta/Cli-Proxy-API-Management-Center/releases/latest"
+	managementAssetName         = "management.html"
+	httpUserAgent               = "CLIProxyAPI-management-updater"
+	managementSyncMinInterval   = 30 * time.Second
+	updateCheckInterval         = 3 * time.Hour
+	maxAssetDownloadSize        = 50 << 20
 )
 
 // ManagementFileName exposes the control panel asset filename.
@@ -216,21 +215,15 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		lastUpdateCheckTime = now
 		lastUpdateCheckMu.Unlock()
 
-		localFileMissing := false
-		if _, errStat := os.Stat(localPath); errStat != nil {
-			if errors.Is(errStat, os.ErrNotExist) {
-				localFileMissing = true
-			} else {
-				log.WithError(errStat).Debug("failed to stat local management asset")
-			}
-		}
-
 		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
 			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
 			return nil, nil
 		}
 
 		releaseURL := resolveReleaseURL(panelRepository)
+		if strings.TrimSpace(panelRepository) != "" && releaseURL != defaultManagementReleaseURL {
+			log.Warn("using explicitly configured management panel repository; compatibility and digests remain mandatory")
+		}
 		client := newHTTPClient(proxyURL)
 
 		localHash, err := fileSHA256(localPath)
@@ -241,39 +234,32 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			localHash = ""
 		}
 
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		asset, manifestAsset, err := fetchLatestAssets(ctx, client, releaseURL)
 		if err != nil {
-			if localFileMissing {
-				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
-				return nil, nil
-			}
 			log.WithError(err).Warn("failed to fetch latest management release information")
 			return nil, nil
 		}
 
+		remoteHash := parseDigest(asset.Digest)
 		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
-			log.Debug("management asset is already up to date")
-			return nil, nil
-		}
-
-		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
-		if err != nil {
-			if localFileMissing {
-				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
+			if _, errLocal := validateFiles(localPath, filepath.Join(staticDir, manifestAssetName)); errLocal == nil {
+				log.Debug("management asset is already up to date")
 				return nil, nil
 			}
-			log.WithError(err).Warn("failed to download management asset")
-			return nil, nil
 		}
 
-		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
-			log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
+		manifestData, _, err := downloadVerifiedAsset(ctx, client, manifestAsset)
+		if err != nil {
+			log.WithError(err).Warn("failed to download verified management manifest")
+			return nil, nil
+		}
+		data, downloadedHash, err := downloadVerifiedAsset(ctx, client, asset)
+		if err != nil {
+			log.WithError(err).Warn("failed to download verified management asset")
+			return nil, nil
+		}
+		if _, errValidate := validateArtifact(data, manifestData); errValidate != nil {
+			log.WithError(errValidate).Warn("rejected incompatible management asset")
 			return nil, nil
 		}
 
@@ -281,32 +267,29 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			log.WithError(err).Warn("failed to update management asset on disk")
 			return nil, nil
 		}
+		if err = atomicWriteFile(filepath.Join(staticDir, manifestAssetName), manifestData); err != nil {
+			log.WithError(err).Warn("failed to update management manifest on disk")
+			return nil, nil
+		}
 
 		log.Infof("management asset updated successfully (hash=%s)", downloadedHash)
 		return nil, nil
 	})
 
-	_, err := os.Stat(localPath)
+	_, err := validateFiles(localPath, filepath.Join(staticDir, manifestAssetName))
 	return err == nil
 }
 
-func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
-	if err != nil {
-		log.WithError(err).Warn("failed to download fallback management control panel page")
-		return false
+func validateFiles(htmlPath, manifestPath string) (ArtifactManifest, error) {
+	html, errHTML := os.ReadFile(htmlPath)
+	if errHTML != nil {
+		return ArtifactManifest{}, errHTML
 	}
-
-	log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s) — "+
-		"enable verified GitHub updates by keeping disable-auto-update-panel set to false", downloadedHash)
-
-	if err = atomicWriteFile(localPath, data); err != nil {
-		log.WithError(err).Warn("failed to persist fallback management control panel page")
-		return false
+	manifest, errManifest := os.ReadFile(manifestPath)
+	if errManifest != nil {
+		return ArtifactManifest{}, errManifest
 	}
-
-	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
-	return true
+	return validateArtifact(html, manifest)
 }
 
 func resolveReleaseURL(repo string) string {
@@ -341,7 +324,7 @@ func resolveReleaseURL(repo string) string {
 	return defaultManagementReleaseURL
 }
 
-func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
+func fetchLatestAssets(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, *releaseAsset, error) {
 	if strings.TrimSpace(releaseURL) == "" {
 		releaseURL = defaultManagementReleaseURL
 	}
@@ -356,23 +339,50 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 
 	data, err := httpfetch.GetBytes(ctx, client, releaseURL, headers, 0)
 	if err != nil {
-		return nil, "", fmt.Errorf("fetch release: %w", err)
+		return nil, nil, fmt.Errorf("fetch release: %w", err)
 	}
 
 	var release releaseResponse
 	if err = json.Unmarshal(data, &release); err != nil {
-		return nil, "", fmt.Errorf("decode release response: %w", err)
+		return nil, nil, fmt.Errorf("decode release response: %w", err)
 	}
 
+	var htmlAsset *releaseAsset
+	var manifestAsset *releaseAsset
 	for i := range release.Assets {
 		asset := &release.Assets[i]
-		if strings.EqualFold(asset.Name, managementAssetName) {
-			remoteHash := parseDigest(asset.Digest)
-			return asset, remoteHash, nil
+		switch {
+		case strings.EqualFold(asset.Name, managementAssetName):
+			htmlAsset = asset
+		case strings.EqualFold(asset.Name, manifestAssetName):
+			manifestAsset = asset
 		}
 	}
+	if htmlAsset == nil || manifestAsset == nil {
+		return nil, nil, fmt.Errorf("release must contain %s and %s", managementAssetName, manifestAssetName)
+	}
+	if parseDigest(htmlAsset.Digest) == "" || parseDigest(manifestAsset.Digest) == "" {
+		return nil, nil, fmt.Errorf("release assets must include sha256 digests")
+	}
+	return htmlAsset, manifestAsset, nil
+}
 
-	return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
+func downloadVerifiedAsset(ctx context.Context, client *http.Client, asset *releaseAsset) ([]byte, string, error) {
+	if asset == nil {
+		return nil, "", fmt.Errorf("nil release asset")
+	}
+	expected := parseDigest(asset.Digest)
+	if expected == "" {
+		return nil, "", fmt.Errorf("missing digest for %s", asset.Name)
+	}
+	data, actual, errDownload := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+	if errDownload != nil {
+		return nil, "", errDownload
+	}
+	if !strings.EqualFold(expected, actual) {
+		return nil, "", fmt.Errorf("%s digest mismatch", asset.Name)
+	}
+	return data, actual, nil
 }
 
 func downloadAsset(ctx context.Context, client *http.Client, downloadURL string) ([]byte, string, error) {

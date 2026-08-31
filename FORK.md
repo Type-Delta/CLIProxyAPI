@@ -76,6 +76,18 @@ The versioned fixtures define events, token categories, deterministic credential
 
 **Last updated:** 2026-08-31
 
+### DL006 - Reproducible embedded CPAMC artifact
+
+CPA builds CPAMC from the pinned `web/management-center` checkout with Bun 1.3.14 and embeds the resulting single-file application in the Go binary. The main and Nginx images verify their panel build byte-for-byte against that canonical artifact; release archives carry the same HTML, compatibility manifest, and CPAUK/CPAMC license notices. No product build clones or floats on a remote CPAMC branch.
+
+Mutable and downloaded panels require an adjacent `management-artifact.json` whose Management API range accepts this CPA build and whose SHA-256 matches the exact HTML bytes. An invalid, missing, incompatible, or tampered mutable panel falls back to the immutable bundled artifact. The former undigested network fallback is removed, and updates default to the Type-Delta CPAMC fork.
+
+**Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, both Dockerfiles, `nginx-web.conf`, release workflows, and `docs/management-center.md`.
+
+**Recorded validation:** the exact Bun 1.3.14 Docker build reproduced SHA-256 `bcd83e9c326e948e74d459c3a64257d5328a969df19f76666e219ff73a125433`; the Nginx image served those identical bytes from `/` and `/management.html`, with `no-store` and `no-referrer` headers on the management route. Mutable artifact validation and bundled fallback passed focused Go tests.
+
+**Last updated:** 2026-08-31
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

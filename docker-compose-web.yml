@@ -29,8 +29,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
-      args:
-        MANAGEMENT_CENTER_REF: ${MANAGEMENT_CENTER_REF:-main}
     depends_on:
       - cli-proxy-api
     ports:

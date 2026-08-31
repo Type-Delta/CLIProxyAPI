@@ -17,11 +17,11 @@ func TestFetchLatestAssetSetsGitHubAuthorization(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		authorization = req.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"}]}`))
+		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"},{"name":"management-artifact.json","browser_download_url":"https://example.com/management-artifact.json","digest":"sha256:def456"}]}`))
 	}))
 	defer server.Close()
 
-	asset, remoteHash, err := fetchLatestAsset(t.Context(), server.Client(), server.URL)
+	asset, manifest, err := fetchLatestAssets(t.Context(), server.Client(), server.URL)
 	if err != nil {
 		t.Fatalf("fetchLatestAsset() error = %v", err)
 	}
@@ -31,8 +31,8 @@ func TestFetchLatestAssetSetsGitHubAuthorization(t *testing.T) {
 	if asset == nil || asset.Name != managementAssetName {
 		t.Fatalf("asset = %#v, want %q", asset, managementAssetName)
 	}
-	if remoteHash != "abc123" {
-		t.Fatalf("remoteHash = %q, want %q", remoteHash, "abc123")
+	if manifest == nil || manifest.Name != manifestAssetName {
+		t.Fatalf("manifest = %#v, want %q", manifest, manifestAssetName)
 	}
 }
 
@@ -46,11 +46,11 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		authorization = req.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"}]}`))
+		_, _ = w.Write([]byte(`{"assets":[{"name":"management.html","browser_download_url":"https://example.com/management.html","digest":"sha256:abc123"},{"name":"management-artifact.json","browser_download_url":"https://example.com/management-artifact.json","digest":"sha256:def456"}]}`))
 	}))
 	defer server.Close()
 
-	asset, remoteHash, err := fetchLatestAsset(t.Context(), server.Client(), server.URL)
+	asset, manifest, err := fetchLatestAssets(t.Context(), server.Client(), server.URL)
 	if err != nil {
 		t.Fatalf("fetchLatestAsset() error = %v", err)
 	}
@@ -60,8 +60,8 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	if asset == nil || asset.Name != managementAssetName {
 		t.Fatalf("asset = %#v, want %q", asset, managementAssetName)
 	}
-	if remoteHash != "abc123" {
-		t.Fatalf("remoteHash = %q, want %q", remoteHash, "abc123")
+	if manifest == nil || manifest.Name != manifestAssetName {
+		t.Fatalf("manifest = %#v, want %q", manifest, manifestAssetName)
 	}
 }
 

@@ -1,18 +1,19 @@
-FROM oven/bun:1.4.0-alpine AS builder
-
-ARG MANAGEMENT_CENTER_REF=main
+FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git \
-    && git clone --depth 1 --branch "${MANAGEMENT_CENTER_REF}" \
-        https://github.com/router-for-me/Cli-Proxy-API-Management-Center.git .
+COPY web/management-center/package.json web/management-center/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY web/management-center/ ./
+COPY internal/managementasset/bundled/management.html /expected/management.html
+RUN bun run build && cmp dist/index.html /expected/management.html
 
-RUN bun install --frozen-lockfile && bun run build
-
-FROM nginx:1.31.4-alpine
+FROM nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913
 
 COPY nginx-web.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist/index.html /usr/share/nginx/html/index.html
+COPY internal/managementasset/bundled/management-artifact.json /usr/share/nginx/html/management-artifact.json
+COPY web/management-center/LICENSE /usr/share/licenses/CPAMC-LICENSE
+COPY internal/cpauk/LICENSE.upstream /usr/share/licenses/CPAUK-LICENSE
 
 EXPOSE 80

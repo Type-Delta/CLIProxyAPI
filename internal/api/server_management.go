@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -297,26 +296,15 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	filePath := managementasset.FilePath(s.configFilePath)
-	if strings.TrimSpace(filePath) == "" {
-		c.AbortWithStatus(http.StatusNotFound)
+	asset, errResolve := managementasset.Resolve(s.configFilePath)
+	if errResolve != nil {
+		log.WithError(errResolve).Error("failed to resolve management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if _, err := os.Stat(filePath); err != nil {
-		if os.IsNotExist(err) {
-			// Synchronously ensure management.html is available with a detached context.
-			// Control panel bootstrap should not be canceled by client disconnects.
-			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
-				c.AbortWithStatus(http.StatusNotFound)
-				return
-			}
-		} else {
-			log.WithError(err).Error("failed to stat management control panel asset")
-			c.AbortWithStatus(http.StatusInternalServerError)
-			return
-		}
-	}
-
-	c.File(filePath)
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-CPAMC-Commit", asset.Manifest.CPAMCCommit)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", asset.HTML)
 }

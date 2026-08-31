@@ -21,6 +21,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          submodules: recursive
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -31,7 +34,7 @@ jobs:
           changelog_entries_file="$(mktemp)"
           changelog_notes_file="$(mktemp)"
           updated_notes_file="$(mktemp)"
-          trap 'rm -f "$release_notes_file" "$generated_notes_file" "$changelog_entries_file" "$changelog_notes_file" "$updated_notes_file"' EXIT
+          trap 'unlink "$release_notes_file" "$generated_notes_file" "$changelog_entries_file" "$changelog_notes_file" "$updated_notes_file"' EXIT
 
           cat > "$release_notes_file" <<'EOF'
           <!-- cliproxyapi-linux-release-assets:start -->
@@ -86,9 +89,9 @@ jobs:
           } > "$updated_notes_file"
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file"
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file" --draft=true
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file"
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file" --draft
           fi
 
   build-hosted:
@@ -127,10 +130,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Verify pinned submodules
+        shell: bash
+        run: scripts/verify-submodules.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -170,7 +177,6 @@ jobs:
 
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_${GOOS}_${ASSET_ARCH}.${ARCHIVE_FORMAT}"
-          rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
           CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
@@ -178,10 +184,14 @@ jobs:
             -o "$archive_dir/$binary_name" ./cmd/server/
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          mkdir -p "$archive_dir/licenses"
+          cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
+          cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
           else
-            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml
+            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -202,35 +212,6 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
 
   build-linux-glibc:
     name: build linux-${{ matrix.goarch }} glibc
@@ -254,10 +235,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -283,7 +267,6 @@ jobs:
 
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_linux_${ASSET_ARCH}.tar.gz"
-          rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
           docker run --rm \
@@ -298,7 +281,8 @@ jobs:
             bash -euo pipefail -c '
               go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
               curl -fsSL "https://go.dev/dl/${go_archive}" -o "/tmp/${go_archive}"
-              rm -rf /usr/local/go
+              find /usr/local/go -depth \( -type f -o -type l \) -exec unlink {} \;
+              find /usr/local/go -depth -type d -exec rmdir {} \;
               tar -C /usr/local -xzf "/tmp/${go_archive}"
               export PATH="/usr/local/go/bin:${PATH}"
 
@@ -318,7 +302,11 @@ jobs:
             '
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          mkdir -p "$archive_dir/licenses"
+          cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
+          cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -338,35 +326,6 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
 
   build-linux-no-plugin:
     name: build linux-${{ matrix.goarch }} no-plugin
@@ -386,10 +345,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -423,7 +385,6 @@ jobs:
 
           archive_dir="dist/${TARGET}/archive"
           archive_name="CLIProxyAPI_${RELEASE_VERSION}_linux_${ASSET_ARCH}_no-plugin.tar.gz"
-          rm -rf "dist/${TARGET}"
           mkdir -p "$archive_dir"
 
           CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false \
@@ -437,7 +398,11 @@ jobs:
           fi
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          mkdir -p "$archive_dir/licenses"
+          cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
+          cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -457,35 +422,6 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
 
   build-freebsd:
     name: build ${{ matrix.target }}
@@ -514,10 +450,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Fetch tags
@@ -544,11 +483,6 @@ jobs:
           echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "build_date=$build_date" >> "$GITHUB_OUTPUT"
-      - name: Prepare FreeBSD output
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "dist/${TARGET}"
       - name: Install FreeBSD cross-build dependencies
         if: ${{ matrix.cgo_enabled }}
         run: |
@@ -591,7 +525,11 @@ jobs:
           echo "Packaging ${archive_name}"
           cp "dist/${TARGET}/bin/cli-proxy-api" "$archive_dir/cli-proxy-api"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          mkdir -p "$archive_dir/licenses"
+          cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
+          cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -611,39 +549,10 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
 
   publish-checksums:
     runs-on: ubuntu-latest
-    if: always()
+    if: success()
     needs:
       - build-hosted
       - build-linux-glibc
@@ -663,8 +572,9 @@ jobs:
           shopt -s nullglob
           archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
           if [[ ${#archives[@]} -eq 0 ]]; then
-            echo "No release archives found"
-            exit 0
+            echo "No release archives found" >&2
+            exit 1
           fi
           sha256sum "${archives[@]}" | sort -k2 > checksums.txt
           gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

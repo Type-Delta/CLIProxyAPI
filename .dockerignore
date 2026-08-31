@@ -14,6 +14,11 @@ docs
 README.md
 README_CN.md
 LICENSE
+!LICENSE
+
+# Submodule build outputs are regenerated in the image.
+web/management-center/node_modules
+web/management-center/dist
 
 # Runtime data folders (should be mounted as volumes)
 auths
