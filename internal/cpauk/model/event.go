@@ -16,6 +16,10 @@ const (
 	TokenQualityMissing   TokenQuality = "missing"
 )
 
+func (q TokenQuality) Valid() bool {
+	return q == TokenQualityExact || q == TokenQualityEstimated || q == TokenQualityMissing
+}
+
 type TokenUsage struct {
 	Input         int64        `json:"input"`
 	Output        int64        `json:"output"`
@@ -52,6 +56,10 @@ type Event struct {
 	ServiceTierUsed       *string          `json:"service_tier_used"`
 	Generated             bool             `json:"generated"`
 	Tokens                TokenUsage       `json:"tokens"`
+	// Query-time pricing enrichment is omitted from sanitized intake events and
+	// populated only when an event is read from durable storage.
+	KnownCost      *NanoUSD `json:"known_cost_usd,omitempty"`
+	UnpricedTokens int64    `json:"unpriced_tokens,omitempty"`
 }
 
 func (e Event) Validate() error {
@@ -105,6 +113,9 @@ func (e Event) Validate() error {
 	}
 	if err := e.Tokens.Validate(); err != nil {
 		return err
+	}
+	if e.KnownCost != nil && *e.KnownCost < 0 || e.UnpricedTokens < 0 {
+		return fmt.Errorf("event pricing values must not be negative")
 	}
 	encoded, err := json.Marshal(e)
 	if err != nil {

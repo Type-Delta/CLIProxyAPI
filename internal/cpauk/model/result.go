@@ -85,6 +85,7 @@ type Capabilities struct {
 type Health struct {
 	State                AnalyticsState `json:"state"`
 	Category             string         `json:"category,omitempty"`
+	Field                string         `json:"field,omitempty"`
 	Message              string         `json:"message,omitempty"`
 	Queue                QueueSnapshot  `json:"queue"`
 	LastSuccessfulWrite  *time.Time     `json:"last_successful_write_at"`

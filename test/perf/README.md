@@ -8,9 +8,9 @@ The required command is:
 go test -run TestAnalyticsLoadProfile -count=5 ./test/perf
 ```
 
-Set `CPA_ANALYTICS_LOAD_PROFILE=1` to run the full profile. Full runs also need `analytics_load_adapter_test.go` to assign `analyticsLoadAdapterFactory`. The test fails with a direct error when the flag is set without that adapter. The adapter must start CPA in process for the requested mode, route all four traffic classes to the supplied deterministic upstream URLs, report attempts and queue metrics, then shut CPA down through its normal lifecycle.
+Set `CPA_ANALYTICS_LOAD_PROFILE=1` to run the full profile. `analytics_load_adapter_test.go` composes CPA's production usage manager, CPAUK service, collector, and SQLite store in process. It routes all four traffic classes to the deterministic upstream, reports attempts and queue metrics, and shuts the components down in lifecycle order. SQLite-blocked mode stalls the real collector writer. Both-queues-saturated mode also stalls a generic observer lane.
 
-Set `CPA_PERF_RUNNER_CLASS` to the stable CI runner class. Each `ANALYTICS_LOAD_RUN` JSON line records that value, Go and OS details, CPU count and model, RAM, and the CPU power mode. Keep the five run lines in one file, then set `CPA_ANALYTICS_LOAD_RESULTS_FILE` to that file and run the required command again. The recorded gate computes the disabled and healthy median-of-five p99 and checks the blocked and saturated queue-wait, dispatch-lag, heap, and goroutine limits.
+Set `CPA_PERF_RUNNER_CLASS` to the stable CI runner class. Each `ANALYTICS_LOAD_RUN` JSON line records that value, Go and OS details, CPU count and model, RAM, and the CPU power mode. The full profile refuses to run when any required metadata is missing. Linux hosts are detected through `/proc`, `/etc/os-release`, and sysfs. Other dedicated runners can set `CPA_PERF_OS`, `CPA_PERF_CPU_MODEL`, `CPA_PERF_RAM_BYTES`, and `CPA_PERF_POWER_MODE` explicitly. Keep the five run lines in one file, then set `CPA_ANALYTICS_LOAD_RESULTS_FILE` to that file and run the required command again. The recorded gate computes the disabled and healthy median-of-five p99 and checks the blocked and saturated queue-wait, dispatch-lag, heap, and goroutine limits.
 
 ## Observed runner metadata
 
@@ -29,12 +29,12 @@ This machine is reference metadata, not yet a certified dedicated CI runner. Rec
 
 ## Full run
 
-After the CPA adapter lands, run:
+Run:
 
 ```bash
 CPA_ANALYTICS_LOAD_PROFILE=1 \
 CPA_PERF_RUNNER_CLASS=local-reference-i7-7700 \
-go test -run TestAnalyticsLoadProfile -count=5 ./test/perf | tee analytics-load-runs.log
+go test -v -run TestAnalyticsLoadProfile -count=5 ./test/perf | tee analytics-load-runs.log
 ```
 
 Feed those five records back through the gate with `CPA_ANALYTICS_LOAD_RESULTS_FILE=analytics-load-runs.log go test -run TestAnalyticsLoadProfileRecordedGate -count=1 ./test/perf`.

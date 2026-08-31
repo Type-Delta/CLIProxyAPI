@@ -76,8 +76,12 @@ type upstreamEndpoints struct {
 }
 
 type analyticsAdapterConfig struct {
-	Mode     loadMode
-	Upstream upstreamEndpoints
+	Mode                   loadMode
+	Upstream               upstreamEndpoints
+	StateDirectory         string
+	GenericQueueCapacity   int
+	AnalyticsQueueCapacity int
+	SQLiteBlockDuration    time.Duration
 }
 
 type loadRequest struct {
@@ -94,6 +98,7 @@ type loadResponse struct {
 
 type adapterMetrics struct {
 	AnalyticsReady         bool
+	AnalyticsState         string
 	SQLiteBlocked          bool
 	GenericLaneWorkers     int
 	GenericQueueCapacity   int
@@ -108,8 +113,7 @@ type adapterMetrics struct {
 }
 
 // analyticsLoadAdapter is deliberately local to the performance test package.
-// A production integration file in this directory installs a factory once the
-// CPA analytics and usage-delivery contracts are available.
+// The test-only production adapter installs its factory from a _test.go file.
 type analyticsLoadAdapter interface {
 	Do(context.Context, loadRequest) (loadResponse, error)
 	Metrics() adapterMetrics
@@ -120,6 +124,7 @@ var analyticsLoadAdapterFactory func(analyticsAdapterConfig) (analyticsLoadAdapt
 
 type modeResult struct {
 	Mode                          loadMode       `json:"mode"`
+	AnalyticsState                string         `json:"analytics_state"`
 	Completed                     int            `json:"completed"`
 	ActualCompletedPerSecond      float64        `json:"actual_completed_per_second"`
 	P99LatencyNanoseconds         int64          `json:"p99_latency_ns"`
@@ -175,6 +180,7 @@ func TestAnalyticsLoadProfile(t *testing.T) {
 	}
 
 	runner := readRunnerMetadata()
+	validateRunnerMetadata(t, runner)
 	results := make([]modeResult, 0, len(fixedAnalyticsLoadProfile.Modes))
 	for _, mode := range fixedAnalyticsLoadProfile.Modes {
 		result := runLoadMode(t, fixedAnalyticsLoadProfile, mode, runner)
@@ -455,7 +461,11 @@ type phaseResult struct {
 func runLoadMode(t *testing.T, profile loadProfile, mode loadMode, runner runnerMetadata) modeResult {
 	t.Helper()
 	upstream := newDeterministicUpstream(t)
-	adapter, errFactory := analyticsLoadAdapterFactory(analyticsAdapterConfig{Mode: mode, Upstream: upstream.endpoints()})
+	adapter, errFactory := analyticsLoadAdapterFactory(analyticsAdapterConfig{
+		Mode:           mode,
+		Upstream:       upstream.endpoints(),
+		StateDirectory: t.TempDir(),
+	})
 	if errFactory != nil {
 		t.Fatalf("start %s adapter: %v", mode, errFactory)
 	}
@@ -500,6 +510,7 @@ func runLoadMode(t *testing.T, profile loadProfile, mode loadMode, runner runner
 	queueWaitTotal := durationDelta(t, mode, "queue wait total", metricsBefore.QueueWaitTotal, metricsAfter.QueueWaitTotal)
 	result := modeResult{
 		Mode:                          mode,
+		AnalyticsState:                metricsAfter.AnalyticsState,
 		Completed:                     measurement.Completed,
 		ActualCompletedPerSecond:      float64(measurement.Completed) / measurement.Elapsed.Seconds(),
 		P99LatencyNanoseconds:         measurement.P99Latency.Nanoseconds(),
@@ -837,10 +848,16 @@ func validateModeResult(t *testing.T, profile loadProfile, result modeResult, me
 		if !metrics.SQLiteBlocked {
 			t.Error("SQLite-blocked mode does not report the injected block")
 		}
+		if result.AnalyticsState != "circuit_open" {
+			t.Errorf("SQLite-blocked analytics state = %q, want circuit_open", result.AnalyticsState)
+		}
 		if result.AnalyticsQueueDropped == 0 {
 			t.Error("SQLite-blocked mode did not record analytics loss")
 		}
 	case modeBothQueuesSaturated:
+		if result.AnalyticsState != "circuit_open" {
+			t.Errorf("saturated analytics state = %q, want circuit_open", result.AnalyticsState)
+		}
 		if result.GenericQueueDropped == 0 || result.AnalyticsQueueDropped == 0 {
 			t.Errorf("saturated mode did not drop from both queues: generic=%d analytics=%d", result.GenericQueueDropped, result.AnalyticsQueueDropped)
 		}
@@ -937,6 +954,9 @@ func aggregateRecordedRuns(profile loadProfile, recordings [][]byte) (aggregateR
 			if result.ActualCompletedPerSecond < 1000 {
 				problems = append(problems, fmt.Sprintf("recorded run %d mode %s completed %.3f requests/s", index+1, result.Mode, result.ActualCompletedPerSecond))
 			}
+			for _, problem := range recordedModeProblems(result) {
+				problems = append(problems, fmt.Sprintf("recorded run %d: %s", index+1, problem))
+			}
 		}
 		for _, mode := range profile.Modes {
 			if _, found := byMode[mode]; !found {
@@ -976,6 +996,41 @@ func aggregateRecordedRuns(profile loadProfile, recordings [][]byte) (aggregateR
 		return result, fmt.Errorf("analytics load gate failed: %s", strings.Join(problems, "; "))
 	}
 	return result, nil
+}
+
+func recordedModeProblems(result modeResult) []string {
+	var problems []string
+	switch result.Mode {
+	case modeDisabled:
+		if result.AnalyticsState != "disabled" {
+			problems = append(problems, fmt.Sprintf("disabled analytics state is %q", result.AnalyticsState))
+		}
+	case modeHealthy:
+		if result.AnalyticsState != "ready" {
+			problems = append(problems, fmt.Sprintf("healthy analytics state is %q", result.AnalyticsState))
+		}
+		if result.GenericQueueCapacity != 4096 || result.AnalyticsQueueCapacity != 8192 {
+			problems = append(problems, "healthy mode did not use default queue capacities")
+		}
+		if result.GenericQueueDropped != 0 || result.AnalyticsQueueDropped != 0 {
+			problems = append(problems, "healthy mode dropped usage events")
+		}
+	case modeSQLiteBlocked:
+		if result.AnalyticsState != "circuit_open" {
+			problems = append(problems, fmt.Sprintf("SQLite-blocked analytics state is %q", result.AnalyticsState))
+		}
+		if result.AnalyticsQueueDropped == 0 {
+			problems = append(problems, "SQLite-blocked mode recorded no analytics loss")
+		}
+	case modeBothQueuesSaturated:
+		if result.AnalyticsState != "circuit_open" {
+			problems = append(problems, fmt.Sprintf("saturated analytics state is %q", result.AnalyticsState))
+		}
+		if result.GenericQueueDropped == 0 || result.AnalyticsQueueDropped == 0 {
+			problems = append(problems, "saturated mode did not drop from both queues")
+		}
+	}
+	return problems
 }
 
 func medianInt64(values []int64) int64 {
@@ -1064,10 +1119,10 @@ func syntheticRecordedRuns(t *testing.T, mutate func([]recordedRun)) [][]byte {
 	disabledP99 := []time.Duration{time.Millisecond, 1100 * time.Microsecond, 900 * time.Microsecond, 1200 * time.Microsecond, 800 * time.Microsecond}
 	runs := make([]recordedRun, 5)
 	for index := range runs {
-		disabled := modeResult{Mode: modeDisabled, Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: disabledP99[index].Nanoseconds(), P99DispatchLagNanoseconds: (100 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 10 << 20, GoroutinesMaximum: 100, GoroutinesBefore: 10, GoroutinesAfterShutdown: 10, Runner: runner}
-		healthy := modeResult{Mode: modeHealthy, Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1500 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (150 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 20 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, Runner: runner}
-		blocked := modeResult{Mode: modeSQLiteBlocked, Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1600 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (200 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 30 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, Runner: runner}
-		saturated := modeResult{Mode: modeBothQueuesSaturated, Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1700 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (200 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 40 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, Runner: runner}
+		disabled := modeResult{Mode: modeDisabled, AnalyticsState: "disabled", Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: disabledP99[index].Nanoseconds(), P99DispatchLagNanoseconds: (100 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 10 << 20, GoroutinesMaximum: 100, GoroutinesBefore: 10, GoroutinesAfterShutdown: 10, Runner: runner}
+		healthy := modeResult{Mode: modeHealthy, AnalyticsState: "ready", Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1500 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (150 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 20 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, GenericQueueCapacity: 4096, AnalyticsQueueCapacity: 8192, Runner: runner}
+		blocked := modeResult{Mode: modeSQLiteBlocked, AnalyticsState: "circuit_open", Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1600 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (200 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 30 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, AnalyticsQueueDropped: 1, Runner: runner}
+		saturated := modeResult{Mode: modeBothQueuesSaturated, AnalyticsState: "circuit_open", Completed: 300_000, ActualCompletedPerSecond: 1000, P99LatencyNanoseconds: (1700 * time.Microsecond).Nanoseconds(), P99DispatchLagNanoseconds: (200 * time.Microsecond).Nanoseconds(), HeapAfterGCBytes: 40 << 20, GoroutinesMaximum: 105, GoroutinesAfterShutdown: 10, GenericLaneWorkers: 1, GenericQueueDropped: 1, AnalyticsQueueDropped: 1, Runner: runner}
 		runs[index] = recordedRun{Results: []modeResult{disabled, healthy, blocked, saturated}, Runner: runner}
 	}
 	if mutate != nil {
@@ -1123,12 +1178,17 @@ func readRunnerMetadata() runnerMetadata {
 	metadata := runnerMetadata{
 		RunnerClass:  strings.TrimSpace(os.Getenv("CPA_PERF_RUNNER_CLASS")),
 		GoVersion:    runtime.Version(),
-		OS:           runtime.GOOS,
+		OS:           environmentOr("CPA_PERF_OS", readOSDescription()),
 		Architecture: runtime.GOARCH,
 		LogicalCPUs:  runtime.NumCPU(),
-		CPUModel:     readProcValue("/proc/cpuinfo", "model name"),
+		CPUModel:     environmentOr("CPA_PERF_CPU_MODEL", readProcValue("/proc/cpuinfo", "model name")),
 		RAMBytes:     readMemoryBytes(),
-		PowerMode:    readFirstFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
+		PowerMode:    environmentOr("CPA_PERF_POWER_MODE", readFirstFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")),
+	}
+	if value := strings.TrimSpace(os.Getenv("CPA_PERF_RAM_BYTES")); value != "" {
+		if parsed, errParse := strconv.ParseUint(value, 10, 64); errParse == nil {
+			metadata.RAMBytes = parsed
+		}
 	}
 	if metadata.RunnerClass == "" {
 		metadata.RunnerClass = "unrecorded-local"
@@ -1140,6 +1200,60 @@ func readRunnerMetadata() runnerMetadata {
 		metadata.PowerMode = "unknown"
 	}
 	return metadata
+}
+
+func validateRunnerMetadata(t *testing.T, metadata runnerMetadata) {
+	t.Helper()
+	var missing []string
+	if metadata.RunnerClass == "" || metadata.RunnerClass == "unrecorded-local" {
+		missing = append(missing, "CPA_PERF_RUNNER_CLASS")
+	}
+	if metadata.OS == "" || metadata.OS == "unknown" {
+		missing = append(missing, "CPA_PERF_OS")
+	}
+	if metadata.CPUModel == "" || metadata.CPUModel == "unknown" {
+		missing = append(missing, "CPA_PERF_CPU_MODEL")
+	}
+	if metadata.RAMBytes == 0 {
+		missing = append(missing, "CPA_PERF_RAM_BYTES")
+	}
+	if metadata.PowerMode == "" || metadata.PowerMode == "unknown" {
+		missing = append(missing, "CPA_PERF_POWER_MODE")
+	}
+	if len(missing) != 0 {
+		t.Fatalf("dedicated runner metadata is incomplete; set or make detectable: %s", strings.Join(missing, ", "))
+	}
+}
+
+func environmentOr(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func readOSDescription() string {
+	name := ""
+	file, errOpen := os.Open("/etc/os-release")
+	if errOpen == nil {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			key, value, found := strings.Cut(scanner.Text(), "=")
+			if found && key == "PRETTY_NAME" {
+				name = strings.Trim(strings.TrimSpace(value), `"`)
+				break
+			}
+		}
+		_ = file.Close()
+	}
+	if name == "" {
+		name = runtime.GOOS
+	}
+	kernel := readFirstFile("/proc/sys/kernel/osrelease")
+	if kernel == "" {
+		return name
+	}
+	return name + ", kernel " + kernel
 }
 
 func readProcValue(path, key string) string {

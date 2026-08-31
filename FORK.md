@@ -64,15 +64,17 @@ The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `
 
 **Last updated:** 2026-08-31
 
-### DL005 - Embedded CPA Usage Keeper contracts and load gate
+### DL005 - Failure-isolated embedded CPA Usage Keeper
 
-CPA carries the CPAUK analytics implementation behind the `internal/cpauk` package boundary. Its first frozen contract imports the observable behavior needed from upstream CPA Usage Keeper v1.15.0 at commit `696a4659ce1d5d6f2d2d0530e3205eb51fbce889` without importing its GORM, CGO SQLite, HTTP server, authentication, or process-lifecycle architecture. Attribution, source mapping, rejected designs, exact nano-USD arithmetic, privacy-safe key identity, encrypted pagination cursors, and fixture provenance are recorded beside the package.
+CPA carries optional CPAUK analytics behind the `internal/cpauk` package boundary. The port adapts observable behavior from upstream CPA Usage Keeper v1.15.0 at commit `696a4659ce1d5d6f2d2d0530e3205eb51fbce889` without importing its GORM, CGO SQLite, HTTP server, authentication, or process-lifecycle architecture. Analytics are disabled by default and have independent startup, health, circuit, maintenance, and shutdown states. Bounded, lossy observer delivery runs only after synchronous per-key accounting; storage errors, panics, queue saturation, and invalid analytics configuration cannot change proxy readiness or request success.
 
-The versioned fixtures define events, token categories, deterministic credential identities, key display identities, ranges, pricing, limit windows, viewer isolation, maintenance envelopes, imports, reconciliation, and stable leaderboard ordering. `test/perf` defines the analytics load-gate contract and median-of-five aggregation; the production adapter and dedicated-runner result are release-gate work and are not claimed by this contract commit.
+The module sanitizes usage records before enqueue, persists full SHA-256 key identities in a separate pure-Go SQLite database, and retains a separate random identity key for credential pseudonyms and encrypted cursors. Checksummed migrations, quota reserves, verified backup and restore, corruption guards, hourly and daily rollups, monotonic retention checkpoints, resumable import and rollback, confirmed purge batches, repair jobs, and identity-epoch recovery are isolated from CPA's auth and limit state. Event detail is indexed; event APIs reject retained-away ranges rather than returning partial history. Summary, time series, dimensions, event pages, pricing, provider quotas, key catalog, and token- or known-cost leaderboards share bounded multi-key query contracts and explicitly report unpriced tokens.
 
-**Implementation evidence:** `internal/cpauk/model`, `internal/cpauk/testdata/upstream-v1.15.0`, `internal/cpauk/LICENSE.upstream`, `internal/cpauk/UPSTREAM.md`, `internal/cpauk/provenance.json`, and `test/perf`.
+Versioned fixtures record events, token categories, deterministic credential identities, key display identities, ranges, pricing, limit windows, viewer isolation, maintenance envelopes, imports, reconciliation, and stable pagination. `test/perf` includes a production adapter covering HTTP, streaming, WebSocket, retries, blocked SQLite, and saturated queues. Its long median-of-five certification remains opt-in because it requires the documented dedicated-runner metadata and power controls.
 
-**Recorded validation:** focused contract and fixture tests passed normally and under the race detector; focused load-contract and aggregation tests passed for five runs and under the race detector; `go vet` and the fixture provenance/hash checks passed. The full production-adapter load profile remains open until the runtime implementation is present.
+**Implementation evidence:** `internal/cpauk`, `internal/cpauk/testdata/upstream-v1.15.0`, `sdk/cliproxy/usage/manager.go`, and `test/perf`.
+
+**Recorded validation:** all CPAUK, usage-delivery, API integration, deterministic load-adapter, retention/reopen, migration, backup/restore, import/rollback, and failure-containment tests pass. The required focused race suite and ordinary full repository suite pass. The dedicated approximately 110-minute load certification remains an environment-specific release result and is not claimed by this checkout.
 
 **Last updated:** 2026-08-31
 

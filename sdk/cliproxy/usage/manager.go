@@ -76,7 +76,19 @@ type Detail struct {
 	TotalTokens         int64
 	TokenBreakdown      TokenBreakdown
 	ResponseServiceTier string
+	// TokenQuality distinguishes exact upstream usage from estimates and
+	// responses where token data was unavailable. An empty value is inferred.
+	TokenQuality TokenQuality
 }
+
+// TokenQuality describes the reliability of normalized token accounting.
+type TokenQuality string
+
+const (
+	TokenQualityExact     TokenQuality = "exact"
+	TokenQualityEstimated TokenQuality = "estimated"
+	TokenQualityMissing   TokenQuality = "missing"
+)
 
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
