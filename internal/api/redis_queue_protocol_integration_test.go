@@ -3,10 +3,12 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -294,6 +296,71 @@ func TestRedisProtocol_HomeEnabled_DisablesConnection(t *testing.T) {
 	}
 	if ne, ok := errRead.(net.Error); ok && ne.Timeout() {
 		t.Fatalf("expected connection to be closed after home-mode RESP error, got timeout: %v", errRead)
+	}
+}
+
+func TestRedisProtocol_TLSWithoutALPNReachesHandler(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-password")
+	redisqueue.SetEnabled(false)
+
+	server := newTestServer(t)
+	if server.cfg == nil {
+		t.Fatal("expected server cfg to be non-nil")
+	}
+	server.cfg.Home.Enabled = true
+
+	certificateServer := httptest.NewTLSServer(nil)
+	certificate := certificateServer.TLS.Certificates[0]
+	certificateServer.Close()
+
+	baseListener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatal(errListen)
+	}
+	tlsListener := tls.NewListener(baseListener, &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		NextProtos:   []string{"h2", "http/1.1"},
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.acceptMuxConnections(tlsListener, nil) }()
+	t.Cleanup(func() {
+		if errClose := tlsListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close TLS listener: %v", errClose)
+		}
+		select {
+		case errAccept := <-errCh:
+			if errAccept != nil && !errors.Is(errAccept, net.ErrClosed) {
+				t.Errorf("accept loop returned unexpected error: %v", errAccept)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timeout waiting for accept loop to exit")
+		}
+	})
+
+	conn, errDial := tls.Dial("tcp", tlsListener.Addr().String(), &tls.Config{InsecureSkipVerify: true}) //nolint:gosec -- ephemeral test certificate
+	if errDial != nil {
+		t.Fatal(errDial)
+	}
+	t.Cleanup(func() {
+		if errClose := conn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			t.Errorf("close TLS client: %v", errClose)
+		}
+	})
+	if protocol := conn.ConnectionState().NegotiatedProtocol; protocol != "" {
+		t.Fatalf("negotiated ALPN = %q, want empty", protocol)
+	}
+	if errDeadline := conn.SetDeadline(time.Now().Add(2 * time.Second)); errDeadline != nil {
+		t.Fatal(errDeadline)
+	}
+	if errWrite := writeTestRESPCommand(conn, "PING"); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	message, errRead := readTestRESPError(bufio.NewReader(conn))
+	if errRead != nil {
+		t.Fatalf("read RESP response: %v", errRead)
+	}
+	if message != "ERR redis usage output disabled in home mode" {
+		t.Fatalf("RESP response = %q", message)
 	}
 }
 
