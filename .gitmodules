@@ -1,0 +1,3 @@
+[submodule "web/management-center"]
+	path = web/management-center
+	url = https://github.com/Type-Delta/Cli-Proxy-API-Management-Center
