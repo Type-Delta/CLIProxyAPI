@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
@@ -11,6 +12,8 @@ import (
 )
 
 const rollupTotalsSelect = `0, COALESCE(SUM(upstream_attempts),0),
+COALESCE(SUM(CASE WHEN succeeded THEN upstream_attempts ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN succeeded THEN 0 ELSE upstream_attempts END),0),
 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
@@ -60,7 +63,7 @@ func scanGroupedTotals(ctx context.Context, database *sql.DB, statement string, 
 	for rows.Next() {
 		var value, quality string
 		var data totals
-		if err := rows.Scan(&value, &data.proxyRequests, &data.attempts,
+		if err := rows.Scan(&value, &data.proxyRequests, &data.attempts, &data.succeeded, &data.failed,
 			&data.tokens.Input, &data.tokens.Output, &data.tokens.Reasoning, &data.tokens.Cached,
 			&data.tokens.CacheRead, &data.tokens.CacheCreation, &data.tokens.Total,
 			&data.knownCost, &data.unpriced, &quality); err != nil {
@@ -135,6 +138,7 @@ func rollupDimensionExpression(dimension string) (string, bool) {
 		"key": "key_id", "endpoint": "endpoint_class", "failure": "CASE WHEN error_class='' THEN 'success' ELSE error_class END",
 		"latency": "latency_bucket", "cache": "cache_class",
 		"service_tier": "CASE WHEN service_tier='' THEN 'Unknown' ELSE service_tier END",
+		"source":       "CASE WHEN import_batch_id='' THEN 'native' ELSE 'import' END",
 	}
 	expression, ok := expressions[dimension]
 	return expression, ok
@@ -233,15 +237,45 @@ func validateRollupWidth(grain, width string) error {
 }
 
 func (s *SQLiteStore) validateRetainedRange(ctx context.Context, query model.Query) error {
+	location, err := s.retentionLocation(ctx, query.TimeZone)
+	if err != nil {
+		return err
+	}
+	predicate, predicateArguments, err := retainedSelectionPredicate(query)
+	if err != nil {
+		return err
+	}
 	var count int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollups
 WHERE bucket_start_ns < ? AND bucket_end_ns > ?
-AND NOT (bucket_start_ns >= ? AND bucket_end_ns <= ?)`, query.End.UnixNano(), query.Start.UnixNano(),
-		query.Start.UnixNano(), query.End.UnixNano()).Scan(&count); err != nil {
+AND NOT (bucket_start_ns >= ? AND bucket_end_ns <= ?)`+predicate, append([]any{query.End.UnixNano(), query.Start.UnixNano(),
+		query.Start.UnixNano(), query.End.UnixNano()}, predicateArguments...)...).Scan(&count); err != nil {
 		return fmt.Errorf("validate retained analytics range: %w", err)
 	}
 	if count != 0 {
 		return ErrRetainedRangePartial
 	}
+	if location.String() != query.TimeZone {
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollups
+WHERE grain='daily' AND bucket_start_ns < ? AND bucket_end_ns > ?`+predicate,
+			append([]any{query.End.UnixNano(), query.Start.UnixNano()}, predicateArguments...)...).Scan(&count); err != nil {
+			return fmt.Errorf("validate retained analytics time zone: %w", err)
+		}
+		if count != 0 {
+			return ErrRetainedRangePartial
+		}
+	}
 	return nil
+}
+
+func retainedSelectionPredicate(query model.Query) (string, []any, error) {
+	where, arguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
+	if err != nil {
+		return "", nil, err
+	}
+	const rangePredicate = "WHERE bucket_start_ns >= ? AND bucket_end_ns <= ?"
+	if !strings.HasPrefix(where, rangePredicate) || len(arguments) < 2 {
+		return "", nil, fmt.Errorf("build retained analytics selection predicate")
+	}
+	return strings.TrimPrefix(where, rangePredicate), arguments[2:], nil
 }

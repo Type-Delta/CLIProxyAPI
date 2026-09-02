@@ -18,6 +18,8 @@ import (
 )
 
 const totalsSelect = `COUNT(DISTINCT proxy_request_id), COUNT(*),
+COALESCE(SUM(CASE WHEN succeeded THEN 1 ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN succeeded THEN 0 ELSE 1 END),0),
 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
@@ -30,6 +32,8 @@ ELSE 'exact' END`
 type totals struct {
 	proxyRequests int64
 	attempts      int64
+	succeeded     int64
+	failed        int64
 	tokens        model.TokenUsage
 	knownCost     model.NanoUSD
 	unpriced      int64
@@ -74,9 +78,26 @@ func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Sum
 		Meta:             responseMeta(query),
 		ProxyRequests:    result.proxyRequests,
 		UpstreamAttempts: result.attempts,
-		Tokens:           result.tokens,
-		KnownCost:        result.knownCost,
-		UnpricedTokens:   result.unpriced,
+		Succeeded:        result.succeeded,
+		Failed:           result.failed,
+		SuccessRate:      optionalPercentageFixed(result.succeeded, result.attempts, 2),
+		RequestsPerMinute: decimalProductsRatio(
+			result.proxyRequests, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
+		TokensPerMinute: decimalProductsRatio(
+			result.tokens.Total, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
+		CacheReadRate: optionalPercentage(result.tokens.CacheRead, result.tokens.Input),
+		RangeDays: decimalRatio(
+			int64(query.End.Sub(query.Start)), int64(24*time.Hour)),
+		AvgRequestsPerDay: decimalProductsRatio(
+			result.proxyRequests, int64(24*time.Hour), int64(query.End.Sub(query.Start)), 1),
+		AvgTokensPerDay: decimalProductsRatio(
+			result.tokens.Total, int64(24*time.Hour), int64(query.End.Sub(query.Start)), 1),
+		AvgKnownCostUSDPerDay: decimalProductsRatio(
+			int64(result.knownCost), int64(24*time.Hour), int64(query.End.Sub(query.Start)), 1_000_000_000),
+		PriceCoverageComplete: result.unpriced == 0,
+		Tokens:                result.tokens,
+		KnownCost:             result.knownCost,
+		UnpricedTokens:        result.unpriced,
 	}, nil
 }
 
@@ -86,6 +107,8 @@ func (s *SQLiteStore) rollupTotals(ctx context.Context, query model.Query) (tota
 		return totals{}, err
 	}
 	statement := `SELECT 0, COALESCE(SUM(upstream_attempts),0),
+COALESCE(SUM(CASE WHEN succeeded THEN upstream_attempts ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN succeeded THEN 0 ELSE upstream_attempts END),0),
 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
@@ -123,6 +146,8 @@ UNION ALL SELECT proxy_request_id FROM request_rollups ` + rollupWhere + `)`
 
 func addTotals(destination *totals, source totals) {
 	destination.attempts += source.attempts
+	destination.succeeded += source.succeeded
+	destination.failed += source.failed
 	destination.tokens.Input += source.tokens.Input
 	destination.tokens.Output += source.tokens.Output
 	destination.tokens.Reasoning += source.tokens.Reasoning
@@ -138,7 +163,7 @@ func addTotals(destination *totals, source totals) {
 func scanTotals(row *sql.Row) (totals, error) {
 	var result totals
 	var quality string
-	err := row.Scan(&result.proxyRequests, &result.attempts,
+	err := row.Scan(&result.proxyRequests, &result.attempts, &result.succeeded, &result.failed,
 		&result.tokens.Input, &result.tokens.Output, &result.tokens.Reasoning,
 		&result.tokens.Cached, &result.tokens.CacheRead, &result.tokens.CacheCreation,
 		&result.tokens.Total, &result.knownCost, &result.unpriced, &quality)
@@ -225,7 +250,6 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 	}
 	return result, nil
 }
-
 func (s *SQLiteStore) Dimensions(ctx context.Context, query model.Query) (model.DimensionPage, error) {
 	if err := s.validateQuery(&query, model.OperationDimensions); err != nil {
 		return model.DimensionPage{}, err
@@ -300,7 +324,8 @@ requested_at_ns, provider, executor_type, model, requested_alias, endpoint_class
 credential_id, credential_id_algorithm, succeeded, upstream_status_code, error_class,
 latency_ms, time_to_first_token_ms, service_tier_requested, service_tier_used, generated,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
-cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens`
+cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
+price_rule_id, price_source, import_batch_id`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -310,6 +335,8 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	if err != nil {
 		return model.EventPage{}, err
 	}
+	countWhere := where
+	countArguments := append([]any(nil), arguments...)
 	selection, err := query.SelectionDigest()
 	if err != nil {
 		return model.EventPage{}, err
@@ -333,12 +360,16 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return model.EventPage{}, ErrRetainedRangePartial
 	}
+	var totalCount int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+countWhere, countArguments...).Scan(&totalCount); err != nil {
+		return model.EventPage{}, fmt.Errorf("count analytics events: %w", err)
+	}
 	rows, err := s.db.QueryContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" ORDER BY requested_at_ns DESC, attempt_id ASC LIMIT ?", arguments...)
 	if err != nil {
 		return model.EventPage{}, fmt.Errorf("query analytics events: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	result := model.EventPage{Meta: responseMeta(query)}
+	result := model.EventPage{Meta: responseMeta(query), TotalCount: totalCount}
 	for rows.Next() {
 		event, err := scanEvent(rows)
 		if err != nil {
@@ -559,6 +590,47 @@ func percentage(value, total int64) string {
 	return strings.TrimRight(strings.TrimRight(text, "0"), ".")
 }
 
+func optionalPercentage(value, total int64) *string {
+	if total == 0 {
+		return nil
+	}
+	numerator := new(big.Int).Mul(big.NewInt(value), big.NewInt(100))
+	result := new(big.Rat).SetFrac(numerator, big.NewInt(total)).FloatString(18)
+	result = strings.TrimRight(strings.TrimRight(result, "0"), ".")
+	if point := strings.IndexByte(result, '.'); point >= 0 && len(result)-point-1 > 2 {
+		result = new(big.Rat).SetFrac(numerator, big.NewInt(total)).FloatString(2)
+		result = strings.TrimRight(strings.TrimRight(result, "0"), ".")
+	}
+	return &result
+}
+
+func optionalPercentageFixed(value, total int64, decimals int) *string {
+	if total == 0 {
+		return nil
+	}
+	numerator := new(big.Int).Mul(big.NewInt(value), big.NewInt(100))
+	result := new(big.Rat).SetFrac(numerator, big.NewInt(total)).FloatString(decimals)
+	return &result
+}
+
+func decimalRatio(numerator, denominator int64) string {
+	if numerator == 0 || denominator == 0 {
+		return "0"
+	}
+	result := new(big.Rat).SetFrac(big.NewInt(numerator), big.NewInt(denominator)).FloatString(18)
+	return strings.TrimRight(strings.TrimRight(result, "0"), ".")
+}
+
+func decimalProductsRatio(numeratorA, numeratorB, denominatorA, denominatorB int64) string {
+	if numeratorA == 0 || numeratorB == 0 || denominatorA == 0 || denominatorB == 0 {
+		return "0"
+	}
+	numerator := new(big.Int).Mul(big.NewInt(numeratorA), big.NewInt(numeratorB))
+	denominator := new(big.Int).Mul(big.NewInt(denominatorA), big.NewInt(denominatorB))
+	result := new(big.Rat).SetFrac(numerator, denominator).FloatString(18)
+	return strings.TrimRight(strings.TrimRight(result, "0"), ".")
+}
+
 func buildWhere(query model.Query) (string, []any, error) {
 	clauses := []string{"requested_at_ns >= ?", "requested_at_ns < ?"}
 	arguments := []any{query.Start.UnixNano(), query.End.UnixNano()}
@@ -583,6 +655,45 @@ func buildWhere(query model.Query) (string, []any, error) {
 			}
 			clauses = append(clauses, name+" = ?")
 			arguments = append(arguments, value)
+			continue
+		}
+		if name == "result" {
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return "", nil, fmt.Errorf("decode result filter: %w", err)
+			}
+			clauses = append(clauses, "succeeded = ?")
+			arguments = append(arguments, value == "success")
+			continue
+		}
+		if name == "source" {
+			var values []string
+			if err := json.Unmarshal(raw, &values); err != nil {
+				var value string
+				if errScalar := json.Unmarshal(raw, &value); errScalar != nil {
+					return "", nil, fmt.Errorf("decode source filter: %w", err)
+				}
+				values = []string{value}
+			}
+			var sourceClauses []string
+			var batchIDs []string
+			for _, value := range values {
+				switch value {
+				case "native":
+					sourceClauses = append(sourceClauses, "import_batch_id IS NULL")
+				case "import":
+					sourceClauses = append(sourceClauses, "import_batch_id IS NOT NULL")
+				default:
+					batchIDs = append(batchIDs, value)
+				}
+			}
+			if len(batchIDs) != 0 {
+				sourceClauses = append(sourceClauses, inClause("import_batch_id", len(batchIDs)))
+				for _, batchID := range batchIDs {
+					arguments = append(arguments, batchID)
+				}
+			}
+			clauses = append(clauses, "("+strings.Join(sourceClauses, " OR ")+")")
 			continue
 		}
 		column, ok := columns[name]
@@ -677,8 +788,9 @@ func dimensionExpression(dimension string) (string, bool) {
 		"provider": "provider", "model": "model", "credential": "COALESCE(credential_id, 'Unknown')",
 		"key": "key_id", "endpoint": "endpoint_class", "failure": "COALESCE(error_class, 'success')",
 		"latency":      "CASE WHEN latency_ms < 100 THEN '<100ms' WHEN latency_ms < 500 THEN '100-499ms' WHEN latency_ms < 1000 THEN '500-999ms' ELSE '1000ms+' END",
-		"cache":        "CASE WHEN cached_tokens > 0 THEN 'cached' ELSE 'uncached' END",
+		"cache":        "CASE WHEN cache_read_tokens > 0 THEN 'cached' ELSE 'uncached' END",
 		"service_tier": "COALESCE(service_tier_used, service_tier_requested, 'Unknown')",
+		"source":       "CASE WHEN import_batch_id IS NULL THEN 'native' ELSE 'import' END",
 	}
 	expression, ok := expressions[dimension]
 	return expression, ok
@@ -694,7 +806,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var requestQuality, tokenQuality string
 	var requestedAlias, authType, credentialID, credentialAlgorithm sql.NullString
 	var status sql.NullInt64
-	var errorClass, tierRequested, tierUsed sql.NullString
+	var errorClass, tierRequested, tierUsed, priceRuleID, priceSource, importBatchID sql.NullString
 	var ttft sql.NullInt64
 	var knownCost sql.NullInt64
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
@@ -703,7 +815,8 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&status, &errorClass, &event.LatencyMS, &ttft, &tierRequested, &tierUsed, &event.Generated,
 		&event.Tokens.Input, &event.Tokens.Output, &event.Tokens.Reasoning, &event.Tokens.Cached,
 		&event.Tokens.CacheRead, &event.Tokens.CacheCreation, &event.Tokens.Total,
-		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens)
+		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
+		&priceRuleID, &priceSource, &importBatchID)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
 	}
@@ -716,6 +829,18 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	event.ErrorClass = scanNullableString(errorClass)
 	event.ServiceTierRequested = scanNullableString(tierRequested)
 	event.ServiceTierUsed = scanNullableString(tierUsed)
+	if priceRuleID.Valid {
+		event.PriceRuleID = priceRuleID.String
+	}
+	if priceSource.Valid {
+		event.PriceSource = priceSource.String
+	}
+	if importBatchID.Valid {
+		event.ImportBatchID = importBatchID.String
+		event.Source = "import"
+	} else {
+		event.Source = "native"
+	}
 	event.Tokens.Quality = model.TokenQuality(tokenQuality)
 	if knownCost.Valid {
 		value := model.NanoUSD(knownCost.Int64)
@@ -743,7 +868,7 @@ func combineQuality(current, next model.TokenQuality) model.TokenQuality {
 }
 
 func responseMeta(query model.Query) model.ResponseMeta {
-	return model.ResponseMeta{SchemaVersion: model.APISchemaVersion, Range: model.Range{Start: query.Start, End: query.End, TimeZone: query.TimeZone}}
+	return model.ResponseMeta{SchemaVersion: query.SchemaVersion, Range: model.Range{Start: query.Start, End: query.End, TimeZone: query.TimeZone}}
 }
 
 func (s *SQLiteStore) decodeCursor(value string) (model.Cursor, error) {

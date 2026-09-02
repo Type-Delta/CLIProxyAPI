@@ -11,7 +11,7 @@ type Capabilities = model.Capabilities
 func capabilitiesFor(state State, cfg Config, queue model.QueueSnapshot, lastWrite *time.Time) Capabilities {
 	available := state == StateReady || state == StateDegraded
 	return Capabilities{
-		APISchemaVersions:   []int{model.APISchemaVersion},
+		APISchemaVersions:   []int{model.APISchemaVersion, model.APISchemaVersionV2},
 		EventSchemaVersion:  model.EventSchemaVersion,
 		Supported:           true,
 		Enabled:             cfg.Enabled,

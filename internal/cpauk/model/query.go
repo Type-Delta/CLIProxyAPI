@@ -25,6 +25,8 @@ const (
 	OperationDimensions  Operation = "dimensions"
 	OperationEvents      Operation = "events"
 	OperationLeaderboard Operation = "leaderboard"
+	OperationActivity    Operation = "activity"
+	OperationAnalysis    Operation = "analysis"
 )
 
 type LeaderboardSort string
@@ -40,6 +42,7 @@ type Query struct {
 	Start         time.Time                  `json:"start"`
 	End           time.Time                  `json:"end"`
 	TimeZone      string                     `json:"time_zone"`
+	Range         *RangeRequest              `json:"range,omitempty"`
 	KeyIDs        []string                   `json:"key_ids,omitempty"`
 	Filters       map[string]json.RawMessage `json:"filters,omitempty"`
 	Cursor        string                     `json:"cursor,omitempty"`
@@ -47,6 +50,59 @@ type Query struct {
 	BucketWidth   string                     `json:"bucket_width,omitempty"`
 	Dimension     string                     `json:"dimension,omitempty"`
 	SortBy        LeaderboardSort            `json:"sort_by,omitempty"`
+	Window        string                     `json:"window,omitempty"`
+}
+
+// RangeRequest is the named range form accepted by v2 requests. The service
+// resolves it against the request clock before querying storage.
+type RangeRequest struct {
+	Preset   string    `json:"preset"`
+	N        int       `json:"n,omitempty"`
+	Start    time.Time `json:"start,omitempty"`
+	End      time.Time `json:"end,omitempty"`
+	TimeZone string    `json:"time_zone"`
+}
+
+func (r RangeRequest) Validate() error {
+	if strings.TrimSpace(r.TimeZone) != r.TimeZone || r.TimeZone == "" {
+		return fmt.Errorf("range time_zone is required")
+	}
+	if _, err := time.LoadLocation(r.TimeZone); err != nil {
+		return fmt.Errorf("invalid IANA range time zone %q", r.TimeZone)
+	}
+	switch r.Preset {
+	case "today", "yesterday", "this_week", "this_month":
+		if r.N != 0 || !r.Start.IsZero() || !r.End.IsZero() {
+			return fmt.Errorf("range preset %q does not accept n, start, or end", r.Preset)
+		}
+	case "last_n_hours":
+		if r.N < 1 || r.N > MaxQueryRangeDays*24 {
+			return fmt.Errorf("range n must be between 1 and %d", MaxQueryRangeDays*24)
+		}
+		if !r.Start.IsZero() || !r.End.IsZero() {
+			return fmt.Errorf("rolling range does not accept start or end")
+		}
+	case "last_n_days":
+		if r.N < 1 || r.N > MaxQueryRangeDays {
+			return fmt.Errorf("range n must be between 1 and %d", MaxQueryRangeDays)
+		}
+		if !r.Start.IsZero() || !r.End.IsZero() {
+			return fmt.Errorf("rolling range does not accept start or end")
+		}
+	case "custom":
+		if r.N != 0 || r.Start.IsZero() || r.End.IsZero() {
+			return fmt.Errorf("custom range requires start and end")
+		}
+		if !r.Start.Before(r.End) {
+			return fmt.Errorf("range start must precede end")
+		}
+		if r.End.Sub(r.Start) > MaxQueryRangeDays*24*time.Hour {
+			return fmt.Errorf("query range exceeds %d elapsed days", MaxQueryRangeDays)
+		}
+	default:
+		return fmt.Errorf("unsupported range preset %q", r.Preset)
+	}
+	return nil
 }
 
 var allowedQueryFilters = map[Operation]map[string]string{
@@ -72,18 +128,30 @@ var allowedQueryFilters = map[Operation]map[string]string{
 		"provider": "strings", "model": "strings", "credential_id": "digests",
 		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
 		"success": "bool", "error_class": "strings", "status_code": "integers",
-		"token_quality": "strings", "generated": "bool",
+		"token_quality": "strings", "generated": "bool", "result": "result", "source": "strings",
 	},
 	OperationLeaderboard: {
 		"provider": "strings", "model": "strings", "endpoint_class": "strings",
 		"auth_type": "strings", "service_tier": "strings", "success": "bool",
 		"error_class": "strings", "status_code": "integers", "token_quality": "strings",
 	},
+	OperationActivity: {
+		"provider": "strings", "model": "strings", "credential_id": "digests",
+		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
+		"success": "bool", "error_class": "strings", "status_code": "integers",
+		"token_quality": "strings",
+	},
+	OperationAnalysis: {
+		"provider": "strings", "model": "strings", "credential_id": "digests",
+		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
+		"success": "bool", "error_class": "strings", "status_code": "integers",
+		"token_quality": "strings",
+	},
 }
 
 var allowedDimensions = map[string]struct{}{
 	"provider": {}, "model": {}, "credential": {}, "key": {}, "endpoint": {},
-	"failure": {}, "latency": {}, "cache": {}, "service_tier": {},
+	"failure": {}, "latency": {}, "cache": {}, "service_tier": {}, "source": {},
 }
 
 var allowedBucketWidths = map[string]time.Duration{
@@ -124,15 +192,29 @@ func ParseQuery(data []byte, codecs ...*CursorCodec) (Query, error) {
 }
 
 func (q *Query) Validate() error {
-	if q.SchemaVersion != QuerySchemaVersion {
+	if q.SchemaVersion != QuerySchemaVersion && q.SchemaVersion != QuerySchemaVersionV2 {
 		return fmt.Errorf("unsupported query schema version %d", q.SchemaVersion)
 	}
 	filterKinds, operationOK := allowedQueryFilters[q.Operation]
 	if !operationOK {
 		return fmt.Errorf("unsupported operation %q", q.Operation)
 	}
-	if err := validateRange(q.Start, q.End, q.TimeZone); err != nil {
-		return err
+	if q.Range != nil {
+		if q.SchemaVersion != QuerySchemaVersionV2 {
+			return fmt.Errorf("named ranges require query schema version %d", QuerySchemaVersionV2)
+		}
+		if !q.Start.IsZero() || !q.End.IsZero() || q.TimeZone != "" {
+			return fmt.Errorf("range cannot be combined with start, end, or time_zone")
+		}
+		if err := q.Range.Validate(); err != nil {
+			return err
+		}
+	} else if !q.Start.IsZero() || !q.End.IsZero() || q.TimeZone != "" {
+		if err := validateRange(q.Start, q.End, q.TimeZone); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("start, end, and time_zone are required")
 	}
 	if len(q.KeyIDs) > MaxKeyFilters {
 		return fmt.Errorf("key_ids exceeds %d values", MaxKeyFilters)
@@ -165,6 +247,30 @@ func (q *Query) Validate() error {
 	}
 
 	switch q.Operation {
+	case OperationActivity:
+		if q.SchemaVersion != QuerySchemaVersionV2 {
+			return fmt.Errorf("activity requires query schema version %d", QuerySchemaVersionV2)
+		}
+		switch q.Window {
+		case "day", "week", "month", "year":
+		default:
+			return fmt.Errorf("unsupported activity window %q", q.Window)
+		}
+		if q.Cursor != "" || q.PageSize != 0 || q.BucketWidth != "" || q.Dimension != "" || q.SortBy != "" {
+			return fmt.Errorf("activity does not accept cursor, page_size, bucket_width, dimension, or sort_by")
+		}
+	case OperationAnalysis:
+		if q.SchemaVersion != QuerySchemaVersionV2 {
+			return fmt.Errorf("analysis requires query schema version %d", QuerySchemaVersionV2)
+		}
+		if q.Cursor != "" || q.PageSize != 0 || q.Dimension != "" || q.SortBy != "" {
+			return fmt.Errorf("analysis does not accept cursor, page_size, dimension, or sort_by")
+		}
+		if q.BucketWidth != "" {
+			if _, ok := allowedBucketWidths[q.BucketWidth]; !ok {
+				return fmt.Errorf("unsupported bucket_width %q", q.BucketWidth)
+			}
+		}
 	case OperationSummary:
 		if q.Cursor != "" || q.PageSize != 0 || q.BucketWidth != "" || q.Dimension != "" || q.SortBy != "" {
 			return fmt.Errorf("summary does not accept cursor, page_size, bucket_width, dimension, or sort_by")
@@ -335,6 +441,11 @@ func validateRange(start, end time.Time, zoneName string) error {
 
 func validateFilterValue(name, kind string, raw json.RawMessage) error {
 	switch kind {
+	case "result":
+		var value string
+		if err := decodeStrictValue(raw, &value); err != nil || value != "success" && value != "failure" {
+			return fmt.Errorf("filter %s must be success or failure", name)
+		}
 	case "bool":
 		var value bool
 		if err := decodeStrictValue(raw, &value); err != nil {
@@ -373,6 +484,12 @@ func validateFilterValue(name, kind string, raw json.RawMessage) error {
 func normalizeFilterValue(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	var value any
 	switch kind {
+	case "result":
+		var parsed string
+		if err := decodeStrictValue(raw, &parsed); err != nil {
+			return nil, err
+		}
+		value = parsed
 	case "bool":
 		var parsed bool
 		if err := decodeStrictValue(raw, &parsed); err != nil {

@@ -91,7 +91,7 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventPage, err := database.Events(ctx, eventsQuery)
-	if err != nil || len(eventPage.Events) != 2 || eventPage.Meta.NextCursor == "" {
+	if err != nil || len(eventPage.Events) != 2 || eventPage.TotalCount != 3 || eventPage.Meta.NextCursor == "" {
 		t.Fatalf("events page 1=%+v err=%v", eventPage, err)
 	}
 	eventsQuery.Cursor = eventPage.Meta.NextCursor
@@ -99,7 +99,7 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventPage, err = database.Events(ctx, eventsQuery)
-	if err != nil || len(eventPage.Events) != 1 || eventPage.Meta.NextCursor != "" {
+	if err != nil || len(eventPage.Events) != 1 || eventPage.TotalCount != 3 || eventPage.Meta.NextCursor != "" {
 		t.Fatalf("events page 2=%+v err=%v", eventPage, err)
 	}
 	eventsQuery.Cursor = ""

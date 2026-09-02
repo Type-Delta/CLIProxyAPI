@@ -1,12 +1,14 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
@@ -85,6 +87,81 @@ func (s *SQLiteStore) PricingSnapshot(ctx context.Context) (PricingSnapshot, err
 		return PricingSnapshot{}, err
 	}
 	return PricingSnapshot{Rules: book.Rules, Provenance: provenance}, nil
+}
+
+func (s *SQLiteStore) PricingMissing(ctx context.Context, selected model.Range) ([]model.PricingMissing, error) {
+	query := model.Query{SchemaVersion: model.QuerySchemaVersion, Operation: model.OperationSummary,
+		Start: selected.Start, End: selected.End, TimeZone: selected.TimeZone}
+	if err := query.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid pricing missing range: %w", err)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil, ErrClosed
+	}
+	if err := s.validateRetainedRange(ctx, query); err != nil {
+		return nil, err
+	}
+	type missingTotals struct {
+		firstSeen time.Time
+		requests  int64
+		unpriced  int64
+	}
+	grouped := map[string]missingTotals{}
+	addRows := func(statement string, arguments ...any) error {
+		rows, err := s.db.QueryContext(ctx, statement, arguments...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var modelName, provider string
+			var firstNS, requests, unpriced int64
+			if err := rows.Scan(&modelName, &provider, &firstNS, &requests, &unpriced); err != nil {
+				return err
+			}
+			key := provider + "\x00" + modelName
+			current := grouped[key]
+			first := time.Unix(0, firstNS).UTC()
+			if current.firstSeen.IsZero() || first.Before(current.firstSeen) {
+				current.firstSeen = first
+			}
+			current.requests += requests
+			current.unpriced += unpriced
+			grouped[key] = current
+		}
+		return rows.Err()
+	}
+	if err := addRows(`SELECT model,provider,MIN(requested_at_ns),COUNT(DISTINCT proxy_request_id),SUM(unpriced_tokens)
+FROM events WHERE requested_at_ns >= ? AND requested_at_ns < ? AND unpriced_tokens > 0
+GROUP BY model,provider`, selected.Start.UnixNano(), selected.End.UnixNano()); err != nil {
+		return nil, fmt.Errorf("query missing raw pricing: %w", err)
+	}
+	if err := addRows(`SELECT model,provider,MIN(first_activity_ns),SUM(proxy_requests),SUM(unpriced_tokens)
+FROM rollups WHERE bucket_start_ns >= ? AND bucket_end_ns <= ? AND unpriced_tokens > 0
+GROUP BY model,provider`, selected.Start.UnixNano(), selected.End.UnixNano()); err != nil {
+		return nil, fmt.Errorf("query missing retained pricing: %w", err)
+	}
+	result := make([]model.PricingMissing, 0, len(grouped))
+	for key, totals := range grouped {
+		separator := 0
+		for separator < len(key) && key[separator] != 0 {
+			separator++
+		}
+		result = append(result, model.PricingMissing{Provider: key[:separator], Model: key[separator+1:],
+			FirstSeen: totals.firstSeen, Requests: totals.requests, UnpricedTokens: totals.unpriced})
+	}
+	slices.SortFunc(result, func(left, right model.PricingMissing) int {
+		if order := cmp.Compare(right.UnpricedTokens, left.UnpricedTokens); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(left.Provider, right.Provider); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.Model, right.Model)
+	})
+	return result, nil
 }
 
 func validatePricingCatalog(rules []aggregate.PricingRule, provenance PricingProvenance) error {

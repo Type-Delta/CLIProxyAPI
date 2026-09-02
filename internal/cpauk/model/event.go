@@ -60,6 +60,10 @@ type Event struct {
 	// populated only when an event is read from durable storage.
 	KnownCost      *NanoUSD `json:"known_cost_usd,omitempty"`
 	UnpricedTokens int64    `json:"unpriced_tokens,omitempty"`
+	PriceRuleID    string   `json:"price_rule_id,omitempty"`
+	PriceSource    string   `json:"price_source,omitempty"`
+	ImportBatchID  string   `json:"import_batch_id,omitempty"`
+	Source         string   `json:"source,omitempty"`
 }
 
 func (e Event) Validate() error {

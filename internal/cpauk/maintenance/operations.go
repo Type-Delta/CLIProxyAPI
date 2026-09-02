@@ -28,6 +28,7 @@ type Store interface {
 	RollbackImport(context.Context, string) (int64, error)
 	ApplyRetention(context.Context, time.Time, int) (store.RetentionResult, error)
 	ApplyRetentionPolicy(context.Context, time.Time, time.Time, int) (store.RetentionResult, error)
+	Reprice(context.Context, store.RepriceOptions, func(int, string)) (store.RepriceResult, error)
 	IdentityKeyArray() [32]byte
 	WriteImportBatch(context.Context, []model.Event, string) (int64, error)
 	LoadImportCheckpoint(context.Context, string) ([]byte, bool, error)
@@ -37,6 +38,60 @@ type Store interface {
 
 func StoreOperations(database Store) map[string]Operation {
 	return map[string]Operation{
+		"reprice": func(ctx context.Context, options map[string]any, progress ProgressFunc) (map[string]any, error) {
+			selected, ok := options["range"].(model.Range)
+			if !ok {
+				return nil, fmt.Errorf("maintenance option range is required")
+			}
+			dryRun, err := boolOption(options, "dry_run", false)
+			if err != nil {
+				return nil, err
+			}
+			resume, err := boolOption(options, "resume", false)
+			if err != nil {
+				return nil, err
+			}
+			chunkSize, err := intOption(options, "chunk_size", 500, 1, 10_000)
+			if err != nil {
+				return nil, err
+			}
+			checkpoint, _ := options["checkpoint"].(string)
+			var matched, updated int64
+			var effectiveStart time.Time
+			var retainedCutoff *time.Time
+			historyComplete := true
+			for {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				result, errReprice := database.Reprice(ctx, store.RepriceOptions{
+					Range: selected, DryRun: dryRun, Resume: resume,
+					ChunkSize: chunkSize, ResumeCheckpoint: checkpoint,
+				}, nil)
+				if errReprice != nil {
+					return nil, errReprice
+				}
+				matched = result.Matched
+				updated += result.Updated
+				checkpoint = result.Checkpoint
+				effectiveStart = result.EffectiveStart
+				retainedCutoff = result.RetainedCutoff
+				historyComplete = result.HistoryComplete
+				percent := 95
+				if matched > 0 && !dryRun {
+					percent = min(95, int(updated*95/matched))
+				}
+				progress(percent, checkpoint)
+				if result.Completed {
+					return map[string]any{
+						"matched": matched, "updated": updated, "checkpoint": checkpoint,
+						"completed": true, "dry_run": dryRun, "effective_start": effectiveStart,
+						"retained_cutoff": retainedCutoff, "history_complete": historyComplete,
+					}, nil
+				}
+				resume = false
+			}
+		},
 		"integrity_check": func(ctx context.Context, _ map[string]any, progress ProgressFunc) (map[string]any, error) {
 			progress(50, "integrity_check")
 			if err := database.IntegrityCheck(ctx); err != nil {

@@ -65,7 +65,9 @@ func BucketBounds(at time.Time, zoneName, width string) (time.Time, time.Time, e
 		if err != nil || duration <= 0 {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid bucket width %q", width)
 		}
-		start = at.UTC().Truncate(duration)
+		_, offsetSeconds := local.Zone()
+		offset := time.Duration(offsetSeconds) * time.Second
+		start = at.UTC().Add(offset).Truncate(duration).Add(-offset)
 		end = start.Add(duration)
 	}
 	return start.UTC(), end.UTC(), nil

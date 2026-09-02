@@ -24,6 +24,13 @@ type Reader interface {
 	Leaderboard(context.Context, model.Query) (model.LeaderboardPage, error)
 }
 
+// ReaderV2 is additive so existing Reader implementations remain compatible
+// while schema-v2 callers can discover the richer operations explicitly.
+type ReaderV2 interface {
+	Activity(context.Context, model.Query) (model.Activity, error)
+	Analysis(context.Context, model.Query) (model.Analysis, error)
+}
+
 // EventLookup provides indexed event-detail retrieval without making the
 // paginated event collection part of the lookup contract.
 type EventLookup interface {
@@ -66,6 +73,14 @@ type PriceBookBackend interface {
 
 type PricingSnapshotBackend interface {
 	PricingSnapshot(context.Context) (store.PricingSnapshot, error)
+}
+
+type PricingMissingBackend interface {
+	PricingMissing(context.Context, model.Range) ([]model.PricingMissing, error)
+}
+
+type ProviderCredentialBackend interface {
+	ProviderCredentials(context.Context) ([]model.ProviderCredential, error)
 }
 
 type Service interface {
@@ -479,7 +494,11 @@ func (s *service) CredentialID(provider, authIndex, authID string) (*string, err
 	s.mu.RLock()
 	identityKey := s.identityKey
 	hasIdentityKey := s.hasIdentityKey
+	storeCredentialID := s.config.Privacy.StoreCredentialID
 	s.mu.RUnlock()
+	if !storeCredentialID {
+		return nil, nil
+	}
 	if !hasIdentityKey {
 		return nil, ErrUnavailable
 	}
@@ -487,6 +506,12 @@ func (s *service) CredentialID(provider, authIndex, authID string) (*string, err
 }
 
 func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots []store.ProviderQuotaSnapshot) (err error) {
+	s.mu.RLock()
+	storeCredentialID := s.config.Privacy.StoreCredentialID
+	s.mu.RUnlock()
+	if !storeCredentialID {
+		snapshots = nil
+	}
 	backend, err := s.backendForRead()
 	if err != nil {
 		return err
@@ -504,6 +529,12 @@ func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots [
 }
 
 func (s *service) ProviderQuotaSnapshots(ctx context.Context) (snapshots []store.ProviderQuotaSnapshot, err error) {
+	s.mu.RLock()
+	storeCredentialID := s.config.Privacy.StoreCredentialID
+	s.mu.RUnlock()
+	if !storeCredentialID {
+		return []store.ProviderQuotaSnapshot{}, nil
+	}
 	backend, err := s.backendForRead()
 	if err != nil {
 		return nil, err
@@ -519,6 +550,40 @@ func (s *service) ProviderQuotaSnapshots(ctx context.Context) (snapshots []store
 		}
 	}()
 	return provider.ProviderQuotaSnapshots(ctx)
+}
+
+func (s *service) PricingMissing(ctx context.Context, selected model.Range) (result []model.PricingMissing, err error) {
+	backend, err := s.backendForRead()
+	if err != nil {
+		return nil, err
+	}
+	provider, ok := backend.(PricingMissingBackend)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	err = recoverQuery(func() error { result, err = provider.PricingMissing(ctx, selected); return err })
+	s.reader.recordQueryFailure(err)
+	return result, err
+}
+
+func (s *service) ProviderCredentials(ctx context.Context) (result []model.ProviderCredential, err error) {
+	s.mu.RLock()
+	storeCredentialID := s.config.Privacy.StoreCredentialID
+	s.mu.RUnlock()
+	if !storeCredentialID {
+		return []model.ProviderCredential{}, nil
+	}
+	backend, err := s.backendForRead()
+	if err != nil {
+		return nil, err
+	}
+	provider, ok := backend.(ProviderCredentialBackend)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	err = recoverQuery(func() error { result, err = provider.ProviderCredentials(ctx); return err })
+	s.reader.recordQueryFailure(err)
+	return result, err
 }
 
 func (s *service) KeyCatalog(ctx context.Context, query model.Query) (page store.KeyCatalogPage, err error) {
@@ -1188,6 +1253,36 @@ func (r *readerProxy) Leaderboard(ctx context.Context, query model.Query) (resul
 		return result, err
 	}
 	err = recoverQuery(func() error { result, err = backend.Leaderboard(ctx, query); return err })
+	r.recordQueryFailure(err)
+	r.decorateMeta(&result.Meta, err)
+	return result, err
+}
+
+func (r *readerProxy) Activity(ctx context.Context, query model.Query) (result model.Activity, err error) {
+	backend, err := r.service.backendForRead()
+	if err != nil {
+		return result, err
+	}
+	reader, ok := backend.(ReaderV2)
+	if !ok {
+		return result, ErrUnavailable
+	}
+	err = recoverQuery(func() error { result, err = reader.Activity(ctx, query); return err })
+	r.recordQueryFailure(err)
+	r.decorateMeta(&result.Meta, err)
+	return result, err
+}
+
+func (r *readerProxy) Analysis(ctx context.Context, query model.Query) (result model.Analysis, err error) {
+	backend, err := r.service.backendForRead()
+	if err != nil {
+		return result, err
+	}
+	reader, ok := backend.(ReaderV2)
+	if !ok {
+		return result, ErrUnavailable
+	}
+	err = recoverQuery(func() error { result, err = reader.Analysis(ctx, query); return err })
 	r.recordQueryFailure(err)
 	r.decorateMeta(&result.Meta, err)
 	return result, err

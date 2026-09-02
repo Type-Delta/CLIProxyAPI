@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/maintenance"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
@@ -74,17 +75,36 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query model.Query) {
 	}
 	var result any
 	var err error
+	reader := service.Reader()
 	switch query.Operation {
 	case model.OperationSummary:
-		result, err = service.Reader().Summary(c.Request.Context(), query)
+		result, err = reader.Summary(c.Request.Context(), query)
 	case model.OperationTimeseries:
-		result, err = service.Reader().Timeseries(c.Request.Context(), query)
+		result, err = reader.Timeseries(c.Request.Context(), query)
 	case model.OperationDimensions:
-		result, err = service.Reader().Dimensions(c.Request.Context(), query)
+		result, err = reader.Dimensions(c.Request.Context(), query)
 	case model.OperationEvents:
-		result, err = service.Reader().Events(c.Request.Context(), query)
+		result, err = reader.Events(c.Request.Context(), query)
 	case model.OperationLeaderboard:
-		result, err = service.Reader().Leaderboard(c.Request.Context(), query)
+		result, err = reader.Leaderboard(c.Request.Context(), query)
+	case model.OperationActivity:
+		v2, ok := reader.(interface {
+			Activity(context.Context, model.Query) (model.Activity, error)
+		})
+		if !ok {
+			writeAnalyticsError(c, cpauk.ErrUnavailable)
+			return
+		}
+		result, err = v2.Activity(c.Request.Context(), query)
+	case model.OperationAnalysis:
+		v2, ok := reader.(interface {
+			Analysis(context.Context, model.Query) (model.Analysis, error)
+		})
+		if !ok {
+			writeAnalyticsError(c, cpauk.ErrUnavailable)
+			return
+		}
+		result, err = v2.Analysis(c.Request.Context(), query)
 	default:
 		writeAnalyticsInvalid(c, fmt.Errorf("unsupported operation"))
 		return
@@ -93,8 +113,38 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query model.Query) {
 		writeAnalyticsError(c, classifyAnalyticsReadError(err))
 		return
 	}
+	result = analyticsResultWithRange(result, query)
 	setAnalyticsNoStore(c)
 	c.JSON(http.StatusOK, result)
+}
+
+func analyticsResultWithRange(result any, query model.Query) any {
+	resolved := model.Range{Start: query.Start.UTC(), End: query.End.UTC(), TimeZone: query.TimeZone}
+	switch value := result.(type) {
+	case model.Summary:
+		value.Meta.Range = resolved
+		return value
+	case model.Timeseries:
+		value.Meta.Range = resolved
+		return value
+	case model.DimensionPage:
+		value.Meta.Range = resolved
+		return value
+	case model.EventPage:
+		value.Meta.Range = resolved
+		return value
+	case model.LeaderboardPage:
+		value.Meta.Range = resolved
+		return value
+	case model.Activity:
+		value.Meta.Range = resolved
+		return value
+	case model.Analysis:
+		value.Meta.Range = resolved
+		return value
+	default:
+		return result
+	}
 }
 
 func (h *Handler) analyticsService() cpauk.Service {
@@ -123,7 +173,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 		"start": {}, "end": {}, "time_zone": {}, "cursor": {}, "page_size": {},
 		"bucket_width": {}, "dimension": {}, "sort_by": {}, "provider": {}, "model": {},
 		"endpoint_class": {}, "auth_type": {}, "service_tier": {}, "success": {},
-		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {},
+		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {}, "result": {}, "source": {},
 	}
 	for name := range values {
 		if name == "key_id" || name == "key_ids" {
@@ -158,7 +208,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 			return model.Query{}, fmt.Errorf("page_size must be an integer")
 		}
 	}
-	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality"} {
+	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality", "source"} {
 		if entries, ok := values[name]; ok {
 			encoded, errEncode := json.Marshal(entries)
 			if errEncode != nil {
@@ -166,6 +216,9 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 			}
 			query.Filters[name] = encoded
 		}
+	}
+	if raw := values.Get("result"); raw != "" {
+		query.Filters["result"], _ = json.Marshal(raw)
 	}
 	for _, name := range []string{"success", "generated"} {
 		if raw := values.Get(name); raw != "" {
@@ -229,17 +282,82 @@ func parseAnalyticsBodyQuery(data []byte) (model.Query, error) {
 	if err := requireAnalyticsJSONEOF(decoder); err != nil {
 		return model.Query{}, err
 	}
+	if query.Range != nil {
+		if err := resolveAnalyticsRange(&query, time.Now().UTC()); err != nil {
+			return model.Query{}, err
+		}
+	}
 	if err := query.Validate(); err != nil {
 		return model.Query{}, err
 	}
 	parsed, err := model.ParseQuery(data)
 	if err == nil {
+		if parsed.Range != nil {
+			if err := resolveAnalyticsRange(&parsed, time.Now().UTC()); err != nil {
+				return model.Query{}, err
+			}
+		}
 		return parsed, nil
 	}
 	if query.Cursor == "" || err.Error() != "cursor query requires a cursor codec" {
 		return model.Query{}, err
 	}
 	return query, nil
+}
+
+// resolveAnalyticsRange converts the v2 named range into the normalized query
+// bounds consumed by v1-compatible readers. The original named range remains
+// attached so adapters can echo the request form if desired.
+func resolveAnalyticsRange(query *model.Query, now time.Time) error {
+	if query == nil || query.Range == nil {
+		return nil
+	}
+	if query.SchemaVersion != model.QuerySchemaVersionV2 {
+		return fmt.Errorf("named ranges require query schema version %d", model.QuerySchemaVersionV2)
+	}
+	rangeRequest := query.Range
+	if err := rangeRequest.Validate(); err != nil {
+		return err
+	}
+	location, err := time.LoadLocation(rangeRequest.TimeZone)
+	if err != nil {
+		return fmt.Errorf("invalid IANA range time zone %q", rangeRequest.TimeZone)
+	}
+	localNow := now.In(location)
+	var start, end time.Time
+	switch rangeRequest.Preset {
+	case "today":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeToday, now, rangeRequest.TimeZone, 0)
+		end = now
+	case "yesterday":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeYesterday, now, rangeRequest.TimeZone, 0)
+	case "this_week":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeCalendarWeek, now, rangeRequest.TimeZone, 0)
+		end = now
+	case "this_month":
+		start = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+		end = now
+	case "last_n_hours":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeRolling, now, rangeRequest.TimeZone, time.Duration(rangeRequest.N)*time.Hour)
+	case "last_n_days":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeRolling, now, rangeRequest.TimeZone, time.Duration(rangeRequest.N)*24*time.Hour)
+	case "custom":
+		start, end = rangeRequest.Start, rangeRequest.End
+	default:
+		return fmt.Errorf("unsupported range preset %q", rangeRequest.Preset)
+	}
+	if err != nil {
+		return err
+	}
+	if !start.Before(end) {
+		return fmt.Errorf("range start must be before end")
+	}
+	query.Start, query.End, query.TimeZone = start.UTC(), end.UTC(), rangeRequest.TimeZone
+	// Storage readers consume the normalized v1-compatible bounds. Keeping the
+	// named form alongside populated bounds would violate Query.Validate's
+	// mutually-exclusive range representation.
+	query.Range = nil
+	return nil
 }
 
 func decodeAnalyticsJSON(c *gin.Context, target any, limit int64) error {
@@ -392,8 +510,7 @@ func writeAnalyticsEventsCSV(ctx context.Context, writer io.Writer, reader cpauk
 		return 0, fmt.Errorf("invalid export row limit")
 	}
 	csvWriter := csv.NewWriter(writer)
-	header := []string{"attempt_id", "proxy_request_id", "key_id", "requested_at", "provider", "model", "endpoint_class", "succeeded", "status_code", "error_class", "latency_ms", "total_tokens"}
-	if err := csvWriter.Write(header); err != nil {
+	if err := csvWriter.Write(analyticsEventExportColumns); err != nil {
 		return 0, err
 	}
 	written := 0
@@ -409,18 +526,10 @@ func writeAnalyticsEventsCSV(ctx context.Context, writer io.Writer, reader cpauk
 			return written, err
 		}
 		for _, event := range page.Events {
-			status := ""
-			if event.UpstreamStatusCode != nil {
-				status = strconv.Itoa(*event.UpstreamStatusCode)
-			}
-			errorClass := ""
-			if event.ErrorClass != nil {
-				errorClass = *event.ErrorClass
-			}
-			row := []string{
-				event.AttemptID, event.ProxyRequestID, event.KeyID, event.RequestedAt.Format(time.RFC3339Nano),
-				event.Provider, event.Model, event.EndpointClass, strconv.FormatBool(event.Succeeded), status,
-				errorClass, strconv.FormatInt(event.LatencyMS, 10), strconv.FormatInt(event.Tokens.Total, 10),
+			values := analyticsEventExportValues(event)
+			row := make([]string, 0, len(analyticsEventExportColumns))
+			for _, column := range analyticsEventExportColumns {
+				row = append(row, analyticsExportValueString(values[column]))
 			}
 			for index := range row {
 				row[index] = analyticsCSVCell(row[index])
@@ -441,6 +550,53 @@ func writeAnalyticsEventsCSV(ctx context.Context, writer io.Writer, reader cpauk
 	}
 	csvWriter.Flush()
 	return written, csvWriter.Error()
+}
+
+func analyticsExportValueString(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case *string:
+		if typed == nil {
+			return ""
+		}
+		return *typed
+	case time.Time:
+		return typed.UTC().Format(time.RFC3339Nano)
+	case *time.Time:
+		if typed == nil {
+			return ""
+		}
+		return typed.UTC().Format(time.RFC3339Nano)
+	case bool:
+		return strconv.FormatBool(typed)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case *int:
+		if typed == nil {
+			return ""
+		}
+		return strconv.Itoa(*typed)
+	case *int64:
+		if typed == nil {
+			return ""
+		}
+		return strconv.FormatInt(*typed, 10)
+	case model.NanoUSD:
+		return typed.String()
+	case *model.NanoUSD:
+		if typed == nil {
+			return ""
+		}
+		return typed.String()
+	default:
+		return fmt.Sprint(typed)
+	}
 }
 
 type modelExportTooLargeError struct{}

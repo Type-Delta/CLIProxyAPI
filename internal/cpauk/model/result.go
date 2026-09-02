@@ -115,12 +115,23 @@ type ResponseMeta struct {
 }
 
 type Summary struct {
-	Meta             ResponseMeta `json:"meta"`
-	ProxyRequests    int64        `json:"proxy_requests"`
-	UpstreamAttempts int64        `json:"upstream_attempts"`
-	Tokens           TokenUsage   `json:"tokens"`
-	KnownCost        NanoUSD      `json:"known_cost_usd"`
-	UnpricedTokens   int64        `json:"unpriced_tokens"`
+	Meta                  ResponseMeta `json:"meta"`
+	ProxyRequests         int64        `json:"proxy_requests"`
+	UpstreamAttempts      int64        `json:"upstream_attempts"`
+	Tokens                TokenUsage   `json:"tokens"`
+	KnownCost             NanoUSD      `json:"known_cost_usd"`
+	UnpricedTokens        int64        `json:"unpriced_tokens"`
+	Succeeded             int64        `json:"succeeded"`
+	Failed                int64        `json:"failed"`
+	SuccessRate           *string      `json:"success_rate"`
+	RequestsPerMinute     string       `json:"requests_per_minute"`
+	TokensPerMinute       string       `json:"tokens_per_minute"`
+	CacheReadRate         *string      `json:"cache_read_rate"`
+	RangeDays             string       `json:"range_days"`
+	AvgRequestsPerDay     string       `json:"avg_requests_per_day"`
+	AvgTokensPerDay       string       `json:"avg_tokens_per_day"`
+	AvgKnownCostUSDPerDay string       `json:"avg_known_cost_usd_per_day"`
+	PriceCoverageComplete bool         `json:"price_coverage_complete"`
 }
 
 type TimeseriesPoint struct {
@@ -154,8 +165,9 @@ type DimensionPage struct {
 }
 
 type EventPage struct {
-	Meta   ResponseMeta `json:"meta"`
-	Events []Event      `json:"events"`
+	Meta       ResponseMeta `json:"meta"`
+	Events     []Event      `json:"events"`
+	TotalCount int64        `json:"total_count"`
 }
 
 type KeyStatus string
@@ -169,16 +181,161 @@ const (
 )
 
 type KeyIdentity struct {
-	KeyID           string     `json:"key_id"`
-	ShortKeyID      string     `json:"short_key_id"`
-	Label           string     `json:"label,omitempty"`
-	Status          KeyStatus  `json:"status"`
-	ConfigIndexes   []int      `json:"config_indexes,omitempty"`
-	FirstActivityAt *time.Time `json:"first_activity_at"`
-	LastActivityAt  *time.Time `json:"last_activity_at"`
-	TotalTokens     int64      `json:"total_tokens"`
-	KnownCost       NanoUSD    `json:"known_cost_usd"`
-	UnpricedTokens  int64      `json:"unpriced_tokens"`
+	KeyID                   string     `json:"key_id"`
+	ShortKeyID              string     `json:"short_key_id"`
+	Label                   string     `json:"label,omitempty"`
+	Status                  KeyStatus  `json:"status"`
+	ConfigIndexes           []int      `json:"config_indexes,omitempty"`
+	FirstActivityAt         *time.Time `json:"first_activity_at"`
+	LastActivityAt          *time.Time `json:"last_activity_at"`
+	TotalTokens             int64      `json:"total_tokens"`
+	KnownCost               NanoUSD    `json:"known_cost_usd"`
+	UnpricedTokens          int64      `json:"unpriced_tokens"`
+	LifetimeFirstActivityAt *time.Time `json:"lifetime_first_activity_at"`
+	LifetimeLastActivityAt  *time.Time `json:"lifetime_last_activity_at"`
+}
+
+type Analysis struct {
+	Meta             ResponseMeta              `json:"meta"`
+	SeriesByCategory *AnalysisSeriesByCategory `json:"series_by_category"`
+	ModelByTime      *AnalysisModelByTime      `json:"model_by_time"`
+	Latency          *AnalysisLatency          `json:"latency"`
+	CostComponents   *AnalysisCostComponents   `json:"cost_components"`
+	KeyModelMatrix   *AnalysisKeyModelMatrix   `json:"key_model_matrix"`
+}
+
+type AnalysisSectionMeta struct {
+	Partial bool `json:"partial"`
+}
+
+type AnalysisSeriesByCategory struct {
+	Meta    AnalysisSectionMeta `json:"meta"`
+	Buckets []ActivityBucket    `json:"buckets"`
+}
+
+type AnalysisModelByTime struct {
+	Meta    AnalysisSectionMeta   `json:"meta"`
+	Models  []AnalysisModel       `json:"models"`
+	Buckets []AnalysisModelBucket `json:"buckets"`
+}
+
+type AnalysisLatency struct {
+	Meta              AnalysisSectionMeta     `json:"meta"`
+	Samples           []AnalysisLatencySample `json:"samples"`
+	UnsupportedReason string                  `json:"unsupported_reason,omitempty"`
+	P95TTFTMS         *float64                `json:"p95_ttft_ms"`
+	P95LatencyMS      *float64                `json:"p95_latency_ms"`
+	MaxTTFTMS         *int64                  `json:"max_ttft_ms"`
+	MaxLatencyMS      *int64                  `json:"max_latency_ms"`
+	SampleCount       int64                   `json:"sample_count"`
+	Sampled           bool                    `json:"sampled"`
+}
+
+type AnalysisCostComponents struct {
+	Meta                 AnalysisSectionMeta `json:"meta"`
+	UncachedInputUSD     string              `json:"uncached_input_usd"`
+	CacheReadUSD         string              `json:"cache_read_usd"`
+	CacheCreationUSD     string              `json:"cache_creation_usd"`
+	OutputUSD            string              `json:"output_usd"`
+	BlendedUSDPerMillion string              `json:"blended_usd_per_million"`
+}
+
+type AnalysisKeyModelMatrix struct {
+	Meta   AnalysisSectionMeta  `json:"meta"`
+	Keys   []string             `json:"keys"`
+	Models []string             `json:"models"`
+	Cells  []AnalysisMatrixCell `json:"cells"`
+}
+
+type Activity struct {
+	Meta    ResponseMeta     `json:"meta"`
+	Grain   string           `json:"grain"`
+	Zone    string           `json:"zone"`
+	Buckets []ActivityBucket `json:"buckets"`
+}
+
+type ActivityBucket struct {
+	Start               time.Time `json:"start"`
+	End                 time.Time `json:"end"`
+	Requests            int64     `json:"requests"`
+	Succeeded           int64     `json:"succeeded"`
+	Failed              int64     `json:"failed"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CachedTokens        int64     `json:"cached_tokens"`
+	CacheReadTokens     int64     `json:"cache_read_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	ReasoningTokens     int64     `json:"reasoning_tokens"`
+	TotalTokens         int64     `json:"total_tokens"`
+	KnownCost           NanoUSD   `json:"known_cost_usd"`
+}
+
+type AnalysisModel struct {
+	Model               string  `json:"model"`
+	Requests            int64   `json:"requests"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CachedTokens        int64   `json:"cached_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	ReasoningTokens     int64   `json:"reasoning_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	KnownCost           NanoUSD `json:"known_cost_usd"`
+}
+
+type AnalysisModelBucket struct {
+	Start  time.Time       `json:"start"`
+	Models []AnalysisModel `json:"models"`
+}
+
+type AnalysisLatencySample struct {
+	RequestedAt time.Time `json:"requested_at"`
+	TTFTMS      *int64    `json:"ttft_ms"`
+	LatencyMS   int64     `json:"latency_ms"`
+	Model       string    `json:"model"`
+	Succeeded   bool      `json:"succeeded"`
+}
+
+type AnalysisMatrixCell struct {
+	KeyID               string  `json:"key_id"`
+	Model               string  `json:"model"`
+	Requests            int64   `json:"requests"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CachedTokens        int64   `json:"cached_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	ReasoningTokens     int64   `json:"reasoning_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	KnownCost           NanoUSD `json:"known_cost_usd"`
+}
+
+type PricingMissing struct {
+	Provider       string    `json:"provider"`
+	Model          string    `json:"model"`
+	FirstSeen      time.Time `json:"first_seen"`
+	Requests       int64     `json:"requests"`
+	UnpricedTokens int64     `json:"unpriced_tokens"`
+}
+
+type ProviderCredential struct {
+	CredentialID   string         `json:"credential_id"`
+	Provider       string         `json:"provider"`
+	AuthType       string         `json:"auth_type"`
+	Status         string         `json:"status"`
+	Requests       int64          `json:"requests"`
+	Failed         int64          `json:"failed"`
+	LastErrorClass *string        `json:"last_error_class"`
+	LastErrorAt    *time.Time     `json:"last_error_at"`
+	Quota          *ProviderQuota `json:"quota"`
+	ObservedAt     time.Time      `json:"observed_at"`
+}
+
+type ProviderQuota struct {
+	Limit     *int64     `json:"limit"`
+	Used      *int64     `json:"used"`
+	Remaining *int64     `json:"remaining"`
+	ResetsAt  *time.Time `json:"resets_at"`
 }
 
 type LimitWindow string

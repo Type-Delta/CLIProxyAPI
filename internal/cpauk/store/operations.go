@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"modernc.org/sqlite"
 )
 
@@ -473,7 +475,7 @@ func (s *SQLiteStore) ApplyRetentionPolicy(ctx context.Context, rawCutoff, hourl
 		if checkpoint != nil {
 			result.RawCheckpoint = checkpoint
 		}
-		if deleted < int64(batchSize) {
+		if deleted == 0 {
 			break
 		}
 	}
@@ -506,8 +508,8 @@ func (s *SQLiteStore) ApplyRetentionPolicy(ctx context.Context, rawCutoff, hourl
 	return result, s.integrityCheck(ctx)
 }
 
-const hourNanoseconds int64 = int64(time.Hour)
-const dayNanoseconds int64 = int64(24 * time.Hour)
+const retentionTimeZoneMetadataKey = "retention_time_zone"
+
 const rollupColumns = `grain,bucket_start_ns,bucket_end_ns,first_activity_ns,last_activity_ns,
 key_id,provider,model,credential_id,endpoint_class,auth_type,service_tier,succeeded,error_class,
 status_code,token_quality,latency_bucket,cache_class,import_batch_id,proxy_requests,upstream_attempts,input_tokens,
@@ -517,29 +519,105 @@ const requestRollupColumns = `grain,bucket_start_ns,bucket_end_ns,proxy_request_
 model,credential_id,endpoint_class,auth_type,service_tier,succeeded,error_class,status_code,
 token_quality,latency_bucket,cache_class,import_batch_id`
 
+func (s *SQLiteStore) retentionLocation(ctx context.Context, preferredZone string) (*time.Location, error) {
+	var zone string
+	err := s.db.QueryRowContext(ctx, "SELECT value FROM analytics_metadata WHERE key = ?", retentionTimeZoneMetadataKey).Scan(&zone)
+	if errors.Is(err, sql.ErrNoRows) {
+		var rollups int64
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rollups").Scan(&rollups); err != nil {
+			return nil, fmt.Errorf("inspect retained analytics time zone: %w", err)
+		}
+		zone = preferredZone
+		if rollups != 0 {
+			zone = "UTC"
+		} else if zone == "" {
+			zone = localTimeZoneName()
+		}
+		if _, err := s.db.ExecContext(ctx, "INSERT OR IGNORE INTO analytics_metadata(key,value) VALUES (?,?)", retentionTimeZoneMetadataKey, zone); err != nil {
+			return nil, fmt.Errorf("record retained analytics time zone: %w", err)
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT value FROM analytics_metadata WHERE key = ?", retentionTimeZoneMetadataKey).Scan(&zone); err != nil {
+			return nil, fmt.Errorf("read retained analytics time zone: %w", err)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("read retained analytics time zone: %w", err)
+	}
+	if zone == "Local" {
+		return time.Local, nil
+	}
+	location, err := time.LoadLocation(zone)
+	if err != nil {
+		return nil, fmt.Errorf("load retained analytics time zone %q: %w", zone, err)
+	}
+	return location, nil
+}
+
+func localTimeZoneName() string {
+	if zone := strings.TrimSpace(os.Getenv("TZ")); zone != "" && !strings.HasPrefix(zone, ":") {
+		return zone
+	}
+	if target, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+		const zoneInfoPrefix = "/usr/share/zoneinfo/"
+		if strings.HasPrefix(target, zoneInfoPrefix) {
+			return strings.TrimPrefix(target, zoneInfoPrefix)
+		}
+	}
+	return time.Local.String()
+}
+
+func retentionDayBounds(at time.Time, location *time.Location) (time.Time, time.Time) {
+	local := at.In(location)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
+	return start.UTC(), start.AddDate(0, 0, 1).UTC()
+}
+
 func (s *SQLiteStore) rollRawBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, int64, *time.Time, error) {
+	location, err := s.retentionLocation(ctx, "")
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	var oldest int64
+	if err := s.db.QueryRowContext(ctx, "SELECT requested_at_ns FROM events ORDER BY requested_at_ns,attempt_id LIMIT 1").Scan(&oldest); errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil, nil
+	} else if err != nil {
+		return 0, 0, nil, fmt.Errorf("read oldest analytics event: %w", err)
+	}
+	timestamp := time.Unix(0, oldest).UTC()
+	bucketStart, bucketEnd, err := aggregate.BucketBounds(timestamp, location.String(), "1h")
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("resolve retained analytics hour: %w", err)
+	}
+	dayStart, dayEnd := retentionDayBounds(timestamp, location)
+	if dayStart.After(bucketStart) {
+		bucketStart = dayStart
+	}
+	if dayEnd.Before(bucketEnd) {
+		bucketEnd = dayEnd
+	}
+	if bucketEnd.After(cutoff) {
+		return 0, 0, nil, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("begin raw retention batch: %w", err)
 	}
-	selector := `SELECT attempt_id FROM events WHERE ((requested_at_ns / ?) + 1) * ? <= ?
+	selector := `SELECT attempt_id FROM events WHERE requested_at_ns >= ? AND requested_at_ns < ?
 ORDER BY requested_at_ns, attempt_id LIMIT ?`
-	selectorArgs := []any{hourNanoseconds, hourNanoseconds, cutoff.UnixNano(), batchSize}
+	selectorArgs := []any{bucketStart.UnixNano(), bucketEnd.UnixNano(), batchSize}
 	var checkpoint sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(requested_at_ns) FROM events WHERE attempt_id IN (`+selector+`)`, selectorArgs...).Scan(&checkpoint); err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("read raw retention checkpoint: %w", err)
 	}
-	rollupArgs := append([]any{hourNanoseconds, hourNanoseconds, hourNanoseconds, hourNanoseconds}, selectorArgs...)
-	rollupArgs = append(rollupArgs, hourNanoseconds)
+	rollupArgs := append([]any{bucketStart.UnixNano(), bucketEnd.UnixNano()}, selectorArgs...)
 	rollupResult, err := tx.ExecContext(ctx, `INSERT INTO rollups (`+rollupColumns+`)
-SELECT 'hourly', (requested_at_ns / ?) * ?, ((requested_at_ns / ?) + 1) * ?,
+SELECT 'hourly', ?, ?,
 MIN(requested_at_ns), MAX(requested_at_ns),
 key_id, provider, model, COALESCE(credential_id,''), endpoint_class, COALESCE(auth_type,''),
 COALESCE(service_tier_used,service_tier_requested,''), succeeded, COALESCE(error_class,''),
 COALESCE(upstream_status_code,0), token_quality,
 CASE WHEN latency_ms < 100 THEN '<100ms' WHEN latency_ms < 500 THEN '100-499ms' WHEN latency_ms < 1000 THEN '500-999ms' ELSE '1000ms+' END,
-CASE WHEN cached_tokens > 0 THEN 'cached' ELSE 'uncached' END,
+CASE WHEN cache_read_tokens > 0 THEN 'cached' ELSE 'uncached' END,
 COALESCE(import_batch_id,''),
 COUNT(DISTINCT proxy_request_id), COUNT(*),
 SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), SUM(cached_tokens),
@@ -547,11 +625,11 @@ SUM(cache_read_tokens), SUM(cache_creation_tokens), SUM(total_tokens),
 COALESCE(SUM(known_cost_nano),0), SUM(unpriced_tokens)
 FROM events WHERE attempt_id IN (
 `+selector+`)
-GROUP BY (requested_at_ns / ?), key_id, provider, model, credential_id,
+GROUP BY key_id, provider, model, credential_id,
 endpoint_class, auth_type, service_tier_used, service_tier_requested, succeeded, error_class,
 upstream_status_code, token_quality,
 CASE WHEN latency_ms < 100 THEN '<100ms' WHEN latency_ms < 500 THEN '100-499ms' WHEN latency_ms < 1000 THEN '500-999ms' ELSE '1000ms+' END,
-CASE WHEN cached_tokens > 0 THEN 'cached' ELSE 'uncached' END, import_batch_id
+CASE WHEN cache_read_tokens > 0 THEN 'cached' ELSE 'uncached' END, import_batch_id
 ON CONFLICT DO UPDATE SET
 first_activity_ns=MIN(first_activity_ns,excluded.first_activity_ns),
 last_activity_ns=MAX(last_activity_ns,excluded.last_activity_ns),
@@ -568,14 +646,14 @@ unpriced_tokens=unpriced_tokens+excluded.unpriced_tokens`, rollupArgs...)
 		return 0, 0, nil, fmt.Errorf("build hourly retention rollup: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO request_rollups (`+requestRollupColumns+`)
-SELECT 'hourly', (requested_at_ns / ?) * ?, ((requested_at_ns / ?) + 1) * ?,
+SELECT 'hourly', ?, ?,
 proxy_request_id, key_id, provider, model, COALESCE(credential_id,''), endpoint_class,
 COALESCE(auth_type,''), COALESCE(service_tier_used,service_tier_requested,''), succeeded,
 COALESCE(error_class,''), COALESCE(upstream_status_code,0), token_quality,
 CASE WHEN latency_ms < 100 THEN '<100ms' WHEN latency_ms < 500 THEN '100-499ms' WHEN latency_ms < 1000 THEN '500-999ms' ELSE '1000ms+' END,
-CASE WHEN cached_tokens > 0 THEN 'cached' ELSE 'uncached' END, COALESCE(import_batch_id,'')
+CASE WHEN cache_read_tokens > 0 THEN 'cached' ELSE 'uncached' END, COALESCE(import_batch_id,'')
 FROM events WHERE attempt_id IN (
-`+selector+`)`, append([]any{hourNanoseconds, hourNanoseconds, hourNanoseconds, hourNanoseconds}, selectorArgs...)...); err != nil {
+`+selector+`)`, append([]any{bucketStart.UnixNano(), bucketEnd.UnixNano()}, selectorArgs...)...); err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("build hourly request identities: %w", err)
 	}
@@ -604,22 +682,35 @@ FROM events WHERE attempt_id IN (
 }
 
 func (s *SQLiteStore) rollHourlyBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, int64, *time.Time, error) {
+	location, err := s.retentionLocation(ctx, "")
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	var oldest int64
+	if err := s.db.QueryRowContext(ctx, "SELECT bucket_start_ns FROM rollups WHERE grain='hourly' ORDER BY bucket_start_ns LIMIT 1").Scan(&oldest); errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil, nil
+	} else if err != nil {
+		return 0, 0, nil, fmt.Errorf("read oldest hourly analytics rollup: %w", err)
+	}
+	dayStart, dayEnd := retentionDayBounds(time.Unix(0, oldest).UTC(), location)
+	if dayEnd.After(cutoff) {
+		return 0, 0, nil, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("begin hourly retention batch: %w", err)
 	}
 	selector := `SELECT DISTINCT bucket_start_ns FROM rollups WHERE grain='hourly'
-AND ((bucket_start_ns / ?) + 1) * ? <= ? ORDER BY bucket_start_ns LIMIT ?`
-	selectorArgs := []any{dayNanoseconds, dayNanoseconds, cutoff.UnixNano(), batchSize}
+AND bucket_start_ns >= ? AND bucket_start_ns < ? ORDER BY bucket_start_ns LIMIT ?`
+	selectorArgs := []any{dayStart.UnixNano(), dayEnd.UnixNano(), batchSize}
 	var checkpoint sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(bucket_start_ns) FROM rollups WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)`, selectorArgs...).Scan(&checkpoint); err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("read hourly retention checkpoint: %w", err)
 	}
-	rollupArgs := append([]any{dayNanoseconds, dayNanoseconds, dayNanoseconds, dayNanoseconds}, selectorArgs...)
-	rollupArgs = append(rollupArgs, dayNanoseconds)
+	rollupArgs := append([]any{dayStart.UnixNano(), dayEnd.UnixNano()}, selectorArgs...)
 	rollupResult, err := tx.ExecContext(ctx, `INSERT INTO rollups (`+rollupColumns+`)
-SELECT 'daily', (bucket_start_ns / ?) * ?, ((bucket_start_ns / ?) + 1) * ?,
+SELECT 'daily', ?, ?,
 MIN(first_activity_ns), MAX(last_activity_ns), key_id,
 provider, model, credential_id, endpoint_class, auth_type, service_tier, succeeded,
 error_class, status_code, token_quality, latency_bucket, cache_class,
@@ -628,7 +719,7 @@ SUM(proxy_requests), SUM(upstream_attempts),
 SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), SUM(cached_tokens),
 SUM(cache_read_tokens), SUM(cache_creation_tokens), SUM(total_tokens), SUM(known_cost_nano),
 SUM(unpriced_tokens) FROM rollups WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)
-GROUP BY (bucket_start_ns / ?), key_id, provider, model, credential_id, endpoint_class,
+GROUP BY key_id, provider, model, credential_id, endpoint_class,
 auth_type, service_tier, succeeded, error_class, status_code, token_quality, latency_bucket, cache_class, import_batch_id
 ON CONFLICT DO UPDATE SET proxy_requests=proxy_requests+excluded.proxy_requests,
 first_activity_ns=MIN(first_activity_ns,excluded.first_activity_ns),
@@ -645,11 +736,10 @@ unpriced_tokens=unpriced_tokens+excluded.unpriced_tokens`, rollupArgs...)
 		return 0, 0, nil, fmt.Errorf("build daily retention rollup: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO request_rollups (`+requestRollupColumns+`)
-SELECT 'daily', (bucket_start_ns / ?) * ?, ((bucket_start_ns / ?) + 1) * ?,
+SELECT 'daily', ?, ?,
 proxy_request_id, key_id, provider, model, credential_id, endpoint_class, auth_type,
 service_tier, succeeded, error_class, status_code, token_quality, latency_bucket, cache_class, import_batch_id FROM request_rollups
-WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)`, append([]any{dayNanoseconds, dayNanoseconds,
-		dayNanoseconds, dayNanoseconds}, selectorArgs...)...); err != nil {
+WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)`, append([]any{dayStart.UnixNano(), dayEnd.UnixNano()}, selectorArgs...)...); err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("build daily request identities: %w", err)
 	}

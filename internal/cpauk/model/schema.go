@@ -1,9 +1,11 @@
 package model
 
 const (
-	EventSchemaVersion = 1
-	APISchemaVersion   = 1
-	QuerySchemaVersion = 1
+	EventSchemaVersion   = 1
+	APISchemaVersion     = 1
+	APISchemaVersionV2   = 2
+	QuerySchemaVersion   = 1
+	QuerySchemaVersionV2 = 2
 
 	MaxEventBytes        = 4 * 1024
 	MaxStoredStringBytes = 256

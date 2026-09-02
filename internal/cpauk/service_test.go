@@ -31,6 +31,30 @@ func TestDisabledServiceIsNonNilAndTyped(t *testing.T) {
 	}
 }
 
+func TestCredentialIdentityHonorsPrivacySetting(t *testing.T) {
+	service := &service{identityKey: [32]byte{1}, hasIdentityKey: true}
+	credentialID, err := service.CredentialID("provider", "index", "auth-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentialID != nil {
+		t.Fatalf("credential identity stored with privacy disabled: %q", *credentialID)
+	}
+	credentials, err := service.ProviderCredentials(context.Background())
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("credential rows with privacy disabled = %v, %v", credentials, err)
+	}
+	snapshots, err := service.ProviderQuotaSnapshots(context.Background())
+	if err != nil || len(snapshots) != 0 {
+		t.Fatalf("quota snapshots with privacy disabled = %v, %v", snapshots, err)
+	}
+	service.config.Privacy.StoreCredentialID = true
+	credentialID, err = service.CredentialID("provider", "index", "auth-id")
+	if err != nil || credentialID == nil || !model.IsFullKeyID(*credentialID) {
+		t.Fatalf("credential identity with privacy enabled = %v, %v", credentialID, err)
+	}
+}
+
 func TestInvalidConfigAndFactoryFailureStayUnavailable(t *testing.T) {
 	badDrain := DefaultConfig()
 	badDrain.ShutdownDrain = -time.Second

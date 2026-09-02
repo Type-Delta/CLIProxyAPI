@@ -109,6 +109,10 @@ func (s *SQLiteStore) KeyCatalog(ctx context.Context, query model.Query) (KeyCat
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
+	lifetimeActivity, err := s.keyLifetimeActivity(ctx)
+	if err != nil {
+		return KeyCatalogPage{}, err
+	}
 	statuses, err := s.keyLifecycle(ctx)
 	if err != nil {
 		return KeyCatalogPage{}, err
@@ -148,6 +152,10 @@ func (s *SQLiteStore) KeyCatalog(ctx context.Context, query model.Query) (KeyCat
 		if bounds, ok := activity[keyID]; ok {
 			first, last := time.Unix(0, bounds[0]).UTC(), time.Unix(0, bounds[1]).UTC()
 			item.FirstActivityAt, item.LastActivityAt = &first, &last
+		}
+		if bounds, ok := lifetimeActivity[keyID]; ok {
+			first, last := time.Unix(0, bounds[0]).UTC(), time.Unix(0, bounds[1]).UTC()
+			item.LifetimeFirstActivityAt, item.LifetimeLastActivityAt = &first, &last
 		}
 		keys = append(keys, item)
 	}
@@ -209,6 +217,19 @@ FROM events `+rawWhere+` GROUP BY key_id`, rawArguments, result); err != nil {
 	if err := scanKeyActivity(ctx, s.db, `SELECT key_id,MIN(first_activity_ns),MAX(last_activity_ns)
 FROM rollups `+rollupWhere+` GROUP BY key_id`, rollupArguments, result); err != nil {
 		return nil, fmt.Errorf("query retained key activity: %w", err)
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) keyLifetimeActivity(ctx context.Context) (map[string][2]int64, error) {
+	result := map[string][2]int64{}
+	if err := scanKeyActivity(ctx, s.db, `SELECT key_id,MIN(requested_at_ns),MAX(requested_at_ns)
+FROM events GROUP BY key_id`, nil, result); err != nil {
+		return nil, fmt.Errorf("query lifetime raw key activity: %w", err)
+	}
+	if err := scanKeyActivity(ctx, s.db, `SELECT key_id,MIN(first_activity_ns),MAX(last_activity_ns)
+FROM rollups GROUP BY key_id`, nil, result); err != nil {
+		return nil, fmt.Errorf("query lifetime retained key activity: %w", err)
 	}
 	return result, nil
 }

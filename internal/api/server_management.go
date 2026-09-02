@@ -38,6 +38,7 @@ func (s *Server) registerManagementRoutes() {
 		analytics.GET("/events/:attempt_id", s.mgmt.GetAnalyticsEvent)
 		analytics.GET("/pricing", s.mgmt.GetAnalyticsPricing)
 		analytics.PUT("/pricing", s.mgmt.PutAnalyticsPricing)
+		analytics.POST("/pricing/reprice", s.mgmt.PostAnalyticsReprice)
 		analytics.GET("/providers", s.mgmt.GetAnalyticsProviders)
 		analytics.GET("/quotas", s.mgmt.GetAnalyticsQuotas)
 		analytics.GET("/keys", s.mgmt.GetAnalyticsKeys)
