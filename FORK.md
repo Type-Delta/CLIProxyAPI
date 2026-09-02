@@ -56,11 +56,11 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the shipped gitlink pins pushed commit `8e67a42cb25a1af4d56124f04dbd890990593243`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, distinct Analytics navigation icons, complete visual analytics configuration, and safe CRLF YAML normalization.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the shipped gitlink pins pushed commit `9aeef9e909ff8a971d973188f592053615780cff`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, distinct Analytics navigation icons, complete visual analytics configuration, full `int64` storage precision, and safe CRLF YAML normalization.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
-**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044`, `1f77aae`, `0cb4790`, `a7a342a`, `69e7ab6`, and `8e67a42`.
+**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044`, `1f77aae`, `0cb4790`, `a7a342a`, `69e7ab6`, `8e67a42`, and `9aeef9e`.
 
 **Recorded validation:** exact Bun 1.3.14 verification passes 441 tests, ESLint, TypeScript compilation, and the Vite production build. An independent clean clone confirmed the earlier implementation pin matched `origin/main`, both remotes follow the documented convention, and the worktree stayed clean after verification. Raw-CDP desktop and mobile journeys passed every Analytics route plus successful and failed viewer exchange, URL/history scrubbing, storage and raw-key checks, focus order, overflow, alerts, and runtime diagnostics. A later isolated raw-CDP run against a live CPA verified all nine Analytics icons, all 12 Common-tab analytics controls, CIDR validation, responsive layout at 1440 by 900 and 390 by 844, and a real configuration save and reload without runtime exceptions.
 
@@ -88,7 +88,7 @@ Mutable and downloaded panels require an adjacent `management-artifact.json` who
 
 **Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
 
-**Recorded validation:** the exact Bun 1.3.14 canonical builder produces SHA-256 `2a71362c67e4273b36cb6b6d9e201c4875d684cc1d5d661f9b41c640c0e32666` from CPAMC `8e67a42cb25a1af4d56124f04dbd890990593243`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
+**Recorded validation:** the exact Bun 1.3.14 canonical builder produces SHA-256 `4cb95ae8f657967294f05f1290223fee5a072ecb21ea25e6efb66c123c9cc48f` from CPAMC `9aeef9e909ff8a971d973188f592053615780cff`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
 
 **Last updated:** 2026-09-02
 
