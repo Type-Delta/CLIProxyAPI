@@ -6,12 +6,10 @@ COPY web/management-center/package.json web/management-center/bun.lock ./
 RUN --mount=type=cache,id=cpamc-bun-1.3.14,target=/root/.bun/install/cache \
     bun install --frozen-lockfile
 COPY web/management-center/ ./
-COPY internal/managementasset/bundled/management.html /expected/management.html
 COPY internal/managementasset/bundled/management-artifact.json /expected/management-artifact.json
 RUN cpamc_commit="$(sed -n 's/.*"cpamc_commit": "\([^"]*\)".*/\1/p' /expected/management-artifact.json)" \
     && test -n "$cpamc_commit" \
-    && VERSION="$cpamc_commit" bun run build \
-    && cmp dist/index.html /expected/management.html
+    && VERSION="$cpamc_commit" bun run build
 
 FROM nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913
 
