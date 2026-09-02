@@ -18,7 +18,7 @@ func TestBundledArtifactIsValid(t *testing.T) {
 	if asset.Source != "bundled" || len(asset.HTML) == 0 {
 		t.Fatalf("Resolve() = source %q bytes %d", asset.Source, len(asset.HTML))
 	}
-	if asset.Manifest.CPAMCCommit != "9aeef9e909ff8a971d973188f592053615780cff" {
+	if asset.Manifest.CPAMCCommit != "864f39412d5afe0f7b1f701ecb931c970c7f618c" {
 		t.Fatalf("CPAMC commit = %q", asset.Manifest.CPAMCCommit)
 	}
 }
