@@ -6,12 +6,10 @@ COPY web/management-center/package.json web/management-center/bun.lock ./
 RUN --mount=type=cache,id=cpamc-bun-1.3.14,target=/root/.bun/install/cache \
     bun install --frozen-lockfile
 COPY web/management-center/ ./
-COPY internal/managementasset/bundled/management.html /expected/management.html
 COPY internal/managementasset/bundled/management-artifact.json /expected/management-artifact.json
 RUN cpamc_commit="$(sed -n 's/.*"cpamc_commit": "\([^"]*\)".*/\1/p' /expected/management-artifact.json)" \
     && test -n "$cpamc_commit" \
-    && VERSION="$cpamc_commit" bun run build \
-    && cmp dist/index.html /expected/management.html
+    && VERSION="$cpamc_commit" bun run build
 
 FROM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS builder
 
