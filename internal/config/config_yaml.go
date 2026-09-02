@@ -18,6 +18,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	data = normalizeYAMLLineEndings(data)
 
 	var original yaml.Node
 	if err = yaml.Unmarshal(data, &original); err != nil {
@@ -89,6 +90,7 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	if err != nil {
 		return err
 	}
+	data = normalizeYAMLLineEndings(data)
 	var root yaml.Node
 	if err = yaml.Unmarshal(data, &root); err != nil {
 		return err
@@ -153,6 +155,11 @@ func NormalizeCommentIndentation(data []byte) []byte {
 		return data
 	}
 	return bytes.Join(lines, []byte("\n"))
+}
+
+func normalizeYAMLLineEndings(data []byte) []byte {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
 }
 
 // getOrCreateMapValue finds the value node for a given key in a mapping node.

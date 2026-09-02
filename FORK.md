@@ -100,11 +100,13 @@ Shared viewers are stored in a separate bounded, atomic JSON document containing
 
 Plain HTTP development remains available only through the explicit loopback option. The protocol multiplexer no longer advertises an empty TLS connection state on ordinary buffered TCP connections, so same-origin loopback requests with ports are classified as HTTP. After protocol sniffing, TLS-backed HTTP retains the real connection state, including for clients that omit ALPN, while Redis RESP over the same no-ALPN TLS listener keeps its existing route.
 
-**Implementation evidence:** `internal/api/analytics_*`, `internal/api/handlers/management/analytics*`, `internal/api/server*.go`, `internal/api/middleware/request_logging.go`, `internal/config/analytics.go`, `internal/util/provider.go`, and `config.example.yaml`.
+CPA normalizes CRLF and lone-CR YAML input before comment-preserving writes. This prevents carriage returns retained in parsed comments from becoming extra blank lines when startup hashes a plaintext management secret or another nested scalar changes; the resulting file uses LF line endings.
 
-**Recorded validation:** management/viewer authorization matrices, production-mux loopback CORS, TLS with and without ALPN, no-ALPN Redis/TLS, trusted-proxy cases, normal and error-only logging, low-entropy key fixtures, reload failure and recovery, viewer persistence and revocation, URL identity rejection, cursor/error mapping, indexed retained-event handling, CSV injection, throttling, and maintenance API tests pass normally and in the focused race suite. Raw CDP verifies both successful and failed viewer exchanges against a live server.
+**Implementation evidence:** `internal/api/analytics_*`, `internal/api/handlers/management/analytics*`, `internal/api/server*.go`, `internal/api/middleware/request_logging.go`, `internal/config/{analytics.go,config_yaml.go}`, `internal/util/provider.go`, and `config.example.yaml`.
 
-**Last updated:** 2026-08-31
+**Recorded validation:** management/viewer authorization matrices, production-mux loopback CORS, TLS with and without ALPN, no-ALPN Redis/TLS, trusted-proxy cases, normal and error-only logging, low-entropy key fixtures, reload failure and recovery, viewer persistence and revocation, URL identity rejection, cursor/error mapping, indexed retained-event handling, CSV injection, throttling, maintenance API tests, and the CRLF nested-scalar regression pass. Raw CDP verifies both successful and failed viewer exchanges against a live server.
+
+**Last updated:** 2026-09-02
 
 ### DL008 - Fresh graceful-shutdown budget
 
