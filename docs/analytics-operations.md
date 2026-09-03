@@ -38,7 +38,7 @@ reports `state: circuit_open` with `category: storage_time_zone`, `field:
 storage-time-zone`, and a health `zone_mismatch` object naming both zones:
 
 ```json
-{"zone_mismatch": {"stored": "UTC", "configured": "Asia/Kolkata"}}
+{ "zone_mismatch": { "stored": "UTC", "configured": "Asia/Kolkata" } }
 ```
 
 Restore the stored zone in the configuration, or reset analytics storage, to
@@ -71,6 +71,37 @@ subnet when it overlaps another Docker network, and put the same narrow CIDR in
 only from the CIDR supplied above and sends its verified result to CPA. Never
 use a public or catch-all CIDR. Direct clients and untrusted peers cannot
 upgrade plain HTTP by spoofing the header.
+
+## Cross-origin viewer clients
+
+The viewer API is same-origin only by default: the browser's `Origin` must
+match the request's own scheme and host. `analytics.viewer.allowed-origins`
+extends that with an explicit list of additional browser origins allowed to
+call `/v0/analytics/viewer/*` — for example a CPAMC dev server or a viewer app
+served from a different host than CPA itself. Each entry is an absolute
+origin (scheme + host[:port], no path/query/fragment/userinfo), matched
+case-insensitively with default ports normalized. `https` origins are always
+accepted; `http` is accepted only for a loopback host (`127.0.0.1`,
+`localhost`, `[::1]`) and only when `allow-loopback-http` is also `true`. Up
+to 32 entries are allowed; an invalid or duplicate entry disables analytics
+only, the same as any other analytics configuration error.
+
+An allowed cross-origin request receives `Access-Control-Allow-Origin` echoing
+the request's `Origin`, `Access-Control-Allow-Credentials: true`, and
+`Vary: Origin`; anything else still gets a 403. The session cookie set for a
+cross-origin exchange uses `SameSite=None` (still `Secure`) instead of the
+same-origin default `SameSite=Strict`, because browsers require `SameSite=None`
+for a cookie to be sent on a cross-origin request. `Secure` is always set, so a
+cross-origin viewer needs HTTPS — the one exception is the documented
+loopback-http development case, where Chrome and other major browsers accept
+`Secure` cookies over `http://127.0.0.1` and `http://localhost`. Changing
+`allowed-origins` requires a CPA restart, the same as the other
+`analytics.viewer` fields.
+
+Shared-view links embed the CPA API origin so recipients do not need stored
+management configuration. For split-origin deployments, CPA must list the
+CPAMC origin in `analytics.viewer.allowed-origins`. The trust model is narrow:
+a crafted link can only send its own credential to its own server.
 
 ## Backup
 

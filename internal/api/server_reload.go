@@ -276,10 +276,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 func markAnalyticsViewerRestartRequired(service cpauk.Service, oldCfg, newCfg *config.Config) []string {
 	if service == nil || oldCfg == nil || newCfg == nil ||
 		slices.Equal(oldCfg.Analytics.Viewer.TrustedProxyCIDRs, newCfg.Analytics.Viewer.TrustedProxyCIDRs) &&
-			oldCfg.Analytics.Viewer.AllowLoopbackHTTP == newCfg.Analytics.Viewer.AllowLoopbackHTTP {
+			oldCfg.Analytics.Viewer.AllowLoopbackHTTP == newCfg.Analytics.Viewer.AllowLoopbackHTTP &&
+			slices.Equal(oldCfg.Analytics.Viewer.AllowedOrigins, newCfg.Analytics.Viewer.AllowedOrigins) {
 		return nil
 	}
-	fields := []string{"viewer.trusted-proxy-cidrs", "viewer.allow-loopback-http"}
+	fields := []string{"viewer.trusted-proxy-cidrs", "viewer.allow-loopback-http", "viewer.allowed-origins"}
 	if marker, ok := service.(interface{ MarkRestartRequired([]string) }); ok {
 		marker.MarkRestartRequired(fields)
 	}

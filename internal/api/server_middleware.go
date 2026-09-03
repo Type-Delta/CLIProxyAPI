@@ -159,6 +159,12 @@ func isAnalyticsViewerPath(path string) bool {
 	return path == "/v0/analytics/viewer" || strings.HasPrefix(path, "/v0/analytics/viewer/")
 }
 
+// analyticsViewerCrossOriginContextKey flags, in the gin context, that the
+// current request was admitted under analytics.viewer.allowed-origins rather
+// than same-origin. exchangeAnalyticsViewerSession reads it to choose the
+// viewer cookie's SameSite attribute.
+const analyticsViewerCrossOriginContextKey = "analyticsViewerCrossOrigin"
+
 func applyViewerSameOriginPolicy(c *gin.Context, security analyticsViewerSecurity) {
 	origins := c.Request.Header.Values("Origin")
 	if len(origins) > 1 {
@@ -172,10 +178,16 @@ func applyViewerSameOriginPolicy(c *gin.Context, security analyticsViewerSecurit
 	if origin != "" {
 		parsed, err := url.Parse(origin)
 		scheme := security.requestScheme(c.Request)
-		if err != nil || parsed.Scheme != scheme || !strings.EqualFold(parsed.Host, c.Request.Host) || parsed.User != nil ||
-			parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
+		sameOrigin := err == nil && parsed.Scheme == scheme && strings.EqualFold(parsed.Host, c.Request.Host) &&
+			parsed.User == nil && parsed.Opaque == "" && parsed.RawQuery == "" && parsed.Fragment == "" &&
+			(parsed.Path == "" || parsed.Path == "/")
+		if !sameOrigin {
+			normalized, _, _, ok := config.NormalizeOrigin(origin)
+			if !ok || !security.isAllowedOrigin(normalized) {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			c.Set(analyticsViewerCrossOriginContextKey, true)
 		}
 		c.Header("Vary", "Origin")
 		c.Header("Access-Control-Allow-Origin", origin)

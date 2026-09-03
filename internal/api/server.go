@@ -175,6 +175,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	viewerSecurity, errViewerSecurity := newAnalyticsViewerSecurity(AnalyticsViewerSecurityOptions{
 		TrustedProxyCIDRs: cfg.Analytics.Viewer.TrustedProxyCIDRs,
 		AllowLoopbackHTTP: cfg.Analytics.Viewer.AllowLoopbackHTTP,
+		AllowedOrigins:    cfg.Analytics.Viewer.AllowedOrigins,
 	})
 	if errViewerSecurity != nil {
 		log.WithError(errViewerSecurity).Warn("analytics viewer security configuration is invalid")
@@ -267,6 +268,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		if errViewerRoutes := s.RegisterAnalyticsViewerRoutes(viewerStore, AnalyticsViewerSecurityOptions{
 			TrustedProxyCIDRs: cfg.Analytics.Viewer.TrustedProxyCIDRs,
 			AllowLoopbackHTTP: cfg.Analytics.Viewer.AllowLoopbackHTTP,
+			AllowedOrigins:    cfg.Analytics.Viewer.AllowedOrigins,
 		}); errViewerRoutes != nil {
 			log.WithError(errViewerRoutes).Warn("analytics viewer routes are unavailable")
 		} else {

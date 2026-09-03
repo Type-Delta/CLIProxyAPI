@@ -153,6 +153,14 @@ analytics:
       - 172.30.0.0/24
     # Development escape hatch; accepted only from a direct loopback peer.
     allow-loopback-http: false
+    # Extra browser origins allowed to fetch the viewer API cross-origin, in
+    # addition to same-origin requests. Each entry is an absolute origin with
+    # no path/query/fragment/userinfo (scheme + host[:port]), https except for
+    # a loopback host (127.0.0.1 / localhost / [::1]), which is http-only
+    # accepted when allow-loopback-http is also true. Max 32 entries.
+    # allowed-origins:
+    #   - https://viewer.example.com
+    #   - http://127.0.0.1:15173
 
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.

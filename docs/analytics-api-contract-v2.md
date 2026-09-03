@@ -167,6 +167,17 @@ persisted `retention_time_zone` metadata disagrees with
 `ViewerEventPage` intentionally omits `total_count`; only the management event
 page carries it.
 
+### Cross-origin session exchange
+
+`POST /v0/analytics/viewer/session` and the rest of `/v0/analytics/viewer/*`
+are same-origin only unless the request's `Origin` matches an entry in
+`analytics.viewer.allowed-origins` (see `docs/analytics-operations.md`). A
+same-origin exchange sets the session cookie with `SameSite=Strict`; an
+allowed cross-origin exchange sets `SameSite=None; Secure` instead, so a
+cross-origin client must call with `credentials: 'include'` and must be served
+over HTTPS (loopback HTTP is exempt when `allow-loopback-http` is enabled).
+Any other origin gets HTTP 403 with no CORS headers.
+
 ## Retention errors
 
 A raw-event read (`operation: "events"`, or a single event lookup) whose range

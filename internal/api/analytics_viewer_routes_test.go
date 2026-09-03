@@ -219,6 +219,68 @@ func TestViewerEventsStripAdminOnlyIdentityFields(t *testing.T) {
 	}
 }
 
+func TestViewerSessionCookieSameSiteMatchesOriginDecision(t *testing.T) {
+	// newViewerRouteFixture registers routes without corsMiddlewareWithViewerSecurity,
+	// so build the engine directly here: the cross-origin decision this test checks is
+	// set by that middleware, not by RegisterAnalyticsViewerRoutes.
+	gin.SetMode(gin.TestMode)
+	options := AnalyticsViewerSecurityOptions{AllowedOrigins: []string{"http://127.0.0.1:15173"}}
+	security, err := newAnalyticsViewerSecurity(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := managementHandlers.NewAnalyticsViewerStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(managementHandlers.ViewerCreateRequest{
+		KeyID: strings.Repeat("a", 64), AllowedViews: []string{"summary"},
+		ExpiresAt: time.Now().UTC().Add(time.Hour), Label: "shared",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	engine.Use(corsMiddlewareWithViewerSecurity(security))
+	server := &Server{engine: engine, analytics: &viewerRouteService{reader: &viewerRouteReader{}}}
+	if err = server.RegisterAnalyticsViewerRoutes(store, options); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same-origin exchange keeps SameSite=Strict.
+	request := httptest.NewRequest(http.MethodPost, "https://cpa.test/v0/analytics/viewer/session", strings.NewReader(`{"credential":"`+created.Credential+`"}`))
+	request.Header.Set("Origin", "https://cpa.test")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("same-origin status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("same-origin cookies = %#v", cookies)
+	}
+
+	// Allowed cross-origin exchange switches to SameSite=None (still Secure).
+	created2, err := store.Create(managementHandlers.ViewerCreateRequest{
+		KeyID: strings.Repeat("b", 64), AllowedViews: []string{"summary"},
+		ExpiresAt: time.Now().UTC().Add(time.Hour), Label: "shared cross-origin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "https://cpa.test/v0/analytics/viewer/session", strings.NewReader(`{"credential":"`+created2.Credential+`"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:15173")
+	recorder = httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("cross-origin status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	cookies = recorder.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteNoneMode {
+		t.Fatalf("cross-origin cookies = %#v", cookies)
+	}
+}
+
 func TestViewerCORSUsesTrustedProxySchemeWithoutWildcard(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	security, err := newAnalyticsViewerSecurity(AnalyticsViewerSecurityOptions{TrustedProxyCIDRs: []string{"203.0.113.0/24"}})

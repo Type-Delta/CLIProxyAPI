@@ -150,6 +150,62 @@ The v2 contract document additionally records the `{keys, meta}` catalog wrapper
 
 **Last updated:** 2026-09-03
 
+### DL011 - Viewer cross-origin allowlist
+
+The viewer API (`/v0/analytics/viewer/*`) was same-origin only, which 404s a
+shared-view link whenever CPAMC is served from a different origin than CPA
+itself (a dev server, or the fork's own documented Nginx deployment).
+`analytics.viewer.allowed-origins` adds an explicit, validated allowlist of
+extra browser origins permitted to call the viewer API cross-origin, in
+addition to same-origin requests.
+
+Each entry is an absolute origin (scheme + host[:port], no
+path/query/fragment/userinfo), matched case-insensitively with default ports
+normalized. `https` is always accepted; `http` is accepted only for a loopback
+host (`127.0.0.1` / `localhost` / `[::1]`) and only when
+`analytics.viewer.allow-loopback-http` is also `true`. Up to 32 entries are
+allowed; duplicates (after normalization) or any other invalid entry disables
+analytics only, matching the existing `viewer.trusted-proxy-cidrs` behavior.
+Changing `allowed-origins` requires a CPA restart, like the other
+`analytics.viewer` fields.
+
+`applyViewerSameOriginPolicy` now falls back to the allowlist when a request's
+`Origin` is not same-origin: an allowed cross-origin request gets
+`Access-Control-Allow-Origin` echoing the request `Origin`,
+`Access-Control-Allow-Credentials: true`, and `Vary: Origin`, the same headers
+same-origin requests already received; anything else still gets a bare 403.
+The session-exchange handler reads a gin context flag the middleware sets for
+an allowed cross-origin request and issues the viewer cookie with
+`SameSite=None; Secure` instead of the same-origin default
+`SameSite=Strict; Secure`, since browsers require `SameSite=None` for a cookie
+to be sent back on a cross-origin request. `Secure` is always set, so
+cross-origin viewers need HTTPS except the already-documented loopback-http
+development case.
+
+**Implementation evidence:** `internal/config/analytics.go` (`AllowedOrigins`,
+`NormalizeOrigin`, `IsLoopbackHostname`), `internal/api/analytics_viewer_routes.go`
+(`AnalyticsViewerSecurityOptions.AllowedOrigins`, cookie `SameSite` selection),
+`internal/api/server_middleware.go` (`applyViewerSameOriginPolicy` allowlist
+branch, `analyticsViewerCrossOriginContextKey`), `internal/api/server.go` (both
+`AnalyticsViewerSecurityOptions` construction sites), `internal/api/server_reload.go`
+(`markAnalyticsViewerRestartRequired` equality check), `config.example.yaml`,
+`docs/analytics-operations.md`, and `docs/analytics-api-contract-v2.md`.
+
+**Recorded validation:** `go test ./internal/config/... ./internal/api/... -count=1`
+passes, including `TestAnalyticsConfigAcceptsValidAllowedOrigins` and
+`TestNormalizeOrigin` (config), `TestAnalyticsConfigFailuresAreIsolated`'s new
+allowed-origins cases (path/query rejected, non-loopback `http` rejected,
+loopback `http` rejected without `allow-loopback-http`, normalized duplicates
+rejected), `TestApplyViewerSameOriginPolicyAllowsConfiguredCrossOrigin` /
+`...RejectsUnknownOrigin` / `...SameOriginUnchanged` (middleware), and
+`TestViewerSessionCookieSameSiteMatchesOriginDecision` (cookie attribute).
+`gofmt -l` is clean on the touched files and `go build -o test-output
+./cmd/server` succeeds. Verified live against the seeded stack: `curl -s -i -X
+OPTIONS -H 'Origin: http://127.0.0.1:15173' ... /v0/analytics/viewer/session`
+returns the allow headers while `Origin: http://evil.example` gets 403.
+
+**Last updated:** 2026-09-03
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -29,11 +30,17 @@ const analyticsViewerCookieName = "cpa_analytics_viewer"
 type AnalyticsViewerSecurityOptions struct {
 	TrustedProxyCIDRs []string
 	AllowLoopbackHTTP bool
+	// AllowedOrigins lists absolute http(s) origins (no path/query/fragment)
+	// that may fetch the viewer API cross-origin, in addition to same-origin
+	// requests. Entries are validated and normalized by
+	// internal/config.AnalyticsViewerConfig; see config.NormalizeOrigin.
+	AllowedOrigins []string
 }
 
 type analyticsViewerSecurity struct {
 	trustedProxies    []netip.Prefix
 	allowLoopbackHTTP bool
+	allowedOrigins    map[string]struct{}
 }
 
 // RegisterAnalyticsViewerRoutes installs the separately authenticated viewer
@@ -87,7 +94,25 @@ func newAnalyticsViewerSecurity(options AnalyticsViewerSecurityOptions) (analyti
 		}
 		security.trustedProxies = append(security.trustedProxies, prefix.Masked())
 	}
+	if len(options.AllowedOrigins) > 0 {
+		security.allowedOrigins = make(map[string]struct{}, len(options.AllowedOrigins))
+		for _, raw := range options.AllowedOrigins {
+			normalized, _, _, ok := config.NormalizeOrigin(raw)
+			if !ok {
+				return analyticsViewerSecurity{}, fmt.Errorf("invalid analytics viewer allowed origin %q", raw)
+			}
+			security.allowedOrigins[normalized] = struct{}{}
+		}
+	}
 	return security, nil
+}
+
+// isAllowedOrigin reports whether normalizedOrigin (as returned by
+// config.NormalizeOrigin) is one of the configured cross-origin viewer
+// origins.
+func (security analyticsViewerSecurity) isAllowedOrigin(normalizedOrigin string) bool {
+	_, ok := security.allowedOrigins[normalizedOrigin]
+	return ok
 }
 
 func (s *Server) exchangeAnalyticsViewerSession(c *gin.Context, store *managementHandlers.AnalyticsViewerStore, security analyticsViewerSecurity, limiter *viewerRateLimiter) {
@@ -129,9 +154,20 @@ func (s *Server) exchangeAnalyticsViewerSession(c *gin.Context, store *managemen
 		managementHandlers.WriteAnalyticsAPIError(c, managementHandlers.ErrViewerCredentialInvalid)
 		return
 	}
+	// A cross-origin exchange (allowed by applyViewerSameOriginPolicy against
+	// analytics.viewer.allowed-origins) needs SameSite=None so the browser
+	// sends the cookie back on subsequent cross-origin API calls; browsers
+	// require Secure alongside SameSite=None. Same-origin keeps the tighter
+	// SameSite=Strict. Cross-origin viewers therefore need HTTPS, except the
+	// documented loopback-http development case where browsers accept
+	// Secure cookies over http://127.0.0.1 and http://localhost.
+	sameSite := http.SameSiteStrictMode
+	if c.GetBool(analyticsViewerCrossOriginContextKey) {
+		sameSite = http.SameSiteNoneMode
+	}
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name: analyticsViewerCookieName, Value: token, Path: "/v0/analytics/viewer",
-		Expires: scope.ExpiresAt, MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+		Expires: scope.ExpiresAt, MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: sameSite,
 	})
 	managementHandlers.SetAnalyticsNoStore(c)
 	c.Status(http.StatusNoContent)

@@ -88,7 +88,7 @@ func TestSuccessfulReloadPreparationInvalidatesSessionsAndMarksViewerRestart(t *
 	newConfig := &config.Config{}
 	newConfig.Analytics.Viewer.TrustedProxyCIDRs = []string{"172.30.0.0/24"}
 	fields := markAnalyticsViewerRestartRequired(service, oldConfig, newConfig)
-	if len(fields) != 2 || service.Health().Category != "restart_required" {
+	if len(fields) != 3 || service.Health().Category != "restart_required" {
 		t.Fatalf("restart marker fields=%v health=%+v", fields, service.Health())
 	}
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -53,6 +54,7 @@ type AnalyticsPrivacyConfig struct {
 type AnalyticsViewerConfig struct {
 	TrustedProxyCIDRs []string `yaml:"trusted-proxy-cidrs" json:"trusted_proxy_cidrs"`
 	AllowLoopbackHTTP bool     `yaml:"allow-loopback-http" json:"allow_loopback_http"`
+	AllowedOrigins    []string `yaml:"allowed-origins" json:"allowed_origins"`
 }
 
 // AnalyticsConfigProblem is safe to expose through analytics health.
@@ -174,7 +176,72 @@ func (c AnalyticsConfig) invalidField() string {
 		}
 		seenProxyCIDRs[prefix] = struct{}{}
 	}
+	if len(c.Viewer.AllowedOrigins) > 32 {
+		return "viewer.allowed-origins"
+	}
+	seenOrigins := make(map[string]struct{}, len(c.Viewer.AllowedOrigins))
+	for _, rawOrigin := range c.Viewer.AllowedOrigins {
+		if rawOrigin == "" || strings.TrimSpace(rawOrigin) != rawOrigin {
+			return "viewer.allowed-origins"
+		}
+		normalized, hostname, scheme, ok := NormalizeOrigin(rawOrigin)
+		if !ok {
+			return "viewer.allowed-origins"
+		}
+		if scheme == "http" && (!c.Viewer.AllowLoopbackHTTP || !IsLoopbackHostname(hostname)) {
+			return "viewer.allowed-origins"
+		}
+		if _, duplicate := seenOrigins[normalized]; duplicate {
+			return "viewer.allowed-origins"
+		}
+		seenOrigins[normalized] = struct{}{}
+	}
 	return ""
+}
+
+// NormalizeOrigin canonicalizes an absolute http/https origin as
+// "scheme://host[:port]" with default ports stripped and scheme/host
+// lower-cased, for case-insensitive comparison with default-port
+// normalization. It rejects anything carrying userinfo, a path, a query, or
+// a fragment, and returns ok=false for those and for any non-http(s) scheme.
+// hostname is the lower-cased, bracket-free host for loopback checks.
+func NormalizeOrigin(raw string) (normalized string, hostname string, scheme string, ok bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" {
+		return "", "", "", false
+	}
+	scheme = strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", "", "", false
+	}
+	hostname = strings.ToLower(parsed.Hostname())
+	if hostname == "" {
+		return "", "", "", false
+	}
+	port := parsed.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	host := hostname
+	if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host, hostname, scheme, true
+}
+
+// IsLoopbackHostname reports whether host is "localhost" or a loopback IP
+// literal (127.0.0.1, ::1, ...), matching the hosts
+// AnalyticsViewerConfig.AllowLoopbackHTTP is meant to exempt.
+func IsLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 func validateAnalyticsPrivacyNode(node *yaml.Node) *AnalyticsConfigProblem {
@@ -207,7 +274,7 @@ func validateAnalyticsViewerNode(node *yaml.Node) *AnalyticsConfigProblem {
 		}
 		seen[field] = struct{}{}
 		switch field {
-		case "trusted-proxy-cidrs", "allow-loopback-http":
+		case "trusted-proxy-cidrs", "allow-loopback-http", "allowed-origins":
 		default:
 			return &AnalyticsConfigProblem{Category: "unknown_field", Field: "viewer." + field}
 		}
