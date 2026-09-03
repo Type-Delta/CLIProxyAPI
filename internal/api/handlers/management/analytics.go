@@ -407,7 +407,12 @@ func writeAnalyticsInvalid(c *gin.Context, _ error) {
 
 func writeAnalyticsError(c *gin.Context, err error) {
 	status, code, message := analyticsErrorStatus(err)
-	writeAnalyticsEnvelope(c, status, code, message)
+	cutoff := ""
+	var retained retainedRangeReadError
+	if errors.As(err, &retained) {
+		cutoff = retained.cutoffRFC3339()
+	}
+	writeAnalyticsEnvelopeWithCutoff(c, status, code, message, cutoff)
 }
 
 // WriteAnalyticsAPIError lets the viewer router reuse the frozen error
@@ -455,6 +460,13 @@ func analyticsErrorStatus(err error) (int, model.ErrorCode, string) {
 			message += " " + detailed.detail
 		}
 		return http.StatusBadRequest, model.ErrorAnalyticsInvalidQuery, message
+	case errors.Is(err, errAnalyticsRetainedRangePartial):
+		message := "The analytics query is invalid."
+		var retained retainedRangeReadError
+		if errors.As(err, &retained) {
+			message = "Events older than the retention cutoff " + retained.cutoffRFC3339() + " were compacted into rollups; narrow the range."
+		}
+		return http.StatusBadRequest, model.ErrorAnalyticsInvalidQuery, message
 	case errors.Is(err, errAnalyticsInvalidRead):
 		return http.StatusBadRequest, model.ErrorAnalyticsInvalidQuery, "The analytics query is invalid."
 	default:
@@ -463,6 +475,12 @@ func analyticsErrorStatus(err error) (int, model.ErrorCode, string) {
 }
 
 func writeAnalyticsEnvelope(c *gin.Context, status int, code model.ErrorCode, message string) {
+	writeAnalyticsEnvelopeWithCutoff(c, status, code, message, "")
+}
+
+// writeAnalyticsEnvelopeWithCutoff adds the machine-readable retention cutoff
+// to the frozen error envelope. An empty cutoff omits the field.
+func writeAnalyticsEnvelopeWithCutoff(c *gin.Context, status int, code model.ErrorCode, message, retentionCutoff string) {
 	setAnalyticsNoStore(c)
 	requestID := ""
 	if c != nil && c.Request != nil {
@@ -472,7 +490,7 @@ func writeAnalyticsEnvelope(c *gin.Context, status int, code model.ErrorCode, me
 		}
 	}
 	c.AbortWithStatusJSON(status, model.ErrorEnvelope{Error: model.ErrorBody{
-		Code: code, Message: message, RequestID: requestID,
+		Code: code, Message: message, RequestID: requestID, RetentionCutoff: retentionCutoff,
 	}})
 }
 
@@ -489,6 +507,10 @@ func classifyAnalyticsReadError(err error) error {
 		return retainedTimeZoneReadError{detail: detail}
 	}
 	if errors.Is(err, store.ErrRetainedRangePartial) {
+		var rangeErr store.RetainedRangeError
+		if errors.As(err, &rangeErr) && !rangeErr.Cutoff.IsZero() {
+			return retainedRangeReadError{cutoff: rangeErr.Cutoff}
+		}
 		return fmt.Errorf("%w", errAnalyticsInvalidRead)
 	}
 	message := err.Error()
@@ -520,6 +542,24 @@ func (e retainedTimeZoneReadError) Error() string {
 }
 
 func (e retainedTimeZoneReadError) Unwrap() error { return errAnalyticsRetainedTimeZonePartial }
+
+var errAnalyticsRetainedRangePartial = errors.New("analytics range predates the retention cutoff")
+
+// retainedRangeReadError carries the retention cutoff into the error envelope
+// so the operator sees which range still holds raw events.
+type retainedRangeReadError struct {
+	cutoff time.Time
+}
+
+func (e retainedRangeReadError) Error() string {
+	return errAnalyticsRetainedRangePartial.Error() + ": " + e.cutoffRFC3339()
+}
+
+func (e retainedRangeReadError) Unwrap() error { return errAnalyticsRetainedRangePartial }
+
+func (e retainedRangeReadError) cutoffRFC3339() string {
+	return e.cutoff.UTC().Format(time.RFC3339)
+}
 
 func analyticsCSVCell(value string) string {
 	if value == "" {

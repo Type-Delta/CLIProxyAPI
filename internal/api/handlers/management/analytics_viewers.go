@@ -76,12 +76,16 @@ type ViewerMetadata struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// ViewerSessionScope carries both expiries: ExpiresAt is the short-lived
+// session expiry (also the cookie lifetime), ViewExpiresAt is the shared
+// view/link expiry the creator chose.
 type ViewerSessionScope struct {
-	AuditID      string
-	KeyID        string
-	AllowedViews []string
-	ExpiresAt    time.Time
-	Label        string
+	AuditID       string
+	KeyID         string
+	AllowedViews  []string
+	ExpiresAt     time.Time
+	ViewExpiresAt time.Time
+	Label         string
 }
 
 type viewerRecord struct {
@@ -352,7 +356,7 @@ func (s *AnalyticsViewerStore) InvalidateSessions() error {
 func viewerScope(viewer viewerRecord, session viewerSessionRecord) ViewerSessionScope {
 	return ViewerSessionScope{
 		AuditID: session.AuditID, KeyID: viewer.KeyID, AllowedViews: slices.Clone(viewer.AllowedViews),
-		ExpiresAt: session.ExpiresAt, Label: viewer.Label,
+		ExpiresAt: session.ExpiresAt, ViewExpiresAt: viewer.ExpiresAt, Label: viewer.Label,
 	}
 }
 

@@ -32,6 +32,23 @@ different zone cannot be rebucketed exactly, so CPA returns a `partial` result â
 bucket width â€” instead of relabelling rollup buckets. Choose the zone your
 operators read reports in, or keep the default and query in `UTC`.
 
+If the persisted `retention_time_zone` metadata disagrees with the configured
+zone and any rollups already exist, the store refuses to open. Analytics then
+reports `state: circuit_open` with `category: storage_time_zone`, `field:
+storage-time-zone`, and a health `zone_mismatch` object naming both zones:
+
+```json
+{"zone_mismatch": {"stored": "UTC", "configured": "Asia/Kolkata"}}
+```
+
+Restore the stored zone in the configuration, or reset analytics storage, to
+bring analytics back.
+
+Raw-event queries (Events and single-event lookups) whose range starts before
+the retention cutoff also return `analytics_invalid_query`. That message names
+the RFC3339 cutoff and the error envelope repeats it in `retention_cutoff`, so
+the operator can narrow the range to the raw window.
+
 ## Shared-view HTTPS
 
 Viewer credentials can be exchanged only over direct TLS or forwarded HTTPS

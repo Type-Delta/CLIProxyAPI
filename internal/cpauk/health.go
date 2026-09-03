@@ -91,6 +91,10 @@ func cloneHealth(value model.Health) model.Health {
 	value.LastSuccessfulWrite = cloneTime(value.LastSuccessfulWrite)
 	value.LastPanicAt = cloneTime(value.LastPanicAt)
 	value.RetentionCutoff = cloneTime(value.RetentionCutoff)
+	if value.ZoneMismatch != nil {
+		mismatch := *value.ZoneMismatch
+		value.ZoneMismatch = &mismatch
+	}
 	return value
 }
 

@@ -429,3 +429,43 @@ func TestViewerStoreRejectsOversizedDocumentBeforeReadingIt(t *testing.T) {
 		t.Fatalf("oversized viewer store error=%v", err)
 	}
 }
+
+func TestViewerScopeSeparatesViewAndSessionExpiry(t *testing.T) {
+	viewerStore, err := NewAnalyticsViewerStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewExpiry := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Second)
+	created, err := viewerStore.Create(ViewerCreateRequest{
+		KeyID: strings.Repeat("f", 64), AllowedViews: []string{"summary"}, ExpiresAt: viewExpiry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, scope, err := viewerStore.Exchange(created.Credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scope.ViewExpiresAt.Equal(viewExpiry) {
+		t.Fatalf("view expiry = %s, want %s", scope.ViewExpiresAt, viewExpiry)
+	}
+	if !scope.ExpiresAt.Before(scope.ViewExpiresAt) {
+		t.Fatalf("session expiry %s should precede view expiry %s", scope.ExpiresAt, scope.ViewExpiresAt)
+	}
+	if scope.ExpiresAt.After(time.Now().UTC().Add(viewerSessionLifetime + time.Minute)) {
+		t.Fatalf("session expiry %s exceeds the session lifetime", scope.ExpiresAt)
+	}
+	capabilities := model.ViewerCapabilities{
+		APISchemaVersion: model.APISchemaVersion, AllowedViews: scope.AllowedViews,
+		ExpiresAt: scope.ExpiresAt, ViewExpiresAt: scope.ViewExpiresAt, SessionExpiresAt: scope.ExpiresAt,
+	}
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"view_expires_at"`, `"session_expires_at"`, `"expires_at"`} {
+		if !bytes.Contains(encoded, []byte(want)) {
+			t.Fatalf("capabilities %s missing %s", encoded, want)
+		}
+	}
+}

@@ -55,6 +55,35 @@ func (e RetainedTimeZoneError) Unwrap() []error {
 	return []error{ErrRetainedRangePartial, ErrRetainedTimeZonePartial}
 }
 
+// RetainedRangeError reports a raw-event read whose range starts before the
+// retention cutoff. It stays matchable as ErrRetainedRangePartial while
+// carrying the cutoff so callers can name it instead of a static string.
+type RetainedRangeError struct {
+	Cutoff time.Time
+}
+
+func (e RetainedRangeError) Error() string {
+	return fmt.Sprintf("%s: retention cutoff %s", ErrRetainedRangePartial.Error(), e.Cutoff.UTC().Format(time.RFC3339))
+}
+
+func (e RetainedRangeError) Unwrap() error { return ErrRetainedRangePartial }
+
+// ZoneMismatchError reports a store that refuses to open because its retained
+// rollups were bucketed in a different time zone than the configured one. Both
+// zone names travel with the error so the operator sees them in health.
+type ZoneMismatchError struct {
+	Stored     string
+	Configured string
+}
+
+func (e ZoneMismatchError) Error() string {
+	return fmt.Sprintf("configured analytics storage time zone %q does not match retained data time zone %q", e.Configured, e.Stored)
+}
+
+func (e ZoneMismatchError) Permanent() bool { return true }
+
+func (e ZoneMismatchError) Category() string { return "storage_time_zone" }
+
 type classifiedError struct {
 	message   string
 	category  string

@@ -467,3 +467,28 @@ func waitForService(t *testing.T, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestStorageZoneMismatchSurfacesBothZonesInHealth(t *testing.T) {
+	config := smallConfig()
+	config.Path = filepath.Join(t.TempDir(), "analytics.db")
+	serviceFacade := New(context.Background(), config, func(context.Context, Config) (Backend, [32]byte, error) {
+		return nil, [32]byte{}, store.ZoneMismatchError{Stored: "UTC", Configured: "Asia/Kolkata"}
+	})
+	defer func() { _ = serviceFacade.Close(context.Background()) }()
+	waitServiceState(t, serviceFacade, StateCircuitOpen)
+	health := serviceFacade.Health()
+	if health.ZoneMismatch == nil {
+		t.Fatalf("health did not carry the zone mismatch: %#v", health)
+	}
+	if health.ZoneMismatch.Stored != "UTC" || health.ZoneMismatch.Configured != "Asia/Kolkata" {
+		t.Fatalf("zone mismatch = %+v", *health.ZoneMismatch)
+	}
+	if health.Category != "storage_time_zone" || health.Field != "storage-time-zone" {
+		t.Fatalf("category/field = %q/%q", health.Category, health.Field)
+	}
+	for _, want := range []string{"UTC", "Asia/Kolkata"} {
+		if !strings.Contains(health.Message, want) {
+			t.Fatalf("health message %q does not name %q", health.Message, want)
+		}
+	}
+}

@@ -147,9 +147,11 @@ func (s *Server) getAnalyticsViewerCapabilities(c *gin.Context, store *managemen
 		return
 	}
 	managementHandlers.SetAnalyticsNoStore(c)
+	// ExpiresAt stays an alias of the session expiry for older viewer clients.
 	c.JSON(http.StatusOK, model.ViewerCapabilities{
 		APISchemaVersion: model.APISchemaVersion, AllowedViews: scope.AllowedViews,
 		Label: scope.Label, ExpiresAt: scope.ExpiresAt,
+		ViewExpiresAt: scope.ViewExpiresAt, SessionExpiresAt: scope.ExpiresAt,
 	})
 }
 

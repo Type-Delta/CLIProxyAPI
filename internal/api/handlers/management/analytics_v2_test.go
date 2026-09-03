@@ -400,3 +400,36 @@ func mustJSON(value any) string {
 }
 
 var _ = io.EOF
+
+func TestAnalyticsEventsOverRetainedRangeNamesCutoff(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cutoff := time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)
+	reader := &analyticsV2ReaderFake{analyticsHandlerReader: &analyticsHandlerReader{
+		err: fmt.Errorf("query analytics events: %w", store.RetainedRangeError{Cutoff: cutoff}),
+	}}
+	handler := v2HandlerWithReader(reader, nil)
+	body := `{"schema_version":2,"operation":"events","start":"2026-08-01T00:00:00Z","end":"2026-08-02T00:00:00Z","time_zone":"UTC"}`
+	ctx, recorder := v2Request(http.MethodPost, "/v0/management/analytics/query", body)
+	handler.PostAnalyticsQuery(ctx)
+	responseBody := recorder.Body.String()
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, responseBody)
+	}
+	var envelope model.ErrorEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v body=%s", err, responseBody)
+	}
+	want := cutoff.Format(time.RFC3339)
+	if envelope.Error.Code != model.ErrorAnalyticsInvalidQuery {
+		t.Fatalf("code=%s body=%s", envelope.Error.Code, responseBody)
+	}
+	if !strings.Contains(envelope.Error.Message, want) {
+		t.Fatalf("message does not name the retention cutoff %q: %s", want, envelope.Error.Message)
+	}
+	if envelope.Error.RetentionCutoff != want {
+		t.Fatalf("retention_cutoff=%q want %q", envelope.Error.RetentionCutoff, want)
+	}
+	if strings.Contains(responseBody, "query analytics events") {
+		t.Fatalf("internal error text leaked: %s", responseBody)
+	}
+}

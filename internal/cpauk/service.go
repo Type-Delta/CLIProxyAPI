@@ -723,6 +723,11 @@ func (s *service) beginStart(ctx context.Context) {
 func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 	backend, identityKey, err := callFactory(ctx, s.factory, config)
 	if err != nil {
+		var mismatch store.ZoneMismatchError
+		if errors.As(err, &mismatch) {
+			s.finishStartZoneMismatch(sequence, mismatch)
+			return
+		}
 		s.finishStartFailure(sequence, startupErrorCategory(err))
 		return
 	}
@@ -870,6 +875,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 		health.Category = ""
 		health.Field = ""
 		health.Message = ""
+		health.ZoneMismatch = nil
 	})
 	if retention != nil {
 		if err = retention.Start(context.Background()); err != nil {
@@ -895,6 +901,28 @@ func (s *service) finishStartFailure(sequence uint64, category string) {
 		health.State = StateCircuitOpen
 		health.Category = category
 		health.Message = "Analytics is unavailable."
+		health.ZoneMismatch = nil
+	})
+}
+
+// finishStartZoneMismatch names both storage time zones in health so the
+// operator can see why the store refused to open instead of a bare
+// "analytics unavailable".
+func (s *service) finishStartZoneMismatch(sequence uint64, mismatch store.ZoneMismatchError) {
+	s.mu.Lock()
+	if sequence != s.startSeq.Load() || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.starting = false
+	s.startCancel = nil
+	s.mu.Unlock()
+	s.snapshots.mutate(func(health *model.Health) {
+		health.State = StateCircuitOpen
+		health.Category = mismatch.Category()
+		health.Field = "storage-time-zone"
+		health.Message = "Analytics storage is pinned to time zone " + mismatch.Stored + " but the configuration requests " + mismatch.Configured + ". Restore the stored zone or reset analytics storage."
+		health.ZoneMismatch = &model.ZoneMismatch{Stored: mismatch.Stored, Configured: mismatch.Configured}
 	})
 }
 

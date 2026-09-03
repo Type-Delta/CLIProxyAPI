@@ -358,7 +358,7 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 		return model.EventPage{}, ErrClosed
 	}
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
-		return model.EventPage{}, ErrRetainedRangePartial
+		return model.EventPage{}, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
 	var totalCount int64
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+countWhere, countArguments...).Scan(&totalCount); err != nil {
@@ -412,7 +412,7 @@ func (s *SQLiteStore) EventByAttemptID(ctx context.Context, attemptID string, qu
 		return model.Event{}, false, ErrClosed
 	}
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
-		return model.Event{}, false, ErrRetainedRangePartial
+		return model.Event{}, false, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
 	event, err := scanEvent(s.db.QueryRowContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" LIMIT 1", arguments...))
 	if errors.Is(err, sql.ErrNoRows) {

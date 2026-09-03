@@ -550,7 +550,7 @@ func (s *SQLiteStore) retentionLocation(ctx context.Context) (*time.Location, er
 				return nil, fmt.Errorf("update retained analytics time zone: %w", err)
 			}
 		} else {
-			return nil, fmt.Errorf("configured analytics storage time zone %q does not match retained data time zone %q", s.config.RetentionTimeZone, zone)
+			return nil, ZoneMismatchError{Stored: zone, Configured: s.config.RetentionTimeZone}
 		}
 	}
 	if zone == "Local" {

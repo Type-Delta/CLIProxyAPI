@@ -132,6 +132,24 @@ Named ranges require top-level `schema_version: 2`, and CSV and JSON exports emi
 
 **Last updated:** 2026-09-03
 
+### DL010 - Named retention and viewer expiry in the analytics contract
+
+Three analytics responses stopped being generic.
+
+Raw-event reads whose range starts before the retention cutoff now return a typed `store.RetainedRangeError` carrying the cutoff instead of the bare `ErrRetainedRangePartial` sentinel. The management API maps it to a 400 `analytics_invalid_query` whose message names the RFC3339 cutoff, and the frozen error envelope repeats it in an additive `retention_cutoff` field so a client can narrow the range without parsing English. Both partial sentinels stay matchable with `errors.Is` and internal error text is still withheld.
+
+Viewer capabilities now report the shared view (link) expiry and the browser session expiry as distinct fields. `view_expires_at` is the creator's chosen link lifetime, `session_expires_at` is the 30-minute session, and `expires_at` remains an alias of the session expiry so older viewer clients keep working. The viewer page previously rendered the session expiry under the creator-facing "expires after 7 days" promise.
+
+A store that refuses to open because its persisted `retention_time_zone` metadata disagrees with `analytics.storage-time-zone` now returns a typed `store.ZoneMismatchError`. The service publishes both zone names in health as `category: storage_time_zone`, `field: storage-time-zone`, a message naming each zone, and an additive `zone_mismatch: {stored, configured}` object, so Maintenance can show the operator why analytics is unavailable.
+
+The v2 contract document additionally records the `{keys, meta}` catalog wrapper, the providers/quotas wrappers and their `durable` flag, pricing `sync_state`/`updated_at`, the full `Capabilities` and `Health` field sets, the viewer expiry fields, and the retention error details. On the client, `ViewerEventPage.total_count` became optional to match Go, and `AnalyticsQuotasResponse` gained `durable`.
+
+**Implementation evidence:** `internal/cpauk/store/{config.go,query.go,operations.go}`, `internal/cpauk/model/result.go`, `internal/cpauk/{health.go,service.go}`, `internal/api/handlers/management/{analytics.go,analytics_viewers.go}`, `internal/api/analytics_viewer_routes.go`, `docs/analytics-api-contract-v2.md`, `docs/analytics-operations.md`, and in CPAMC `src/features/analytics/ViewerPage.tsx`, `src/features/analytics/views/viewer/viewerApi.ts`, `src/types/analytics.ts`.
+
+**Recorded validation:** `go build -o test-output ./cmd/server` succeeds and `go test ./internal/cpauk/... ./internal/api/... -count=1` passes, including `TestRetainedEventErrorCarriesTheRetentionCutoff` and `TestStorageZoneMismatchNamesBothZones` (store), `TestStorageZoneMismatchSurfacesBothZonesInHealth` (service health), `TestAnalyticsEventsOverRetainedRangeNamesCutoff` (400 message and `retention_cutoff` envelope field), and `TestViewerScopeSeparatesViewAndSessionExpiry` (the session expiry precedes the view expiry and both serialize). `gofmt -l .` reports only the two pre-existing unformatted executor test files. In CPAMC, `bunx tsc --noEmit` is clean for the owned files and `bun test tests/analyticsViewerExpiry.test.ts` passes four cases covering the two dated sentences, the legacy `expires_at` fallback, and the omitted link sentence.
+
+**Last updated:** 2026-09-03
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

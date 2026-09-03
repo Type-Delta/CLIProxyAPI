@@ -108,3 +108,77 @@ Provider results add credential rows with `credential_id`, `provider`,
 `auth_type`, `status`, request/failure counts, last error class/time, optional
 quota `limit`, `used`, `remaining`, and `resets_at`, plus `observed_at`.
 Credential IDs are privacy-preserving hashes, never raw auth identifiers.
+
+## Response wrappers
+
+Several management endpoints wrap their payload rather than returning the store
+DTO directly:
+
+- `GET /v0/management/analytics/keys` returns `{"meta": ResponseMeta, "keys":
+  AnalyticsKey[]}`. `keys` may be `null` when the range holds no keys.
+- `GET /v0/management/analytics/providers` returns `{"providers": [...],
+  "storage_scope": "instance", "durable": true}`. `durable` is present and
+  `true` only when the rows come from durable analytics storage; it is absent
+  when they are derived from the in-memory auth manager.
+- `GET /v0/management/analytics/quotas` returns `{"quotas": [...],
+  "shared_enforcement": bool, "durable": true}` with the same `durable`
+  semantics.
+
+## Pricing state
+
+The pricing GET envelope carries `sync_state` (the remote price-book sync
+state) and a nullable `updated_at` (the durable snapshot's last sync time)
+beside `currency_unit`, `rounding`, `rules`, and `missing`.
+
+## Capabilities and health
+
+`GET /v0/management/analytics/capabilities` reports `api_schema_versions`,
+`event_schema_version`, `supported`, `enabled`, `available`, `degraded`,
+`state`, `storage_driver`, `storage_scope`, `key_id_algorithm`,
+`structured_keys`, `shared_enforcement`, `management_query_v1`, `viewer_v1`,
+`queue`, and `last_successful_write_at`.
+
+`GET /v0/management/analytics/health` reports `state`, optional `category`,
+`field`, and `message`, the `queue` snapshot, `last_successful_write_at`,
+`last_panic_category`, `last_panic_at`, `restart_count`,
+`restart_window_seconds`, `rejected_events`, `truncated_fields`,
+`abandoned_events`, an optional `retention_cutoff`, and an optional
+`zone_mismatch` object:
+
+```json
+{"zone_mismatch": {"stored": "UTC", "configured": "Asia/Kolkata"}}
+```
+
+`zone_mismatch` appears when the analytics store refuses to open because its
+persisted `retention_time_zone` metadata disagrees with
+`analytics.storage-time-zone`. `category` is then `storage_time_zone` and
+`field` is `storage-time-zone`.
+
+## Viewer expiry
+
+`GET /v0/analytics/viewer/capabilities` returns two distinct expiries:
+
+- `view_expires_at` — when the shared link itself stops working, chosen by the
+  creator (up to 90 days).
+- `session_expires_at` — when this browser session lapses (30 minutes, or the
+  view expiry when that is sooner). Reopening the link starts a new session.
+- `expires_at` — a compatibility alias of `session_expires_at`.
+
+`ViewerEventPage` intentionally omits `total_count`; only the management event
+page carries it.
+
+## Retention errors
+
+A raw-event read (`operation: "events"`, or a single event lookup) whose range
+starts before the retention cutoff returns HTTP 400
+`analytics_invalid_query`. The message names the RFC3339 cutoff and the error
+envelope repeats it in a machine-readable field:
+
+```json
+{"error": {"code": "analytics_invalid_query",
+           "message": "Events older than the retention cutoff 2026-08-05T06:00:00Z were compacted into rollups; narrow the range.",
+           "retention_cutoff": "2026-08-05T06:00:00Z"}}
+```
+
+A retained read requested in a different time zone than the storage zone
+returns the same code with both zone names and the bucket width in the message.

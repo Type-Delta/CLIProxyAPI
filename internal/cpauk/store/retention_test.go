@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -304,5 +305,75 @@ func TestEventQueriesRejectRetainedHistoryAfterReopen(t *testing.T) {
 	}
 	if _, err = database.Events(ctx, query); !errors.Is(err, ErrRetainedRangePartial) {
 		t.Fatalf("reopened retained events error=%v", err)
+	}
+}
+
+func TestRetainedEventErrorCarriesTheRetentionCutoff(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	database, err := Open(ctx, Config{Path: path, MaxStorageBytes: 64 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close(context.Background()) }()
+	events := loadFixtureEvents(t)
+	if err = database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	if _, err = database.ApplyRetention(ctx, cutoff, 10); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 1, Operation: model.OperationEvents,
+		Start: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
+		TimeZone: "UTC", PageSize: 100}
+	_, err = database.Events(ctx, query)
+	var rangeErr RetainedRangeError
+	if !errors.As(err, &rangeErr) {
+		t.Fatalf("events error = %v, want RetainedRangeError", err)
+	}
+	retained := database.RetentionCutoff()
+	if retained == nil || !rangeErr.Cutoff.Equal(*retained) {
+		t.Fatalf("cutoff = %v, want %v", rangeErr.Cutoff, retained)
+	}
+	if !errors.Is(err, ErrRetainedRangePartial) {
+		t.Fatalf("typed error lost the sentinel: %v", err)
+	}
+	if !strings.Contains(rangeErr.Error(), rangeErr.Cutoff.UTC().Format(time.RFC3339)) {
+		t.Fatalf("error text omits the cutoff: %s", rangeErr.Error())
+	}
+	if _, _, err = database.EventByAttemptID(ctx, events[0].AttemptID, query); !errors.As(err, &rangeErr) {
+		t.Fatalf("event detail error = %v, want RetainedRangeError", err)
+	}
+}
+
+func TestStorageZoneMismatchNamesBothZones(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	config := Config{Path: path, MaxStorageBytes: 64 << 20, RetentionTimeZone: "UTC"}
+	database, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = database.WriteBatch(ctx, loadFixtureEvents(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.ApplyRetention(ctx, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), 10); err != nil {
+		t.Fatal(err)
+	}
+	if err = database.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	config.RetentionTimeZone = "Asia/Kolkata"
+	_, err = Open(ctx, config)
+	var mismatch ZoneMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("reopen error = %v, want ZoneMismatchError", err)
+	}
+	if mismatch.Stored != "UTC" || mismatch.Configured != "Asia/Kolkata" {
+		t.Fatalf("mismatch = %+v", mismatch)
+	}
+	if !mismatch.Permanent() || mismatch.Category() != "storage_time_zone" {
+		t.Fatalf("classification = %t/%s", mismatch.Permanent(), mismatch.Category())
 	}
 }

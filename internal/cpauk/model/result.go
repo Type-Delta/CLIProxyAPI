@@ -50,6 +50,9 @@ type ErrorBody struct {
 	Message   string        `json:"message"`
 	RequestID string        `json:"request_id,omitempty"`
 	Details   []ErrorDetail `json:"details,omitempty"`
+	// RetentionCutoff is set on retention-related query rejections so a client
+	// can narrow the range without parsing the English message. It is RFC3339.
+	RetentionCutoff string `json:"retention_cutoff,omitempty"`
 }
 
 type ErrorEnvelope struct {
@@ -97,6 +100,15 @@ type Health struct {
 	TruncatedFields      int64          `json:"truncated_fields"`
 	AbandonedEvents      int64          `json:"abandoned_events"`
 	RetentionCutoff      *time.Time     `json:"retention_cutoff,omitempty"`
+	ZoneMismatch         *ZoneMismatch  `json:"zone_mismatch,omitempty"`
+}
+
+// ZoneMismatch names both storage time zones when a store refuses to open
+// because its retained data was bucketed in a different zone than the
+// configured one.
+type ZoneMismatch struct {
+	Stored     string `json:"stored"`
+	Configured string `json:"configured"`
 }
 
 type Range struct {
@@ -407,11 +419,16 @@ func SortLeaderboardPage(rows []LeaderboardRow, sortBy LeaderboardSort, rankOffs
 
 // Viewer DTOs intentionally contain no key digest. The authenticated viewer
 // session supplies scope on the server.
+// ViewerCapabilities reports two distinct expiries: the shared view (link)
+// expiry chosen by the creator, and the short-lived viewer session expiry.
+// ExpiresAt stays an alias of the session expiry for older clients.
 type ViewerCapabilities struct {
 	APISchemaVersion int       `json:"api_schema_version"`
 	AllowedViews     []string  `json:"allowed_views"`
 	Label            string    `json:"label,omitempty"`
 	ExpiresAt        time.Time `json:"expires_at"`
+	ViewExpiresAt    time.Time `json:"view_expires_at"`
+	SessionExpiresAt time.Time `json:"session_expires_at"`
 }
 
 type ViewerSummary struct {
