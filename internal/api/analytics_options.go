@@ -82,6 +82,7 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 		CircuitFailureThreshold: value.CircuitFailureThreshold,
 		MaxStorageBytes:         value.MaxStorageBytes,
 		MinFreeBytes:            value.MinFreeBytes,
+		StorageTimeZone:         value.StorageTimeZone,
 		Privacy: cpauk.PrivacyConfig{
 			StoreCredentialID: value.Privacy.StoreCredentialID,
 		},
@@ -98,12 +99,13 @@ func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend,
 		return nil, [32]byte{}, fmt.Errorf("create analytics cursor codec: %w", err)
 	}
 	database, err := store.Open(ctx, store.Config{
-		Path:            cfg.Path,
-		IdentityKeyPath: filepath.Join(filepath.Dir(cfg.Path), "identity.key"),
-		MaxStorageBytes: cfg.MaxStorageBytes,
-		MinFreeBytes:    cfg.MinFreeBytes,
-		PriceBook:       aggregate.PriceBook{},
-		CursorCodec:     cursorCodec,
+		Path:              cfg.Path,
+		IdentityKeyPath:   filepath.Join(filepath.Dir(cfg.Path), "identity.key"),
+		MaxStorageBytes:   cfg.MaxStorageBytes,
+		MinFreeBytes:      cfg.MinFreeBytes,
+		RetentionTimeZone: cfg.StorageTimeZone,
+		PriceBook:         aggregate.PriceBook{},
+		CursorCodec:       cursorCodec,
 	})
 	if err != nil {
 		return nil, [32]byte{}, err

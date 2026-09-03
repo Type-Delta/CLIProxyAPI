@@ -448,6 +448,13 @@ func analyticsErrorStatus(err error) (int, model.ErrorCode, string) {
 		return http.StatusTooManyRequests, model.ErrorAnalyticsThrottled, "The analytics request was throttled."
 	case errors.Is(err, cpauk.ErrInternal):
 		return http.StatusInternalServerError, model.ErrorAnalyticsInternal, "The analytics request failed."
+	case errors.Is(err, errAnalyticsRetainedTimeZonePartial):
+		message := "Retained analytics are stored in a different time zone and cannot be rebucketed exactly."
+		var detailed retainedTimeZoneReadError
+		if errors.As(err, &detailed) && detailed.detail != "" {
+			message += " " + detailed.detail
+		}
+		return http.StatusBadRequest, model.ErrorAnalyticsInvalidQuery, message
 	case errors.Is(err, errAnalyticsInvalidRead):
 		return http.StatusBadRequest, model.ErrorAnalyticsInvalidQuery, "The analytics query is invalid."
 	default:
@@ -473,6 +480,14 @@ func classifyAnalyticsReadError(err error) error {
 	if errors.Is(err, cpauk.ErrDisabled) || errors.Is(err, cpauk.ErrUnavailable) || errors.Is(err, cpauk.ErrInternal) || errors.Is(err, cpauk.ErrClosed) || errors.Is(err, cpauk.ErrMaintenance) {
 		return err
 	}
+	if errors.Is(err, store.ErrRetainedTimeZonePartial) {
+		detail := ""
+		var zoneErr store.RetainedTimeZoneError
+		if errors.As(err, &zoneErr) {
+			detail = zoneErr.Detail()
+		}
+		return retainedTimeZoneReadError{detail: detail}
+	}
 	if errors.Is(err, store.ErrRetainedRangePartial) {
 		return fmt.Errorf("%w", errAnalyticsInvalidRead)
 	}
@@ -489,6 +504,22 @@ func classifyAnalyticsReadError(err error) error {
 }
 
 var errAnalyticsInvalidRead = errors.New("invalid analytics read query")
+var errAnalyticsRetainedTimeZonePartial = errors.New("retained analytics time zone is partial")
+
+// retainedTimeZoneReadError carries the store's zone/grain detail into the
+// error envelope while staying matchable as errAnalyticsRetainedTimeZonePartial.
+type retainedTimeZoneReadError struct {
+	detail string
+}
+
+func (e retainedTimeZoneReadError) Error() string {
+	if e.detail == "" {
+		return errAnalyticsRetainedTimeZonePartial.Error()
+	}
+	return errAnalyticsRetainedTimeZonePartial.Error() + ": " + e.detail
+}
+
+func (e retainedTimeZoneReadError) Unwrap() error { return errAnalyticsRetainedTimeZonePartial }
 
 func analyticsCSVCell(value string) string {
 	if value == "" {

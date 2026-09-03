@@ -21,6 +21,7 @@ analytics:
   queue-capacity: 4096
   batch-size: 128
   flush-interval: 500ms
+  storage-time-zone: Asia/Bangkok
   privacy:
     store-credential-id: false
 `))
@@ -30,7 +31,7 @@ analytics:
 	if problem := valid.Analytics.Problem(); problem != nil {
 		t.Fatalf("valid analytics problem = %#v", problem)
 	}
-	if !valid.Analytics.Enabled || valid.Analytics.QueueCapacity != 4096 || valid.Analytics.BatchSize != 128 || valid.Analytics.FlushInterval != 500*time.Millisecond {
+	if !valid.Analytics.Enabled || valid.Analytics.QueueCapacity != 4096 || valid.Analytics.BatchSize != 128 || valid.Analytics.FlushInterval != 500*time.Millisecond || valid.Analytics.StorageTimeZone != "Asia/Bangkok" {
 		t.Fatalf("valid analytics = %#v", valid.Analytics)
 	}
 }
@@ -47,6 +48,7 @@ func TestAnalyticsConfigFailuresAreIsolated(t *testing.T) {
 		{name: "unknown field", node: "{enabled: true, surprise: true}", category: "unknown_field", field: "surprise"},
 		{name: "unknown privacy field", node: "{enabled: true, privacy: {store-auth-id: true}}", category: "unknown_field", field: "privacy.store-auth-id"},
 		{name: "semantic error", node: "{enabled: true, batch-size: -1}", category: "invalid_value", field: "batch-size"},
+		{name: "invalid storage zone", node: "{enabled: true, storage-time-zone: Not/AZone}", category: "invalid_value", field: "storage-time-zone"},
 		{name: "invalid viewer proxy", node: "{viewer: {trusted-proxy-cidrs: [not-a-cidr]}}", category: "invalid_value", field: "viewer.trusted-proxy-cidrs"},
 		{name: "non-canonical viewer proxy", node: "{viewer: {trusted-proxy-cidrs: [192.0.2.1/24]}}", category: "invalid_value", field: "viewer.trusted-proxy-cidrs"},
 		{name: "duplicate viewer proxy", node: "{viewer: {trusted-proxy-cidrs: [192.0.2.0/24, 192.0.2.0/24]}}", category: "invalid_value", field: "viewer.trusted-proxy-cidrs"},

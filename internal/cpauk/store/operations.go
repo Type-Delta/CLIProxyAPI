@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
@@ -519,7 +518,7 @@ const requestRollupColumns = `grain,bucket_start_ns,bucket_end_ns,proxy_request_
 model,credential_id,endpoint_class,auth_type,service_tier,succeeded,error_class,status_code,
 token_quality,latency_bucket,cache_class,import_batch_id`
 
-func (s *SQLiteStore) retentionLocation(ctx context.Context, preferredZone string) (*time.Location, error) {
+func (s *SQLiteStore) retentionLocation(ctx context.Context) (*time.Location, error) {
 	var zone string
 	err := s.db.QueryRowContext(ctx, "SELECT value FROM analytics_metadata WHERE key = ?", retentionTimeZoneMetadataKey).Scan(&zone)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -527,11 +526,9 @@ func (s *SQLiteStore) retentionLocation(ctx context.Context, preferredZone strin
 		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rollups").Scan(&rollups); err != nil {
 			return nil, fmt.Errorf("inspect retained analytics time zone: %w", err)
 		}
-		zone = preferredZone
+		zone = s.config.RetentionTimeZone
 		if rollups != 0 {
 			zone = "UTC"
-		} else if zone == "" {
-			zone = localTimeZoneName()
 		}
 		if _, err := s.db.ExecContext(ctx, "INSERT OR IGNORE INTO analytics_metadata(key,value) VALUES (?,?)", retentionTimeZoneMetadataKey, zone); err != nil {
 			return nil, fmt.Errorf("record retained analytics time zone: %w", err)
@@ -541,6 +538,20 @@ func (s *SQLiteStore) retentionLocation(ctx context.Context, preferredZone strin
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("read retained analytics time zone: %w", err)
+	}
+	if zone != s.config.RetentionTimeZone {
+		var rollups int64
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM rollups").Scan(&rollups); err != nil {
+			return nil, fmt.Errorf("inspect retained analytics time zone: %w", err)
+		}
+		if rollups == 0 {
+			zone = s.config.RetentionTimeZone
+			if _, err := s.db.ExecContext(ctx, "UPDATE analytics_metadata SET value = ? WHERE key = ?", zone, retentionTimeZoneMetadataKey); err != nil {
+				return nil, fmt.Errorf("update retained analytics time zone: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("configured analytics storage time zone %q does not match retained data time zone %q", s.config.RetentionTimeZone, zone)
+		}
 	}
 	if zone == "Local" {
 		return time.Local, nil
@@ -552,19 +563,6 @@ func (s *SQLiteStore) retentionLocation(ctx context.Context, preferredZone strin
 	return location, nil
 }
 
-func localTimeZoneName() string {
-	if zone := strings.TrimSpace(os.Getenv("TZ")); zone != "" && !strings.HasPrefix(zone, ":") {
-		return zone
-	}
-	if target, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
-		const zoneInfoPrefix = "/usr/share/zoneinfo/"
-		if strings.HasPrefix(target, zoneInfoPrefix) {
-			return strings.TrimPrefix(target, zoneInfoPrefix)
-		}
-	}
-	return time.Local.String()
-}
-
 func retentionDayBounds(at time.Time, location *time.Location) (time.Time, time.Time) {
 	local := at.In(location)
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
@@ -572,7 +570,7 @@ func retentionDayBounds(at time.Time, location *time.Location) (time.Time, time.
 }
 
 func (s *SQLiteStore) rollRawBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, int64, *time.Time, error) {
-	location, err := s.retentionLocation(ctx, "")
+	location, err := s.retentionLocation(ctx)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -682,7 +680,7 @@ FROM events WHERE attempt_id IN (
 }
 
 func (s *SQLiteStore) rollHourlyBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, int64, *time.Time, error) {
-	location, err := s.retentionLocation(ctx, "")
+	location, err := s.retentionLocation(ctx)
 	if err != nil {
 		return 0, 0, nil, err
 	}

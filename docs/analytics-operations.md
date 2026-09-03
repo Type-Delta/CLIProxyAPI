@@ -17,6 +17,21 @@ Disabling analytics detaches intake and performs a bounded drain. It retains the
 database and identity key. Re-enable it to resume the same history. Path and
 queue-capacity changes require a CPA restart.
 
+## Storage time zone
+
+`analytics.storage-time-zone` selects the zone whose local hour and day
+boundaries retention uses when it builds rollups. It defaults to `UTC` and must
+be a valid IANA name; an invalid value disables analytics only and leaves the
+proxy serving traffic. Set it before the first retention run: the zone is
+recorded in the analytics database on first use, and existing rollups are never
+rebucketed by a later configuration change.
+
+Raw events answer any query zone. Once a range has been retained, a query in a
+different zone cannot be rebucketed exactly, so CPA returns a `partial` result —
+`analytics_invalid_query` naming the stored zone, the requested zone, and the
+bucket width — instead of relabelling rollup buckets. Choose the zone your
+operators read reports in, or keep the default and query in `UTC`.
+
 ## Shared-view HTTPS
 
 Viewer credentials can be exchanged only over direct TLS or forwarded HTTPS

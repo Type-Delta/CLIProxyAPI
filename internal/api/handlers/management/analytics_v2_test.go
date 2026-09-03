@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +199,45 @@ func TestPostAnalyticsEventsAcceptsResultErrorAndSourceFilters(t *testing.T) {
 	}
 }
 
+func TestAnalyticsRetainedCrossZoneErrorIsTruthful(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reader := &analyticsV2ReaderFake{analyticsHandlerReader: &analyticsHandlerReader{
+		err: fmt.Errorf("%w: %w", store.ErrRetainedRangePartial, store.ErrRetainedTimeZonePartial),
+	}}
+	handler := v2HandlerWithReader(reader, nil)
+	body := `{"schema_version":2,"operation":"summary","start":"2026-08-01T00:00:00Z","end":"2026-08-02T00:00:00Z","time_zone":"Asia/Kolkata"}`
+	ctx, recorder := v2Request(http.MethodPost, "/v0/management/analytics/query", body)
+	handler.PostAnalyticsQuery(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "cannot be rebucketed exactly") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAnalyticsRetainedCrossZoneErrorKeepsStoreDetail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reader := &analyticsV2ReaderFake{analyticsHandlerReader: &analyticsHandlerReader{
+		err: fmt.Errorf("query analytics timeseries: %w", store.RetainedTimeZoneError{
+			StorageTimeZone: "Asia/Bangkok", QueryTimeZone: "Asia/Kolkata", BucketWidth: "1h",
+		}),
+	}}
+	handler := v2HandlerWithReader(reader, nil)
+	body := `{"schema_version":2,"operation":"timeseries","start":"2026-08-01T00:00:00Z","end":"2026-08-02T00:00:00Z","time_zone":"Asia/Kolkata","bucket_width":"1h"}`
+	ctx, recorder := v2Request(http.MethodPost, "/v0/management/analytics/query", body)
+	handler.PostAnalyticsQuery(ctx)
+	responseBody := recorder.Body.String()
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, responseBody)
+	}
+	for _, want := range []string{"cannot be rebucketed exactly", "Asia/Bangkok", "Asia/Kolkata", "1h"} {
+		if !strings.Contains(responseBody, want) {
+			t.Fatalf("cross-zone reason is missing %q: %s", want, responseBody)
+		}
+	}
+	if strings.Contains(responseBody, "query analytics timeseries") {
+		t.Fatalf("internal error text leaked: %s", responseBody)
+	}
+}
+
 func TestAnalyticsExportRejectsCursorAndSupportsSanitizedCSVAndJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	keyID := strings.Repeat("a", 64)
@@ -228,6 +269,7 @@ func TestAnalyticsExportRejectsCursorAndSupportsSanitizedCSVAndJSON(t *testing.T
 		t.Fatalf("v1 named-range export status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
+	var csvFields, jsonFields []string
 	for _, format := range []string{"csv", "json"} {
 		ctx, recorder = v2Request(http.MethodPost, "/v0/management/analytics/exports", `{"query":`+baseQuery+`,"format":"`+format+`"}`)
 		handler.CreateAnalyticsExport(ctx)
@@ -249,20 +291,29 @@ func TestAnalyticsExportRejectsCursorAndSupportsSanitizedCSVAndJSON(t *testing.T
 					t.Fatalf("csv header omitted %q: %v", required, rows[0])
 				}
 			}
+			csvFields = append(csvFields, rows[0]...)
 		} else {
 			var payload []map[string]any
 			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil || len(payload) != 1 {
 				t.Fatalf("json export payload=%s err=%v", recorder.Body.String(), err)
 			}
-			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
+			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "cache_read_tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
 				if _, ok := payload[0][required]; !ok {
 					t.Fatalf("json export omitted %q: %v", required, payload[0])
 				}
 			}
+			for field := range payload[0] {
+				jsonFields = append(jsonFields, field)
+			}
+			slices.Sort(jsonFields)
 			if payload[0]["price_rule_id"] != ruleID || payload[0]["price_source"] != priceSource || payload[0]["import_batch_id"] != importBatch || payload[0]["source"] != source {
 				t.Fatalf("json export lost provenance: %v", payload[0])
 			}
 		}
+	}
+	slices.Sort(csvFields)
+	if !slices.Equal(csvFields, jsonFields) {
+		t.Fatalf("export field mismatch\n csv: %v\njson: %v", csvFields, jsonFields)
 	}
 }
 

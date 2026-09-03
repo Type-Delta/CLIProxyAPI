@@ -19,6 +19,7 @@ var analyticsFields = map[string]struct{}{
 	"circuit-failure-threshold": {},
 	"max-storage-bytes":         {},
 	"min-free-bytes":            {},
+	"storage-time-zone":         {},
 	"privacy":                   {},
 	"viewer":                    {},
 }
@@ -35,6 +36,7 @@ type AnalyticsConfig struct {
 	CircuitFailureThreshold int                    `yaml:"circuit-failure-threshold" json:"circuit_failure_threshold"`
 	MaxStorageBytes         int64                  `yaml:"max-storage-bytes" json:"max_storage_bytes"`
 	MinFreeBytes            int64                  `yaml:"min-free-bytes" json:"min_free_bytes"`
+	StorageTimeZone         string                 `yaml:"storage-time-zone" json:"storage_time_zone"`
 	Privacy                 AnalyticsPrivacyConfig `yaml:"privacy" json:"privacy"`
 	Viewer                  AnalyticsViewerConfig  `yaml:"viewer" json:"viewer"`
 
@@ -69,6 +71,7 @@ func DefaultAnalyticsConfig() AnalyticsConfig {
 		CircuitFailureThreshold: 5,
 		MaxStorageBytes:         5 * 1024 * 1024 * 1024,
 		MinFreeBytes:            512 * 1024 * 1024,
+		StorageTimeZone:         "UTC",
 		Privacy:                 AnalyticsPrivacyConfig{StoreCredentialID: true},
 	}
 }
@@ -147,6 +150,12 @@ func (c AnalyticsConfig) invalidField() string {
 	}
 	if c.MaxStorageBytes < 0 || c.MinFreeBytes < 0 || (c.MaxStorageBytes == 0 && c.MinFreeBytes == 0) {
 		return "storage-budget"
+	}
+	if c.StorageTimeZone == "" || strings.TrimSpace(c.StorageTimeZone) != c.StorageTimeZone {
+		return "storage-time-zone"
+	}
+	if _, err := time.LoadLocation(c.StorageTimeZone); err != nil {
+		return "storage-time-zone"
 	}
 	if len(c.Viewer.TrustedProxyCIDRs) > 64 {
 		return "viewer.trusted-proxy-cidrs"

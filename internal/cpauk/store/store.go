@@ -220,6 +220,9 @@ WHERE key IN ('identity_fingerprint','identity_epoch')`).Scan(&identityMetadata)
 			return fmt.Errorf("read analytics identity epoch: %w", err)
 		}
 	}
+	if _, err := s.retentionLocation(ctx); err != nil {
+		return err
+	}
 	if err := s.integrityCheck(ctx); err != nil {
 		return err
 	}

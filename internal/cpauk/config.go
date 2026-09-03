@@ -16,6 +16,7 @@ const (
 	DefaultCircuitFailureThreshold = 5
 	DefaultMaxStorageBytes         = int64(5 * 1024 * 1024 * 1024)
 	DefaultMinFreeBytes            = int64(512 * 1024 * 1024)
+	DefaultStorageTimeZone         = "UTC"
 	DefaultShutdownDrain           = 5 * time.Second
 	MaxQueueBytes                  = int64(32 * 1024 * 1024)
 )
@@ -36,6 +37,7 @@ type Config struct {
 	CircuitFailureThreshold int           `yaml:"circuit-failure-threshold" json:"circuit_failure_threshold"`
 	MaxStorageBytes         int64         `yaml:"max-storage-bytes" json:"max_storage_bytes"`
 	MinFreeBytes            int64         `yaml:"min-free-bytes" json:"min_free_bytes"`
+	StorageTimeZone         string        `yaml:"storage-time-zone" json:"storage_time_zone"`
 	Privacy                 PrivacyConfig `yaml:"privacy" json:"privacy"`
 	ShutdownDrain           time.Duration `yaml:"-" json:"-"`
 }
@@ -49,6 +51,7 @@ func DefaultConfig() Config {
 		CircuitFailureThreshold: DefaultCircuitFailureThreshold,
 		MaxStorageBytes:         DefaultMaxStorageBytes,
 		MinFreeBytes:            DefaultMinFreeBytes,
+		StorageTimeZone:         DefaultStorageTimeZone,
 		Privacy:                 PrivacyConfig{StoreCredentialID: true},
 		ShutdownDrain:           DefaultShutdownDrain,
 	}
@@ -77,6 +80,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.MinFreeBytes == 0 {
 		c.MinFreeBytes = defaults.MinFreeBytes
+	}
+	if c.StorageTimeZone == "" {
+		c.StorageTimeZone = defaults.StorageTimeZone
 	}
 	if c.ShutdownDrain == 0 {
 		c.ShutdownDrain = defaults.ShutdownDrain
@@ -109,6 +115,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxStorageBytes < 0 || c.MinFreeBytes < 0 {
 		return &ConfigError{Field: "storage-budget", Reason: "byte limits must not be negative"}
+	}
+	if strings.TrimSpace(c.StorageTimeZone) != c.StorageTimeZone {
+		return &ConfigError{Field: "storage-time-zone", Reason: "must not have surrounding whitespace"}
+	}
+	if _, err := time.LoadLocation(c.StorageTimeZone); err != nil {
+		return &ConfigError{Field: "storage-time-zone", Reason: "must be an IANA time zone"}
 	}
 	if c.ShutdownDrain <= 0 || c.ShutdownDrain > time.Minute {
 		return &ConfigError{Field: "shutdown-drain", Reason: "must be between 1ns and 1m"}

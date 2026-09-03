@@ -144,7 +144,7 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 		"generated": event.Generated, "input_tokens": event.Tokens.Input, "output_tokens": event.Tokens.Output, "reasoning_tokens": event.Tokens.Reasoning,
 		"cached_tokens": event.Tokens.Cached, "cache_read_tokens": event.Tokens.CacheRead, "cache_creation_tokens": event.Tokens.CacheCreation,
 		"total_tokens": event.Tokens.Total, "accounting_schema": event.Tokens.Schema, "token_quality": event.Tokens.Quality,
-		"known_cost_usd": event.KnownCost, "unpriced_tokens": event.UnpricedTokens, "tokens": event.Tokens,
+		"known_cost_usd": event.KnownCost, "unpriced_tokens": event.UnpricedTokens,
 	}
 	values["price_rule_id"], values["price_source"], values["import_batch_id"], values["source"] = event.PriceRuleID, event.PriceSource, event.ImportBatchID, event.Source
 	return values

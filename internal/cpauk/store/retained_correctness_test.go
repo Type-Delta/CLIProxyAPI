@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestRetainedRollupsUseZoneLocalDayBoundaries(t *testing.T) {
 			}
 			localStart := time.Date(testCase.localDate.Year(), testCase.localDate.Month(), testCase.localDate.Day(), 0, 0, 0, 0, location)
 			query := model.Query{SchemaVersion: 1, Start: localStart.UTC(), End: localStart.AddDate(0, 0, 1).UTC(), TimeZone: testCase.zone}
-			database := openRetainedCorrectnessStore(t)
+			database := openRetainedCorrectnessStoreInZone(t, testCase.zone)
 			events := retainedCorrectnessEvents(t, testCase.events)
 			if err := database.WriteBatch(context.Background(), events); err != nil {
 				t.Fatal(err)
@@ -76,6 +77,138 @@ func TestRetainedRollupsUseZoneLocalDayBoundaries(t *testing.T) {
 			}
 			assertRetainedSnapshot(t, database, query, "1d", wantDaily)
 		})
+	}
+}
+
+func TestRetainedHourlyCrossZoneReturnsPartial(t *testing.T) {
+	database := openRetainedCorrectnessStore(t)
+	events := retainedCorrectnessEvents(t, []time.Time{
+		time.Date(2026, 8, 31, 17, 15, 0, 0, time.UTC),
+		time.Date(2026, 8, 31, 17, 45, 0, 0, time.UTC),
+	})
+	if err := database.WriteBatch(context.Background(), events); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplyRetention(context.Background(), time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC), 100); err != nil {
+		t.Fatal(err)
+	}
+
+	query := model.Query{
+		SchemaVersion: 1,
+		Operation:     model.OperationTimeseries,
+		Start:         time.Date(2026, 8, 31, 16, 30, 0, 0, time.UTC),
+		End:           time.Date(2026, 8, 31, 18, 30, 0, 0, time.UTC),
+		TimeZone:      "Asia/Kolkata",
+		BucketWidth:   "1h",
+	}
+	if _, err := database.Timeseries(context.Background(), query); !errors.Is(err, ErrRetainedRangePartial) || !errors.Is(err, ErrRetainedTimeZonePartial) {
+		t.Fatalf("cross-zone retained hourly query error=%v, want retained range and time-zone partial errors", err)
+	}
+}
+
+// TestRetainedOnlyHourlyMatchesRawAggregationInStorageZone is the R2.4(e)
+// acceptance test: with only rollups left, the storage zone answers hourly
+// buckets exactly, and a fractional-offset zone is refused with a reason.
+func TestRetainedOnlyHourlyMatchesRawAggregationInStorageZone(t *testing.T) {
+	const storageZone = "UTC"
+	database := openRetainedCorrectnessStoreInZone(t, storageZone)
+	// Minute-level offsets that straddle both an hour and a day boundary.
+	events := retainedCorrectnessEvents(t, []time.Time{
+		time.Date(2026, 8, 31, 23, 15, 0, 0, time.UTC),
+		time.Date(2026, 8, 31, 23, 45, 0, 0, time.UTC),
+		time.Date(2026, 9, 1, 0, 10, 0, 0, time.UTC),
+	})
+	if err := database.WriteBatch(context.Background(), events); err != nil {
+		t.Fatal(err)
+	}
+	storageQuery := model.Query{
+		SchemaVersion: 1,
+		Start:         time.Date(2026, 8, 31, 23, 0, 0, 0, time.UTC),
+		End:           time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC),
+		TimeZone:      storageZone,
+	}
+	// Snapshot the raw-event aggregation in the storage zone before retention.
+	wantHourly := retainedSnapshot(t, database, storageQuery, "1h")
+	if len(wantHourly.timeseries.Points) != 2 {
+		t.Fatalf("raw hourly points = %+v, want two zone-local hours", wantHourly.timeseries.Points)
+	}
+	// Independent raw-event aggregation over the same zone-local hours.
+	wantAttempts := map[time.Time]int64{
+		time.Date(2026, 8, 31, 23, 0, 0, 0, time.UTC): 2,
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC):   1,
+	}
+	for _, point := range wantHourly.timeseries.Points {
+		if point.UpstreamAttempts != wantAttempts[point.Start] {
+			t.Fatalf("raw hourly bucket %v attempts=%d, want %d", point.Start, point.UpstreamAttempts, wantAttempts[point.Start])
+		}
+	}
+
+	result, err := database.ApplyRetention(context.Background(), storageQuery.End, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedRows != int64(len(events)) {
+		t.Fatalf("retention result = %+v, want every raw event retained", result)
+	}
+	var remainingRaw int64
+	if err := database.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM events").Scan(&remainingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if remainingRaw != 0 {
+		t.Fatalf("raw events remaining = %d, want a retained-only store", remainingRaw)
+	}
+
+	assertRetainedSnapshot(t, database, storageQuery, "1h", wantHourly)
+
+	crossZoneQuery := model.Query{
+		SchemaVersion: 1,
+		Operation:     model.OperationTimeseries,
+		Start:         time.Date(2026, 8, 31, 22, 30, 0, 0, time.UTC),
+		End:           time.Date(2026, 9, 1, 1, 30, 0, 0, time.UTC),
+		TimeZone:      "Asia/Kolkata",
+		BucketWidth:   "1h",
+	}
+	series, err := database.Timeseries(context.Background(), crossZoneQuery)
+	if !errors.Is(err, ErrRetainedRangePartial) || !errors.Is(err, ErrRetainedTimeZonePartial) {
+		t.Fatalf("cross-zone retained hourly error=%v points=%+v, want both partial sentinels", err, series.Points)
+	}
+	var zoneErr RetainedTimeZoneError
+	if !errors.As(err, &zoneErr) {
+		t.Fatalf("cross-zone error %v does not carry a RetainedTimeZoneError reason", err)
+	}
+	if zoneErr.StorageTimeZone != storageZone || zoneErr.QueryTimeZone != crossZoneQuery.TimeZone || zoneErr.BucketWidth != crossZoneQuery.BucketWidth {
+		t.Fatalf("cross-zone reason = %+v", zoneErr)
+	}
+	if !strings.Contains(zoneErr.Detail(), storageZone) || !strings.Contains(zoneErr.Detail(), crossZoneQuery.TimeZone) {
+		t.Fatalf("cross-zone detail = %q", zoneErr.Detail())
+	}
+}
+
+func TestRetentionZoneIsNotDerivedFromFirstQuery(t *testing.T) {
+	database, err := Open(context.Background(), Config{
+		Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20,
+		RetentionTimeZone: "Asia/Bangkok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close(context.Background()) })
+	query := model.Query{
+		SchemaVersion: 1,
+		Operation:     model.OperationSummary,
+		Start:         time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
+		End:           time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		TimeZone:      "Asia/Kolkata",
+	}
+	if _, err := database.Summary(context.Background(), query); err != nil {
+		t.Fatal(err)
+	}
+	var zone string
+	if err := database.db.QueryRowContext(context.Background(), "SELECT value FROM analytics_metadata WHERE key = ?", retentionTimeZoneMetadataKey).Scan(&zone); err != nil {
+		t.Fatal(err)
+	}
+	if zone != "Asia/Bangkok" {
+		t.Fatalf("retention zone=%q, want configured Asia/Bangkok", zone)
 	}
 }
 
@@ -243,10 +376,14 @@ func assertJSONTime(t *testing.T, fields map[string]json.RawMessage, name string
 }
 
 func openRetainedCorrectnessStore(t *testing.T) *SQLiteStore {
+	return openRetainedCorrectnessStoreInZone(t, "UTC")
+}
+
+func openRetainedCorrectnessStoreInZone(t *testing.T, zone string) *SQLiteStore {
 	t.Helper()
 	database, err := Open(context.Background(), Config{
 		Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20,
-		PriceBook: fixturePriceBook(),
+		PriceBook: fixturePriceBook(), RetentionTimeZone: zone,
 	})
 	if err != nil {
 		t.Fatal(err)

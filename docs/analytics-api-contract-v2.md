@@ -9,7 +9,7 @@ collision-safe short key reference in its client-side hash URL.
 ## Query ranges
 
 Query bodies may keep the version 1 `start`, `end`, and `time_zone` fields or
-use `range`:
+use `range`. Named ranges require top-level `schema_version: 2`:
 
 ```json
 {
@@ -25,6 +25,11 @@ use `range`:
 for `custom`. Every response echoes the resolved UTC bounds and IANA zone in
 `meta.range`. `today`, `this_week`, and `this_month` end at request time;
 `yesterday` is the complete previous local calendar day.
+
+Retention uses the configured `analytics.storage-time-zone`. If a range contains
+retained rows and requests another time zone, the API returns
+`analytics_invalid_query` with a reason instead of rebucketing an indivisible
+stored row.
 
 ## Summary
 
@@ -77,7 +82,8 @@ range-local `first_activity_at` and `last_activity_at`, lifetime
 
 Events accept `result: "success"|"failure"`, `error_class`, and `source`
 filters in addition to existing filters. CSV and JSON exports accept the same
-filter body without a cursor and emit every stored, sanitized event field.
+filter body without a cursor and emit the same flat set of stored, sanitized
+event fields.
 They never export raw keys, request bodies, headers, IP addresses, or other
 forbidden event fields. Event pages include filter-wide `total_count`; cursors
 remain bound to the exact resolved range and filter selection.

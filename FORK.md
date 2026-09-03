@@ -118,6 +118,20 @@ The 30-second graceful-shutdown budget begins when `Service.Run` exits, not when
 
 **Last updated:** 2026-08-31
 
+### DL009 - Configured analytics storage time zone and exact retained reads
+
+`analytics.storage-time-zone` selects the zone whose local hour and day boundaries retention uses when it builds rollups. It defaults to `UTC`, is validated as an IANA name, and an invalid value disables analytics only while the proxy keeps serving traffic. The store no longer adopts the first query's zone on a fresh database; the configured zone is recorded on first use and existing rollups are never rebucketed by a later configuration change.
+
+Retained reads are exact or refused. A query whose range contains rollups but requests another zone is rejected for daily and hourly grains alike rather than relabelling an indivisible stored bucket, so minute-level events inside one stored hour cannot be moved into the wrong fractional-offset bucket. The store's partial error carries the stored zone, the requested zone, and the bucket width, and the management API surfaces that reason in the `analytics_invalid_query` envelope while keeping both partial sentinels matchable with `errors.Is`; internal error text is still withheld.
+
+Named ranges require top-level `schema_version: 2`, and CSV and JSON exports emit the same flat set of sanitized event fields. Both are recorded in the v2 contract document.
+
+**Implementation evidence:** `internal/cpauk/config.go`, `internal/config/analytics.go`, `internal/api/analytics_options.go`, `internal/cpauk/store/{config.go,operations.go,retained_query.go,store.go}`, `internal/api/handlers/management/analytics.go`, `config.example.yaml`, `docs/analytics-operations.md`, and `docs/analytics-api-contract-v2.md`.
+
+**Recorded validation:** `go test ./internal/cpauk/... ./internal/config/... ./internal/api/... -count=1` passes, including the retained-only acceptance test that retains a day-boundary seed with minute-level offsets, replays hourly buckets in the storage zone against the pre-retention raw aggregation, and asserts a reasoned partial for the same range in `Asia/Kolkata`, plus the handler test that checks the zone pair and grain reach the error envelope. `gofmt -l .` is clean for the touched files and the disposable `cmd/server` compile check passes.
+
+**Last updated:** 2026-09-03
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

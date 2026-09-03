@@ -237,7 +237,7 @@ func validateRollupWidth(grain, width string) error {
 }
 
 func (s *SQLiteStore) validateRetainedRange(ctx context.Context, query model.Query) error {
-	location, err := s.retentionLocation(ctx, query.TimeZone)
+	location, err := s.retentionLocation(ctx)
 	if err != nil {
 		return err
 	}
@@ -257,12 +257,12 @@ AND NOT (bucket_start_ns >= ? AND bucket_end_ns <= ?)`+predicate, append([]any{q
 	}
 	if location.String() != query.TimeZone {
 		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollups
-WHERE grain='daily' AND bucket_start_ns < ? AND bucket_end_ns > ?`+predicate,
+WHERE bucket_start_ns < ? AND bucket_end_ns > ?`+predicate,
 			append([]any{query.End.UnixNano(), query.Start.UnixNano()}, predicateArguments...)...).Scan(&count); err != nil {
 			return fmt.Errorf("validate retained analytics time zone: %w", err)
 		}
 		if count != 0 {
-			return ErrRetainedRangePartial
+			return RetainedTimeZoneError{StorageTimeZone: location.String(), QueryTimeZone: query.TimeZone, BucketWidth: query.BucketWidth}
 		}
 	}
 	return nil

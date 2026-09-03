@@ -142,6 +142,8 @@ analytics:
   circuit-failure-threshold: 5
   max-storage-bytes: 5368709120
   min-free-bytes: 536870912
+  # Retained rollups use this IANA zone. Cross-zone retained reads are rejected.
+  storage-time-zone: UTC
   privacy:
     store-credential-id: true
   viewer:
