@@ -13,7 +13,7 @@ use `range`. Named ranges require top-level `schema_version: 2`:
 
 ```json
 {
-  "preset": "today|yesterday|last_n_hours|last_n_days|this_week|this_month|custom",
+  "preset": "today|yesterday|last_n_hours|last_n_days|this_week|prev_week|this_month|prev_month|this_year|prev_year|custom",
   "n": 7,
   "start": "2026-08-01T00:00:00Z",
   "end": "2026-08-08T00:00:00Z",
@@ -22,9 +22,11 @@ use `range`. Named ranges require top-level `schema_version: 2`:
 ```
 
 `n` is required only for rolling presets. `start` and `end` are required only
-for `custom`. Every response echoes the resolved UTC bounds and IANA zone in
-`meta.range`. `today`, `this_week`, and `this_month` end at request time;
-`yesterday` is the complete previous local calendar day.
+for `custom`; calendar presets reject `n`, `start`, and `end`. Every response
+echoes the resolved UTC bounds and IANA zone in `meta.range`. `today`,
+`this_week`, `this_month`, and `this_year` end at request time. `yesterday`,
+`prev_week`, `prev_month`, and `prev_year` are complete previous local
+calendar periods. Calendar boundaries use the requested IANA time zone.
 
 Retention uses the configured `analytics.storage-time-zone`. If a range contains
 retained rows and requests another time zone, the API returns
@@ -50,9 +52,15 @@ Decimal rates and costs use JSON strings so clients do not lose precision.
 
 `operation: "activity"` accepts the common range and `key_ids`, plus `window`
 of `day`, `week`, `month`, or `year`. The response contains `grain`, `zone`,
-and ordered, gap-free `buckets`. Each bucket contains `start`, `end`, request
-success/failure counts, known cost, and the six token categories plus
-`total_tokens`.
+and ordered, gap-free `buckets`. A `year` window uses exactly 365 local-day
+(`1d`) buckets. It reads hot days from `events` and retained days from the
+per-day, per-key `daily_stats` snapshot compiled by retention; it never reads
+rollups directly. `key_ids` applies to both sources. Other filters cannot be
+applied to retained snapshots and are rejected when the selected range
+contains them. Each bucket contains `start`, `end`, request success/failure
+counts, known cost, and the six token categories plus `total_tokens`.
+Retained snapshots preserve all listed counts and token fields, but not known
+cost, so their contribution to `known_cost_usd` is zero.
 
 ## Analysis
 

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestQueryAcceptsV1V2OperationsAndNamedRanges(t *testing.T) {
@@ -27,6 +28,35 @@ func TestQueryAcceptsV1V2OperationsAndNamedRanges(t *testing.T) {
 	namedRange := `{"schema_version":2,"operation":"summary","range":{"preset":"last_n_days","n":7,"time_zone":"Asia/Bangkok"}}`
 	if _, err := ParseQuery([]byte(namedRange)); err != nil {
 		t.Fatalf("v2 named range query rejected: %v", err)
+	}
+}
+
+func TestCalendarNamedRangesRejectRollingAndCustomFields(t *testing.T) {
+	for _, preset := range []string{"today", "yesterday", "this_week", "prev_week", "this_month", "prev_month", "this_year", "prev_year"} {
+		t.Run(preset, func(t *testing.T) {
+			rangeRequest := RangeRequest{Preset: preset, TimeZone: "America/St_Johns"}
+			if err := rangeRequest.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			rangeRequest.N = 1
+			if err := rangeRequest.Validate(); err == nil {
+				t.Fatal("calendar preset accepted n")
+			}
+			for name, value := range map[string]time.Time{
+				"start": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+				"end":   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+			} {
+				rangeRequest = RangeRequest{Preset: preset, TimeZone: "America/St_Johns"}
+				if name == "start" {
+					rangeRequest.Start = value
+				} else {
+					rangeRequest.End = value
+				}
+				if err := rangeRequest.Validate(); err == nil {
+					t.Fatalf("calendar preset accepted %s", name)
+				}
+			}
+		})
 	}
 }
 

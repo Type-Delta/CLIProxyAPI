@@ -34,7 +34,7 @@ func TestVersionZeroUpgradeBacksUpAndInitializesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	if store.SchemaVersion() != 1 || store.IdentityEpoch() == "" {
+	if store.SchemaVersion() != 2 || store.IdentityEpoch() == "" {
 		t.Fatalf("schema=%d epoch=%q", store.SchemaVersion(), store.IdentityEpoch())
 	}
 	if _, err := os.Stat(path + ".pre-migration-v1"); err != nil {

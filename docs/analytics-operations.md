@@ -32,6 +32,11 @@ different zone cannot be rebucketed exactly, so CPA returns a `partial` result â
 bucket width â€” instead of relabelling rollup buckets. Choose the zone your
 operators read reports in, or keep the default and query in `UTC`.
 
+The one-year activity view reads current days from raw events and older days
+from compact `daily_stats` rows. Retained days therefore show the request,
+outcome, and token statistics compiled when retention ran; this is intended,
+and the version-2 migration backfills those rows from existing rollups.
+
 If the persisted `retention_time_zone` metadata disagrees with the configured
 zone and any rollups already exist, the store refuses to open. Analytics then
 reports `state: circuit_open` with `category: storage_time_zone`, `field:
@@ -99,9 +104,11 @@ loopback-http development case, where Chrome and other major browsers accept
 `analytics.viewer` fields.
 
 Shared-view links embed the CPA API origin so recipients do not need stored
-management configuration. For split-origin deployments, CPA must list the
-CPAMC origin in `analytics.viewer.allowed-origins`. The trust model is narrow:
-a crafted link can only send its own credential to its own server.
+management configuration. The viewer proceeds without prompting only for its
+own page origin, the locally configured management API origin, or an origin
+previously approved in local storage; otherwise it shows the origin and asks
+the recipient to continue before sending the one-time credential, then
+remembers that approval locally.
 
 ## Backup
 

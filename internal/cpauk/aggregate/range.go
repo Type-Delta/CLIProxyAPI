@@ -8,10 +8,15 @@ import (
 type RangeKind string
 
 const (
-	RangeToday        RangeKind = "today"
-	RangeYesterday    RangeKind = "yesterday"
-	RangeCalendarWeek RangeKind = "calendar_week"
-	RangeRolling      RangeKind = "rolling"
+	RangeToday         RangeKind = "today"
+	RangeYesterday     RangeKind = "yesterday"
+	RangeCalendarWeek  RangeKind = "calendar_week"
+	RangePreviousWeek  RangeKind = "previous_week"
+	RangeCalendarMonth RangeKind = "calendar_month"
+	RangePreviousMonth RangeKind = "previous_month"
+	RangeCalendarYear  RangeKind = "calendar_year"
+	RangePreviousYear  RangeKind = "previous_year"
+	RangeRolling       RangeKind = "rolling"
 )
 
 func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.Duration) (time.Time, time.Time, error) {
@@ -31,6 +36,22 @@ func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.D
 		daysSinceMonday := (int(localNow.Weekday()) + 6) % 7
 		start = day.AddDate(0, 0, -daysSinceMonday)
 		end = start.AddDate(0, 0, 7)
+	case RangePreviousWeek:
+		daysSinceMonday := (int(localNow.Weekday()) + 6) % 7
+		end = day.AddDate(0, 0, -daysSinceMonday)
+		start = end.AddDate(0, 0, -7)
+	case RangeCalendarMonth:
+		start = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+		end = start.AddDate(0, 1, 0)
+	case RangePreviousMonth:
+		end = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+		start = end.AddDate(0, -1, 0)
+	case RangeCalendarYear:
+		start = time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, location)
+		end = start.AddDate(1, 0, 0)
+	case RangePreviousYear:
+		end = time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, location)
+		start = end.AddDate(-1, 0, 0)
 	case RangeRolling:
 		if rolling <= 0 {
 			return time.Time{}, time.Time{}, fmt.Errorf("rolling duration must be positive")

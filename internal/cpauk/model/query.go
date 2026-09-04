@@ -71,7 +71,7 @@ func (r RangeRequest) Validate() error {
 		return fmt.Errorf("invalid IANA range time zone %q", r.TimeZone)
 	}
 	switch r.Preset {
-	case "today", "yesterday", "this_week", "this_month":
+	case "today", "yesterday", "this_week", "prev_week", "this_month", "prev_month", "this_year", "prev_year":
 		if r.N != 0 || !r.Start.IsZero() || !r.End.IsZero() {
 			return fmt.Errorf("range preset %q does not accept n, start, or end", r.Preset)
 		}

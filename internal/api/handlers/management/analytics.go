@@ -319,11 +319,10 @@ func resolveAnalyticsRange(query *model.Query, now time.Time) error {
 	if err := rangeRequest.Validate(); err != nil {
 		return err
 	}
-	location, err := time.LoadLocation(rangeRequest.TimeZone)
-	if err != nil {
+	if _, err := time.LoadLocation(rangeRequest.TimeZone); err != nil {
 		return fmt.Errorf("invalid IANA range time zone %q", rangeRequest.TimeZone)
 	}
-	localNow := now.In(location)
+	var err error
 	var start, end time.Time
 	switch rangeRequest.Preset {
 	case "today":
@@ -335,8 +334,17 @@ func resolveAnalyticsRange(query *model.Query, now time.Time) error {
 		start, end, err = aggregate.ResolveRange(aggregate.RangeCalendarWeek, now, rangeRequest.TimeZone, 0)
 		end = now
 	case "this_month":
-		start = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+		start, end, err = aggregate.ResolveRange(aggregate.RangeCalendarMonth, now, rangeRequest.TimeZone, 0)
 		end = now
+	case "prev_week":
+		start, end, err = aggregate.ResolveRange(aggregate.RangePreviousWeek, now, rangeRequest.TimeZone, 0)
+	case "prev_month":
+		start, end, err = aggregate.ResolveRange(aggregate.RangePreviousMonth, now, rangeRequest.TimeZone, 0)
+	case "this_year":
+		start, end, err = aggregate.ResolveRange(aggregate.RangeCalendarYear, now, rangeRequest.TimeZone, 0)
+		end = now
+	case "prev_year":
+		start, end, err = aggregate.ResolveRange(aggregate.RangePreviousYear, now, rangeRequest.TimeZone, 0)
 	case "last_n_hours":
 		start, end, err = aggregate.ResolveRange(aggregate.RangeRolling, now, rangeRequest.TimeZone, time.Duration(rangeRequest.N)*time.Hour)
 	case "last_n_days":

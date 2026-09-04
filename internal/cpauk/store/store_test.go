@@ -29,7 +29,7 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close(context.Background()) }()
-	if database.SchemaVersion() != 1 || database.IdentityEpoch() == "" {
+	if database.SchemaVersion() != 2 || database.IdentityEpoch() == "" {
 		t.Fatalf("schema=%d epoch=%q", database.SchemaVersion(), database.IdentityEpoch())
 	}
 	events := loadFixtureEvents(t)

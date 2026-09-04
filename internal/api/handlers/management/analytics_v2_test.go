@@ -141,6 +141,38 @@ func TestResolveAnalyticsRangeCurrentPeriodsEndAtNow(t *testing.T) {
 	}
 }
 
+func TestResolveAnalyticsRangeAcceptsAddedCalendarPresets(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 34, 56, 0, time.UTC)
+	cases := []struct {
+		preset string
+		kind   aggregate.RangeKind
+	}{
+		{preset: "prev_week", kind: aggregate.RangePreviousWeek},
+		{preset: "prev_month", kind: aggregate.RangePreviousMonth},
+		{preset: "this_year", kind: aggregate.RangeCalendarYear},
+		{preset: "prev_year", kind: aggregate.RangePreviousYear},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.preset, func(t *testing.T) {
+			query := model.Query{SchemaVersion: 2, Operation: model.OperationSummary,
+				Range: &model.RangeRequest{Preset: testCase.preset, TimeZone: "Asia/Kolkata"}}
+			if err := resolveAnalyticsRange(&query, now); err != nil {
+				t.Fatal(err)
+			}
+			wantStart, wantEnd, err := aggregate.ResolveRange(testCase.kind, now, "Asia/Kolkata", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.preset == "this_year" {
+				wantEnd = now
+			}
+			if !query.Start.Equal(wantStart) || !query.End.Equal(wantEnd) {
+				t.Fatalf("resolved=%s..%s, want %s..%s", query.Start, query.End, wantStart, wantEnd)
+			}
+		})
+	}
+}
+
 func TestPostAnalyticsQueryV2DispatchesActivityAndAnalysis(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	reader := &analyticsV2ReaderFake{analyticsHandlerReader: &analyticsHandlerReader{}}

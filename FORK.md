@@ -206,6 +206,40 @@ returns the allow headers while `Origin: http://evil.example` gets 403.
 
 **Last updated:** 2026-09-03
 
+### DL012 - Calendar range presets and retained one-year activity
+
+Analytics v2 named ranges accept `prev_week`, `prev_month`, `this_year`, and
+`prev_year`. The previous-period presets resolve to complete local calendar
+periods, while `this_year` ends at request time. Calendar presets reject `n`,
+`start`, and `end`. Activity `window: "year"` returns exactly 365 adjacent
+local-day buckets and aligns long rolling requests to complete local days so
+retained daily statistics remain queryable.
+
+Schema migration 2 creates a per-storage-zone-day and per-key `daily_stats`
+table, backfills it once from existing hourly or daily rollups, and rebuilds it
+after retention. The year activity path reads hot days only from `events` and
+retained days only from `daily_stats`; both halves honor `key_ids`. Retained
+rows preserve request, succeeded, and failed counts, all six token categories
+(`input`, `output`, `reasoning`, `cached`, `cache_read`, and `cache_creation`),
+and `total_tokens`. They do not preserve known cost or unpriced-token totals.
+
+**Implementation evidence:** `internal/cpauk/aggregate/range.go`,
+`internal/cpauk/model/query.go`, `internal/cpauk/store/activity.go`,
+`internal/cpauk/store/activity_test.go`, `internal/cpauk/store/daily_stats.go`,
+`internal/cpauk/store/daily_stats_test.go`,
+`internal/cpauk/store/migrations/002_daily_stats.sql`,
+`internal/api/handlers/management/analytics.go`,
+`docs/analytics-api-contract-v2.md`, `docs/analytics-operations.md`, and the R6 seeder in
+`/tmp/cpa-critique/seed/main.go`.
+
+**Recorded validation:** the calendar range tests cover
+`America/St_Johns` and `Asia/Kolkata`; storage tests verify retention output,
+migration backfill, DST-aware day bounds, 365 gap-free activity buckets,
+cross-zone rejection, source independence, and `key_ids` across retained and
+hot days.
+
+**Last updated:** 2026-09-04
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

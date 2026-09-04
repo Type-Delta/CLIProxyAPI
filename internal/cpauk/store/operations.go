@@ -366,6 +366,7 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 		"DELETE FROM events WHERE key_id = ?",
 		"DELETE FROM rollups WHERE key_id = ?",
 		"DELETE FROM request_rollups WHERE key_id = ?",
+		"DELETE FROM daily_stats WHERE key_id = ?",
 	} {
 		result, err := tx.ExecContext(ctx, statement, keyID)
 		if err != nil {
@@ -396,6 +397,7 @@ func (s *SQLiteStore) PreviewPurgeByKeyID(ctx context.Context, keyID string) (in
 		"SELECT COUNT(*) FROM events WHERE key_id = ?",
 		"SELECT COUNT(*) FROM rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM request_rollups WHERE key_id = ?",
+		"SELECT COUNT(*) FROM daily_stats WHERE key_id = ?",
 	} {
 		var count int64
 		if err := s.db.QueryRowContext(ctx, statement, keyID).Scan(&count); err != nil {
@@ -437,6 +439,15 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 	if _, err := tx.ExecContext(ctx, "DELETE FROM import_checkpoints WHERE batch_id = ?", batchID); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("remove import checkpoint: %w", err)
+	}
+	location, err := dailyStatsLocation(ctx, tx, s.config.RetentionTimeZone)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if _, err := rebuildDailyStats(ctx, tx, location); err != nil {
+		_ = tx.Rollback()
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit import rollback: %w", err)
@@ -502,6 +513,9 @@ func (s *SQLiteStore) ApplyRetentionPolicy(ctx context.Context, rawCutoff, hourl
 		if err := s.recordCompletedCutoff(ctx, "hourly", hourlyCutoff); err != nil {
 			return result, err
 		}
+	}
+	if _, err := s.rebuildDailyStats(ctx); err != nil {
+		return result, err
 	}
 	s.advanceEventRetentionFloor(rawCutoff)
 	return result, s.integrityCheck(ctx)

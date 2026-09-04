@@ -47,6 +47,46 @@ func TestRangeDSTAndMonday(t *testing.T) {
 	}
 }
 
+func TestAddedCalendarRangesAcrossZones(t *testing.T) {
+	now := time.Date(2026, 11, 4, 15, 0, 0, 0, time.UTC)
+	for _, zone := range []string{"America/St_Johns", "Asia/Kolkata"} {
+		t.Run(zone, func(t *testing.T) {
+			location, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			localNow := now.In(location)
+			day := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+			daysSinceMonday := (int(localNow.Weekday()) + 6) % 7
+			currentWeekStart := day.AddDate(0, 0, -daysSinceMonday)
+			currentMonthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+			currentYearStart := time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, location)
+			cases := []struct {
+				name      string
+				kind      RangeKind
+				wantStart time.Time
+				wantEnd   time.Time
+			}{
+				{"previous week", RangePreviousWeek, currentWeekStart.AddDate(0, 0, -7), currentWeekStart},
+				{"previous month", RangePreviousMonth, currentMonthStart.AddDate(0, -1, 0), currentMonthStart},
+				{"current year", RangeCalendarYear, currentYearStart, currentYearStart.AddDate(1, 0, 0)},
+				{"previous year", RangePreviousYear, currentYearStart.AddDate(-1, 0, 0), currentYearStart},
+			}
+			for _, testCase := range cases {
+				t.Run(testCase.name, func(t *testing.T) {
+					start, end, err := ResolveRange(testCase.kind, now, zone, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !start.Equal(testCase.wantStart.UTC()) || !end.Equal(testCase.wantEnd.UTC()) {
+						t.Fatalf("range=%s..%s, want %s..%s", start, end, testCase.wantStart.UTC(), testCase.wantEnd.UTC())
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestLatencyFixtures(t *testing.T) {
 	bins, err := LatencyBins([]int64{10, 20, 30, 40, 50})
 	if err != nil {

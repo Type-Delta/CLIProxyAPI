@@ -164,6 +164,17 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %d: %w", item.version, err)
 		}
+		if item.version == 2 {
+			location, errLocation := dailyStatsLocation(ctx, tx, s.config.RetentionTimeZone)
+			if errLocation != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("resolve daily stats migration time zone: %w", errLocation)
+			}
+			if _, errBackfill := rebuildDailyStats(ctx, tx, location); errBackfill != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("backfill daily stats: %w", errBackfill)
+			}
+		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, checksum, applied_at_ns) VALUES (?, ?, ?, ?)", item.version, item.name, item.checksum, time.Now().UTC().UnixNano()); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", item.version, err)
@@ -188,7 +199,7 @@ WHERE key IN ('identity_fingerprint','identity_epoch')`).Scan(&identityMetadata)
 		var sensitiveRows int64
 		if err := s.db.QueryRowContext(ctx, `SELECT
 (SELECT COUNT(*) FROM events)+(SELECT COUNT(*) FROM rollups)+(SELECT COUNT(*) FROM request_rollups)+
-(SELECT COUNT(*) FROM import_checkpoints)`).Scan(&sensitiveRows); err != nil {
+(SELECT COUNT(*) FROM daily_stats)+(SELECT COUNT(*) FROM import_checkpoints)`).Scan(&sensitiveRows); err != nil {
 			return fmt.Errorf("inspect interrupted analytics initialization: %w", err)
 		}
 		if sensitiveRows != 0 {
