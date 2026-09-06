@@ -160,6 +160,8 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("api-keys count: %d -> %d", len(oldCfg.APIKeys), len(newCfg.APIKeys)))
 	} else if !reflect.DeepEqual(oldCfg.APIKeyStrings(), newCfg.APIKeyStrings()) || !reflect.DeepEqual(oldCfg.APIKeyLimits(), newCfg.APIKeyLimits()) {
 		changes = append(changes, "api-keys: values updated (count unchanged, redacted)")
+	} else if !reflect.DeepEqual(apiKeyLabels(oldCfg.APIKeys), apiKeyLabels(newCfg.APIKeys)) {
+		changes = append(changes, "api-keys: labels updated")
 	}
 	if len(oldCfg.GeminiKey) != len(newCfg.GeminiKey) {
 		changes = append(changes, fmt.Sprintf("gemini-api-key count: %d -> %d", len(oldCfg.GeminiKey), len(newCfg.GeminiKey)))
@@ -454,6 +456,14 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	}
 
 	return changes
+}
+
+func apiKeyLabels(entries []config.APIKeyEntry) []string {
+	labels := make([]string, len(entries))
+	for index, entry := range entries {
+		labels[index] = entry.Label
+	}
+	return labels
 }
 
 func trimStrings(in []string) []string {

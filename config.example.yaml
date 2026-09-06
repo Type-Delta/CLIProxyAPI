@@ -40,6 +40,9 @@ api-keys:
   - "your-api-key-1"
   - "your-api-key-2"
   - "your-api-key-3"
+  # Labels are optional, must be unique, and are shown in management UI in place of short key IDs.
+  # - key: "your-api-key-4"
+  #   label: "billing team"
   # - key: "limited-api-key"
   #   limits:
   #     max-requests: 1000

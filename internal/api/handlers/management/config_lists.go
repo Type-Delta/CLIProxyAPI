@@ -146,6 +146,7 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 // api-keys
 type apiKeyIdentityEntry struct {
 	KeyID         string `json:"key_id"`
+	Label         string `json:"label,omitempty"`
 	Status        string `json:"status"`
 	ConfigIndexes []int  `json:"config_indexes"`
 	Duplicate     bool   `json:"duplicate,omitempty"`
@@ -193,6 +194,7 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 type apiKeyIdentityGroup struct {
 	identity apiKeyIdentityEntry
 	sources  map[string]struct{}
+	labels   map[string]struct{}
 }
 
 func buildAPIKeyIdentityCatalog(entries []config.APIKeyEntry, digest func(string) string) ([]apiKeyIdentityEntry, [][]int) {
@@ -210,19 +212,35 @@ func buildAPIKeyIdentityCatalog(entries []config.APIKeyEntry, digest func(string
 		groupIndex, exists := byID[keyID]
 		if !exists {
 			byID[keyID] = len(groups)
+			labels := make(map[string]struct{})
+			if entry.Label != "" {
+				labels[entry.Label] = struct{}{}
+			}
 			groups = append(groups, apiKeyIdentityGroup{
 				identity: apiKeyIdentityEntry{
 					KeyID:         keyID,
+					Label:         entry.Label,
 					Status:        "configured",
 					ConfigIndexes: []int{index},
 				},
 				sources: map[string]struct{}{raw: {}},
+				labels:  labels,
 			})
 			continue
 		}
 		group := &groups[groupIndex]
 		group.identity.ConfigIndexes = append(group.identity.ConfigIndexes, index)
 		group.sources[raw] = struct{}{}
+		if entry.Label != "" {
+			group.labels[entry.Label] = struct{}{}
+		}
+		if len(group.labels) != 1 {
+			group.identity.Label = ""
+		} else {
+			for label := range group.labels {
+				group.identity.Label = label
+			}
+		}
 	}
 
 	catalog := make([]apiKeyIdentityEntry, 0, len(groups))
@@ -290,9 +308,11 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	match, errMatch := decodeAPIKeyPatchString(fields, "match")
 	newKey, errNew := decodeAPIKeyPatchString(fields, "new")
 	value, errValue := decodeAPIKeyPatchString(fields, "value")
+	label, errLabel := decodeAPIKeyPatchString(fields, "label")
 	limits, limitsPresent, errLimits := decodeAPIKeyPatchLimits(fields)
 	configRevision, errRevision := decodeAPIKeyPatchString(fields, "config_revision")
-	if errIndex != nil || errOld != nil || errMatch != nil || errNew != nil || errValue != nil {
+	labelPresent := apiKeyPatchStringPresent(fields, "label")
+	if errIndex != nil || errOld != nil || errMatch != nil || errNew != nil || errValue != nil || errLabel != nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
@@ -366,6 +386,9 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 			}
 			entries[target].Limits = limits
 		}
+		if labelPresent {
+			entries[target].Label = *label
+		}
 	} else {
 		if newKey == nil || strings.TrimSpace(*newKey) == "" {
 			c.JSON(400, gin.H{"error": "missing fields"})
@@ -374,6 +397,9 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		entry := config.APIKeyEntry{Key: *newKey}
 		if limitsPresent {
 			entry.Limits = limits
+		}
+		if labelPresent {
+			entry.Label = *label
 		}
 		entries = append(entries, entry)
 	}
@@ -409,6 +435,11 @@ func decodeAPIKeyPatchString(fields map[string]json.RawMessage, field string) (*
 		return nil, err
 	}
 	return &value, nil
+}
+
+func apiKeyPatchStringPresent(fields map[string]json.RawMessage, field string) bool {
+	raw, exists := fields[field]
+	return exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func decodeAPIKeyPatchIndex(fields map[string]json.RawMessage) (*int, error) {
@@ -512,7 +543,7 @@ func decodeAPIKeyEntries(data []byte, existing []config.APIKeyEntry) ([]config.A
 // PATCH replaces an entry in place, so the limits belong to that slot rather
 // than to the old key string: rotating a limited key must keep its limits.
 func apiKeyEntryReplacing(key string, previous config.APIKeyEntry) config.APIKeyEntry {
-	entry := config.APIKeyEntry{Key: key, ExtensionFields: previous.ExtensionFields}
+	entry := config.APIKeyEntry{Key: key, Label: previous.Label, ExtensionFields: previous.ExtensionFields}
 	if previous.Limits != nil {
 		limits := *previous.Limits
 		entry.Limits = normalizeAPIKeyLimits(&limits)

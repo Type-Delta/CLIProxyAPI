@@ -57,6 +57,188 @@ func TestKeysTabRendersLimitAndWarningWithoutKeyLeak(t *testing.T) {
 	}
 }
 
+func TestKeysTabDisplaysLabelsAndSecretFreeShortIDs(t *testing.T) {
+	previousLocale := CurrentLocale()
+	SetLocale("en")
+	t.Cleanup(func() { SetLocale(previousLocale) })
+
+	secret := "labelled-secret-key"
+	m := newKeysTabModel(nil)
+	m.SetSize(160, 40)
+	m, _ = m.Update(keysDataMsg{entries: []APIKeyEntry{
+		{Key: secret, KeyID: "0123456789abcdef", Label: "tenant 🚀\nprod", Index: 0},
+		{Key: "unlabelled-secret-key", KeyID: "fedcba9876543210", Index: 1},
+	}})
+	content := m.renderContent()
+	if !strings.Contains(content, "tenant 🚀�prod") {
+		t.Fatalf("label missing or unsafe: %q", content)
+	}
+	if !strings.Contains(content, "fedcba987654") {
+		t.Fatalf("short key ID missing: %q", content)
+	}
+	if strings.Contains(content, secret) || strings.Contains(content, "unlabelled-secret-key") || strings.Contains(content, "\nprod") {
+		t.Fatalf("raw key or label control sequence leaked: %q", content)
+	}
+}
+
+func TestKeysTabCreatesKeyWithUTF8Label(t *testing.T) {
+	patchBody := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && r.URL.Path == "/v0/management/api-keys" {
+			raw, _ := io.ReadAll(r.Body)
+			patchBody = strings.TrimSpace(string(raw))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m.SetSize(160, 40)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m.formInputs[keyFieldKey].SetValue("new-secret")
+	m.formLabel.SetValue("租户 🚀 / prod")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || m.adding {
+		t.Fatalf("create command = %v, adding = %v", cmd != nil, m.adding)
+	}
+	if action, ok := cmd().(keyActionMsg); !ok || action.err != nil {
+		t.Fatalf("create result = %#v", action)
+	}
+	if patchBody != `{"label":"租户 🚀 / prod","new":"new-secret"}` {
+		t.Fatalf("patch body = %s", patchBody)
+	}
+}
+
+func TestKeysTabPreservesControlCharactersInUnchangedLabel(t *testing.T) {
+	originalLabel := "tenant\nprod\t\x1b[31m"
+	var patch map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			t.Errorf("decode patch body: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m.SetSize(160, 40)
+	m, _ = m.Update(keysDataMsg{entries: []APIKeyEntry{{
+		Key: "raw-secret", Label: originalLabel, Index: 3,
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if !m.labelJSONMode || m.formLabel.Value() != quoteJSONLabel(originalLabel) {
+		t.Fatalf("control-bearing label was not opened as JSON: mode=%v value=%q", m.labelJSONMode, m.formLabel.Value())
+	}
+	m.formInputs[keyFieldMaxRequests].SetValue("1")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("edit command is nil")
+	}
+	if action, ok := cmd().(keyActionMsg); !ok || action.err != nil {
+		t.Fatalf("edit result = %#v", action)
+	}
+	if got, _ := patch["label"].(string); got != originalLabel {
+		t.Fatalf("label = %q, want exact original %q", got, originalLabel)
+	}
+	if got, _ := patch["index"].(float64); got != 3 {
+		t.Fatalf("index = %v, want 3", got)
+	}
+}
+
+func TestKeysTabLabelOnlyEditOmitsUnknownLimits(t *testing.T) {
+	var patch map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			t.Errorf("decode patch body: %v", err)
+			return
+		}
+		if _, exists := patch["limits"]; exists {
+			w.WriteHeader(http.StatusConflict)
+		}
+	}))
+	defer server.Close()
+
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m.SetSize(160, 40)
+	m, _ = m.Update(keysDataMsg{entries: []APIKeyEntry{{
+		Key: "raw-secret", Label: "old", Index: 2,
+		Limits: &APIKeyLimitConfig{ExtensionFields: map[string]json.RawMessage{
+			"future-window": json.RawMessage(`"quarter"`),
+		}},
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m.formLabel.SetValue("renamed")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("label edit command is nil")
+	}
+	if action, ok := cmd().(keyActionMsg); !ok || action.err != nil {
+		t.Fatalf("label edit result = %#v", action)
+	}
+	if len(patch) != 2 || patch["index"] != float64(2) || patch["label"] != "renamed" {
+		t.Fatalf("label-only patch = %#v, want index and label only", patch)
+	}
+}
+
+func TestKeysTabJSONLabelModeCreatesExactControlCharacters(t *testing.T) {
+	var patch map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			t.Errorf("decode patch body: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m.SetSize(160, 40)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m.focusFormField(keyFieldLabel)
+	m.formLabel.SetValue("ordinary")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if !m.labelJSONMode || m.formLabel.Value() != `"ordinary"` {
+		t.Fatalf("JSON mode = %v, value = %q", m.labelJSONMode, m.formLabel.Value())
+	}
+	m.formInputs[keyFieldKey].SetValue("new-secret")
+	m.formLabel.SetValue(`"line\nwith\ttab\u001b[31m"`)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || m.adding {
+		t.Fatalf("create command = %v, adding = %v", cmd != nil, m.adding)
+	}
+	if action, ok := cmd().(keyActionMsg); !ok || action.err != nil {
+		t.Fatalf("create result = %#v", action)
+	}
+	want := "line\nwith\ttab\x1b[31m"
+	if got, _ := patch["label"].(string); got != want {
+		t.Fatalf("label = %q, want %q", got, want)
+	}
+}
+
+func TestKeysTabJSONLabelModeRejectsMalformedInput(t *testing.T) {
+	m := newKeysTabModel(nil)
+	m.SetSize(160, 40)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m.focusFormField(keyFieldLabel)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m.formInputs[keyFieldKey].SetValue("new-secret")
+	m.formLabel.SetValue(`"unterminated`)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil || !m.adding || m.formErr != T("key_form_label_invalid_json") {
+		t.Fatalf("malformed label: cmd=%v adding=%v err=%q", cmd != nil, m.adding, m.formErr)
+	}
+}
+
 func TestKeysTabResetsSelectedLimitedKeyAfterConfirmation(t *testing.T) {
 	previousLocale := CurrentLocale()
 	SetLocale("en")
@@ -119,6 +301,47 @@ func TestKeysTabResetsSelectedLimitedKeyAfterConfirmation(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.resetConfirm != -1 {
 		t.Fatalf("resetConfirm after Esc = %d, want -1", m.resetConfirm)
+	}
+}
+
+func TestKeysTabResetsByStableKeyID(t *testing.T) {
+	requested := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v0/management/api-key-limits/reset" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Key   string `json:"key"`
+			KeyID string `json:"key_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode reset body: %v", err)
+		}
+		if body.Key != "" {
+			t.Errorf("reset body exposed raw key: %q", body.Key)
+		}
+		requested = body.KeyID
+	}))
+	defer server.Close()
+
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m.SetSize(160, 40)
+	m, _ = m.Update(keysDataMsg{
+		entries: []APIKeyEntry{{Key: "raw-secret", KeyID: "stable-id", Index: 0}},
+		limits:  map[string]APIKeyLimit{"stable-id": {MaxRequests: 1}},
+	})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("reset command is nil")
+	}
+	if action, ok := cmd().(keyActionMsg); !ok || action.err != nil {
+		t.Fatalf("reset result = %#v", action)
+	}
+	if requested != "stable-id" {
+		t.Fatalf("reset key ID = %q, want stable-id", requested)
 	}
 }
 

@@ -1845,7 +1845,7 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 		if !strings.Contains(strings.ToLower(rr.Body.String()), "<!doctype html>") {
 			t.Fatalf("bundled management panel body missing")
 		}
-		if got := rr.Header().Get("X-CPAMC-Commit"); got != "8977ea108816339f7e416ba87013e87bfb9527cd" {
+		if got := rr.Header().Get("X-CPAMC-Commit"); got != "c4ef0c26b22bbb7a0c630ef00db0cb8fc68c9391" {
 			t.Fatalf("X-CPAMC-Commit = %q", got)
 		}
 	})

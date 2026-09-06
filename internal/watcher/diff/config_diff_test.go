@@ -645,6 +645,21 @@ func TestBuildConfigChangeDetails_CountBranches(t *testing.T) {
 	expectContains(t, changes, "vertex-api-key count: 0 -> 1")
 }
 
+func TestBuildConfigChangeDetails_APIKeyLabelChangeIsRedacted(t *testing.T) {
+	oldCfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{
+		APIKeys: []config.APIKeyEntry{{Key: "same-key", Label: "old\nlabel"}},
+	}}
+	newCfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{
+		APIKeys: []config.APIKeyEntry{{Key: "same-key", Label: "new\nlabel"}},
+	}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "api-keys: labels updated")
+	if strings.Contains(strings.Join(changes, "\n"), "old\nlabel") || strings.Contains(strings.Join(changes, "\n"), "new\nlabel") {
+		t.Fatalf("label values leaked into config diff: %v", changes)
+	}
+}
+
 func TestTrimStrings(t *testing.T) {
 	out := trimStrings([]string{" a ", "b", "  c"})
 	if len(out) != 3 || out[0] != "a" || out[1] != "b" || out[2] != "c" {

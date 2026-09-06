@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -20,6 +23,7 @@ const (
 	keyFieldMaxRequests
 	keyFieldMaxTokens
 	keyFieldResets
+	keyFieldLabel
 	keyFieldCount
 )
 
@@ -58,11 +62,17 @@ type keysTabModel struct {
 	adding  bool
 	// editRow is the displayed row being edited; the server index comes from
 	// the entry itself.
-	editRow     int
-	formInputs  [keyTextFieldCount]textinput.Model
-	formField   int
-	formCadence int
-	formErr     string
+	editRow            int
+	formInputs         [keyTextFieldCount]textinput.Model
+	formLabel          textinput.Model
+	formField          int
+	formCadence        int
+	formErr            string
+	labelJSONMode      bool
+	formLabelPresent   bool
+	formOriginalKey    string
+	formOriginalLabel  string
+	formOriginalLimits *APIKeyLimitConfig
 }
 
 type keysDataMsg struct {
@@ -95,11 +105,15 @@ func newKeysTabModel(client *Client) keysTabModel {
 		ti.Prompt = ""
 		if i == keyFieldKey {
 			ti.CharLimit = 512
+			ti.EchoMode = textinput.EchoPassword
 		} else {
 			ti.CharLimit = 24
 		}
 		m.formInputs[i] = ti
 	}
+	m.formLabel = textinput.New()
+	m.formLabel.Prompt = ""
+	m.formLabel.CharLimit = 0
 	return m
 }
 
@@ -121,8 +135,12 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 	} else {
 		result.limits = make(map[string]APIKeyLimit, len(limitSnapshots))
 		for _, snapshot := range limitSnapshots {
-			if strings.TrimSpace(snapshot.Key) != "" && snapshot.Limits != nil {
-				result.limits[strings.TrimSpace(snapshot.Key)] = *snapshot.Limits
+			keyID := strings.TrimSpace(snapshot.KeyID)
+			if keyID == "" && strings.TrimSpace(snapshot.Key) != "" {
+				keyID = apiKeyID(snapshot.Key)
+			}
+			if keyID != "" && snapshot.Limits != nil {
+				result.limits[keyID] = *snapshot.Limits
 			}
 		}
 	}
@@ -180,6 +198,12 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 		// ---- Editing / Adding mode ----
 		if m.editing || m.adding {
 			switch msg.String() {
+			case "ctrl+j":
+				if m.formField == keyFieldLabel {
+					m.toggleLabelJSONMode()
+					m.viewport.SetContent(m.renderContent())
+					return m, nil
+				}
 			case "enter":
 				return m.submitKeyForm()
 			case "esc":
@@ -207,6 +231,12 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 					return m, nil
 				}
 			}
+			if m.formField == keyFieldLabel {
+				var cmd tea.Cmd
+				m.formLabel, cmd = m.formLabel.Update(msg)
+				m.viewport.SetContent(m.renderContent())
+				return m, cmd
+			}
 			if m.formField >= keyTextFieldCount {
 				m.viewport.SetContent(m.renderContent())
 				return m, nil
@@ -224,9 +254,15 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				idx := m.resetConfirm
 				m.resetConfirm = -1
 				if idx < len(m.entries) {
+					keyID := m.entries[idx].KeyID
 					key := m.entries[idx].Key
 					return m, func() tea.Msg {
-						err := m.client.ResetAPIKeyLimits(key)
+						var err error
+						if keyID != "" {
+							err = m.client.ResetAPIKeyLimitsByID(keyID)
+						} else {
+							err = m.client.ResetAPIKeyLimits(key)
+						}
 						if err != nil {
 							return keyActionMsg{err: err}
 						}
@@ -295,7 +331,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			if m.cursor < len(m.entries) {
 				entry := m.entries[m.cursor]
 				m.editRow = m.cursor
-				m.openKeyForm(false, entry.Key, entry.Limits)
+				m.openKeyForm(false, entry.Key, entry.Limits, entry.Label)
 				m.viewport.SetContent(m.renderContent())
 				return m, textinput.Blink
 			}
@@ -350,6 +386,7 @@ func (m *keysTabModel) SetSize(w, h int) {
 		keyWidth = 16
 	}
 	m.formInputs[keyFieldKey].Width = keyWidth
+	m.formLabel.Width = keyWidth
 	m.formInputs[keyFieldMaxRequests].Width = 12
 	m.formInputs[keyFieldMaxTokens].Width = 12
 	if !m.ready {
@@ -370,12 +407,28 @@ func (m keysTabModel) View() string {
 }
 
 // openKeyForm prepares the add/edit form, prefilling it from the configured
-// limits of the key being edited.
-func (m *keysTabModel) openKeyForm(adding bool, key string, limits *APIKeyLimitConfig) {
+// label and limits of the key being edited.
+func (m *keysTabModel) openKeyForm(adding bool, key string, limits *APIKeyLimitConfig, labels ...string) {
 	m.adding = adding
 	m.editing = !adding
 	m.formErr = ""
 	m.formInputs[keyFieldKey].SetValue(key)
+	m.formOriginalKey = key
+	m.formLabel.SetValue("")
+	m.labelJSONMode = false
+	m.formLabelPresent = false
+	m.formOriginalLabel = ""
+	m.formOriginalLimits = cloneAPIKeyLimitConfig(limits)
+	if len(labels) > 0 {
+		m.formLabelPresent = labels[0] != ""
+		m.formOriginalLabel = labels[0]
+		if labelNeedsJSON(labels[0]) {
+			m.labelJSONMode = true
+			m.formLabel.SetValue(quoteJSONLabel(labels[0]))
+		} else {
+			m.formLabel.SetValue(labels[0])
+		}
+	}
 	m.formInputs[keyFieldMaxRequests].SetValue("")
 	m.formInputs[keyFieldMaxTokens].SetValue("")
 	m.formCadence = 0
@@ -399,6 +452,7 @@ func (m *keysTabModel) closeKeyForm() {
 	for i := range m.formInputs {
 		m.formInputs[i].Blur()
 	}
+	m.formLabel.Blur()
 }
 
 // focusFormField moves the focus to one form field.
@@ -410,6 +464,10 @@ func (m *keysTabModel) focusFormField(field int) {
 		} else {
 			m.formInputs[i].Blur()
 		}
+	}
+	m.formLabel.Blur()
+	if field == keyFieldLabel {
+		m.formLabel.Focus()
 	}
 }
 
@@ -428,6 +486,27 @@ func (m *keysTabModel) submitKeyForm() (keysTabModel, tea.Cmd) {
 		return *m, nil
 	}
 	isAdding := m.adding
+	label := m.formLabel.Value()
+	if m.labelJSONMode {
+		var decoded any
+		if label == "" {
+			label = ""
+		} else if err := json.Unmarshal([]byte(label), &decoded); err != nil {
+			m.formErr = T("key_form_label_invalid_json")
+			m.viewport.SetContent(m.renderContent())
+			return *m, nil
+		} else if decodedLabel, ok := decoded.(string); !ok {
+			m.formErr = T("key_form_label_invalid_json")
+			m.viewport.SetContent(m.renderContent())
+			return *m, nil
+		} else {
+			label = decodedLabel
+		}
+	}
+	labelProvided := label != "" || m.formLabelPresent
+	keyChanged := !isAdding && key != m.formOriginalKey
+	limitsChanged := !isAdding && !apiKeyLimitConfigEqual(limits, m.formOriginalLimits)
+	labelChanged := !isAdding && label != m.formOriginalLabel
 	// Edits address the original server position of the entry, not its row.
 	serverIdx := -1
 	if !isAdding {
@@ -443,14 +522,49 @@ func (m *keysTabModel) submitKeyForm() (keysTabModel, tea.Cmd) {
 	m.viewport.SetContent(m.renderContent())
 	if isAdding {
 		return *m, func() tea.Msg {
-			if errAdd := client.AddAPIKey(key, limits); errAdd != nil {
+			if errAdd := client.AddAPIKey(key, limits, label); errAdd != nil {
 				return keyActionMsg{err: errAdd}
 			}
 			return keyActionMsg{action: T("key_added")}
 		}
 	}
 	return *m, func() tea.Msg {
-		if errEdit := client.EditAPIKey(serverIdx, key, limits); errEdit != nil {
+		if !keyChanged && !limitsChanged {
+			if !labelChanged {
+				return keyActionMsg{action: T("key_updated")}
+			}
+			if errEdit := client.EditAPIKeyLabel(serverIdx, label); errEdit != nil {
+				return keyActionMsg{err: errEdit}
+			}
+			return keyActionMsg{action: T("key_updated")}
+		}
+		if keyChanged && !limitsChanged {
+			var errEdit error
+			if labelChanged {
+				if m.formOriginalLimits == nil {
+					errEdit = client.EditAPIKey(serverIdx, key, nil, label)
+				} else {
+					errEdit = client.RotateAPIKey(serverIdx, key, label)
+				}
+			} else {
+				if m.formOriginalLimits == nil {
+					errEdit = client.EditAPIKey(serverIdx, key, nil)
+				} else {
+					errEdit = client.RotateAPIKey(serverIdx, key)
+				}
+			}
+			if errEdit != nil {
+				return keyActionMsg{err: errEdit}
+			}
+			return keyActionMsg{action: T("key_updated")}
+		}
+		var errEdit error
+		if labelProvided {
+			errEdit = client.EditAPIKey(serverIdx, key, limits, label)
+		} else {
+			errEdit = client.EditAPIKey(serverIdx, key, limits)
+		}
+		if errEdit != nil {
 			return keyActionMsg{err: errEdit}
 		}
 		return keyActionMsg{action: T("key_updated")}
@@ -471,13 +585,50 @@ func (m keysTabModel) formLimits() (*APIKeyLimitConfig, error) {
 	cadence := keyResetCadences[m.formCadence]
 	if maxRequests == 0 && maxTokensM == 0 {
 		if cadence == "" {
+			if m.formOriginalLimits != nil && len(m.formOriginalLimits.ExtensionFields) > 0 {
+				return &APIKeyLimitConfig{ExtensionFields: cloneAPIKeyLimitExtensions(m.formOriginalLimits.ExtensionFields)}, nil
+			}
 			return nil, nil
 		}
 		// A reset cadence without any cap enforces nothing and the server
 		// discards it, so refuse it here instead of sending an inert limit.
 		return nil, fmt.Errorf("%s", T("key_form_cadence_needs_cap"))
 	}
-	return &APIKeyLimitConfig{MaxRequests: maxRequests, MaxTokensM: maxTokensM, Resets: cadence}, nil
+	limits := &APIKeyLimitConfig{MaxRequests: maxRequests, MaxTokensM: maxTokensM, Resets: cadence}
+	if m.formOriginalLimits != nil && len(m.formOriginalLimits.ExtensionFields) > 0 {
+		limits.ExtensionFields = cloneAPIKeyLimitExtensions(m.formOriginalLimits.ExtensionFields)
+	}
+	return limits, nil
+}
+
+func cloneAPIKeyLimitConfig(limits *APIKeyLimitConfig) *APIKeyLimitConfig {
+	if limits == nil {
+		return nil
+	}
+	clone := *limits
+	clone.ExtensionFields = cloneAPIKeyLimitExtensions(limits.ExtensionFields)
+	return &clone
+}
+
+func cloneAPIKeyLimitExtensions(fields map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(fields) == 0 {
+		return nil
+	}
+	clone := make(map[string]json.RawMessage, len(fields))
+	for name, value := range fields {
+		clone[name] = append(json.RawMessage(nil), value...)
+	}
+	return clone
+}
+
+func apiKeyLimitConfigEqual(left, right *APIKeyLimitConfig) bool {
+	if left == nil || (left.MaxRequests == 0 && left.MaxTokensM == 0 && left.Resets == "" && len(left.ExtensionFields) == 0) {
+		left = nil
+	}
+	if right == nil || (right.MaxRequests == 0 && right.MaxTokensM == 0 && right.Resets == "" && len(right.ExtensionFields) == 0) {
+		right = nil
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // parseLimitInt reads an optional non-negative integer limit.
@@ -533,9 +684,16 @@ func cadenceIndex(cadence string) int {
 // effectiveLimit merges the limits configured on the entry itself with the
 // runtime usage so that a limited key still renders its ceilings when no
 // request was recorded yet. Configured limits come from the entry (duplicate
-// key strings keep their own block); runtime usage is keyed by key string.
+// key strings keep their own block); runtime usage is keyed by stable key ID.
 func (m keysTabModel) effectiveLimit(entry APIKeyEntry) *APIKeyLimit {
-	runtime, hasRuntime := m.limits[entry.Key]
+	identity := strings.TrimSpace(entry.KeyID)
+	if identity == "" {
+		identity = apiKeyID(entry.Key)
+	}
+	runtime, hasRuntime := m.limits[identity]
+	if !hasRuntime {
+		runtime, hasRuntime = m.limits[entry.Key]
+	}
 	config := entry.Limits
 	if !hasRuntime && config == nil {
 		return nil
@@ -569,6 +727,7 @@ func (m keysTabModel) renderKeyForm() string {
 		m.renderFormLine(keyFieldMaxRequests, T("key_form_max_requests"), m.formInputs[keyFieldMaxRequests].View(), T("key_form_blank_unlimited")),
 		m.renderFormLine(keyFieldMaxTokens, T("key_form_max_tokens"), m.formInputs[keyFieldMaxTokens].View(), T("key_form_blank_unlimited")),
 		m.renderFormLine(keyFieldResets, T("key_form_resets"), cadence, T("key_form_cadences")),
+		m.renderFormLine(keyFieldLabel, T("key_form_label"), m.formLabel.View(), m.labelHint()),
 	}
 	if m.formErr != "" {
 		lines = append(lines, errorStyle.Render("✗ "+m.formErr))
@@ -579,6 +738,49 @@ func (m keysTabModel) renderKeyForm() string {
 	sb.WriteString(helpStyle.Render("  " + T("key_form_help")))
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func (m *keysTabModel) toggleLabelJSONMode() {
+	if m.labelJSONMode {
+		var decoded any
+		if m.formLabel.Value() == "" {
+			m.formErr = ""
+			m.labelJSONMode = false
+			return
+		}
+		if err := json.Unmarshal([]byte(m.formLabel.Value()), &decoded); err != nil {
+			m.formErr = T("key_form_label_invalid_json")
+			return
+		}
+		label, ok := decoded.(string)
+		if !ok || labelNeedsJSON(label) {
+			m.formErr = T("key_form_label_json_required")
+			return
+		}
+		m.formLabel.SetValue(label)
+		m.labelJSONMode = false
+		m.formErr = ""
+		return
+	}
+	m.formLabel.SetValue(quoteJSONLabel(m.formLabel.Value()))
+	m.labelJSONMode = true
+	m.formErr = ""
+}
+
+func (m keysTabModel) labelHint() string {
+	if m.labelJSONMode {
+		return T("key_form_label_json_mode")
+	}
+	return T("key_form_label_optional") + " " + T("key_form_label_json_toggle")
+}
+
+func quoteJSONLabel(label string) string {
+	encoded, _ := json.Marshal(label)
+	return string(encoded)
+}
+
+func labelNeedsJSON(label string) bool {
+	return strings.IndexFunc(label, unicode.IsControl) >= 0
 }
 
 // renderFormLine renders one label/value row, highlighting the focused field.
@@ -664,7 +866,6 @@ func (m keysTabModel) renderContent() string {
 	}
 
 	for i, entry := range m.entries {
-		key := entry.Key
 		cursor := "  "
 		rowStyle := lipgloss.NewStyle()
 		if i == m.cursor {
@@ -672,7 +873,7 @@ func (m keysTabModel) renderContent() string {
 			rowStyle = lipgloss.NewStyle().Bold(true)
 		}
 
-		row := fmt.Sprintf("%s%d. %s", cursor, i+1, maskKey(key))
+		row := fmt.Sprintf("%s%d. %s", cursor, i+1, displayAPIKey(entry))
 		if limits := m.effectiveLimit(entry); limits != nil {
 			row += "  " + formatAPIKeyLimit(*limits)
 		} else {
@@ -683,11 +884,11 @@ func (m keysTabModel) renderContent() string {
 
 		// Delete confirmation
 		if m.confirm == i {
-			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_delete_key"), maskKey(key))))
+			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_delete_key"), displayAPIKey(entry))))
 			sb.WriteString("\n")
 		}
 		if m.resetConfirm == i {
-			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_reset_key_usage"), maskKey(key))))
+			sb.WriteString(warningStyle.Render(fmt.Sprintf("    "+T("confirm_reset_key_usage"), displayAPIKey(entry))))
 			sb.WriteString("\n")
 		}
 
@@ -771,6 +972,38 @@ func maskKey(key string) string {
 		return strings.Repeat("*", len(key))
 	}
 	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
+}
+
+// displayAPIKey keeps the raw key out of the TUI while retaining compatibility
+// with locally constructed test rows that predate the key identity catalog.
+func displayAPIKey(entry APIKeyEntry) string {
+	if entry.Label != "" {
+		return sanitizeTerminalText(entry.Label)
+	}
+	if entry.KeyID != "" {
+		return shortAPIKeyID(entry.KeyID)
+	}
+	return maskKey(entry.Key)
+}
+
+// sanitizeTerminalText keeps arbitrary configured labels from injecting
+// control sequences or changing the shape of the TUI. The value sent to the
+// server remains untouched.
+func sanitizeTerminalText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '�'
+		}
+		return r
+	}, value)
+}
+
+func shortAPIKeyID(keyID string) string {
+	keyID = strings.TrimSpace(keyID)
+	if len(keyID) <= 12 {
+		return keyID
+	}
+	return keyID[:12]
 }
 
 func formatAPIKeyLimit(limits APIKeyLimit) string {

@@ -38,6 +38,12 @@ limits:
 			}},
 		},
 		{
+			name: "mapping with unicode label",
+			input: `key: labeled-key
+label: "  团队 🚀  "`,
+			want: APIKeyEntry{Key: "labeled-key", Label: "  团队 🚀  "},
+		},
+		{
 			name:     "mapping without limits",
 			input:    "key: plain-key",
 			want:     APIKeyEntry{Key: "plain-key"},
@@ -108,6 +114,11 @@ func TestAPIKeyEntryJSON(t *testing.T) {
 				MaxTokensM:  0.5,
 				Resets:      "weekly",
 			}},
+		},
+		{
+			name:  "mapping with unicode label",
+			input: `{"key":"labeled-key","label":"  团队 🚀  "}`,
+			want:  APIKeyEntry{Key: "labeled-key", Label: "  团队 🚀  "},
 		},
 		{
 			name:     "mapping without limits",
@@ -252,7 +263,7 @@ metadata:
 	if errUnmarshal := yaml.Unmarshal([]byte(yamlInput), &fromYAML); errUnmarshal != nil {
 		t.Fatalf("yaml.Unmarshal() error = %v", errUnmarshal)
 	}
-	if !fromYAML.IsStructured() || len(fromYAML.ExtensionFields) != 2 || fromYAML.Limits == nil || !fromYAML.Limits.HasExtensionFields() {
+	if !fromYAML.IsStructured() || fromYAML.Label != "tenant-a" || len(fromYAML.ExtensionFields) != 1 || fromYAML.Limits == nil || !fromYAML.Limits.HasExtensionFields() {
 		t.Fatalf("decoded entry did not retain extension fields: %#v", fromYAML)
 	}
 
@@ -348,6 +359,32 @@ func TestAPIKeyConfigRevisionChangesWithStructuredFields(t *testing.T) {
 	if APIKeyConfigRevision(copyEntries) == APIKeyConfigRevision(base) {
 		t.Fatal("limit edit did not change revision")
 	}
+	copyEntries = []APIKeyEntry{{Key: "key", Limits: &KeyLimits{MaxRequests: 1}, Label: "tenant-a"}}
+	if APIKeyConfigRevision(copyEntries) == APIKeyConfigRevision(base) {
+		t.Fatal("label edit did not change revision")
+	}
+	copyEntries[0].Label = ""
+	if APIKeyConfigRevision(copyEntries) != APIKeyConfigRevision(base) {
+		t.Fatal("clearing label changed revision from an unset label")
+	}
+}
+
+func TestValidateAPIKeyLabelsUsesExactNonEmptyStrings(t *testing.T) {
+	valid := []APIKeyEntry{
+		{Key: "first", Label: "team"},
+		{Key: "second", Label: " Team "},
+		{Key: "third", Label: "团队"},
+		{Key: "fourth"},
+		{Key: "fifth"},
+	}
+	if errValidate := ValidateAPIKeyLabels(valid); errValidate != nil {
+		t.Fatalf("ValidateAPIKeyLabels() rejected exact distinct labels: %v", errValidate)
+	}
+	duplicate := append([]APIKeyEntry(nil), valid...)
+	duplicate[4].Label = "team"
+	if errValidate := ValidateAPIKeyLabels(duplicate); errValidate == nil || !strings.Contains(errValidate.Error(), "duplicate api key label") {
+		t.Fatalf("ValidateAPIKeyLabels() = %v, want duplicate label error", errValidate)
+	}
 }
 
 func TestSaveConfigPreservesAPIKeyExtensionFields(t *testing.T) {
@@ -376,7 +413,7 @@ func TestSaveConfigPreservesAPIKeyExtensionFields(t *testing.T) {
 		t.Fatalf("reload error = %v", errReload)
 	}
 	entry := reloaded.APIKeys[0]
-	if entry.Limits == nil || entry.Limits.MaxRequests != 20 || !entry.Limits.HasExtensionFields() || len(entry.ExtensionFields) != 1 {
+	if entry.Label != "tenant-a" || entry.Limits == nil || entry.Limits.MaxRequests != 20 || !entry.Limits.HasExtensionFields() || len(entry.ExtensionFields) != 0 {
 		t.Fatalf("reloaded entry = %#v", entry)
 	}
 }

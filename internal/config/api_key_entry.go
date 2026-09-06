@@ -13,9 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// APIKeyEntry is one inbound client API key with optional usage limits.
+// APIKeyEntry is one inbound client API key with an optional unique display
+// label and optional usage limits.
 type APIKeyEntry struct {
 	Key             string               `yaml:"key" json:"key"`
+	Label           string               `yaml:"label,omitempty" json:"label,omitempty"`
 	Limits          *KeyLimits           `yaml:"limits,omitempty" json:"limits,omitempty"`
 	ExtensionFields map[string]yaml.Node `yaml:"-" json:"-"`
 }
@@ -193,6 +195,10 @@ func (e *APIKeyEntry) UnmarshalYAML(node *yaml.Node) error {
 				if err := value.Decode(&entry.Key); err != nil {
 					return err
 				}
+			case "label":
+				if err := value.Decode(&entry.Label); err != nil {
+					return err
+				}
 			case "limits":
 				if value.Tag == "!!null" {
 					continue
@@ -222,6 +228,9 @@ func (e APIKeyEntry) MarshalYAML() (any, error) {
 	}
 	node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	appendAPIKeyYAMLField(node, "key", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Key})
+	if e.Label != "" {
+		appendAPIKeyYAMLField(node, "label", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Label})
+	}
 	if e.Limits != nil && (!e.Limits.IsZero() || e.Limits.HasExtensionFields()) {
 		var limitsNode yaml.Node
 		if err := limitsNode.Encode(e.Limits); err != nil {
@@ -262,6 +271,10 @@ func (e *APIKeyEntry) UnmarshalJSON(data []byte) error {
 				if err := json.Unmarshal(raw, &entry.Key); err != nil {
 					return err
 				}
+			case "label":
+				if err := json.Unmarshal(raw, &entry.Label); err != nil {
+					return err
+				}
 			case "limits":
 				if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 					continue
@@ -295,6 +308,9 @@ func (e APIKeyEntry) MarshalJSON() ([]byte, error) {
 	}
 	fields := make(map[string]any, 2+len(e.ExtensionFields))
 	fields["key"] = e.Key
+	if e.Label != "" {
+		fields["label"] = e.Label
+	}
 	if e.Limits != nil && (!e.Limits.IsZero() || e.Limits.HasExtensionFields()) {
 		fields["limits"] = e.Limits
 	}
@@ -311,13 +327,13 @@ func (e APIKeyEntry) MarshalJSON() ([]byte, error) {
 
 func (e APIKeyEntry) hasNoLimits() bool {
 	// A reset cadence without a cap is inert, so serialize it as a bare key.
-	return (e.Limits == nil || (e.Limits.IsZero() && !e.Limits.HasExtensionFields())) && len(e.ExtensionFields) == 0
+	return e.Label == "" && (e.Limits == nil || (e.Limits.IsZero() && !e.Limits.HasExtensionFields())) && len(e.ExtensionFields) == 0
 }
 
 // IsStructured reports whether this entry has information that a string-only
 // client cannot represent.
 func (e APIKeyEntry) IsStructured() bool {
-	return (e.Limits != nil && (!e.Limits.IsZero() || e.Limits.HasExtensionFields())) || len(e.ExtensionFields) > 0
+	return e.Label != "" || (e.Limits != nil && (!e.Limits.IsZero() || e.Limits.HasExtensionFields())) || len(e.ExtensionFields) > 0
 }
 
 // APIKeyID returns the stable identifier shared by limits and analytics.
@@ -331,6 +347,11 @@ func APIKeyConfigRevision(entries []APIKeyEntry) string {
 	hash := sha256.New()
 	for index, entry := range entries {
 		_, _ = fmt.Fprintf(hash, "%d\x00%s\x00", index, APIKeyID(entry.Key))
+		if entry.Label != "" {
+			_, _ = fmt.Fprintf(hash, "label\x00%d\x00", len(entry.Label))
+			_, _ = hash.Write([]byte(entry.Label))
+			_, _ = hash.Write([]byte{0})
+		}
 		if entry.Limits != nil {
 			encoded, _ := yaml.Marshal(entry.Limits)
 			_, _ = hash.Write(encoded)
@@ -351,6 +372,9 @@ func APIKeyConfigRevision(entries []APIKeyEntry) string {
 // ValidateAPIKeyMutation rejects newly introduced duplicate trimmed keys while
 // allowing a legacy duplicate set to load and to be repaired one row at a time.
 func ValidateAPIKeyMutation(previous, candidate []APIKeyEntry) error {
+	if err := ValidateAPIKeyLabels(candidate); err != nil {
+		return err
+	}
 	previousCounts := apiKeyCounts(previous)
 	candidateCounts := apiKeyCounts(candidate)
 	for key, count := range candidateCounts {
@@ -358,6 +382,22 @@ func ValidateAPIKeyMutation(previous, candidate []APIKeyEntry) error {
 			continue
 		}
 		return fmt.Errorf("duplicate trimmed API key is not allowed")
+	}
+	return nil
+}
+
+// ValidateAPIKeyLabels rejects duplicate non-empty labels. Labels are exact
+// strings: whitespace and letter case are significant.
+func ValidateAPIKeyLabels(entries []APIKeyEntry) error {
+	seen := make(map[string]int, len(entries))
+	for index, entry := range entries {
+		if entry.Label == "" {
+			continue
+		}
+		if previous, exists := seen[entry.Label]; exists {
+			return fmt.Errorf("duplicate api key label at entries %d and %d", previous, index)
+		}
+		seen[entry.Label] = index
 	}
 	return nil
 }
@@ -479,7 +519,7 @@ func apiKeyCounts(entries []APIKeyEntry) map[string]int {
 }
 
 func (e APIKeyEntry) extensionFieldNames() []string {
-	return sortedAPIKeyYAMLFields(e.ExtensionFields, map[string]struct{}{"key": {}, "limits": {}})
+	return sortedAPIKeyYAMLFields(e.ExtensionFields, map[string]struct{}{"key": {}, "label": {}, "limits": {}})
 }
 
 func sortedAPIKeyYAMLFields(fields map[string]yaml.Node, excluded map[string]struct{}) []string {
@@ -552,6 +592,9 @@ func (c *SDKConfig) APIKeyLimits() map[string]KeyLimits {
 func (c *SDKConfig) ValidateAPIKeyLimits() error {
 	if c == nil {
 		return nil
+	}
+	if err := ValidateAPIKeyLabels(c.APIKeys); err != nil {
+		return err
 	}
 	for index, entry := range c.APIKeys {
 		if entry.Limits == nil {

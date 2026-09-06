@@ -108,6 +108,23 @@ func TestGetAPIKeyEntriesDecodesLimits(t *testing.T) {
 	}
 }
 
+func TestGetAPIKeyEntriesDecodesLabelsAndIdentityCatalog(t *testing.T) {
+	body := `{"api-keys":[{"key":"first","label":"租户 🚀"},{"key":"second"}],"key-identities":[{"key_id":"id-first","label":"租户 🚀","config_indexes":[0]},{"key_id":"id-second","config_indexes":[1]}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, http: server.Client()}
+	entries, err := client.GetAPIKeyEntries()
+	if err != nil {
+		t.Fatalf("GetAPIKeyEntries() error = %v", err)
+	}
+	if len(entries) != 2 || entries[0].KeyID != "id-first" || entries[0].Label != "租户 🚀" || entries[1].KeyID != "id-second" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestDeleteAPIKeyUsesRevisionWithoutRawKeyURL(t *testing.T) {
 	requested := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +202,11 @@ func TestAPIKeyPatchBodies(t *testing.T) {
 			want: `{"limits":{"max-requests":100,"max-tokens-m":1.5,"resets":"daily"},"new":"new-key"}`,
 		},
 		{
+			name: "create with label sends the label",
+			call: func(c *Client) error { return c.AddAPIKey("new-key", nil, "租户 🚀") },
+			want: `{"label":"租户 🚀","new":"new-key"}`,
+		},
+		{
 			name: "edit with limits sends index and object",
 			call: func(c *Client) error {
 				return c.EditAPIKey(2, "edited", &APIKeyLimitConfig{MaxTokensM: 0.5, Resets: "weekly"})
@@ -195,6 +217,11 @@ func TestAPIKeyPatchBodies(t *testing.T) {
 			name: "edit clearing limits sends explicit null",
 			call: func(c *Client) error { return c.EditAPIKey(0, "edited", nil) },
 			want: `{"index":0,"limits":null,"new":"edited"}`,
+		},
+		{
+			name: "edit clearing label sends empty string",
+			call: func(c *Client) error { return c.EditAPIKey(0, "edited", nil, "") },
+			want: `{"index":0,"label":"","limits":null,"new":"edited"}`,
 		},
 	}
 

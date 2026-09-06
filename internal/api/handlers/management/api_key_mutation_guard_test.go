@@ -140,7 +140,7 @@ func TestPutAPIKeysStructuredContractAndRevision(t *testing.T) {
 			t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 		}
 		entry := h.cfg.APIKeys[0]
-		if entry.Limits == nil || entry.Limits.MaxRequests != 20 || !entry.Limits.HasExtensionFields() || len(entry.ExtensionFields) != 1 {
+		if entry.Label != "tenant" || entry.Limits == nil || entry.Limits.MaxRequests != 20 || !entry.Limits.HasExtensionFields() || len(entry.ExtensionFields) != 0 {
 			t.Fatalf("updated entry = %#v", entry)
 		}
 	})

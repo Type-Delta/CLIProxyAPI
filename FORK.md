@@ -240,6 +240,55 @@ hot days.
 
 **Last updated:** 2026-09-04
 
+### DL013 - Human-readable API key labels
+
+Configured inbound API keys may carry an optional `label` alongside their
+stable SHA-256 `key_id`. Labels preserve their exact UTF-8 text, including
+whitespace and case, and every non-empty label must be unique within the
+configuration. An empty label clears the metadata; unlabeled keys continue to
+use the short key ID in management views. Labels do not change key identity,
+limits, authorization, or CPAUK history, and label-only edits apply through
+configuration hot reload without restarting the proxy.
+
+The management API accepts labels when creating, rotating, or editing a key;
+omitting the field preserves the current label and sending an empty string
+clears it. Config-index and revision checks remain the authority for writes, so
+a stale label edit is rejected without changing another key. Secret-free
+`key-identities` and analytics key catalogs expose the configured label for UI
+joins while raw keys remain concealed. Duplicate labels are rejected during
+configuration loading and all full or partial key mutations. The TUI and
+CPAMC create and edit forms support labels, display them in place of short IDs,
+and retain stable IDs for usage operations. The TUI label field uses plain
+text by default; Ctrl+J switches to a JSON string for entering newlines, tabs,
+and other control characters. Existing labels containing controls open in
+that mode automatically.
+
+**Implementation evidence:** `internal/config/api_key_entry.go`,
+`internal/api/handlers/management/config_lists.go`,
+`internal/api/handlers/management/analytics_pricing.go`,
+`internal/watcher/diff/config_diff.go`, `internal/tui/{client.go,keys_tab.go}`,
+`config.example.yaml`, and the CPAMC `src/features/config/components/blocks/ApiKeysCardEditor.tsx`,
+`src/services/api/apiKeys.ts`, `src/types/apiKeys.ts`, and
+`src/utils/keyIdentity.ts`.
+
+**Recorded validation:** focused config, management, watcher, and TUI tests
+pass, including exact Unicode round-trips, duplicate-label rejection,
+create/edit/clear behavior, stable-ID usage resets, and redacted watcher
+messages. CPAMC contract tests cover exact label comparison, identity joins,
+structured-entry preservation, and create/edit payloads. No analytics schema
+or history migration is required because labels are overlaid from current
+configuration. An isolated live server verified create/rename/clear, exact
+Unicode and control characters, stable ID/authentication/limits, unknown-field
+preservation, file hot reload, and rejection of duplicate-label reloads while
+retaining the previous runtime configuration. CPAMC passed its 651-test
+verification pipeline, followed by final focused tests, lint, TypeScript, and
+production build checks. Real Chrome desktop and mobile create/edit/clear
+flows also verified short-ID fallback, blank-row targeting, key concealment,
+and metadata preservation. The bundled panel was rebuilt from CPAMC commit
+`c4ef0c26b22bbb7a0c630ef00db0cb8fc68c9391`.
+
+**Last updated:** 2026-09-06
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

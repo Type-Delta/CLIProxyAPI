@@ -732,25 +732,11 @@ func (h *Handler) GetAnalyticsKeys(c *gin.Context) {
 		return
 	}
 	configured := map[string]apiKeyIdentityEntry{}
-	configuredLabels := map[string]string{}
 	h.mu.Lock()
 	if h.cfg != nil {
 		catalog, _ := buildAPIKeyIdentityCatalog(h.cfg.APIKeys, config.APIKeyID)
 		for _, identity := range catalog {
 			configured[identity.KeyID] = identity
-		}
-		for _, entry := range h.cfg.APIKeys {
-			labelNode, exists := entry.ExtensionFields["label"]
-			if !exists {
-				continue
-			}
-			var label string
-			if err := labelNode.Decode(&label); err == nil {
-				label = strings.TrimSpace(label)
-				if label != "" && len(label) <= model.MaxStoredStringBytes {
-					configuredLabels[config.APIKeyID(entry.Key)] = label
-				}
-			}
 		}
 	}
 	h.mu.Unlock()
@@ -765,7 +751,7 @@ func (h *Handler) GetAnalyticsKeys(c *gin.Context) {
 			keys[index].Status = model.KeyStatusConflict
 		}
 		keys[index].ConfigIndexes = slices.Clone(identity.ConfigIndexes)
-		keys[index].Label = configuredLabels[keys[index].KeyID]
+		keys[index].Label = identity.Label
 	}
 	setAnalyticsNoStore(c)
 	if page.Meta.NextCursor != "" {

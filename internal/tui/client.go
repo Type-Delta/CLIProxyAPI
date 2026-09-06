@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,15 +35,60 @@ type APIKeyLimit struct {
 
 // APIKeyLimitSnapshot identifies one limited access key and its current usage.
 type APIKeyLimitSnapshot struct {
-	Key    string       `json:"key"`
-	Limits *APIKeyLimit `json:"limits"`
+	Key         string       `json:"key"`
+	KeyID       string       `json:"key_id"`
+	ConfigIndex int          `json:"config_index"`
+	Limits      *APIKeyLimit `json:"limits"`
 }
 
 // APIKeyLimitConfig is the configured (not runtime) limit block of one access key.
 type APIKeyLimitConfig struct {
-	MaxRequests int64   `json:"max-requests,omitempty"`
-	MaxTokensM  float64 `json:"max-tokens-m,omitempty"`
-	Resets      string  `json:"resets,omitempty"`
+	MaxRequests     int64                      `json:"max-requests,omitempty"`
+	MaxTokensM      float64                    `json:"max-tokens-m,omitempty"`
+	Resets          string                     `json:"resets,omitempty"`
+	ExtensionFields map[string]json.RawMessage `json:"-"`
+}
+
+func (c *APIKeyLimitConfig) UnmarshalJSON(data []byte) error {
+	type alias APIKeyLimitConfig
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	decoded.ExtensionFields = make(map[string]json.RawMessage)
+	for name, value := range fields {
+		switch name {
+		case "max-requests", "max-tokens-m", "resets":
+		default:
+			decoded.ExtensionFields[name] = append(json.RawMessage(nil), value...)
+		}
+	}
+	if len(decoded.ExtensionFields) == 0 {
+		decoded.ExtensionFields = nil
+	}
+	*c = APIKeyLimitConfig(decoded)
+	return nil
+}
+
+func (c APIKeyLimitConfig) MarshalJSON() ([]byte, error) {
+	fields := make(map[string]any, 3+len(c.ExtensionFields))
+	if c.MaxRequests != 0 {
+		fields["max-requests"] = c.MaxRequests
+	}
+	if c.MaxTokensM != 0 {
+		fields["max-tokens-m"] = c.MaxTokensM
+	}
+	if c.Resets != "" {
+		fields["resets"] = c.Resets
+	}
+	for name, value := range c.ExtensionFields {
+		fields[name] = json.RawMessage(value)
+	}
+	return json.Marshal(fields)
 }
 
 // APIKeyEntry is one configured access key with its optional limit block.
@@ -50,6 +96,8 @@ type APIKeyLimitConfig struct {
 // stays stable even when blank or keyless entries are filtered out of the list.
 type APIKeyEntry struct {
 	Key    string
+	KeyID  string
+	Label  string
 	Index  int
 	Limits *APIKeyLimitConfig
 }
@@ -319,16 +367,21 @@ func (c *Client) GetAPIKeyEntries() ([]APIKeyEntry, error) {
 	result := make([]APIKeyEntry, 0, len(entries))
 	for index, entry := range entries {
 		var key string
+		var keyID, label string
 		var limits *APIKeyLimitConfig
 		if errKey := json.Unmarshal(entry, &key); errKey != nil {
 			var object struct {
 				Key    string             `json:"key"`
+				KeyID  string             `json:"key_id"`
+				Label  string             `json:"label"`
 				Limits *APIKeyLimitConfig `json:"limits"`
 			}
 			if errObject := json.Unmarshal(entry, &object); errObject != nil {
 				return nil, errObject
 			}
 			key = object.Key
+			keyID = object.KeyID
+			label = object.Label
 			limits = object.Limits
 		}
 		// Skip blanks, JSON nulls (which decode into an empty string) and
@@ -338,29 +391,93 @@ func (c *Client) GetAPIKeyEntries() ([]APIKeyEntry, error) {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		result = append(result, APIKeyEntry{Key: strings.TrimSpace(key), Index: index, Limits: limits})
+		result = append(result, APIKeyEntry{Key: strings.TrimSpace(key), KeyID: strings.TrimSpace(keyID), Label: label, Index: index, Limits: limits})
+	}
+	// The identity catalog is deliberately separate from the raw config list.
+	// Join it by config index so callers can render labels and IDs without
+	// needing to expose the key value.
+	if rawIdentities, ok := wrapper["key-identities"]; ok && rawIdentities != nil {
+		var identities []struct {
+			KeyID         string `json:"key_id"`
+			Label         string `json:"label"`
+			ConfigIndexes []int  `json:"config_indexes"`
+		}
+		identityJSON, errMarshal := json.Marshal(rawIdentities)
+		if errMarshal == nil && json.Unmarshal(identityJSON, &identities) == nil {
+			byIndex := make(map[int]struct {
+				keyID string
+				label string
+			}, len(identities))
+			for _, identity := range identities {
+				for _, configIndex := range identity.ConfigIndexes {
+					byIndex[configIndex] = struct {
+						keyID string
+						label string
+					}{identity.KeyID, identity.Label}
+				}
+			}
+			for index := range result {
+				identity, exists := byIndex[result[index].Index]
+				if !exists {
+					continue
+				}
+				if result[index].KeyID == "" {
+					result[index].KeyID = identity.keyID
+				}
+				if result[index].Label == "" {
+					result[index].Label = identity.label
+				}
+			}
+		}
+	}
+	for index := range result {
+		if result[index].KeyID == "" {
+			result[index].KeyID = apiKeyID(result[index].Key)
+		}
 	}
 	return result, nil
 }
 
 // AddAPIKey appends a new API key. Limits are sent only when configured, so a
 // plain key stays a bare string on the server side.
-func (c *Client) AddAPIKey(key string, limits *APIKeyLimitConfig) error {
+func (c *Client) AddAPIKey(key string, limits *APIKeyLimitConfig, label ...string) error {
 	body := map[string]any{"new": key}
 	if limits != nil {
 		body["limits"] = limits
+	}
+	if len(label) > 0 && label[0] != "" {
+		body["label"] = label[0]
 	}
 	return c.patchAPIKeys(body)
 }
 
 // EditAPIKey replaces the API key at the given index. A nil limits value clears
 // the configured limits by sending an explicit JSON null.
-func (c *Client) EditAPIKey(index int, key string, limits *APIKeyLimitConfig) error {
+func (c *Client) EditAPIKey(index int, key string, limits *APIKeyLimitConfig, label ...string) error {
 	body := map[string]any{"index": index, "new": key}
 	if limits != nil {
 		body["limits"] = limits
 	} else {
 		body["limits"] = json.RawMessage("null")
+	}
+	if len(label) > 0 {
+		body["label"] = label[0]
+	}
+	return c.patchAPIKeys(body)
+}
+
+// EditAPIKeyLabel changes only a key label, leaving the key and all other
+// structured metadata untouched on the server.
+func (c *Client) EditAPIKeyLabel(index int, label string) error {
+	return c.patchAPIKeys(map[string]any{"index": index, "label": label})
+}
+
+// RotateAPIKey replaces a key without sending a limits block. The management
+// API preserves the existing limits and extension fields for the slot.
+func (c *Client) RotateAPIKey(index int, key string, label ...string) error {
+	body := map[string]any{"index": index, "new": key}
+	if len(label) > 0 {
+		body["label"] = label[0]
 	}
 	return c.patchAPIKeys(body)
 }
@@ -458,6 +575,15 @@ func (c *Client) GetAPIKeyLimits() ([]APIKeyLimitSnapshot, error) {
 // ResetAPIKeyLimits resets recorded usage for one limited access key.
 func (c *Client) ResetAPIKeyLimits(key string) error {
 	return c.postJSON("/v0/management/api-key-limits/reset", map[string]string{"key": key})
+}
+
+// ResetAPIKeyLimitsByID resets usage using the secret-free stable key ID.
+func (c *Client) ResetAPIKeyLimitsByID(keyID string) error {
+	return c.postJSON("/v0/management/api-key-limits/reset", map[string]string{"key_id": keyID})
+}
+
+func apiKeyID(key string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimSpace(key))))
 }
 
 // GetGeminiKeys fetches Gemini API keys.
