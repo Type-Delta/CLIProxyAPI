@@ -136,7 +136,37 @@ func (h *Handler) APICall(c *gin.Context) {
 		reqHeaders = map[string]string{}
 	}
 
-	var hostOverride string
+	requestKind := classifyQuotaRequest(auth, method, parsedURL, body.Data)
+	cacheKey := buildQuotaCacheKey(h, auth, method, parsedURL, requestProxyURL, reqHeaders, body.Data)
+	execute := func(ctx context.Context) quotaCallOutcome {
+		return h.executeAPICall(ctx, method, urlStr, auth, requestProxyURL, reqHeaders, body.Data)
+	}
+
+	var outcome quotaCallOutcome
+	switch requestKind {
+	case quotaRequestCacheable:
+		outcome = h.getQuotaCache().do(c.Request.Context(), cacheKey, execute)
+	case quotaRequestCodexConsume:
+		outcome = execute(c.Request.Context())
+		if outcome.successfulResponse() {
+			h.getQuotaCache().invalidateAuth(cacheKey.authHash)
+		}
+	default:
+		outcome = execute(c.Request.Context())
+	}
+
+	h.writeAPICallOutcome(c, outcome)
+}
+
+func (h *Handler) executeAPICall(ctx context.Context, method, urlStr string, auth *coreauth.Auth, requestProxyURL string, requestHeaders map[string]string, data string) quotaCallOutcome {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reqHeaders := make(map[string]string, len(requestHeaders))
+	for key, value := range requestHeaders {
+		reqHeaders[key] = value
+	}
+
 	var token string
 	var tokenResolved bool
 	var tokenErr error
@@ -145,16 +175,17 @@ func (h *Handler) APICall(c *gin.Context) {
 			continue
 		}
 		if !tokenResolved {
-			token, tokenErr = h.resolveTokenForAuth(c.Request.Context(), auth, requestProxyURL)
+			token, tokenErr = h.resolveTokenForAuth(ctx, auth, requestProxyURL)
 			tokenResolved = true
 		}
 		if auth != nil && token == "" {
 			if tokenErr != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "auth token refresh failed"})
-				return
+				return quotaCallOutcomeFromTokenError(tokenErr)
 			}
-			c.JSON(http.StatusBadRequest, gin.H{"error": "auth token not found"})
-			return
+			return quotaCallOutcome{
+				outerStatus: http.StatusBadRequest,
+				outerError:  "auth token not found",
+			}
 		}
 		if token == "" {
 			continue
@@ -163,16 +194,18 @@ func (h *Handler) APICall(c *gin.Context) {
 	}
 
 	var requestBody io.Reader
-	if body.Data != "" {
-		requestBody = strings.NewReader(body.Data)
+	if data != "" {
+		requestBody = strings.NewReader(data)
 	}
-
-	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), method, urlStr, requestBody)
+	req, errNewRequest := http.NewRequestWithContext(ctx, method, urlStr, requestBody)
 	if errNewRequest != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to build request"})
-		return
+		return quotaCallOutcome{
+			outerStatus: http.StatusBadRequest,
+			outerError:  "failed to build request",
+		}
 	}
 
+	var hostOverride string
 	for key, value := range reqHeaders {
 		if strings.EqualFold(key, "host") {
 			hostOverride = strings.TrimSpace(value)
@@ -192,8 +225,10 @@ func (h *Handler) APICall(c *gin.Context) {
 	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
 		log.WithError(errDo).Debug("management APICall request failed")
-		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})
-		return
+		return quotaCallOutcome{
+			outerStatus: http.StatusBadGateway,
+			outerError:  "request failed",
+		}
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -203,15 +238,44 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	respBody, errReadAll := io.ReadAll(resp.Body)
 	if errReadAll != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
-		return
+		return quotaCallOutcome{
+			outerStatus: http.StatusBadGateway,
+			outerError:  "failed to read response",
+			rateLimited: resp.StatusCode == http.StatusTooManyRequests,
+			response: apiCallResponse{
+				StatusCode: resp.StatusCode,
+				Header:     cloneResponseHeader(resp.Header),
+			},
+		}
 	}
 
-	c.JSON(http.StatusOK, apiCallResponse{
-		StatusCode: resp.StatusCode,
-		Header:     resp.Header,
-		Body:       string(respBody),
-	})
+	return quotaCallOutcome{
+		hasResponse: true,
+		response: apiCallResponse{
+			StatusCode: resp.StatusCode,
+			Header:     cloneResponseHeader(resp.Header),
+			Body:       string(respBody),
+		},
+	}
+}
+
+func (h *Handler) writeAPICallOutcome(c *gin.Context, outcome quotaCallOutcome) {
+	if outcome.callerCanceled || c == nil || (c.Request != nil && c.Request.Context().Err() != nil) {
+		return
+	}
+	if outcome.outerError != "" {
+		status := outcome.outerStatus
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		c.JSON(status, gin.H{"error": outcome.outerError})
+		return
+	}
+	if !outcome.hasResponse {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})
+		return
+	}
+	c.JSON(http.StatusOK, outcome.response)
 }
 
 func firstNonEmptyString(values ...*string) string {
@@ -307,6 +371,13 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		}
 	}()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter, retryAfterProvided := parseRetryAfter(resp.Header, time.Now())
+		return "", &apiCallRateLimitError{
+			retryAfter:         retryAfter,
+			retryAfterProvided: retryAfterProvided,
+		}
+	}
 	bodyBytes, errRead := io.ReadAll(resp.Body)
 	if errRead != nil {
 		return "", errRead
