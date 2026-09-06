@@ -289,6 +289,46 @@ and metadata preservation. The bundled panel was rebuilt from CPAMC commit
 
 **Last updated:** 2026-09-06
 
+### DL014 - Shared management quota refresh protection
+
+CPA protects the known CPAMC quota and account-information requests forwarded
+through `POST /v0/management/api-call`. Concurrent identical requests for a
+credential share one upstream call, and completed results are reused for one
+minute across management clients. This protection runs before OAuth token
+resolution so repeated refreshes also share credential acquisition work.
+
+An upstream HTTP 429 blocks further quota requests for the same credential and
+provider until `Retry-After` expires. Both delta-seconds and HTTP-date values are
+supported; missing or invalid values use a three-minute backoff. The backoff
+covers sibling quota endpoints and provider fallback hosts, including 429s
+received during token refresh or before an interrupted response body. Other
+credentials remain independent. A 429 uses its retry deadline instead of the ordinary
+one-minute result lifetime.
+
+Cached provider Date headers advance by cache residence time so CPAMC retains
+the provider clock offset used by quota countdowns.
+
+The existing management response envelope is preserved. Generic API calls and
+quota-reset mutations are not cached. The known xAI paid-account health probe is
+covered, while ordinary chat completions are not. Successful Codex reset-credit
+consumption invalidates cached quota results without lifting provider backoff.
+State is held in memory per CPA management handler, shared by its clients, and
+resets when CPA restarts; separate CPA processes do not share it.
+
+**Implementation evidence:** `internal/api/handlers/management/api_tools.go`,
+`internal/api/handlers/management/api_tools_quota_cache.go`, and
+`internal/api/handlers/management/api_tools_quota_cache_test.go`.
+
+**Recorded validation:** `go test ./...`,
+`go test -race ./internal/api/handlers/management -count=1`, and the server build
+pass. Handler tests use registered credentials and a local HTTPS provider to
+verify call counts, concurrent clients, exact expiry, Retry-After parsing and
+fallback, provider backoff, mutation isolation, interrupted responses, and
+preserved countdown clock offset. Bypassing the guard through a test-only Go
+overlay makes the one-minute expiry test fail on excess provider calls.
+
+**Last updated:** 2026-09-06
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

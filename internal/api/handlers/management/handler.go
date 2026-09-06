@@ -48,6 +48,8 @@ type Handler struct {
 	appliedReloadGeneration  uint64
 	attemptsMu               sync.Mutex
 	failedAttempts           map[string]*attemptInfo // keyed by client IP
+	quotaCacheMu             sync.Mutex
+	quotaCache               *apiCallQuotaCache
 	authManager              *coreauth.Manager
 	tokenStore               coreauth.Store
 	localPassword            string
@@ -67,6 +69,21 @@ type Handler struct {
 	pluginStoreHTTPClient    pluginstore.HTTPDoer
 	pluginReleaseCacheMu     sync.Mutex
 	pluginReleaseCache       map[string]pluginReleaseCacheEntry
+}
+
+// getQuotaCache returns the handler-local quota request cache, creating it on
+// first use. The cache intentionally has no background cleanup goroutine;
+// expired state is removed when a request accesses it.
+func (h *Handler) getQuotaCache() *apiCallQuotaCache {
+	if h == nil {
+		return nil
+	}
+	h.quotaCacheMu.Lock()
+	defer h.quotaCacheMu.Unlock()
+	if h.quotaCache == nil {
+		h.quotaCache = newAPICallQuotaCache(nil)
+	}
+	return h.quotaCache
 }
 
 type configReloadSnapshot struct {
