@@ -88,7 +88,7 @@ func TestMigrationBackfillsDailyStatsFromRollups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, "DROP TABLE daily_stats; DELETE FROM schema_migrations WHERE version=2"); err != nil {
+	if _, err := direct.ExecContext(ctx, "DROP TABLE daily_stats; DELETE FROM schema_migrations WHERE version>=2"); err != nil {
 		_ = direct.Close()
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ FROM daily_stats WHERE day_start_ns=? AND key_id=?`, day.UTC().UnixNano(), keyID
 	if requests != 2 || succeeded != 1 || failed != 1 || total != 210 {
 		t.Fatalf("backfilled daily stats requests=%d succeeded=%d failed=%d total=%d", requests, succeeded, failed, total)
 	}
-	if database.SchemaVersion() != 2 {
+	if database.SchemaVersion() != 3 {
 		t.Fatalf("schema version=%d", database.SchemaVersion())
 	}
 }

@@ -17,15 +17,45 @@ import (
 
 const MaxPricingRules = 10_000
 
+const (
+	ModelsDevSource         = "models.dev"
+	PricingCatalogTTL       = 6 * time.Hour
+	PricingRetrySuppression = 15 * time.Minute
+)
+
 type PricingProvenance struct {
-	Source       string
-	SourceDigest string
-	SyncedAt     time.Time
+	Source           string
+	SourceDigest     string
+	SyncedAt         time.Time
+	CatalogSource    string
+	CatalogDigest    string
+	CatalogSyncedAt  time.Time
+	CatalogExpiresAt time.Time
+	CatalogRetryAt   time.Time
+	CatalogLastError string
 }
 
 type PricingSnapshot struct {
 	Rules      []aggregate.PricingRule
+	Overrides  []aggregate.PricingRule
+	Catalog    []aggregate.PricingRule
 	Provenance PricingProvenance
+}
+
+type PricingRefreshResult struct {
+	Snapshot  PricingSnapshot
+	State     string
+	Attempted bool
+	Err       error
+}
+
+type PricingFetcher interface {
+	Fetch(context.Context) (PricingCatalog, error)
+}
+
+type PricingCatalog struct {
+	Rules  []aggregate.PricingRule
+	Digest string
 }
 
 // PricingCatalogStore is the persistence contract used by the service layer.
@@ -44,16 +74,53 @@ func (s *SQLiteStore) PriceBook(ctx context.Context) (aggregate.PriceBook, error
 }
 
 func (s *SQLiteStore) UpdatePriceBook(ctx context.Context, book aggregate.PriceBook) (aggregate.PriceBook, error) {
-	canonical, err := json.Marshal(book.Rules)
+	manual := make([]aggregate.PricingRule, 0, len(book.Rules))
+	for index := range book.Rules {
+		rule := book.Rules[index]
+		rule.Catalog = false
+		// The catalog source is reserved for the managed table. Older clients
+		// may send a discovered row back during a full-list PUT; retain it as
+		// an explicit management override instead of allowing it to disappear.
+		if rule.Source == ModelsDevSource {
+			rule.Source = "management-api"
+		}
+		manual = append(manual, rule)
+	}
+	if err := validatePricingRules(manual); err != nil {
+		return aggregate.PriceBook{}, err
+	}
+	canonical, err := json.Marshal(manual)
 	if err != nil {
-		return aggregate.PriceBook{}, fmt.Errorf("encode pricing catalog: %w", err)
+		return aggregate.PriceBook{}, fmt.Errorf("encode pricing overrides: %w", err)
 	}
 	digest := sha256.Sum256(canonical)
 	provenance := PricingProvenance{Source: "management-api", SourceDigest: hex.EncodeToString(digest[:]), SyncedAt: time.Now().UTC()}
-	if err := s.ReplacePricingRules(ctx, book.Rules, provenance); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return aggregate.PriceBook{}, ErrClosed
+	}
+	_, currentProvenance, err := loadPricingRules(ctx, s.db)
+	if err != nil {
 		return aggregate.PriceBook{}, err
 	}
-	return s.PriceBook(ctx)
+	provenance.CatalogSource = currentProvenance.CatalogSource
+	provenance.CatalogDigest = currentProvenance.CatalogDigest
+	provenance.CatalogSyncedAt = currentProvenance.CatalogSyncedAt
+	provenance.CatalogExpiresAt = currentProvenance.CatalogExpiresAt
+	provenance.CatalogRetryAt = currentProvenance.CatalogRetryAt
+	provenance.CatalogLastError = currentProvenance.CatalogLastError
+	if err := replaceManualPricingRules(ctx, s.db, manual, provenance); err != nil {
+		return aggregate.PriceBook{}, err
+	}
+	// Re-read after the transaction so ordering and pointer ownership stay
+	// identical to normal startup loads.
+	updated, _, err := loadPricingRules(ctx, s.db)
+	if err != nil {
+		return aggregate.PriceBook{}, err
+	}
+	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(updated.Rules)}
+	return updated, nil
 }
 
 func (s *SQLiteStore) ReplacePricingRules(ctx context.Context, rules []aggregate.PricingRule, provenance PricingProvenance) error {
@@ -68,7 +135,11 @@ func (s *SQLiteStore) ReplacePricingRules(ctx context.Context, rules []aggregate
 	if err := replacePricingRules(ctx, s.db, rules, provenance); err != nil {
 		return err
 	}
-	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(rules)}
+	book, _, err := loadPricingRules(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(book.Rules)}
 	return nil
 }
 
@@ -86,7 +157,16 @@ func (s *SQLiteStore) PricingSnapshot(ctx context.Context) (PricingSnapshot, err
 	if err != nil {
 		return PricingSnapshot{}, err
 	}
-	return PricingSnapshot{Rules: book.Rules, Provenance: provenance}, nil
+	overrides := make([]aggregate.PricingRule, 0, len(book.Rules))
+	catalog := make([]aggregate.PricingRule, 0, len(book.Rules))
+	for _, rule := range book.Rules {
+		if rule.Catalog {
+			catalog = append(catalog, rule)
+		} else {
+			overrides = append(overrides, rule)
+		}
+	}
+	return PricingSnapshot{Rules: clonePricingRules(book.Rules), Overrides: overrides, Catalog: catalog, Provenance: provenance}, nil
 }
 
 func (s *SQLiteStore) PricingMissing(ctx context.Context, selected model.Range) ([]model.PricingMissing, error) {
@@ -184,6 +264,29 @@ func validatePricingCatalog(rules []aggregate.PricingRule, provenance PricingPro
 	return nil
 }
 
+func validatePricingRules(rules []aggregate.PricingRule) error {
+	if len(rules) > MaxPricingRules {
+		return fmt.Errorf("pricing catalog exceeds %d rules", MaxPricingRules)
+	}
+	seen := make(map[string]struct{}, len(rules))
+	for index := range rules {
+		if err := rules[index].Validate(); err != nil {
+			return err
+		}
+		match := rules[index].Provider + "\x00"
+		if rules[index].Model != "" {
+			match += "model\x00" + rules[index].Model
+		} else {
+			match += "alias\x00" + rules[index].Alias
+		}
+		if _, duplicate := seen[match]; duplicate {
+			return fmt.Errorf("duplicate pricing match %q", match)
+		}
+		seen[match] = struct{}{}
+	}
+	return nil
+}
+
 func replacePricingRules(ctx context.Context, database *sql.DB, rules []aggregate.PricingRule, provenance PricingProvenance) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
@@ -193,22 +296,21 @@ func replacePricingRules(ctx context.Context, database *sql.DB, rules []aggregat
 		_ = tx.Rollback()
 		return fmt.Errorf("clear pricing rules: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pricing_manual_rules"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear pricing manual rules: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pricing_catalog_rules"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear pricing catalog rules: %w", err)
+	}
 	for index := range rules {
-		var input, output any
-		if rules[index].InputPerMillion != nil {
-			input, output = int64(*rules[index].InputPerMillion), int64(*rules[index].OutputPerMillion)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO pricing_rules
-(rule_id,model,alias,input_per_million_nano,output_per_million_nano,cache_read_multiplier,cache_creation_multiplier,source)
-VALUES (?,?,?,?,?,?,?,?)`, rules[index].ID, rules[index].Model, rules[index].Alias, input, output,
-			rules[index].CacheReadMultiplier, rules[index].CacheCreationMultiplier, rules[index].Source); err != nil {
+		if err := insertPricingRule(ctx, tx, rules[index], rules[index].Catalog); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert pricing rule %d: %w", index, err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO pricing_provenance(singleton,source,source_digest,synced_at_ns) VALUES (1,?,?,?)
-ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=excluded.source_digest,synced_at_ns=excluded.synced_at_ns`,
-		provenance.Source, provenance.SourceDigest, provenance.SyncedAt.UnixNano()); err != nil {
+	if err := writePricingProvenance(ctx, tx, provenance); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("record pricing provenance: %w", err)
 	}
@@ -218,18 +320,85 @@ ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=exclud
 	return nil
 }
 
+func replaceManualPricingRules(ctx context.Context, database *sql.DB, rules []aggregate.PricingRule, provenance PricingProvenance) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin pricing overrides update: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pricing_rules"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear pricing overrides: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pricing_manual_rules"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear pricing manual rules: %w", err)
+	}
+	for index := range rules {
+		if err := insertPricingRule(ctx, tx, rules[index], false); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert pricing override %d: %w", index, err)
+		}
+	}
+	if err := writePricingProvenance(ctx, tx, provenance); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("record pricing provenance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pricing overrides: %w", err)
+	}
+	return nil
+}
+
+func insertPricingRule(ctx context.Context, tx *sql.Tx, rule aggregate.PricingRule, catalog bool) error {
+	var input, output any
+	if rule.InputPerMillion != nil {
+		input, output = int64(*rule.InputPerMillion), int64(*rule.OutputPerMillion)
+	}
+	table := "pricing_manual_rules"
+	if catalog {
+		table = "pricing_catalog_rules"
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO `+table+`
+(rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,cache_read_multiplier,cache_creation_multiplier,source)
+VALUES (?,?,?,?,?,?,?,?,?)`, rule.ID, rule.Provider, rule.Model, rule.Alias, input, output,
+		rule.CacheReadMultiplier, rule.CacheCreationMultiplier, rule.Source)
+	return err
+}
+
+func writePricingProvenance(ctx context.Context, tx *sql.Tx, provenance PricingProvenance) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pricing_provenance(singleton,source,source_digest,synced_at_ns) VALUES (1,?,?,?)
+ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=excluded.source_digest,synced_at_ns=excluded.synced_at_ns`,
+		provenance.Source, provenance.SourceDigest, provenance.SyncedAt.UnixNano()); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO pricing_catalog_provenance(singleton,source,source_digest,synced_at_ns,expires_at_ns,retry_at_ns,last_error)
+VALUES (1,?,?,?,?,?,?)
+ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=excluded.source_digest,synced_at_ns=excluded.synced_at_ns,
+expires_at_ns=excluded.expires_at_ns,retry_at_ns=excluded.retry_at_ns,last_error=excluded.last_error`,
+		provenance.CatalogSource, provenance.CatalogDigest, unixNanoOrZero(provenance.CatalogSyncedAt),
+		unixNanoOrZero(provenance.CatalogExpiresAt), unixNanoOrZero(provenance.CatalogRetryAt), provenance.CatalogLastError)
+	return err
+}
+
+func unixNanoOrZero(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.UTC().UnixNano()
+}
+
 func loadPricingRules(ctx context.Context, database *sql.DB) (aggregate.PriceBook, PricingProvenance, error) {
-	rows, err := database.QueryContext(ctx, `SELECT rule_id,model,alias,input_per_million_nano,output_per_million_nano,
+	book := aggregate.PriceBook{}
+	rows, err := database.QueryContext(ctx, `SELECT rule_id,'',model,alias,input_per_million_nano,output_per_million_nano,
 cache_read_multiplier,cache_creation_multiplier,source FROM pricing_rules ORDER BY rule_id`)
 	if err != nil {
 		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing rules: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	book := aggregate.PriceBook{}
 	for rows.Next() {
 		var rule aggregate.PricingRule
 		var input, output sql.NullInt64
-		if err := rows.Scan(&rule.ID, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
+		if err := rows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
 			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("scan pricing rule: %w", err)
 		}
 		if input.Valid {
@@ -241,17 +410,89 @@ cache_read_multiplier,cache_creation_multiplier,source FROM pricing_rules ORDER 
 	if err := rows.Err(); err != nil {
 		return aggregate.PriceBook{}, PricingProvenance{}, err
 	}
+	manualRows, err := database.QueryContext(ctx, `SELECT rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,
+cache_read_multiplier,cache_creation_multiplier,source FROM pricing_manual_rules ORDER BY rule_id`)
+	if err != nil {
+		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing manual rules: %w", err)
+	}
+	defer func() { _ = manualRows.Close() }()
+	for manualRows.Next() {
+		var rule aggregate.PricingRule
+		var input, output sql.NullInt64
+		if err := manualRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
+			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("scan pricing manual rule: %w", err)
+		}
+		if input.Valid {
+			inputValue, outputValue := model.NanoUSD(input.Int64), model.NanoUSD(output.Int64)
+			rule.InputPerMillion, rule.OutputPerMillion = &inputValue, &outputValue
+		}
+		book.Rules = append(book.Rules, rule)
+	}
+	if err := manualRows.Err(); err != nil {
+		return aggregate.PriceBook{}, PricingProvenance{}, err
+	}
+	catalogRows, err := database.QueryContext(ctx, `SELECT rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,
+cache_read_multiplier,cache_creation_multiplier,source FROM pricing_catalog_rules ORDER BY rule_id`)
+	if err != nil {
+		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing catalog rules: %w", err)
+	}
+	defer func() { _ = catalogRows.Close() }()
+	for catalogRows.Next() {
+		var rule aggregate.PricingRule
+		var input, output sql.NullInt64
+		rule.Catalog = true
+		if err := catalogRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
+			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("scan pricing catalog rule: %w", err)
+		}
+		if input.Valid {
+			inputValue, outputValue := model.NanoUSD(input.Int64), model.NanoUSD(output.Int64)
+			rule.InputPerMillion, rule.OutputPerMillion = &inputValue, &outputValue
+		}
+		book.Rules = append(book.Rules, rule)
+	}
+	if err := catalogRows.Err(); err != nil {
+		return aggregate.PriceBook{}, PricingProvenance{}, err
+	}
+	provenance, err := loadPricingProvenance(ctx, database)
+	if err != nil {
+		return aggregate.PriceBook{}, PricingProvenance{}, err
+	}
+	return book, provenance, nil
+}
+
+func loadPricingProvenance(ctx context.Context, database *sql.DB) (PricingProvenance, error) {
 	var provenance PricingProvenance
 	var syncedAt int64
-	err = database.QueryRowContext(ctx, "SELECT source,source_digest,synced_at_ns FROM pricing_provenance WHERE singleton=1").Scan(&provenance.Source, &provenance.SourceDigest, &syncedAt)
+	err := database.QueryRowContext(ctx, "SELECT source,source_digest,synced_at_ns FROM pricing_provenance WHERE singleton=1").Scan(&provenance.Source, &provenance.SourceDigest, &syncedAt)
 	if err == sql.ErrNoRows {
-		return book, PricingProvenance{}, nil
+		// A catalog can exist in a database created by a future/manual-only
+		// caller even when the legacy provenance singleton has not been set.
+	} else if err != nil {
+		return PricingProvenance{}, fmt.Errorf("load pricing provenance: %w", err)
 	}
-	if err != nil {
-		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing provenance: %w", err)
+	if err == nil {
+		provenance.SyncedAt = time.Unix(0, syncedAt).UTC()
 	}
-	provenance.SyncedAt = time.Unix(0, syncedAt).UTC()
-	return book, provenance, nil
+	var catalogSyncedAt, catalogExpiresAt, catalogRetryAt int64
+	catalogErr := database.QueryRowContext(ctx, `SELECT source,source_digest,synced_at_ns,expires_at_ns,retry_at_ns,last_error
+FROM pricing_catalog_provenance WHERE singleton=1`).Scan(&provenance.CatalogSource, &provenance.CatalogDigest,
+		&catalogSyncedAt, &catalogExpiresAt, &catalogRetryAt, &provenance.CatalogLastError)
+	if catalogErr == sql.ErrNoRows {
+		return provenance, nil
+	}
+	if catalogErr != nil {
+		return PricingProvenance{}, fmt.Errorf("load catalog pricing provenance: %w", catalogErr)
+	}
+	if catalogSyncedAt != 0 {
+		provenance.CatalogSyncedAt = time.Unix(0, catalogSyncedAt).UTC()
+	}
+	if catalogExpiresAt != 0 {
+		provenance.CatalogExpiresAt = time.Unix(0, catalogExpiresAt).UTC()
+	}
+	if catalogRetryAt != 0 {
+		provenance.CatalogRetryAt = time.Unix(0, catalogRetryAt).UTC()
+	}
+	return provenance, nil
 }
 
 func clonePricingRules(rules []aggregate.PricingRule) []aggregate.PricingRule {

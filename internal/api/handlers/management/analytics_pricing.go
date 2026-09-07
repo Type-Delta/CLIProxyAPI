@@ -18,12 +18,17 @@ import (
 )
 
 type analyticsPricingSnapshot struct {
-	CurrencyUnit string                 `json:"currency_unit"`
-	Rounding     string                 `json:"rounding"`
-	Rules        []analyticsPricingRule `json:"rules"`
-	Missing      []model.PricingMissing `json:"missing"`
-	SyncState    string                 `json:"sync_state"`
-	UpdatedAt    *time.Time             `json:"updated_at"`
+	CurrencyUnit     string                 `json:"currency_unit"`
+	Rounding         string                 `json:"rounding"`
+	Rules            []analyticsPricingRule `json:"rules"`
+	Overrides        []analyticsPricingRule `json:"overrides,omitempty"`
+	Catalog          []analyticsPricingRule `json:"catalog,omitempty"`
+	CatalogSource    string                 `json:"catalog_source,omitempty"`
+	CatalogUpdatedAt *time.Time             `json:"catalog_updated_at"`
+	CatalogExpiresAt *time.Time             `json:"catalog_expires_at"`
+	Missing          []model.PricingMissing `json:"missing"`
+	SyncState        string                 `json:"sync_state"`
+	UpdatedAt        *time.Time             `json:"updated_at"`
 }
 
 type analyticsPricingRule struct {
@@ -38,8 +43,9 @@ type analyticsPricingRule struct {
 }
 
 type analyticsPricingMatch struct {
-	Model string `json:"model,omitempty"`
-	Alias string `json:"alias,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Alias    string `json:"alias,omitempty"`
 }
 
 type analyticsPricingProvider interface {
@@ -49,6 +55,10 @@ type analyticsPricingProvider interface {
 
 type analyticsPricingSnapshotProvider interface {
 	PricingSnapshot(context.Context) (store.PricingSnapshot, error)
+}
+
+type analyticsPricingRefreshRequester interface {
+	RequestPricingRefresh()
 }
 
 type analyticsPricingMissingProvider interface {
@@ -74,6 +84,9 @@ func (h *Handler) GetAnalyticsPricing(c *gin.Context) {
 		})
 		return
 	}
+	if requester, okRequester := service.(analyticsPricingRefreshRequester); okRequester {
+		requester.RequestPricingRefresh()
+	}
 	book, err := provider.PriceBook(c.Request.Context())
 	if err != nil {
 		writeAnalyticsError(c, classifyAnalyticsReadError(err))
@@ -86,12 +99,11 @@ func (h *Handler) GetAnalyticsPricing(c *gin.Context) {
 			writeAnalyticsError(c, classifyAnalyticsReadError(errSnapshot))
 			return
 		}
-		if !durable.Provenance.SyncedAt.IsZero() {
-			updatedAt := durable.Provenance.SyncedAt.UTC()
-			response.UpdatedAt = &updatedAt
-			for index := range response.Rules {
-				response.Rules[index].UpdatedAt = &updatedAt
-			}
+		response = pricingSnapshotFromDurable(durable, time.Now().UTC())
+		if _, okRequester := service.(analyticsPricingRefreshRequester); okRequester && response.SyncState != "ready" && !time.Now().UTC().Before(durable.Provenance.CatalogRetryAt) {
+			// The request was deliberately queued above. Let CPAMC poll while
+			// the background fetch is in flight instead of blocking this read.
+			response.SyncState = "refreshing"
 		}
 	}
 	if missingProvider, okMissing := service.(analyticsPricingMissingProvider); okMissing {
@@ -126,7 +138,7 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 	seenMatches := make(map[string]struct{}, len(request.Rules))
 	for _, rule := range request.Rules {
 		converted := aggregate.PricingRule{
-			ID: rule.RuleID, Model: rule.Match.Model, Alias: rule.Match.Alias,
+			Provider: rule.Match.Provider, ID: rule.RuleID, Model: rule.Match.Model, Alias: rule.Match.Alias,
 			InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion,
 			CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier,
 			Source: rule.Source,
@@ -135,9 +147,9 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 			writeAnalyticsInvalid(c, err)
 			return
 		}
-		matchKey := "model\x00" + converted.Model
+		matchKey := converted.Provider + "\x00model\x00" + converted.Model
 		if converted.Alias != "" {
-			matchKey = "alias\x00" + converted.Alias
+			matchKey = converted.Provider + "\x00alias\x00" + converted.Alias
 		}
 		if _, duplicate := seenRuleIDs[converted.ID]; duplicate {
 			writeAnalyticsInvalid(c, fmt.Errorf("duplicate pricing rule ID"))
@@ -168,12 +180,8 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 	}
 	response := pricingSnapshot(result, "ready")
 	if snapshots, okSnapshots := service.(analyticsPricingSnapshotProvider); okSnapshots {
-		if durable, errSnapshot := snapshots.PricingSnapshot(c.Request.Context()); errSnapshot == nil && !durable.Provenance.SyncedAt.IsZero() {
-			updatedAt := durable.Provenance.SyncedAt.UTC()
-			response.UpdatedAt = &updatedAt
-			for index := range response.Rules {
-				response.Rules[index].UpdatedAt = &updatedAt
-			}
+		if durable, errSnapshot := snapshots.PricingSnapshot(c.Request.Context()); errSnapshot == nil {
+			response = pricingSnapshotFromDurable(durable, time.Now().UTC())
 		}
 	}
 	setAnalyticsNoStore(c)
@@ -186,14 +194,93 @@ func pricingSnapshot(book aggregate.PriceBook, syncState string) analyticsPricin
 		Rules: make([]analyticsPricingRule, 0, len(book.Rules)), Missing: []model.PricingMissing{}, SyncState: syncState,
 	}
 	for _, rule := range book.Rules {
-		snapshot.Rules = append(snapshot.Rules, analyticsPricingRule{
-			RuleID: rule.ID, Match: analyticsPricingMatch{Model: rule.Model, Alias: rule.Alias},
+		converted := analyticsPricingRule{
+			RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias},
 			InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion,
 			CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier,
 			Source: rule.Source,
-		})
+		}
+		if rule.Catalog {
+			snapshot.Catalog = append(snapshot.Catalog, converted)
+		} else {
+			snapshot.Overrides = append(snapshot.Overrides, converted)
+		}
 	}
+	snapshot.Rules = effectivePricingRules(book.Rules)
 	return snapshot
+}
+
+func pricingSnapshotFromDurable(durable store.PricingSnapshot, now time.Time) analyticsPricingSnapshot {
+	state := "stale"
+	if durable.Provenance.CatalogSyncedAt.IsZero() {
+		state = "not_configured"
+		if durable.Provenance.CatalogLastError != "" {
+			state = "unavailable"
+		}
+	} else if now.Before(durable.Provenance.CatalogExpiresAt) {
+		state = "ready"
+	}
+	response := pricingSnapshot(aggregate.PriceBook{Rules: durable.Rules}, state)
+	if !durable.Provenance.SyncedAt.IsZero() {
+		updatedAt := durable.Provenance.SyncedAt.UTC()
+		response.UpdatedAt = &updatedAt
+	}
+	if durable.Provenance.CatalogSource != "" {
+		response.CatalogSource = durable.Provenance.CatalogSource
+	}
+	if !durable.Provenance.CatalogSyncedAt.IsZero() {
+		updatedAt := durable.Provenance.CatalogSyncedAt.UTC()
+		response.CatalogUpdatedAt = &updatedAt
+	}
+	if !durable.Provenance.CatalogExpiresAt.IsZero() {
+		expiresAt := durable.Provenance.CatalogExpiresAt.UTC()
+		response.CatalogExpiresAt = &expiresAt
+	}
+	updatedByID := make(map[string]*time.Time, len(durable.Rules))
+	for index := range response.Catalog {
+		response.Catalog[index].UpdatedAt = response.CatalogUpdatedAt
+		updatedByID[response.Catalog[index].RuleID] = response.CatalogUpdatedAt
+	}
+	for index := range response.Overrides {
+		response.Overrides[index].UpdatedAt = response.UpdatedAt
+		updatedByID[response.Overrides[index].RuleID] = response.UpdatedAt
+	}
+	for index := range response.Rules {
+		response.Rules[index].UpdatedAt = updatedByID[response.Rules[index].RuleID]
+	}
+	return response
+}
+
+func effectivePricingRules(rules []aggregate.PricingRule) []analyticsPricingRule {
+	manual := make([]aggregate.PricingRule, 0)
+	catalog := make([]aggregate.PricingRule, 0)
+	for _, rule := range rules {
+		if rule.Catalog {
+			catalog = append(catalog, rule)
+		} else {
+			manual = append(manual, rule)
+		}
+	}
+	result := make([]analyticsPricingRule, 0, len(rules))
+	for _, rule := range manual {
+		result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, Source: rule.Source})
+	}
+	for _, rule := range catalog {
+		shadowed := false
+		for _, override := range manual {
+			if override.Provider != "" && override.Provider != rule.Provider {
+				continue
+			}
+			if override.Model != "" && override.Model == rule.Model {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, Source: rule.Source})
+		}
+	}
+	return result
 }
 
 // PostAnalyticsReprice starts the resumable pricing maintenance operation.

@@ -8,9 +8,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 )
 
-// PricingRule prices an exact model or alias. Model matches take precedence.
-// Prices are USD per million tokens represented as nano-USD values.
+// PricingRule prices an exact provider/model or alias. Manual rules take
+// precedence over discovered catalog rules. Prices are USD per million tokens
+// represented as nano-USD values.
 type PricingRule struct {
+	// Provider is the exact CPA provider identifier for this rule. An empty
+	// provider is retained for legacy management rules and matches any provider.
+	Provider                string
 	ID                      string
 	Model                   string
 	Alias                   string
@@ -19,6 +23,10 @@ type PricingRule struct {
 	CacheReadMultiplier     string
 	CacheCreationMultiplier string
 	Source                  string
+	// Catalog marks rules loaded from the managed remote catalog. It is kept
+	// separate from Source so user supplied source labels cannot masquerade as
+	// automatic rules.
+	Catalog bool
 }
 
 type PriceBook struct {
@@ -33,7 +41,7 @@ type PriceResult struct {
 }
 
 func (r PricingRule) Validate() error {
-	if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Source) == "" || len(r.ID) > model.MaxStoredStringBytes || len(r.Source) > model.MaxStoredStringBytes {
+	if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Source) == "" || len(r.ID) > model.MaxStoredStringBytes || len(r.Source) > model.MaxStoredStringBytes || len(r.Provider) > model.MaxStoredStringBytes {
 		return fmt.Errorf("pricing rule ID and source are required and bounded")
 	}
 	if (r.Model == "") == (r.Alias == "") || len(r.Model) > model.MaxStoredStringBytes || len(r.Alias) > model.MaxStoredStringBytes {
@@ -55,7 +63,7 @@ func (r PricingRule) Validate() error {
 }
 
 func (p PriceBook) Price(event model.Event) (PriceResult, error) {
-	rule := p.match(event.Model, event.RequestedAlias)
+	rule := p.match(event.Provider, event.Model, event.RequestedAlias)
 	if rule == nil || rule.InputPerMillion == nil || rule.OutputPerMillion == nil {
 		return PriceResult{UnpricedTokens: event.Tokens.Total}, nil
 	}
@@ -87,18 +95,28 @@ func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	return PriceResult{KnownCost: &cost, RuleID: rule.ID, Source: rule.Source}, nil
 }
 
-func (p PriceBook) match(eventModel string, alias *string) *PricingRule {
-	for index := range p.Rules {
-		if p.Rules[index].Model != "" && p.Rules[index].Model == eventModel {
-			return &p.Rules[index]
-		}
-	}
-	if alias == nil {
-		return nil
-	}
-	for index := range p.Rules {
-		if p.Rules[index].Alias != "" && p.Rules[index].Alias == *alias {
-			return &p.Rules[index]
+func (p PriceBook) match(eventProvider, eventModel string, alias *string) *PricingRule {
+	// Explicit management rules have precedence over discovered model rules.
+	// In particular, a manual alias is allowed to override an automatic model
+	// rule because aliases are the operator's explicit billing decision.
+	for _, catalog := range []bool{false, true} {
+		for _, aliasMatch := range []bool{false, true} {
+			for _, providerSpecific := range []bool{true, false} {
+				for index := range p.Rules {
+					rule := &p.Rules[index]
+					if rule.Catalog != catalog || (providerSpecific && rule.Provider != eventProvider) || (!providerSpecific && rule.Provider != "") {
+						continue
+					}
+					if aliasMatch {
+						if alias == nil || rule.Alias == "" || rule.Alias != *alias {
+							continue
+						}
+					} else if rule.Model == "" || rule.Model != eventModel {
+						continue
+					}
+					return rule
+				}
+			}
 		}
 	}
 	return nil

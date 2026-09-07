@@ -185,6 +185,29 @@ once-per-event rounding exactly from a rollup. Restoring a pre-retention backup
 and repricing before retention runs is the only exact way to change that older
 history.
 
+## Pricing catalog discovery
+
+When analytics is enabled, CPA discovers baseline model pricing from
+`https://models.dev/api.json` lazily. Opening CPA does not fetch the catalog,
+and no background timer runs while the proxy is idle. A real usage observation
+or a pricing view queues a refresh; usage-triggered work runs after the usage
+record is accepted so it never blocks a proxy request. Concurrent demands are
+coalesced.
+
+The last successful catalog is stored in the analytics database with a six-hour
+expiry. Refresh failures retain that snapshot and use a short retry suppression
+window. The catalog is limited to explicit CPA provider mappings (`openai` and
+`codex` to OpenAI, `claude` and `anthropic` to Anthropic, Gemini variants to
+Google, `vertex` to Google Vertex, and `xai` to xAI). Custom compatibility
+providers and Antigravity remain unpriced unless an operator adds a manual
+rule. Matching uses the exact provider and model IDs from the request.
+
+Manual entries are persisted in a separate override table and take precedence
+over discovered model rules. A manual alias may also override a discovered
+model rule. Manual entries survive catalog replacement; changing the catalog
+does not reprice stored history. Use the explicit reprice maintenance job when
+historical event costs should be recalculated.
+
 ## Query series and rounding
 
 Activity and analysis series return every bucket that intersects the requested

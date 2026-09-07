@@ -42,6 +42,16 @@ type SQLiteStore struct {
 	identityEpoch   string
 	currentSchema   int
 	retentionCutoff time.Time
+
+	pricingRefreshMu sync.Mutex
+	pricingFlight    *pricingRefreshFlight
+	pricingFetcher   PricingFetcher
+	pricingNow       func() time.Time
+}
+
+type pricingRefreshFlight struct {
+	done   chan struct{}
+	result PricingRefreshResult
 }
 
 func Open(ctx context.Context, config Config) (*SQLiteStore, error) {
@@ -78,7 +88,16 @@ func Open(ctx context.Context, config Config) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &SQLiteStore{db: db, config: config, identityKey: identityKey}
+	pricingFetcher := config.PricingFetcher
+	if pricingFetcher == nil {
+		pricingFetcher = newModelsDevFetcher(nil)
+	}
+	pricingNow := config.PricingNow
+	if pricingNow == nil {
+		pricingNow = time.Now
+	}
+	store := &SQLiteStore{db: db, config: config, identityKey: identityKey,
+		pricingFetcher: pricingFetcher, pricingNow: pricingNow}
 	if err := store.initialize(ctx, newDatabase); err != nil {
 		_ = db.Close()
 		return nil, err

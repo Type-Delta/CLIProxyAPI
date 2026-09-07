@@ -75,6 +75,16 @@ type PricingSnapshotBackend interface {
 	PricingSnapshot(context.Context) (store.PricingSnapshot, error)
 }
 
+type PricingRefreshBackend interface {
+	RefreshPricing(context.Context) (store.PricingRefreshResult, error)
+}
+
+// PricingRefreshRequester is additive so discovery remains outside the core
+// Service contract used by existing integrations.
+type PricingRefreshRequester interface {
+	RequestPricingRefresh()
+}
+
 type PricingMissingBackend interface {
 	PricingMissing(context.Context, model.Range) ([]model.PricingMissing, error)
 }
@@ -115,17 +125,27 @@ type service struct {
 	startCancel       context.CancelFunc
 	startWG           sync.WaitGroup
 
-	snapshots        *snapshots
-	observer         *observerProxy
-	reader           *readerProxy
-	maint            Maintenance
-	maintProxy       *maintenanceProxy
-	retention        *maintenance.RetentionScheduler
-	identityKey      [32]byte
-	hasIdentityKey   bool
-	configuredKeyIDs []string
-	rotatedKeyIDs    []string
-	startSeq         atomic.Uint64
+	snapshots         *snapshots
+	observer          *observerProxy
+	reader            *readerProxy
+	maint             Maintenance
+	maintProxy        *maintenanceProxy
+	retention         *maintenance.RetentionScheduler
+	identityKey       [32]byte
+	hasIdentityKey    bool
+	configuredKeyIDs  []string
+	rotatedKeyIDs     []string
+	startSeq          atomic.Uint64
+	pricingPending    atomic.Bool
+	pricingGeneration atomic.Uint64
+	pricingNextCheck  atomic.Int64
+	pricingCtx        context.Context
+	pricingCancel     context.CancelFunc
+	pricingWG         sync.WaitGroup
+}
+
+func newPricingLifecycle() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
 }
 
 // New constructs a failure-isolated service. It never returns an analytics
@@ -133,6 +153,7 @@ type service struct {
 func New(ctx context.Context, config Config, factory BackendFactory) Service {
 	config = config.WithDefaults()
 	if err := config.Validate(); err != nil {
+		pricingCtx, pricingCancel := newPricingLifecycle()
 		s := &service{
 			factory:     factory,
 			config:      config,
@@ -140,15 +161,18 @@ func New(ctx context.Context, config Config, factory BackendFactory) Service {
 			snapshots:   newSnapshots(config, StateCircuitOpen, "invalid_config", "Analytics is unavailable."),
 			observer:    newObserverProxy(),
 			maint:       unavailableMaintenance{err: &UnavailableError{Category: "invalid_config"}},
+			pricingCtx:  pricingCtx, pricingCancel: pricingCancel,
 		}
 		s.reader = &readerProxy{service: s}
 		s.maintProxy = &maintenanceProxy{service: s}
+		s.observer.onUsage = s.requestPricingRefresh
 		return s
 	}
 	state := StateDisabled
 	if config.Enabled {
 		state = StateStarting
 	}
+	pricingCtx, pricingCancel := newPricingLifecycle()
 	s := &service{
 		factory:     factory,
 		config:      config,
@@ -156,9 +180,11 @@ func New(ctx context.Context, config Config, factory BackendFactory) Service {
 		snapshots:   newSnapshots(config, state, "", ""),
 		observer:    newObserverProxy(),
 		maint:       unavailableMaintenance{err: stateError(state)},
+		pricingCtx:  pricingCtx, pricingCancel: pricingCancel,
 	}
 	s.reader = &readerProxy{service: s}
 	s.maintProxy = &maintenanceProxy{service: s}
+	s.observer.onUsage = s.requestPricingRefresh
 	if config.Enabled {
 		s.beginStart(ctx)
 	}
@@ -176,15 +202,18 @@ func NewUnavailable(category string, config Config) Service {
 	if category == "" {
 		category = "startup"
 	}
+	pricingCtx, pricingCancel := newPricingLifecycle()
 	s := &service{
 		config:      config,
 		validConfig: true,
 		snapshots:   newSnapshots(config, StateCircuitOpen, category, "Analytics is unavailable."),
 		observer:    newObserverProxy(),
 		maint:       unavailableMaintenance{err: &UnavailableError{Category: category}},
+		pricingCtx:  pricingCtx, pricingCancel: pricingCancel,
 	}
 	s.reader = &readerProxy{service: s}
 	s.maintProxy = &maintenanceProxy{service: s}
+	s.observer.onUsage = s.requestPricingRefresh
 	return s
 }
 
@@ -195,14 +224,17 @@ func NewInvalid(category, field string, config Config, factory BackendFactory) S
 	if category == "" {
 		category = "invalid_config"
 	}
+	pricingCtx, pricingCancel := newPricingLifecycle()
 	s := &service{
 		factory: factory, config: config, validConfig: false,
 		snapshots: newSnapshots(config, StateCircuitOpen, category, "Analytics is unavailable."),
 		observer:  newObserverProxy(), maint: unavailableMaintenance{err: &UnavailableError{Category: category}},
+		pricingCtx: pricingCtx, pricingCancel: pricingCancel,
 	}
 	s.snapshots.mutate(func(health *model.Health) { health.Field = field })
 	s.reader = &readerProxy{service: s}
 	s.maintProxy = &maintenanceProxy{service: s}
+	s.observer.onUsage = s.requestPricingRefresh
 	return s
 }
 
@@ -258,6 +290,7 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	if !s.validConfig {
 		s.config = config
 		s.validConfig = true
+		s.invalidatePricingDemandLocked()
 		s.mu.Unlock()
 		s.snapshots.setConfig(config)
 		if config.Enabled {
@@ -297,6 +330,7 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 		s.maintenanceActive = false
 		s.maint = unavailableMaintenance{err: ErrDisabled}
 		s.retention = nil
+		s.invalidatePricingDemandLocked()
 		s.startSeq.Add(1)
 		if s.startCancel != nil {
 			s.startCancel()
@@ -318,6 +352,7 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 
 	if !previous.Enabled && config.Enabled {
 		s.config = config
+		s.invalidatePricingDemandLocked()
 		s.mu.Unlock()
 		s.snapshots.setConfig(config)
 		s.snapshots.mutate(func(health *model.Health) {
@@ -335,6 +370,7 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	currentRetention := s.retention
 	if config.Enabled && backend == nil && currentCollector == nil {
 		s.config = config
+		s.invalidatePricingDemandLocked()
 		s.mu.Unlock()
 		s.snapshots.setConfig(config)
 		s.snapshots.mutate(func(health *model.Health) {
@@ -381,17 +417,19 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	}
 	s.mu.Lock()
 	s.config = config
+	s.invalidatePricingDemandLocked()
 	s.mu.Unlock()
 	s.snapshots.setConfig(config)
 	return ReconfigureResult{Applied: true}
 }
 
 func (s *service) Retry(_ context.Context) error {
-	s.mu.RLock()
+	s.mu.Lock()
+	s.invalidatePricingDemandLocked()
 	currentCollector := s.collector
 	config := s.config
 	closed := s.closed
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if closed {
 		return ErrClosed
 	}
@@ -464,6 +502,113 @@ func (s *service) PricingSnapshot(ctx context.Context) (snapshot store.PricingSn
 		}
 	}()
 	return pricing.PricingSnapshot(ctx)
+}
+
+// RefreshPricing performs one demand-driven refresh for callers that can wait
+// for a result, such as tests or an explicit administrative action.
+func (s *service) RefreshPricing(ctx context.Context) (result store.PricingRefreshResult, err error) {
+	backend, err := s.backendForRead()
+	if err != nil {
+		return result, err
+	}
+	pricing, ok := backend.(PricingRefreshBackend)
+	if !ok {
+		return result, ErrUnavailable
+	}
+	generation := s.pricingGeneration.Load()
+	result, err = safePricingRefresh(pricing, ctx)
+	s.recordPricingRefresh(generation, result, err, false)
+	return result, err
+}
+
+// RequestPricingRefresh starts a coalesced background demand. The caller is
+// never held up by models.dev I/O, and the service lifecycle context cancels
+// an in-flight request during shutdown.
+func (s *service) RequestPricingRefresh() {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	if s.closed || !s.config.Enabled || s.backend == nil {
+		s.mu.RUnlock()
+		return
+	}
+	if !s.pricingDemandDue(time.Now()) {
+		s.mu.RUnlock()
+		return
+	}
+	pricing, ok := s.backend.(PricingRefreshBackend)
+	if !ok || !s.pricingPending.CompareAndSwap(false, true) {
+		s.mu.RUnlock()
+		return
+	}
+	generation := s.pricingGeneration.Load()
+	ctx := s.pricingCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.pricingWG.Add(1)
+	s.mu.RUnlock()
+	go func() {
+		defer s.pricingWG.Done()
+		result, err := safePricingRefresh(pricing, ctx)
+		s.recordPricingRefresh(generation, result, err, true)
+	}()
+}
+
+func (s *service) requestPricingRefresh() {
+	s.RequestPricingRefresh()
+}
+
+func safePricingRefresh(pricing PricingRefreshBackend, ctx context.Context) (result store.PricingRefreshResult, err error) {
+	defer func() {
+		if recover() != nil {
+			result = store.PricingRefreshResult{Err: ErrInternal}
+			err = ErrInternal
+		}
+	}()
+	return pricing.RefreshPricing(ctx)
+}
+
+func (s *service) pricingDemandDue(now time.Time) bool {
+	next := s.pricingNextCheck.Load()
+	return next == 0 || now.UnixNano() >= next
+}
+
+func (s *service) recordPricingRefresh(generation uint64, result store.PricingRefreshResult, err error, clearPending bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.pricingGeneration.Load() != generation {
+		return
+	}
+	next := pricingRefreshNextCheck(result, err, time.Now())
+	if next.IsZero() {
+		s.pricingNextCheck.Store(0)
+	} else {
+		s.pricingNextCheck.Store(next.UnixNano())
+	}
+	if clearPending {
+		s.pricingPending.Store(false)
+	}
+}
+
+func pricingRefreshNextCheck(result store.PricingRefreshResult, err error, now time.Time) time.Time {
+	if retryAt := result.Snapshot.Provenance.CatalogRetryAt; retryAt.After(now) {
+		return retryAt
+	}
+	if err == nil && result.Err == nil {
+		if expiresAt := result.Snapshot.Provenance.CatalogExpiresAt; expiresAt.After(now) {
+			return expiresAt
+		}
+		return time.Time{}
+	}
+	return now.Add(store.PricingRetrySuppression)
+}
+
+func (s *service) invalidatePricingDemandLocked() {
+	s.pricingGeneration.Add(1)
+	s.pricingNextCheck.Store(0)
+	s.pricingPending.Store(false)
 }
 
 // MarkRestartRequired lets the CPA integration surface restart-only settings
@@ -640,10 +785,15 @@ func (s *service) Close(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
+	s.invalidatePricingDemandLocked()
 	s.startSeq.Add(1)
 	if s.startCancel != nil {
 		s.startCancel()
 		s.startCancel = nil
+	}
+	if s.pricingCancel != nil {
+		s.pricingCancel()
+		s.pricingCancel = nil
 	}
 	currentCollector, backend, currentMaintenance, currentRetention := s.collector, s.backend, s.maint, s.retention
 	s.collector, s.backend, s.sanitizer = nil, nil, nil
@@ -657,6 +807,8 @@ func (s *service) Close(ctx context.Context) error {
 	}
 	s.observer.clear()
 	s.mu.Unlock()
+	// Stop demand refreshes before closing the backend they may be reading.
+	s.pricingWG.Wait()
 	s.snapshots.mutate(func(health *model.Health) { health.State = StateStopping })
 
 	if ctx == nil {
@@ -767,6 +919,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 			return
 		}
 	}
+	s.invalidatePricingDemandLocked()
 	s.backend = backend
 	s.collector = currentCollector
 	s.sanitizer = sanitizer
@@ -1134,7 +1287,10 @@ func stateError(state State) error {
 
 type observerValue struct{ plugin coreusage.Plugin }
 
-type observerProxy struct{ target atomic.Pointer[observerValue] }
+type observerProxy struct {
+	target  atomic.Pointer[observerValue]
+	onUsage func()
+}
 
 func newObserverProxy() *observerProxy { return &observerProxy{} }
 
@@ -1159,6 +1315,9 @@ func (p *observerProxy) HandleUsage(ctx context.Context, record coreusage.Record
 	value := p.target.Load()
 	if value != nil && value.plugin != nil {
 		value.plugin.HandleUsage(ctx, record)
+		if p.onUsage != nil {
+			p.onUsage()
+		}
 	}
 }
 

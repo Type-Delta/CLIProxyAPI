@@ -135,8 +135,23 @@ DTO directly:
 ## Pricing state
 
 The pricing GET envelope carries `sync_state` (the remote price-book sync
-state) and a nullable `updated_at` (the durable snapshot's last sync time)
-beside `currency_unit`, `rounding`, `rules`, and `missing`.
+state) and a nullable `updated_at` (the durable manual snapshot's last update)
+beside `currency_unit`, `rounding`, `rules`, and `missing`. The additive
+`catalog` and `overrides` arrays expose the discovered models.dev inputs and
+management rules separately; `rules` is the effective display set after
+manual model and alias overrides shadow discovered rows. A catalog rule also
+includes an exact `match.provider`.
+
+`catalog_source`, `catalog_updated_at`, and `catalog_expires_at` identify the
+last-good remote catalog. CPA refreshes models.dev lazily on demand with a
+six-hour TTL. A management pricing PUT replaces only the manual override set,
+so a refresh never deletes operator entries. A failed refresh retains the
+last-good catalog and suppresses another attempt briefly; it does not erase
+known prices. `sync_state` is `not_configured`, `refreshing`, `ready`,
+`stale`, or `unavailable`. A failed first download reports `unavailable`;
+a failed refresh with a saved catalog reports `stale`. Catalog rates are baseline input/output and cache estimates from
+models.dev; long-context, service-tier, and modality-specific billing tiers
+are not represented by the current per-million-token rule format.
 
 ## Capabilities and health
 
