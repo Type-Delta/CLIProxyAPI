@@ -263,6 +263,23 @@ text by default; Ctrl+J switches to a JSON string for entering newlines, tabs,
 and other control characters. Existing labels containing controls open in
 that mode automatically.
 
+CPAMC's Usage Distribution and Key × Model Heatmap axes show the configured
+key label, falling back to the short ID. Their tooltips retain both label and
+short ID. Usage Distribution names the token colors in a legend and reports
+each category's count in its tooltip. Heatmap model headers truncate with an
+ellipsis instead of disappearing when columns are narrow. These frontend
+refinements are tracked under DL025 in `web/management-center/FORK.md`.
+Analysis card metrics also reuse the dashboard count-up animation, with exact
+final formatting and reduced-motion support. Latency tiles have larger values,
+tighter spacing, and annotations aligned beside their labels. These changes
+are tracked under CPAMC DL026.
+CPAMC DL027 rejects invalid capabilities responses at the API boundary so an
+HTML dev-server fallback cannot crash analytics while reading its support flag.
+CPAMC DL028 extends the same count-up animation to Overview KPIs, daily averages,
+and activity summary values through the shared analytics metric component.
+CPAMC DL029 makes the Usage Distribution legend filter token categories with
+accessible toggles and distinguishes visible token sums from full row totals.
+
 **Implementation evidence:** `internal/config/api_key_entry.go`,
 `internal/api/handlers/management/config_lists.go`,
 `internal/api/handlers/management/analytics_pricing.go`,
