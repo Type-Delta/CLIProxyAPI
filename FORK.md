@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `fa25a73973306dfc9c8eb7daee70a5b05d00f04b`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, and the CPAUK-fidelity usage and management views.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `0e5e17529c13e9c89c55860fc4d0aac365b80a5c`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, and the CPAUK-fidelity usage and management views.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -64,7 +64,23 @@ The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `
 
 **Recorded validation:** Bun verification passes 495 tests, ESLint, TypeScript compilation, and the Vite production build. Independent raw-CDP desktop and mobile journeys covered all eight Analytics routes in light and dark themes, including deep-link restore, URL state, rapid route recovery, viewer credential scrubbing, short-hash identity, responsive overflow, control naming, and runtime diagnostics. A seven-day `Asia/Kolkata` Analysis run verified both 168-bucket SVG charts at the start, midpoint, and end with exact 40 px interaction targets and effectively zero target-to-mark drift. Earlier clean-clone validation confirmed both remotes follow the documented convention.
 
-**Last updated:** 2026-09-02
+The analytics upgrade adds the animated diamond cost radar, shared p95/max/median timing radar and
+scatter controls, token/cost/generation heatmap modes, cost component columns, and line-shaped
+chart tooltip markers. Quick Stats includes accumulated processing time and explained comparisons.
+The key catalog uses client-local lifetime activity dates, recent Active/Idle status, top-model tokens,
+generation duration, requests, and header help. Visible analytics refresh every minute without
+replacing charts or selections. Vite accepts all development hosts for the requested remote mock
+workspace. Provider timings and historical generation remain unavailable where measurements are
+absent; CPAMC does not estimate clock offsets from unrelated online UTC services.
+
+Validation for this pin: `bun run verify` passed 670 tests, ESLint, TypeScript, and production build.
+Isolated Chrome CDP at 1440px and 390px checked light/dark cost gradients, clockwise synchronized
+numbers, radar/heatmap modes, missing timing, numeric header alignment, dashed/solid tooltip markers,
+comparison hover and first-tap behavior, client timezone dates, and a full automatic refresh cycle.
+The cycle retained chart instances and controls; no page overflow or console errors were observed.
+A browser-only fixture verified complete timing axes without changing stored mock data.
+
+**Last updated:** 2026-09-08
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
