@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -168,6 +169,56 @@ func TestAdapterContainsPanicsAndCountsRejects(t *testing.T) {
 	adapter.HandleUsage(ctx, record)
 	if adapter.Dropped() != 2 || intake.rejected != 2 {
 		t.Fatalf("reject counts = dropped %d rejected %d", adapter.Dropped(), intake.rejected)
+	}
+}
+
+func TestAdapterUsesCanonicalClaudeInputForCacheRateAndPricing(t *testing.T) {
+	record := validRecord()
+	record.Provider = "anthropic"
+	record.Detail = coreusage.Detail{
+		InputTokens: 30, OutputTokens: 0, CacheReadTokens: 70, TotalTokens: 100,
+		TokenBreakdown: coreusage.NewIndependentTokenBreakdown(30, 70, 0, 0, 0, 100),
+	}
+	source := adaptRecord(record)
+	if source.Tokens.Input != 100 {
+		t.Fatalf("adapted Claude input = %d, want canonical total 100", source.Tokens.Input)
+	}
+	if source.Tokens.CacheRead*100 != source.Tokens.Input*70 {
+		t.Fatalf("cache rate buckets = input %d, cache read %d; want 70%%", source.Tokens.Input, source.Tokens.CacheRead)
+	}
+
+	sanitizer := NewSanitizer(SanitizerOptions{
+		NewID: func() (string, error) { return "91a83fb43b38e8770e7648440a89fc48", nil },
+	})
+	result, err := sanitizer.Sanitize(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputRate := model.NanoUSD(1_000_000_000)
+	book := aggregate.PriceBook{Rules: []aggregate.PricingRule{{
+		ID: "claude-cache-regression", Model: result.Event.Model,
+		InputPerMillion: &inputRate, OutputPerMillion: &inputRate,
+		CacheReadMultiplier: "0", CacheCreationMultiplier: "1", Source: "test",
+	}}}
+	priced, err := book.Price(result.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priced.KnownCost == nil || *priced.KnownCost != 30_000 {
+		t.Fatalf("Claude cost = %+v, want 30000 nano-USD for 30 uncached tokens", priced.KnownCost)
+	}
+}
+
+func TestAdapterPreservesOpenAIInputTotalWhenCacheIsIncluded(t *testing.T) {
+	record := validRecord()
+	record.Provider = "openai"
+	record.Detail = coreusage.Detail{
+		InputTokens: 100, OutputTokens: 30, CacheReadTokens: 70, TotalTokens: 130,
+		TokenBreakdown: coreusage.NewSubsetTokenBreakdown(100, 70, 0, 30, 0, 130),
+	}
+	source := adaptRecord(record)
+	if source.Tokens.Input != 100 || source.Tokens.CacheRead != 70 || source.Tokens.Total != 130 {
+		t.Fatalf("adapted OpenAI tokens = %+v, want input=100 cache read=70 total=130", source.Tokens)
 	}
 }
 

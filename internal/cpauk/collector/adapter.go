@@ -62,6 +62,11 @@ func (a *Adapter) HandleUsage(ctx context.Context, record coreusage.Record) {
 }
 
 func adaptRecord(record coreusage.Record) Source {
+	detail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
+	inputTokens := detail.InputTokens
+	if detail.TokenBreakdown.Valid() && (detail.TokenBreakdown.Input.TotalTokens > 0 || detail.InputTokens == 0) {
+		inputTokens = detail.TokenBreakdown.Input.TotalTokens
+	}
 	requestQuality := model.RequestIDObserved
 	if record.RequestIDQuality == coreusage.RequestIDSynthetic {
 		requestQuality = model.RequestIDSynthetic
@@ -79,11 +84,11 @@ func adaptRecord(record coreusage.Record) Source {
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
 		TTFT: record.TTFT, Failed: record.Failed, StatusCode: record.Fail.StatusCode,
 		Tokens: SourceTokens{
-			Input: record.Detail.InputTokens, Output: record.Detail.OutputTokens,
-			Reasoning: record.Detail.ReasoningTokens, Cached: record.Detail.CachedTokens,
-			CacheRead: record.Detail.CacheReadTokens, CacheCreation: record.Detail.CacheCreationTokens,
-			Total:   record.Detail.TotalTokens,
-			Quality: model.TokenQuality(record.Detail.TokenQuality),
+			Input: inputTokens, Output: detail.OutputTokens,
+			Reasoning: detail.ReasoningTokens, Cached: detail.CachedTokens,
+			CacheRead: detail.CacheReadTokens, CacheCreation: detail.CacheCreationTokens,
+			Total:   detail.TotalTokens,
+			Quality: model.TokenQuality(detail.TokenQuality),
 		},
 	}
 }
