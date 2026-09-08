@@ -150,28 +150,24 @@ FROM events WHERE credential_id IS NOT NULL GROUP BY credential_id,provider,auth
 		return nil, fmt.Errorf("read provider credentials: %w", err)
 	}
 	_ = rows.Close()
-	requestRows, err := s.db.QueryContext(ctx, `SELECT credential_id,provider,COUNT(DISTINCT proxy_request_id),MAX(observed_ns)
+	requestRows, err := s.db.QueryContext(ctx, `SELECT credential_id,provider,COUNT(DISTINCT proxy_request_id)
 FROM (
-SELECT credential_id,provider,proxy_request_id,requested_at_ns AS observed_ns FROM events WHERE credential_id IS NOT NULL
+SELECT credential_id,provider,proxy_request_id FROM events WHERE credential_id IS NOT NULL
 UNION ALL
-SELECT credential_id,provider,proxy_request_id,bucket_end_ns AS observed_ns FROM request_rollups WHERE credential_id <> ''
+SELECT credential_id,provider,proxy_request_id FROM request_rollups WHERE credential_id <> ''
 ) GROUP BY credential_id,provider`)
 	if err != nil {
 		return nil, fmt.Errorf("query retained provider credential requests: %w", err)
 	}
 	for requestRows.Next() {
 		var credentialID, provider string
-		var requests, observedNS int64
-		if err := requestRows.Scan(&credentialID, &provider, &requests, &observedNS); err != nil {
+		var requests int64
+		if err := requestRows.Scan(&credentialID, &provider, &requests); err != nil {
 			_ = requestRows.Close()
 			return nil, fmt.Errorf("scan retained provider credential requests: %w", err)
 		}
 		credential := ensureProviderCredential(byIdentity, provider, credentialID)
 		credential.Requests = requests
-		observed := time.Unix(0, observedNS).UTC()
-		if observed.After(credential.ObservedAt) {
-			credential.ObservedAt = observed
-		}
 	}
 	if err := requestRows.Err(); err != nil {
 		_ = requestRows.Close()

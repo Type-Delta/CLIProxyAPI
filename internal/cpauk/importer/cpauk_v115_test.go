@@ -79,6 +79,26 @@ func TestCPAUKV115AdapterDedupeSanitizeAndVerifiedImport(t *testing.T) {
 	}
 }
 
+func TestCPAUKV115TransformerInfersMissingQualityForFailedEmptyUsage(t *testing.T) {
+	row := CPAUKV115Row{
+		Origin: "hot", ID: 7, EventKey: "failed-empty", RawAPIKey: "sk-upstream-secret",
+		Provider: "openai", Endpoint: "/v1/responses", RequestID: "request-7", Model: "gpt-fixture",
+		ExecutorType: "openai", RequestedAt: time.Date(2026, 8, 31, 6, 0, 0, 0, time.UTC),
+		Failed: true,
+	}
+	transform := NewCPAUKV115Transformer([32]byte{}, false)
+	event, skip, err := transform(context.Background(), SourceRow{Value: row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip {
+		t.Fatal("failed event was skipped")
+	}
+	if event.Succeeded || event.Tokens.Quality != model.TokenQualityMissing {
+		t.Fatalf("imported failed event = %+v, want failed with missing token quality", event)
+	}
+}
+
 func TestCommittedImportRequiresBackup(t *testing.T) {
 	source := &SliceSource{SourceKind: CPAUKV115SourceKind, ID: "fixture"}
 	worker := Importer{Destination: &memoryDestination{events: map[string]model.Event{}, checkpoints: map[string][]byte{}}, Transform: fixtureTransform}

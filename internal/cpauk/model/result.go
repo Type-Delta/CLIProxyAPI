@@ -288,6 +288,7 @@ type ActivityBucket struct {
 	ReasoningTokens     int64     `json:"reasoning_tokens"`
 	TotalTokens         int64     `json:"total_tokens"`
 	KnownCost           NanoUSD   `json:"known_cost_usd"`
+	UnpricedTokens      int64     `json:"unpriced_tokens"`
 }
 
 type AnalysisModel struct {
@@ -301,6 +302,7 @@ type AnalysisModel struct {
 	ReasoningTokens     int64   `json:"reasoning_tokens"`
 	TotalTokens         int64   `json:"total_tokens"`
 	KnownCost           NanoUSD `json:"known_cost_usd"`
+	UnpricedTokens      int64   `json:"unpriced_tokens"`
 }
 
 type AnalysisModelBucket struct {
@@ -330,6 +332,7 @@ type AnalysisMatrixCell struct {
 	ReasoningTokens       int64   `json:"reasoning_tokens"`
 	TotalTokens           int64   `json:"total_tokens"`
 	KnownCost             NanoUSD `json:"known_cost_usd"`
+	UnpricedTokens        int64   `json:"unpriced_tokens"`
 }
 
 type PricingMissing struct {

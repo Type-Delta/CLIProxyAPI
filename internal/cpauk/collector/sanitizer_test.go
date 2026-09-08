@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	executorhelps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -219,6 +220,54 @@ func TestAdapterPreservesOpenAIInputTotalWhenCacheIsIncluded(t *testing.T) {
 	source := adaptRecord(record)
 	if source.Tokens.Input != 100 || source.Tokens.CacheRead != 70 || source.Tokens.Total != 130 {
 		t.Fatalf("adapted OpenAI tokens = %+v, want input=100 cache read=70 total=130", source.Tokens)
+	}
+}
+
+func TestAdapterPersistsGeminiCanonicalOutputAndReasoning(t *testing.T) {
+	record := validRecord()
+	record.Provider = "gemini"
+	record.Detail = executorhelps.ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"thoughtsTokenCount":80,"totalTokenCount":200}}`))
+
+	source := adaptRecord(record)
+	if source.Tokens.Output != 100 || source.Tokens.Reasoning != 80 {
+		t.Fatalf("adapted Gemini tokens = %+v, want output=100 reasoning=80", source.Tokens)
+	}
+	sanitizer := NewSanitizer(SanitizerOptions{
+		NewID: func() (string, error) { return "91a83fb43b38e8770e7648440a89fc48", nil },
+	})
+	result, err := sanitizer.Sanitize(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Tokens.Output != 100 || result.Event.Tokens.Reasoning != 80 {
+		t.Fatalf("sanitized Gemini tokens = %+v, want output=100 reasoning=80", result.Event.Tokens)
+	}
+	// Inclusive output must price reasoning too: (100 + 100) tokens at $1/M = $0.0002.
+	rate := model.NanoUSD(1_000_000_000)
+	book := aggregate.PriceBook{Rules: []aggregate.PricingRule{{
+		ID: "gemini-rule", Provider: "gemini", Model: result.Event.Model,
+		InputPerMillion: &rate, OutputPerMillion: &rate, Source: "test",
+	}}}
+	price, err := book.Price(result.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if price.KnownCost == nil || *price.KnownCost != 200_000 || price.UnpricedTokens != 0 {
+		t.Fatalf("priced Gemini event = %+v, want known cost 200000 nano USD and no unpriced tokens", price)
+	}
+}
+
+func TestSanitizerPreservesAuthoritativeTotalWithUnclassifiedRemainder(t *testing.T) {
+	record := validRecord()
+	record.Provider = "openai"
+	record.Detail = coreusage.Detail{InputTokens: 10, TotalTokens: 15}
+
+	result, err := NewSanitizer(SanitizerOptions{}).Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Tokens.Total != 15 || result.Event.Tokens.UnclassifiedTokens() != 5 {
+		t.Fatalf("sanitized tokens = %+v, want total=15 unclassified=5", result.Event.Tokens)
 	}
 }
 

@@ -56,14 +56,15 @@ type Collector struct {
 	workerCtx    context.Context
 	cancelWorker context.CancelFunc
 
-	generation atomic.Uint64
-	accepting  atomic.Bool
-	closed     atomic.Bool
-	dropped    atomic.Int64
-	rejected   atomic.Int64
-	truncated  atomic.Int64
-	inFlight   atomic.Int64
-	retryable  atomic.Bool
+	generation    atomic.Uint64
+	accepting     atomic.Bool
+	closed        atomic.Bool
+	closeTimedOut atomic.Bool
+	dropped       atomic.Int64
+	rejected      atomic.Int64
+	truncated     atomic.Int64
+	inFlight      atomic.Int64
+	retryable     atomic.Bool
 
 	settingsMu       sync.RWMutex
 	batchSize        int
@@ -242,6 +243,10 @@ func (c *Collector) Resume() bool {
 	return true
 }
 
+// Close stops intake and asks the worker to drain queued events. A failed batch
+// interrupted by shutdown is reported as abandoned. If ctx expires first,
+// queued and in-flight events are reported as abandoned before the worker is
+// canceled.
 func (c *Collector) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -259,6 +264,7 @@ func (c *Collector) Close(ctx context.Context) error {
 		c.cancelWorker()
 		return nil
 	case <-ctx.Done():
+		c.closeTimedOut.Store(true)
 		abandoned := int64(len(c.queue)) + c.inFlight.Load()
 		c.cancelWorker()
 		c.safeCall(func() {
@@ -376,7 +382,7 @@ func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
 				c.retryable.Store(false)
 				state.succeeded()
 			case <-c.stop:
-				return batch[:0]
+				return c.abandon(batch)
 			}
 		}
 		err := c.writer.WriteBatch(c.workerCtx, batch)
@@ -410,7 +416,7 @@ func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
 			continue
 		case <-c.stop:
 			stopAndDrainTimer(timer)
-			return batch[:0]
+			return c.abandon(batch)
 		}
 	}
 }
@@ -441,6 +447,21 @@ func (c *Collector) recordRestart(now time.Time) int {
 
 func (c *Collector) drop() {
 	c.dropped.Add(1)
+}
+
+func (c *Collector) abandon(batch []model.Event) []model.Event {
+	if len(batch) == 0 {
+		return batch[:0]
+	}
+	if c.closeTimedOut.Load() {
+		return batch[:0]
+	}
+	c.safeCall(func() {
+		if c.callbacks.Abandoned != nil {
+			c.callbacks.Abandoned(int64(len(batch)))
+		}
+	})
+	return batch[:0]
 }
 
 func (c *Collector) safeQueue() {

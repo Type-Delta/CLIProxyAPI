@@ -145,7 +145,7 @@ func NewCPAUKV115Transformer(identityKey [32]byte, storeCredential bool) Transfo
 			Tokens: collector.SourceTokens{Input: row.InputTokens, Output: row.OutputTokens,
 				Reasoning: row.ReasoningTokens, Cached: row.CachedTokens,
 				CacheRead: row.CacheReadTokens, CacheCreation: row.CacheCreationTokens,
-				Total: row.TotalTokens, Quality: model.TokenQualityExact},
+				Total: row.TotalTokens},
 		}
 		result, err := sanitizer.Sanitize(record)
 		if err != nil {

@@ -84,6 +84,7 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 			OutputTokens: row.Tokens.Output, CachedTokens: row.Tokens.Cached,
 			CacheReadTokens: row.Tokens.CacheRead, CacheCreationTokens: row.Tokens.CacheCreation,
 			ReasoningTokens: row.Tokens.Reasoning, TotalTokens: row.Tokens.Total, KnownCost: row.KnownCost,
+			UnpricedTokens: row.UnpricedTokens,
 		}
 		result.Models = append(result.Models, item)
 	}
@@ -122,6 +123,7 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 				OutputTokens: point.Tokens.Output, CachedTokens: point.Tokens.Cached,
 				CacheReadTokens: point.Tokens.CacheRead, CacheCreationTokens: point.Tokens.CacheCreation,
 				ReasoningTokens: point.Tokens.Reasoning, TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost,
+				UnpricedTokens: point.UnpricedTokens,
 			}
 			bucket.Models = append(bucket.Models, modelPoint)
 		}
@@ -230,7 +232,10 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 			pricingIncomplete = true
 			continue
 		}
-		pricedTokens += event.Tokens.Total
+		if event.UnpricedTokens > 0 {
+			pricingIncomplete = true
+		}
+		pricedTokens += max(int64(0), event.Tokens.Total-event.UnpricedTokens)
 		uncached := max(int64(0), event.Tokens.Input-event.Tokens.CacheRead-event.Tokens.CacheCreation)
 		parts := []model.TokenUsage{{Input: uncached, Total: uncached},
 			{Input: event.Tokens.CacheRead, CacheRead: event.Tokens.CacheRead, Total: event.Tokens.CacheRead},
@@ -333,7 +338,7 @@ func (s *SQLiteStore) analysisMatrix(ctx context.Context, query model.Query) (mo
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT key_id,model,COUNT(DISTINCT proxy_request_id),
 SUM(input_tokens),SUM(output_tokens),SUM(cached_tokens),SUM(cache_read_tokens),SUM(cache_creation_tokens),
-SUM(reasoning_tokens),SUM(total_tokens),SUM(COALESCE(known_cost_nano,0)),SUM(generation_time_ms),COUNT(generation_time_ms)
+SUM(reasoning_tokens),SUM(total_tokens),SUM(COALESCE(known_cost_nano,0)),SUM(unpriced_tokens),SUM(generation_time_ms),COUNT(generation_time_ms)
 FROM events `+where+` GROUP BY key_id,model`, arguments...)
 	if err != nil {
 		return model.AnalysisKeyModelMatrix{}, fmt.Errorf("query analysis matrix: %w", err)
@@ -346,7 +351,7 @@ FROM events `+where+` GROUP BY key_id,model`, arguments...)
 		var generation sql.NullInt64
 		if err := rows.Scan(&cell.KeyID, &cell.Model, &cell.Requests, &cell.InputTokens, &cell.OutputTokens,
 			&cell.CachedTokens, &cell.CacheReadTokens, &cell.CacheCreationTokens, &cell.ReasoningTokens,
-			&cell.TotalTokens, &cell.KnownCost, &generation, &cell.GenerationSampleCount); err != nil {
+			&cell.TotalTokens, &cell.KnownCost, &cell.UnpricedTokens, &generation, &cell.GenerationSampleCount); err != nil {
 			return model.AnalysisKeyModelMatrix{}, err
 		}
 		if generation.Valid {

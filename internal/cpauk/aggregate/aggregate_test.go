@@ -28,6 +28,57 @@ func TestPriceBookFixtureRules(t *testing.T) {
 	}
 }
 
+func TestPriceBookTracksUnclassifiedTokens(t *testing.T) {
+	rate := model.NanoUSD(1_000_000_000)
+	book := PriceBook{Rules: []PricingRule{{
+		ID: "model-rule", Model: "model", InputPerMillion: &rate, OutputPerMillion: &rate, Source: "test",
+	}}}
+	tests := []struct {
+		name         string
+		event        model.Event
+		wantCost     model.NanoUSD
+		wantUnpriced int64
+	}{
+		{
+			name:         "matching rule with no breakdown",
+			event:        model.Event{Model: "model", Tokens: model.TokenUsage{Total: 100}},
+			wantCost:     0,
+			wantUnpriced: 100,
+		},
+		{
+			name:         "matching rule with remainder",
+			event:        model.Event{Model: "model", Tokens: model.TokenUsage{Input: 10, Total: 15}},
+			wantCost:     10_000,
+			wantUnpriced: 5,
+		},
+		{
+			name:         "no matching rule",
+			event:        model.Event{Model: "other", Tokens: model.TokenUsage{Input: 10, Total: 15}},
+			wantUnpriced: 15,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := book.Price(test.event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.UnpricedTokens != test.wantUnpriced {
+				t.Fatalf("unpriced tokens = %d, want %d", result.UnpricedTokens, test.wantUnpriced)
+			}
+			if test.name == "no matching rule" {
+				if result.KnownCost != nil {
+					t.Fatalf("known cost = %v, want nil", result.KnownCost)
+				}
+				return
+			}
+			if result.KnownCost == nil || *result.KnownCost != test.wantCost {
+				t.Fatalf("known cost = %v, want %d", result.KnownCost, test.wantCost)
+			}
+		})
+	}
+}
+
 func TestRangeDSTAndMonday(t *testing.T) {
 	now := time.Date(2026, 3, 8, 16, 0, 0, 0, time.UTC)
 	start, end, err := ResolveRange(RangeToday, now, "America/New_York", 0)

@@ -67,6 +67,10 @@ func adaptRecord(record coreusage.Record) Source {
 	if detail.TokenBreakdown.Valid() && (detail.TokenBreakdown.Input.TotalTokens > 0 || detail.InputTokens == 0) {
 		inputTokens = detail.TokenBreakdown.Input.TotalTokens
 	}
+	outputTokens := detail.OutputTokens
+	if detail.TokenBreakdown.Valid() && (detail.TokenBreakdown.Output.TotalTokens > 0 || detail.OutputTokens == 0) {
+		outputTokens = detail.TokenBreakdown.Output.TotalTokens
+	}
 	requestQuality := model.RequestIDObserved
 	if record.RequestIDQuality == coreusage.RequestIDSynthetic {
 		requestQuality = model.RequestIDSynthetic
@@ -84,7 +88,7 @@ func adaptRecord(record coreusage.Record) Source {
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
 		GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed, StatusCode: record.Fail.StatusCode,
 		Tokens: SourceTokens{
-			Input: inputTokens, Output: detail.OutputTokens,
+			Input: inputTokens, Output: outputTokens,
 			Reasoning: detail.ReasoningTokens, Cached: detail.CachedTokens,
 			CacheRead: detail.CacheReadTokens, CacheCreation: detail.CacheCreationTokens,
 			Total:   detail.TotalTokens,

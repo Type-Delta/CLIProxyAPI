@@ -152,6 +152,48 @@ func TestCollectorPermanentFailureWaitsForExplicitRetry(t *testing.T) {
 	}
 }
 
+func TestCollectorCloseAccountsPermanentFailureAsAbandoned(t *testing.T) {
+	writer := &recordingWriter{errs: []error{permanentTestError{}}}
+	var abandoned atomic.Int64
+	options := testOptions(4, 1)
+	options.FailureThreshold = 1
+	options.Callbacks.Abandoned = func(count int64) { abandoned.Add(count) }
+	current, err := New(writer, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Start()
+	if !current.Enqueue(current.Generation(), validEvent()) {
+		t.Fatal("enqueue failed")
+	}
+	waitFor(t, func() bool { return writer.calls.Load() == 1 && current.retryable.Load() })
+	if err := current.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertSingleAbandonedEvent(t, writer, current.Stats(), abandoned.Load())
+}
+
+func TestCollectorCloseAccountsTransientFailureAsAbandoned(t *testing.T) {
+	writer := &recordingWriter{errs: []error{errors.New("transient")}}
+	var abandoned atomic.Int64
+	options := testOptions(4, 1)
+	options.FailureThreshold = 1
+	options.Callbacks.Abandoned = func(count int64) { abandoned.Add(count) }
+	current, err := New(writer, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Start()
+	if !current.Enqueue(current.Generation(), validEvent()) {
+		t.Fatal("enqueue failed")
+	}
+	waitFor(t, func() bool { return writer.calls.Load() == 1 && current.inFlight.Load() == 1 })
+	if err := current.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertSingleAbandonedEvent(t, writer, current.Stats(), abandoned.Load())
+}
+
 func TestCollectorCloseHonorsDeadlineWithStalledWriter(t *testing.T) {
 	writer := &recordingWriter{waitForContext: true}
 	var abandoned atomic.Int64
@@ -178,6 +220,22 @@ func TestCollectorCloseHonorsDeadlineWithStalledWriter(t *testing.T) {
 	}
 	if abandoned.Load() < 1 {
 		t.Fatalf("abandoned events = %d, want at least 1", abandoned.Load())
+	}
+}
+
+func assertSingleAbandonedEvent(t *testing.T, writer *recordingWriter, stats Stats, abandoned int64) {
+	t.Helper()
+	if got := writer.count(); got != 0 {
+		t.Fatalf("written events = %d, want 0", got)
+	}
+	if stats.Dropped != 0 {
+		t.Fatalf("dropped events = %d, want 0", stats.Dropped)
+	}
+	if abandoned != 1 {
+		t.Fatalf("abandoned events = %d, want 1", abandoned)
+	}
+	if int64(writer.count())+stats.Dropped+abandoned != 1 {
+		t.Fatalf("loss accounting = written %d + dropped %d + abandoned %d, want accepted 1", writer.count(), stats.Dropped, abandoned)
 	}
 }
 

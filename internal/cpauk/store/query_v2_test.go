@@ -56,6 +56,34 @@ func TestV2SummaryKeepsTwoDecimalSuccessRateAndAvoidsRateOverflow(t *testing.T) 
 	}
 }
 
+func TestV2SummarySuccessFilterUsesSucceededColumn(t *testing.T) {
+	database, events := openV2FixtureStore(t)
+	for _, testCase := range []struct {
+		name      string
+		value     string
+		attempts  int64
+		requests  int64
+		succeeded int64
+		failed    int64
+	}{
+		{name: "success", value: "true", attempts: 2, requests: 2, succeeded: 2},
+		{name: "failure", value: "false", attempts: 1, requests: 1, failed: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			query := v2Query(model.OperationSummary, events[0].RequestedAt, events[0].RequestedAt.Add(15*time.Minute))
+			query.Filters = map[string]json.RawMessage{"success": json.RawMessage(testCase.value)}
+			summary, err := database.Summary(context.Background(), query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.UpstreamAttempts != testCase.attempts || summary.ProxyRequests != testCase.requests ||
+				summary.Succeeded != testCase.succeeded || summary.Failed != testCase.failed {
+				t.Fatalf("filtered summary = %+v", summary)
+			}
+		})
+	}
+}
+
 func TestOptionalPercentageAvoidsOverflow(t *testing.T) {
 	got := optionalPercentage(500_000_000_000_000_000, 1_000_000_000_000_000_000)
 	if got == nil || *got != "50" {
@@ -273,6 +301,55 @@ func TestV2AnalysisSectionsAreIndependentAndLongLatencyIsSupported(t *testing.T)
 	if longRange.SeriesByCategory == nil || longRange.ModelByTime == nil || longRange.CostComponents == nil || longRange.KeyModelMatrix == nil {
 		t.Fatalf("unsupported latency hid another analysis section: %+v", longRange)
 	}
+}
+
+func TestV2AnalysisModelReportsUnpricedTokensBeforeAndAfterRetention(t *testing.T) {
+	database, events := openV2FixtureStore(t)
+	unknown := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(2*time.Minute), true, nil, 0, 0, 10, 100)
+	unknown.Model = "model-v2"
+	unknown.Tokens.Total = 250
+	if err := database.WriteBatch(context.Background(), []model.Event{unknown}); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationAnalysis,
+		Start: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
+		TimeZone: "UTC", BucketWidth: "1h"}
+	analysis, err := database.Analysis(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.CostComponents == nil || !analysis.CostComponents.Meta.Partial {
+		t.Fatalf("partial analysis cost coverage = %+v", analysis.CostComponents)
+	}
+	assertUnpricedAnalysisModel(t, database, query, 50)
+	if _, err := database.ApplyRetention(context.Background(), query.End, 100); err != nil {
+		t.Fatal(err)
+	}
+	assertUnpricedAnalysisModel(t, database, query, 50)
+}
+
+func assertUnpricedAnalysisModel(t *testing.T, database *SQLiteStore, query model.Query, want int64) {
+	t.Helper()
+	analysis, err := database.Analysis(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range analysis.ModelByTime.Models {
+		if item.Model == "model-v2" {
+			if item.UnpricedTokens != want {
+				t.Fatalf("analysis model = %+v, want unpriced=%d", item, want)
+			}
+			for _, bucket := range analysis.ModelByTime.Buckets {
+				for _, point := range bucket.Models {
+					if point.Model == item.Model && point.UnpricedTokens == want {
+						return
+					}
+				}
+			}
+			t.Fatalf("analysis model buckets omitted unpriced=%d: %+v", want, analysis.ModelByTime.Buckets)
+		}
+	}
+	t.Fatalf("analysis models omitted model-v2: %+v", analysis.ModelByTime.Models)
 }
 
 func TestV2AnalysisMarksUnpricedCostsPartialAndPropagatesTotalFailure(t *testing.T) {

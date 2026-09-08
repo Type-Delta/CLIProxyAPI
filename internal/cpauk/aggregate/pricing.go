@@ -92,7 +92,12 @@ func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	if err != nil {
 		return PriceResult{}, fmt.Errorf("pricing rule %s: %w", rule.ID, err)
 	}
-	return PriceResult{KnownCost: &cost, RuleID: rule.ID, Source: rule.Source}, nil
+	return PriceResult{
+		KnownCost:      &cost,
+		UnpricedTokens: event.Tokens.UnclassifiedTokens(),
+		RuleID:         rule.ID,
+		Source:         rule.Source,
+	}, nil
 }
 
 func (p PriceBook) match(eventProvider, eventModel string, alias *string) *PricingRule {

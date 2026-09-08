@@ -109,4 +109,50 @@ func TestProviderCredentialsCountsDistinctRequestsAcrossRawRetainedAndAuthGroups
 	}
 }
 
+func TestProviderCredentialsRetainedKeepsAuthTypeAndActualObservationTime(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close(context.Background()) })
+	start := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	keyID := strings.Repeat("d", 64)
+	credentialIDs := []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
+	events := []model.Event{
+		v2Event(strings.Repeat("a", 32), strings.Repeat("1", 32), keyID, start.Add(6*time.Minute), true, nil, 0, 0, 10, 20),
+		v2Event(strings.Repeat("b", 32), strings.Repeat("2", 32), keyID, start.Add(11*time.Minute), true, nil, 0, 0, 10, 20),
+	}
+	authType := "oauth"
+	for index := range events {
+		events[index].CredentialID = &credentialIDs[index]
+		algorithm := model.CredentialIDAlgorithm
+		events[index].CredentialIDAlgorithm = &algorithm
+		events[index].AuthType = &authType
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplyRetention(ctx, start.AddDate(0, 0, 1), 100); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := database.ProviderCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(credentials) != len(events) {
+		t.Fatalf("retained provider credentials = %+v", credentials)
+	}
+	byID := make(map[string]model.ProviderCredential, len(credentials))
+	for _, credential := range credentials {
+		byID[credential.CredentialID] = credential
+	}
+	for index, event := range events {
+		credential := byID[credentialIDs[index]]
+		if credential.AuthType != authType || !credential.ObservedAt.Equal(event.RequestedAt) {
+			t.Fatalf("retained credential %s = %+v, want auth=%q observed=%s", credentialIDs[index], credential, authType, event.RequestedAt)
+		}
+	}
+}
+
 func pointerString(value string) *string { return &value }

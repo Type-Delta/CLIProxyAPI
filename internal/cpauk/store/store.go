@@ -183,7 +183,9 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %d: %w", item.version, err)
 		}
-		if item.version == 2 {
+		// Version 2 introduced daily_stats; version 5 added cost coverage columns
+		// to it. Both need the retained days rebuilt from the surviving rollups.
+		if item.version == 2 || item.version == 5 {
 			location, errLocation := dailyStatsLocation(ctx, tx, s.config.RetentionTimeZone)
 			if errLocation != nil {
 				_ = tx.Rollback()

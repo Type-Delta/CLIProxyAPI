@@ -61,7 +61,7 @@ func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, wi
 			InputTokens: point.Tokens.Input, OutputTokens: point.Tokens.Output,
 			CachedTokens: point.Tokens.Cached, CacheReadTokens: point.Tokens.CacheRead,
 			CacheCreationTokens: point.Tokens.CacheCreation, ReasoningTokens: point.Tokens.Reasoning,
-			TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost,
+			TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost, UnpricedTokens: point.UnpricedTokens,
 		}
 	}
 	if err := s.addActivityOutcomes(ctx, query, width, byStart); err != nil {
@@ -99,6 +99,8 @@ func (s *SQLiteStore) yearActivityBuckets(ctx context.Context, query model.Query
 	buckets := make([]model.ActivityBucket, len(sequence))
 	byStart := make(map[int64]*model.ActivityBucket, len(sequence))
 	requests := make(map[int64]map[string]struct{}, len(sequence))
+	retainedRequestCounts := make(map[int64]int64, len(sequence))
+	retainedRequestDays := make(map[int64]bool, len(sequence))
 	for index, bounds := range sequence {
 		buckets[index] = model.ActivityBucket{Start: bounds.start, End: bounds.end}
 		byStart[bounds.start.UnixNano()] = &buckets[index]
@@ -118,7 +120,7 @@ func (s *SQLiteStore) yearActivityBuckets(ctx context.Context, query model.Query
 	}
 	rawRows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns,proxy_request_id,succeeded,
 input_tokens,output_tokens,reasoning_tokens,cached_tokens,cache_read_tokens,
-cache_creation_tokens,total_tokens,known_cost_nano FROM events `+rawWhere, rawArguments...)
+cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM events `+rawWhere, rawArguments...)
 	if err != nil {
 		return nil, fmt.Errorf("query year activity events: %w", err)
 	}
@@ -126,10 +128,10 @@ cache_creation_tokens,total_tokens,known_cost_nano FROM events `+rawWhere, rawAr
 		var requestedNS int64
 		var requestID string
 		var succeeded bool
-		var input, output, reasoning, cached, cacheRead, cacheCreation, total int64
+		var input, output, reasoning, cached, cacheRead, cacheCreation, total, unpriced int64
 		var knownCost sql.NullInt64
 		if err := rawRows.Scan(&requestedNS, &requestID, &succeeded, &input, &output, &reasoning,
-			&cached, &cacheRead, &cacheCreation, &total, &knownCost); err != nil {
+			&cached, &cacheRead, &cacheCreation, &total, &knownCost, &unpriced); err != nil {
 			_ = rawRows.Close()
 			return nil, fmt.Errorf("scan year activity event: %w", err)
 		}
@@ -147,7 +149,7 @@ cache_creation_tokens,total_tokens,known_cost_nano FROM events `+rawWhere, rawAr
 		}
 		requests[start.UnixNano()][requestID] = struct{}{}
 		addActivityOutcome(bucket, succeeded, 1)
-		addActivityTokens(bucket, input, output, reasoning, cached, cacheRead, cacheCreation, total)
+		addActivityTokens(bucket, input, output, reasoning, cached, cacheRead, cacheCreation, total, unpriced)
 		if knownCost.Valid {
 			bucket.KnownCost += model.NanoUSD(knownCost.Int64)
 		}
@@ -159,36 +161,80 @@ cache_creation_tokens,total_tokens,known_cost_nano FROM events `+rawWhere, rawAr
 	if err := rawRows.Close(); err != nil {
 		return nil, fmt.Errorf("close year activity events: %w", err)
 	}
-	for start, values := range requests {
-		byStart[start].Requests += int64(len(values))
-	}
-
 	statsWhere, statsArguments := dailyStatsWhere(query, false)
 	statsRows, err := s.db.QueryContext(ctx, `SELECT day_start_ns,requests,succeeded,failed,
 input_tokens,output_tokens,reasoning_tokens,cached_tokens,cache_read_tokens,
-cache_creation_tokens,total_tokens FROM daily_stats `+statsWhere, statsArguments...)
+cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM daily_stats `+statsWhere, statsArguments...)
 	if err != nil {
 		return nil, fmt.Errorf("query retained year activity: %w", err)
 	}
-	defer func() { _ = statsRows.Close() }()
 	for statsRows.Next() {
 		var dayStart, requestCount, succeeded, failed int64
-		var input, output, reasoning, cached, cacheRead, cacheCreation, total int64
+		var input, output, reasoning, cached, cacheRead, cacheCreation, total, knownCost, unpriced int64
 		if err := statsRows.Scan(&dayStart, &requestCount, &succeeded, &failed, &input, &output,
-			&reasoning, &cached, &cacheRead, &cacheCreation, &total); err != nil {
+			&reasoning, &cached, &cacheRead, &cacheCreation, &total, &knownCost, &unpriced); err != nil {
 			return nil, fmt.Errorf("scan retained year activity: %w", err)
 		}
 		bucket := byStart[dayStart]
 		if bucket == nil {
 			continue
 		}
-		bucket.Requests += requestCount
 		bucket.Succeeded += succeeded
 		bucket.Failed += failed
-		addActivityTokens(bucket, input, output, reasoning, cached, cacheRead, cacheCreation, total)
+		addActivityTokens(bucket, input, output, reasoning, cached, cacheRead, cacheCreation, total, unpriced)
+		bucket.KnownCost += model.NanoUSD(knownCost)
+		retainedRequestCounts[dayStart] += requestCount
 	}
 	if err := statsRows.Err(); err != nil {
 		return nil, fmt.Errorf("read retained year activity: %w", err)
+	}
+	if err := statsRows.Close(); err != nil {
+		return nil, fmt.Errorf("close retained year activity: %w", err)
+	}
+
+	retainedWhere, retainedArguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
+	if err != nil {
+		return nil, err
+	}
+	requestRows, err := s.db.QueryContext(ctx, `SELECT bucket_start_ns,proxy_request_id FROM request_rollups `+retainedWhere, retainedArguments...)
+	if err != nil {
+		return nil, fmt.Errorf("query retained year activity requests: %w", err)
+	}
+	for requestRows.Next() {
+		var bucketStart int64
+		var requestID string
+		if err := requestRows.Scan(&bucketStart, &requestID); err != nil {
+			_ = requestRows.Close()
+			return nil, fmt.Errorf("scan retained year activity request: %w", err)
+		}
+		start, _, errBounds := aggregate.BucketBounds(time.Unix(0, bucketStart).UTC(), query.TimeZone, "1d")
+		if errBounds != nil {
+			_ = requestRows.Close()
+			return nil, errBounds
+		}
+		if byStart[start.UnixNano()] == nil {
+			continue
+		}
+		if requests[start.UnixNano()] == nil {
+			requests[start.UnixNano()] = map[string]struct{}{}
+		}
+		requests[start.UnixNano()][requestID] = struct{}{}
+		retainedRequestDays[start.UnixNano()] = true
+	}
+	if err := requestRows.Err(); err != nil {
+		_ = requestRows.Close()
+		return nil, fmt.Errorf("read retained year activity requests: %w", err)
+	}
+	if err := requestRows.Close(); err != nil {
+		return nil, fmt.Errorf("close retained year activity requests: %w", err)
+	}
+	for start, values := range requests {
+		byStart[start].Requests = int64(len(values))
+	}
+	for start, count := range retainedRequestCounts {
+		if !retainedRequestDays[start] {
+			byStart[start].Requests += count
+		}
 	}
 	return buckets, nil
 }
@@ -242,7 +288,7 @@ func dailyStatsWhere(query model.Query, overlap bool) (string, []any) {
 	return "WHERE " + comparison + " AND " + inClause("key_id", len(query.KeyIDs)), arguments
 }
 
-func addActivityTokens(bucket *model.ActivityBucket, input, output, reasoning, cached, cacheRead, cacheCreation, total int64) {
+func addActivityTokens(bucket *model.ActivityBucket, input, output, reasoning, cached, cacheRead, cacheCreation, total, unpriced int64) {
 	bucket.InputTokens += input
 	bucket.OutputTokens += output
 	bucket.ReasoningTokens += reasoning
@@ -250,6 +296,7 @@ func addActivityTokens(bucket *model.ActivityBucket, input, output, reasoning, c
 	bucket.CacheReadTokens += cacheRead
 	bucket.CacheCreationTokens += cacheCreation
 	bucket.TotalTokens += total
+	bucket.UnpricedTokens += unpriced
 }
 
 type analyticsBucket struct {

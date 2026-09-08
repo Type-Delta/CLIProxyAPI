@@ -32,6 +32,18 @@ type TokenUsage struct {
 	Quality       TokenQuality `json:"quality"`
 }
 
+func (t TokenUsage) UnclassifiedTokens() int64 {
+	remaining := t.Total - t.Input
+	if remaining <= 0 {
+		return 0
+	}
+	remaining -= t.Output
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
 type Event struct {
 	SchemaVersion         int              `json:"schema_version"`
 	AttemptID             string           `json:"attempt_id"`

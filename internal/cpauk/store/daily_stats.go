@@ -25,10 +25,16 @@ type dailyStatsRow struct {
 	cacheRead     int64
 	cacheCreation int64
 	total         int64
+	knownCost     int64
+	unpriced      int64
 }
 
 type dailyStatsQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type dailyStatsRowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func dailyStatsLocation(ctx context.Context, queryer dailyStatsQueryer, configuredZone string) (*time.Location, error) {
@@ -56,20 +62,48 @@ func dailyStatsLocation(ctx context.Context, queryer dailyStatsQueryer, configur
 	return location, nil
 }
 
+func dailyStatsHasCostColumns(ctx context.Context, queryer dailyStatsRowsQueryer) (bool, error) {
+	rows, err := queryer.QueryContext(ctx, "PRAGMA table_info(daily_stats)")
+	if err != nil {
+		return false, fmt.Errorf("inspect daily stats columns: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	knownCost, unpriced := false, false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan daily stats columns: %w", err)
+		}
+		switch name {
+		case "known_cost_nano":
+			knownCost = true
+		case "unpriced_tokens":
+			unpriced = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read daily stats columns: %w", err)
+	}
+	return knownCost && unpriced, nil
+}
+
 func rebuildDailyStats(ctx context.Context, tx *sql.Tx, location *time.Location) (int64, error) {
 	stats := make(map[dailyStatsKey]*dailyStatsRow)
 	rows, err := tx.QueryContext(ctx, `SELECT bucket_start_ns,key_id,succeeded,upstream_attempts,
 input_tokens,output_tokens,reasoning_tokens,cached_tokens,cache_read_tokens,
-cache_creation_tokens,total_tokens FROM rollups`)
+cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM rollups`)
 	if err != nil {
 		return 0, fmt.Errorf("query retained rows for daily stats: %w", err)
 	}
 	for rows.Next() {
 		var bucketStart, attempts, input, output, reasoning, cached, cacheRead, cacheCreation, total int64
+		var knownCost, unpriced int64
 		var keyID string
 		var succeeded bool
 		if err := rows.Scan(&bucketStart, &keyID, &succeeded, &attempts, &input, &output,
-			&reasoning, &cached, &cacheRead, &cacheCreation, &total); err != nil {
+			&reasoning, &cached, &cacheRead, &cacheCreation, &total, &knownCost, &unpriced); err != nil {
 			_ = rows.Close()
 			return 0, fmt.Errorf("scan retained row for daily stats: %w", err)
 		}
@@ -92,6 +126,8 @@ cache_creation_tokens,total_tokens FROM rollups`)
 		row.cacheRead += cacheRead
 		row.cacheCreation += cacheCreation
 		row.total += total
+		row.knownCost += knownCost
+		row.unpriced += unpriced
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -136,22 +172,38 @@ FROM request_rollups ORDER BY key_id,proxy_request_id,bucket_start_ns`)
 	if err := requestRows.Close(); err != nil {
 		return 0, fmt.Errorf("close retained requests for daily stats: %w", err)
 	}
+	hasCostColumns, err := dailyStatsHasCostColumns(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM daily_stats"); err != nil {
 		return 0, fmt.Errorf("clear daily stats: %w", err)
 	}
-	statement, err := tx.PrepareContext(ctx, `INSERT INTO daily_stats (
+	statementSQL := `INSERT INTO daily_stats (
 day_start_ns,day_end_ns,key_id,requests,succeeded,failed,input_tokens,output_tokens,
 reasoning_tokens,cached_tokens,cache_read_tokens,cache_creation_tokens,total_tokens)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	if hasCostColumns {
+		statementSQL = `INSERT INTO daily_stats (
+day_start_ns,day_end_ns,key_id,requests,succeeded,failed,input_tokens,output_tokens,
+reasoning_tokens,cached_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,
+known_cost_nano,unpriced_tokens)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	}
+	statement, err := tx.PrepareContext(ctx, statementSQL)
 	if err != nil {
 		return 0, fmt.Errorf("prepare daily stats: %w", err)
 	}
 	defer func() { _ = statement.Close() }()
 	for key, row := range stats {
-		if _, err := statement.ExecContext(ctx, key.dayStart, row.dayEnd, key.keyID, row.requests,
+		arguments := []any{key.dayStart, row.dayEnd, key.keyID, row.requests,
 			row.succeeded, row.failed, row.input, row.output, row.reasoning, row.cached,
-			row.cacheRead, row.cacheCreation, row.total); err != nil {
+			row.cacheRead, row.cacheCreation, row.total}
+		if hasCostColumns {
+			arguments = append(arguments, row.knownCost, row.unpriced)
+		}
+		if _, err := statement.ExecContext(ctx, arguments...); err != nil {
 			return 0, fmt.Errorf("write daily stats: %w", err)
 		}
 	}

@@ -657,7 +657,11 @@ func buildWhere(query model.Query) (string, []any, error) {
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return "", nil, fmt.Errorf("decode %s filter: %w", name, err)
 			}
-			clauses = append(clauses, name+" = ?")
+			column := name
+			if name == "success" {
+				column = "succeeded"
+			}
+			clauses = append(clauses, column+" = ?")
 			arguments = append(arguments, value)
 			continue
 		}
