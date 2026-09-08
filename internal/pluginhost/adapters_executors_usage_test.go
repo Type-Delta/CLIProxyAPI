@@ -325,8 +325,9 @@ func TestExecutorAdapterExecuteStreamPublishesUsage(t *testing.T) {
 	executorRecord := normalizeTestCapabilityRecord(capabilityRecord{id: "executor-plugin-stream"})
 	host := newHostWithRecords(executorRecord)
 
-	streamChunks := make(chan pluginapi.ExecutorStreamChunk, 4)
-	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")}
+	streamChunks := make(chan pluginapi.ExecutorStreamChunk, 5)
+	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hel")}
+	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("lo\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n")}
 	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":25,\"total_tokens\":40}}\n\n")}
 	streamChunks <- pluginapi.ExecutorStreamChunk{Payload: []byte("data: [DONE]\n\n")}
 	close(streamChunks)
@@ -379,6 +380,9 @@ func TestExecutorAdapterExecuteStreamPublishesUsage(t *testing.T) {
 	}
 
 	rec := plugin.waitRecord(t, 200*time.Millisecond)
+	if rec.GenerationTime == nil || *rec.GenerationTime <= 0 {
+		t.Fatalf("split/combined SSE tokens lost generation observation: %v", rec.GenerationTime)
+	}
 	if rec.Provider != "plugin-provider-stream" {
 		t.Errorf("got provider %q, want %q", rec.Provider, "plugin-provider-stream")
 	}

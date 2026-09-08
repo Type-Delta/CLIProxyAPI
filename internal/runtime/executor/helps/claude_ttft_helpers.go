@@ -10,6 +10,10 @@ import (
 // substantive output token content (such as text delta, thinking delta, or tool input delta).
 // It filters out message_start, ping, content_block_stop, and empty containers.
 func IsClaudeTokenEvent(payload []byte) bool {
+	return isClaudeTokenEvent(payload, true)
+}
+
+func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 	payload = bytes.TrimSpace(payload)
 	if len(payload) == 0 {
 		return false
@@ -63,9 +67,9 @@ func IsClaudeTokenEvent(payload []byte) bool {
 
 	// Terminal completion events fallback
 	case "message_delta":
-		return len(gjson.GetBytes(payload, "delta.stop_reason").String()) > 0
+		return terminalFallback && len(gjson.GetBytes(payload, "delta.stop_reason").String()) > 0
 	case "message_stop", "error":
-		return true
+		return terminalFallback
 
 	// Handshake metadata and container boundaries
 	case "message_start", "ping", "content_block_stop":
@@ -89,10 +93,13 @@ func IsClaudeTokenEvent(payload []byte) bool {
 
 // ObserveClaudeTokenEvent inspects an Anthropic Messages SSE chunk and records TTFT if the frame
 // represents the first meaningful token event. It records first-packet arrival time as fallback
-// and returns immediately with zero allocations once effective token TTFT is set.
+// and continues observing substantive token arrivals for generation duration.
 func ObserveClaudeTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
+	}
+	if isClaudeTokenEvent(payload, false) {
+		reporter.ObserveGenerationToken()
 	}
 	if reporter.IsTTFTSet() {
 		return

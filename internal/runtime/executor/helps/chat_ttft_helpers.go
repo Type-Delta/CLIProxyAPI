@@ -10,6 +10,10 @@ import (
 // carries substantive output token content (such as text delta, reasoning content, or tool call arguments).
 // It filters out container metadata, role announcements, and empty delta frames.
 func IsChatTokenEvent(payload []byte) bool {
+	return isChatTokenEvent(payload, true)
+}
+
+func isChatTokenEvent(payload []byte, terminalFallback bool) bool {
 	payload = bytes.TrimSpace(payload)
 	if len(payload) == 0 {
 		return false
@@ -91,7 +95,7 @@ func IsChatTokenEvent(payload []byte) bool {
 		}
 
 		// Finish reason terminal fallback
-		if len(choice.Get("finish_reason").String()) > 0 {
+		if terminalFallback && len(choice.Get("finish_reason").String()) > 0 {
 			return true
 		}
 	}
@@ -101,10 +105,13 @@ func IsChatTokenEvent(payload []byte) bool {
 
 // ObserveChatTokenEvent inspects an OpenAI Chat Completions chunk and records TTFT if the frame
 // represents the first meaningful token event. It records first-packet arrival time as fallback
-// and returns immediately with zero allocations once effective token TTFT is set.
+// and continues observing substantive token arrivals for generation duration.
 func ObserveChatTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
+	}
+	if isChatTokenEvent(payload, false) {
+		reporter.ObserveGenerationToken()
 	}
 	if reporter.IsTTFTSet() {
 		return

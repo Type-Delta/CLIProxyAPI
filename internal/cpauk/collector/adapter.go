@@ -82,7 +82,7 @@ func adaptRecord(record coreusage.Record) Source {
 		APIKey: record.APIKey, AuthID: record.AuthID, AuthIndex: record.AuthIndex,
 		AuthType: record.AuthType, ServiceTier: record.ServiceTier, ResponseTier: responseTier,
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
-		TTFT: record.TTFT, Failed: record.Failed, StatusCode: record.Fail.StatusCode,
+		GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed, StatusCode: record.Fail.StatusCode,
 		Tokens: SourceTokens{
 			Input: inputTokens, Output: detail.OutputTokens,
 			Reasoning: detail.ReasoningTokens, Cached: detail.CachedTokens,

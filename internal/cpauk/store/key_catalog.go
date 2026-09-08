@@ -105,6 +105,14 @@ func (s *SQLiteStore) KeyCatalog(ctx context.Context, query model.Query) (KeyCat
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
+	requestCounts, err := s.dimensionRequestCountsFor(ctx, query, "key")
+	if err != nil {
+		return KeyCatalogPage{}, err
+	}
+	details, err := s.keyUsageDetails(ctx, query)
+	if err != nil {
+		return KeyCatalogPage{}, err
+	}
 	activity, err := s.keyActivity(ctx, query)
 	if err != nil {
 		return KeyCatalogPage{}, err
@@ -149,6 +157,10 @@ func (s *SQLiteStore) KeyCatalog(ctx context.Context, query model.Query) (KeyCat
 		}
 		item := model.KeyIdentity{KeyID: keyID, ShortKeyID: shortIDs[keyID], Status: status,
 			TotalTokens: totals.tokens.Total, KnownCost: totals.knownCost, UnpricedTokens: totals.unpriced}
+		detail := details[keyID]
+		item.Requests = requestCounts[keyID]
+		item.TopModel, item.TopModelTokens = detail.TopModel, detail.TopModelTokens
+		item.GenerationTimeMS, item.GenerationSampleCount = detail.GenerationTimeMS, detail.GenerationSampleCount
 		if bounds, ok := activity[keyID]; ok {
 			first, last := time.Unix(0, bounds[0]).UTC(), time.Unix(0, bounds[1]).UTC()
 			item.FirstActivityAt, item.LastActivityAt = &first, &last

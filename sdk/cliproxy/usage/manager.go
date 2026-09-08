@@ -52,9 +52,12 @@ type Record struct {
 	RequestedAt time.Time
 	Latency     time.Duration
 	TTFT        time.Duration
-	Failed      bool
-	Fail        Failure
-	Detail      Detail
+	// GenerationTime measures first-to-last substantive token arrivals on the local monotonic clock.
+	// nil means the request did not expose observable streaming token boundaries.
+	GenerationTime *time.Duration
+	Failed         bool
+	Fail           Failure
+	Detail         Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

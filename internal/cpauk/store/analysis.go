@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
@@ -139,11 +140,6 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 
 func (s *SQLiteStore) analysisLatency(ctx context.Context, query model.Query) (model.AnalysisLatency, error) {
 	result := model.AnalysisLatency{Samples: []model.AnalysisLatencySample{}}
-	if query.End.Sub(query.Start) > 30*24*time.Hour {
-		result.Meta.Partial = true
-		result.UnsupportedReason = "latency diagnostics support ranges up to 30 days"
-		return result, nil
-	}
 	where, arguments, err := buildWhere(query)
 	if err != nil {
 		return result, err
@@ -153,42 +149,17 @@ func (s *SQLiteStore) analysisLatency(ctx context.Context, query model.Query) (m
 	if s.db == nil {
 		return result, ErrClosed
 	}
+	metrics, err := s.timingMetrics(ctx, query, true)
+	if err != nil {
+		return result, err
+	}
+	result.Metrics = metrics
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return result, ErrRetainedRangePartial
 	}
-	var maxTTFT, maxLatency sql.NullInt64
-	var ttftCount int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(time_to_first_token_ms),MAX(time_to_first_token_ms),MAX(latency_ms)
-FROM events `+where, arguments...).Scan(&result.SampleCount, &ttftCount, &maxTTFT, &maxLatency); err != nil {
-		return result, fmt.Errorf("query analysis latency statistics: %w", err)
-	}
-	if maxTTFT.Valid {
-		value := maxTTFT.Int64
-		result.MaxTTFTMS = &value
-	}
-	if maxLatency.Valid {
-		value := maxLatency.Int64
-		result.MaxLatencyMS = &value
-	}
-	if ttftCount > 0 {
-		var value int64
-		if err := s.db.QueryRowContext(ctx, `SELECT time_to_first_token_ms FROM events `+where+`
-AND time_to_first_token_ms IS NOT NULL ORDER BY time_to_first_token_ms LIMIT 1 OFFSET ?`,
-			append(arguments, percentileOffset(ttftCount, 95, 100))...).Scan(&value); err != nil {
-			return result, fmt.Errorf("query analysis TTFT percentile: %w", err)
-		}
-		percentile := float64(value)
-		result.P95TTFTMS = &percentile
-	}
-	if result.SampleCount > 0 {
-		var value int64
-		if err := s.db.QueryRowContext(ctx, `SELECT latency_ms FROM events `+where+`
-ORDER BY latency_ms LIMIT 1 OFFSET ?`, append(arguments, percentileOffset(result.SampleCount, 95, 100))...).Scan(&value); err != nil {
-			return result, fmt.Errorf("query analysis latency percentile: %w", err)
-		}
-		percentile := float64(value)
-		result.P95LatencyMS = &percentile
-	}
+	result.SampleCount = metrics["e2e"].SampleCount
+	result.P95TTFTMS, result.MaxTTFTMS = metrics["ttft"].P95MS, metrics["ttft"].MaxMS
+	result.P95LatencyMS, result.MaxLatencyMS = metrics["e2e"].P95MS, metrics["e2e"].MaxMS
 	rows, err := s.db.QueryContext(ctx, `WITH ranked AS (
 SELECT requested_at_ns,time_to_first_token_ms,latency_ms,model,succeeded,
 ROW_NUMBER() OVER (ORDER BY requested_at_ns,attempt_id)-1 AS sample_index,
@@ -242,6 +213,7 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 	}
 	defer func() { _ = rows.Close() }()
 	totals := make([]model.NanoUSD, 4)
+	modelTotals := map[string][]model.NanoUSD{}
 	pricingIncomplete := false
 	var pricedTokens int64
 	for rows.Next() {
@@ -279,6 +251,12 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 			}
 		}
 		reconcileCostComponents(componentCosts, parts, *event.KnownCost)
+		if modelTotals[event.Model] == nil {
+			modelTotals[event.Model] = make([]model.NanoUSD, 4)
+		}
+		for index, cost := range componentCosts {
+			modelTotals[event.Model][index] += cost
+		}
 		for index := range totals {
 			totals[index] += componentCosts[index]
 		}
@@ -289,7 +267,11 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 	if err := rows.Close(); err != nil {
 		return model.AnalysisCostComponents{}, err
 	}
-	result := model.AnalysisCostComponents{}
+	result := model.AnalysisCostComponents{Models: []model.ModelCostComponents{}}
+	for name, costs := range modelTotals {
+		result.Models = append(result.Models, model.ModelCostComponents{Model: name, UncachedInputUSD: costs[0].String(), CacheReadUSD: costs[1].String(), CacheCreationUSD: costs[2].String(), OutputUSD: costs[3].String(), TotalUSD: (costs[0] + costs[1] + costs[2] + costs[3]).String()})
+	}
+	slices.SortFunc(result.Models, func(a, b model.ModelCostComponents) int { return strings.Compare(a.Model, b.Model) })
 	result.UncachedInputUSD = totals[0].String()
 	result.CacheReadUSD = totals[1].String()
 	result.CacheCreationUSD = totals[2].String()
@@ -351,7 +333,7 @@ func (s *SQLiteStore) analysisMatrix(ctx context.Context, query model.Query) (mo
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT key_id,model,COUNT(DISTINCT proxy_request_id),
 SUM(input_tokens),SUM(output_tokens),SUM(cached_tokens),SUM(cache_read_tokens),SUM(cache_creation_tokens),
-SUM(reasoning_tokens),SUM(total_tokens),SUM(COALESCE(known_cost_nano,0))
+SUM(reasoning_tokens),SUM(total_tokens),SUM(COALESCE(known_cost_nano,0)),SUM(generation_time_ms),COUNT(generation_time_ms)
 FROM events `+where+` GROUP BY key_id,model`, arguments...)
 	if err != nil {
 		return model.AnalysisKeyModelMatrix{}, fmt.Errorf("query analysis matrix: %w", err)
@@ -361,10 +343,14 @@ FROM events `+where+` GROUP BY key_id,model`, arguments...)
 	keys, models := map[string]struct{}{}, map[string]struct{}{}
 	for rows.Next() {
 		var cell model.AnalysisMatrixCell
+		var generation sql.NullInt64
 		if err := rows.Scan(&cell.KeyID, &cell.Model, &cell.Requests, &cell.InputTokens, &cell.OutputTokens,
 			&cell.CachedTokens, &cell.CacheReadTokens, &cell.CacheCreationTokens, &cell.ReasoningTokens,
-			&cell.TotalTokens, &cell.KnownCost); err != nil {
+			&cell.TotalTokens, &cell.KnownCost, &generation, &cell.GenerationSampleCount); err != nil {
 			return model.AnalysisKeyModelMatrix{}, err
+		}
+		if generation.Valid {
+			cell.GenerationTimeMS = &generation.Int64
 		}
 		result.Cells = append(result.Cells, cell)
 		keys[cell.KeyID] = struct{}{}

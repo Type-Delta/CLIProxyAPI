@@ -790,6 +790,7 @@ func (a *executorAdapter) observeAndTranslateExecutorStream(ctx context.Context,
 	publishResult := func() {
 		publishOnce.Do(func() {
 			if len(lineBuffer) > 0 {
+				helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, lineBuffer)
 				helps.ObservePluginExecutorStreamUsage(prepared.outputFormat.String(), lineBuffer, &streamUsage)
 				lineBuffer = nil
 			}
@@ -839,7 +840,7 @@ func (a *executorAdapter) observeAndTranslateExecutorStream(ctx context.Context,
 				}
 
 				if len(chunk.Payload) > 0 {
-					helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, chunk.Payload)
+					reporter.RecordFirstPacket()
 
 					lineBuffer = append(lineBuffer, chunk.Payload...)
 					for {
@@ -849,15 +850,18 @@ func (a *executorAdapter) observeAndTranslateExecutorStream(ctx context.Context,
 						}
 						line := lineBuffer[:idx+1]
 						lineBuffer = lineBuffer[idx+1:]
+						helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, line)
 						helps.ObservePluginExecutorStreamUsage(prepared.outputFormat.String(), line, &streamUsage)
 					}
 					if len(lineBuffer) > 0 {
 						if jsonBytes := helps.ExtractStreamJSONPayload(lineBuffer); len(jsonBytes) > 0 && json.Valid(jsonBytes) {
+							helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, lineBuffer)
 							helps.ObservePluginExecutorStreamUsage(prepared.outputFormat.String(), lineBuffer, &streamUsage)
 							lineBuffer = nil
 						}
 					}
 					if len(lineBuffer) > maxLineBufferSize {
+						helps.ObservePluginExecutorStreamTTFT(prepared.outputFormat.String(), reporter, lineBuffer)
 						helps.ObservePluginExecutorStreamUsage(prepared.outputFormat.String(), lineBuffer, &streamUsage)
 						lineBuffer = nil
 					}

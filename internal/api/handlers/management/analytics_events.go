@@ -130,7 +130,7 @@ func (h *Handler) CreateAnalyticsExport(c *gin.Context) {
 }
 
 var analyticsEventExportColumns = []string{
-	"schema_version", "attempt_id", "proxy_request_id", "request_id_quality", "key_id", "requested_at", "provider", "executor_type", "model", "requested_alias", "endpoint_class", "auth_type", "credential_id", "credential_id_algorithm", "succeeded", "upstream_status_code", "error_class", "latency_ms", "time_to_first_token_ms", "service_tier_requested", "service_tier_used", "generated", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "accounting_schema", "token_quality", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source",
+	"schema_version", "attempt_id", "proxy_request_id", "request_id_quality", "key_id", "requested_at", "provider", "executor_type", "model", "requested_alias", "endpoint_class", "auth_type", "credential_id", "credential_id_algorithm", "succeeded", "upstream_status_code", "error_class", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "service_tier_requested", "service_tier_used", "generated", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "accounting_schema", "token_quality", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source",
 }
 
 func analyticsEventExportValues(event model.Event) map[string]any {
@@ -140,7 +140,7 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 		"model": event.Model, "requested_alias": event.RequestedAlias, "endpoint_class": event.EndpointClass, "auth_type": event.AuthType,
 		"credential_id": event.CredentialID, "credential_id_algorithm": event.CredentialIDAlgorithm, "succeeded": event.Succeeded,
 		"upstream_status_code": event.UpstreamStatusCode, "error_class": event.ErrorClass, "latency_ms": event.LatencyMS,
-		"time_to_first_token_ms": event.TimeToFirstTokenMS, "service_tier_requested": event.ServiceTierRequested, "service_tier_used": event.ServiceTierUsed,
+		"time_to_first_token_ms": event.TimeToFirstTokenMS, "generation_time_ms": event.GenerationTimeMS, "service_tier_requested": event.ServiceTierRequested, "service_tier_used": event.ServiceTierUsed,
 		"generated": event.Generated, "input_tokens": event.Tokens.Input, "output_tokens": event.Tokens.Output, "reasoning_tokens": event.Tokens.Reasoning,
 		"cached_tokens": event.Tokens.Cached, "cache_read_tokens": event.Tokens.CacheRead, "cache_creation_tokens": event.Tokens.CacheCreation,
 		"total_tokens": event.Tokens.Total, "accounting_schema": event.Tokens.Schema, "token_quality": event.Tokens.Quality,

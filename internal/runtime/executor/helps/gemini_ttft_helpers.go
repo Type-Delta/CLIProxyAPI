@@ -10,6 +10,10 @@ import (
 // substantive output token content (such as text parts, thought traces, or function calls).
 // It filters out metadata-only chunks (e.g. standalone usageMetadata) and empty parts.
 func IsGeminiTokenEvent(payload []byte) bool {
+	return isGeminiTokenEvent(payload, true)
+}
+
+func isGeminiTokenEvent(payload []byte, terminalFallback bool) bool {
 	payload = bytes.TrimSpace(payload)
 	if len(payload) == 0 {
 		return false
@@ -29,7 +33,7 @@ func IsGeminiTokenEvent(payload []byte) bool {
 
 	// Terminal error fallback
 	if gjson.GetBytes(payload, "error.message").Exists() || gjson.GetBytes(payload, "error").Exists() || gjson.GetBytes(payload, "response.error").Exists() {
-		return true
+		return terminalFallback
 	}
 
 	candidatesNode := gjson.GetBytes(payload, "candidates")
@@ -63,7 +67,7 @@ func IsGeminiTokenEvent(payload []byte) bool {
 		}
 
 		// Terminal finishReason fallback (e.g., STOP, MAX_TOKENS, SAFETY)
-		if len(candidate.Get("finishReason").String()) > 0 {
+		if terminalFallback && len(candidate.Get("finishReason").String()) > 0 {
 			return true
 		}
 	}
@@ -73,10 +77,13 @@ func IsGeminiTokenEvent(payload []byte) bool {
 
 // ObserveGeminiTokenEvent inspects a Google Gemini / Antigravity streaming chunk and records TTFT
 // if the frame represents the first meaningful token event. It records first-packet arrival time
-// as fallback and returns immediately with zero allocations once effective token TTFT is set.
+// as fallback and continues observing substantive token arrivals for generation duration.
 func ObserveGeminiTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
+	}
+	if isGeminiTokenEvent(payload, false) {
+		reporter.ObserveGenerationToken()
 	}
 	if reporter.IsTTFTSet() {
 		return

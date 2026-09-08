@@ -74,8 +74,12 @@ func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Sum
 	if err != nil {
 		return model.Summary{}, err
 	}
+	timings, err := s.timingMetrics(ctx, query, false)
+	if err != nil {
+		return model.Summary{}, err
+	}
 	return model.Summary{
-		Meta:             responseMeta(query),
+		ProcessingTime: processingTime(timings, result.attempts), Meta: responseMeta(query),
 		ProxyRequests:    result.proxyRequests,
 		UpstreamAttempts: result.attempts,
 		Succeeded:        result.succeeded,
@@ -325,7 +329,7 @@ credential_id, credential_id_algorithm, succeeded, upstream_status_code, error_c
 latency_ms, time_to_first_token_ms, service_tier_requested, service_tier_used, generated,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
-price_rule_id, price_source, import_batch_id`
+price_rule_id, price_source, import_batch_id, generation_time_ms`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -807,7 +811,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var requestedAlias, authType, credentialID, credentialAlgorithm sql.NullString
 	var status sql.NullInt64
 	var errorClass, tierRequested, tierUsed, priceRuleID, priceSource, importBatchID sql.NullString
-	var ttft sql.NullInt64
+	var ttft, generation sql.NullInt64
 	var knownCost sql.NullInt64
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
@@ -816,7 +820,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Input, &event.Tokens.Output, &event.Tokens.Reasoning, &event.Tokens.Cached,
 		&event.Tokens.CacheRead, &event.Tokens.CacheCreation, &event.Tokens.Total,
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
-		&priceRuleID, &priceSource, &importBatchID)
+		&priceRuleID, &priceSource, &importBatchID, &generation)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
 	}
@@ -849,6 +853,9 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	if status.Valid {
 		value := int(status.Int64)
 		event.UpstreamStatusCode = &value
+	}
+	if generation.Valid {
+		event.GenerationTimeMS = &generation.Int64
 	}
 	if ttft.Valid {
 		value := ttft.Int64

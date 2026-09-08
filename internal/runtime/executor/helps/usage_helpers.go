@@ -45,6 +45,8 @@ type UsageReporter struct {
 	firstPacketSet      bool
 	ttftStart           time.Time
 	ttftSet             bool
+	firstTokenAt        time.Time
+	lastTokenAt         time.Time
 	once                sync.Once
 }
 
@@ -394,6 +396,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
+		GenerationTime:      r.generationDuration(),
 		Failed:              failed,
 		Fail:                fail,
 		Detail:              detail,
@@ -1284,4 +1287,32 @@ func jsonPayload(line []byte) []byte {
 		return nil
 	}
 	return trimmed
+}
+
+// ObserveGenerationToken records token arrivals using one local monotonic clock.
+// Metadata and terminal-only frames must not call this method.
+func (r *UsageReporter) ObserveGenerationToken() {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	r.ttftMu.Lock()
+	defer r.ttftMu.Unlock()
+	if r.firstTokenAt.IsZero() {
+		r.firstTokenAt = now
+	}
+	r.lastTokenAt = now
+}
+
+func (r *UsageReporter) generationDuration() *time.Duration {
+	if r == nil {
+		return nil
+	}
+	r.ttftMu.RLock()
+	defer r.ttftMu.RUnlock()
+	if r.firstTokenAt.IsZero() {
+		return nil
+	}
+	elapsed := r.lastTokenAt.Sub(r.firstTokenAt)
+	return &elapsed
 }

@@ -262,3 +262,30 @@ func (f *fakeIntake) Enqueue(generation uint64, _ Event) bool {
 }
 func (f *fakeIntake) Rejected()         { f.rejected++ }
 func (f *fakeIntake) Truncated(n int64) { f.truncated += n }
+
+func TestSanitizerPreservesGenerationNullAndMeasuredZero(t *testing.T) {
+	sanitizer := NewSanitizer(SanitizerOptions{})
+	record := validRecord()
+	legacy, err := sanitizer.Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Event.GenerationTimeMS != nil {
+		t.Fatal("historical record fabricated generation")
+	}
+	for _, duration := range []time.Duration{0, 42 * time.Millisecond} {
+		record.GenerationTime = &duration
+		result, err := sanitizer.Sanitize(adaptRecord(record))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event.GenerationTimeMS == nil || *result.Event.GenerationTimeMS != duration.Milliseconds() {
+			t.Fatalf("generation=%v", result.Event.GenerationTimeMS)
+		}
+	}
+	negative := -time.Millisecond
+	record.GenerationTime = &negative
+	if _, err := sanitizer.Sanitize(adaptRecord(record)); err == nil {
+		t.Fatal("accepted negative generation time")
+	}
+}

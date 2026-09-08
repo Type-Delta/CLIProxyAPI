@@ -2,6 +2,7 @@ package helps
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -85,6 +86,10 @@ func ObservePluginExecutorStreamTTFT(protocol string, reporter *UsageReporter, p
 		return
 	}
 	reporter.RecordFirstPacket()
+	payload = ExtractStreamJSONPayload(payload)
+	if !json.Valid(payload) {
+		return
+	}
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "claude":
 		ObserveClaudeTokenEvent(reporter, payload)

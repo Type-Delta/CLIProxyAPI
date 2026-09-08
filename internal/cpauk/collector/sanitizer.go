@@ -48,6 +48,7 @@ type Source struct {
 	RequestedAt    time.Time
 	Latency        time.Duration
 	TTFT           time.Duration
+	GenerationTime *time.Duration
 	Failed         bool
 	StatusCode     int
 	Tokens         SourceTokens
@@ -93,7 +94,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if record.RequestedAt.IsZero() {
 		return SanitizeResult{}, fmt.Errorf("requested timestamp is missing")
 	}
-	if record.Latency < 0 || record.TTFT < 0 {
+	if record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
 		return SanitizeResult{}, fmt.Errorf("latency is negative")
 	}
 	if err := validateTokens(record.Tokens); err != nil {
@@ -179,7 +180,11 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		value := classifyFailure(record.StatusCode)
 		errorClass = &value
 	}
-	var ttft *int64
+	var ttft, generation *int64
+	if record.GenerationTime != nil {
+		value := record.GenerationTime.Milliseconds()
+		generation = &value
+	}
 	if record.TTFT > 0 {
 		value := record.TTFT.Milliseconds()
 		ttft = &value
@@ -217,6 +222,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		ErrorClass:            errorClass,
 		LatencyMS:             record.Latency.Milliseconds(),
 		TimeToFirstTokenMS:    ttft,
+		GenerationTimeMS:      generation,
 		ServiceTierRequested:  requestedTier,
 		ServiceTierUsed:       responseTier,
 		Generated:             generated(record.Generated),

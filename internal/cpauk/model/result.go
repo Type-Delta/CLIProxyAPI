@@ -127,23 +127,24 @@ type ResponseMeta struct {
 }
 
 type Summary struct {
-	Meta                  ResponseMeta `json:"meta"`
-	ProxyRequests         int64        `json:"proxy_requests"`
-	UpstreamAttempts      int64        `json:"upstream_attempts"`
-	Tokens                TokenUsage   `json:"tokens"`
-	KnownCost             NanoUSD      `json:"known_cost_usd"`
-	UnpricedTokens        int64        `json:"unpriced_tokens"`
-	Succeeded             int64        `json:"succeeded"`
-	Failed                int64        `json:"failed"`
-	SuccessRate           *string      `json:"success_rate"`
-	RequestsPerMinute     string       `json:"requests_per_minute"`
-	TokensPerMinute       string       `json:"tokens_per_minute"`
-	CacheReadRate         *string      `json:"cache_read_rate"`
-	RangeDays             string       `json:"range_days"`
-	AvgRequestsPerDay     string       `json:"avg_requests_per_day"`
-	AvgTokensPerDay       string       `json:"avg_tokens_per_day"`
-	AvgKnownCostUSDPerDay string       `json:"avg_known_cost_usd_per_day"`
-	PriceCoverageComplete bool         `json:"price_coverage_complete"`
+	ProcessingTime        ProcessingTime `json:"processing_time"`
+	Meta                  ResponseMeta   `json:"meta"`
+	ProxyRequests         int64          `json:"proxy_requests"`
+	UpstreamAttempts      int64          `json:"upstream_attempts"`
+	Tokens                TokenUsage     `json:"tokens"`
+	KnownCost             NanoUSD        `json:"known_cost_usd"`
+	UnpricedTokens        int64          `json:"unpriced_tokens"`
+	Succeeded             int64          `json:"succeeded"`
+	Failed                int64          `json:"failed"`
+	SuccessRate           *string        `json:"success_rate"`
+	RequestsPerMinute     string         `json:"requests_per_minute"`
+	TokensPerMinute       string         `json:"tokens_per_minute"`
+	CacheReadRate         *string        `json:"cache_read_rate"`
+	RangeDays             string         `json:"range_days"`
+	AvgRequestsPerDay     string         `json:"avg_requests_per_day"`
+	AvgTokensPerDay       string         `json:"avg_tokens_per_day"`
+	AvgKnownCostUSDPerDay string         `json:"avg_known_cost_usd_per_day"`
+	PriceCoverageComplete bool           `json:"price_coverage_complete"`
 }
 
 type TimeseriesPoint struct {
@@ -193,6 +194,11 @@ const (
 )
 
 type KeyIdentity struct {
+	Requests                int64      `json:"requests"`
+	TopModel                *string    `json:"top_model"`
+	TopModelTokens          int64      `json:"top_model_tokens"`
+	GenerationTimeMS        *int64     `json:"generation_time_ms"`
+	GenerationSampleCount   int64      `json:"generation_sample_count"`
 	KeyID                   string     `json:"key_id"`
 	ShortKeyID              string     `json:"short_key_id"`
 	Label                   string     `json:"label,omitempty"`
@@ -232,6 +238,7 @@ type AnalysisModelByTime struct {
 }
 
 type AnalysisLatency struct {
+	Metrics           map[string]TimingMetric `json:"metrics"`
 	Meta              AnalysisSectionMeta     `json:"meta"`
 	Samples           []AnalysisLatencySample `json:"samples"`
 	UnsupportedReason string                  `json:"unsupported_reason,omitempty"`
@@ -244,12 +251,13 @@ type AnalysisLatency struct {
 }
 
 type AnalysisCostComponents struct {
-	Meta                 AnalysisSectionMeta `json:"meta"`
-	UncachedInputUSD     string              `json:"uncached_input_usd"`
-	CacheReadUSD         string              `json:"cache_read_usd"`
-	CacheCreationUSD     string              `json:"cache_creation_usd"`
-	OutputUSD            string              `json:"output_usd"`
-	BlendedUSDPerMillion string              `json:"blended_usd_per_million"`
+	Models               []ModelCostComponents `json:"models"`
+	Meta                 AnalysisSectionMeta   `json:"meta"`
+	UncachedInputUSD     string                `json:"uncached_input_usd"`
+	CacheReadUSD         string                `json:"cache_read_usd"`
+	CacheCreationUSD     string                `json:"cache_creation_usd"`
+	OutputUSD            string                `json:"output_usd"`
+	BlendedUSDPerMillion string                `json:"blended_usd_per_million"`
 }
 
 type AnalysisKeyModelMatrix struct {
@@ -309,17 +317,19 @@ type AnalysisLatencySample struct {
 }
 
 type AnalysisMatrixCell struct {
-	KeyID               string  `json:"key_id"`
-	Model               string  `json:"model"`
-	Requests            int64   `json:"requests"`
-	InputTokens         int64   `json:"input_tokens"`
-	OutputTokens        int64   `json:"output_tokens"`
-	CachedTokens        int64   `json:"cached_tokens"`
-	CacheReadTokens     int64   `json:"cache_read_tokens"`
-	CacheCreationTokens int64   `json:"cache_creation_tokens"`
-	ReasoningTokens     int64   `json:"reasoning_tokens"`
-	TotalTokens         int64   `json:"total_tokens"`
-	KnownCost           NanoUSD `json:"known_cost_usd"`
+	GenerationTimeMS      *int64  `json:"generation_time_ms"`
+	GenerationSampleCount int64   `json:"generation_sample_count"`
+	KeyID                 string  `json:"key_id"`
+	Model                 string  `json:"model"`
+	Requests              int64   `json:"requests"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	CacheReadTokens       int64   `json:"cache_read_tokens"`
+	CacheCreationTokens   int64   `json:"cache_creation_tokens"`
+	ReasoningTokens       int64   `json:"reasoning_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	KnownCost             NanoUSD `json:"known_cost_usd"`
 }
 
 type PricingMissing struct {
@@ -496,4 +506,37 @@ type ImportResult struct {
 	Skipped     int64  `json:"skipped"`
 	Rejected    int64  `json:"rejected"`
 	Reconciled  bool   `json:"reconciled"`
+}
+
+// TimingMetric summarizes all available observations, independently of scatter sampling.
+type TimingMetric struct {
+	P95MS       *float64 `json:"p95_ms"`
+	MaxMS       *int64   `json:"max_ms"`
+	MedianMS    *float64 `json:"median_ms"`
+	TotalMS     *int64   `json:"total_ms"`
+	SampleCount int64    `json:"sample_count"`
+	Source      string   `json:"source"`
+}
+
+type ProcessingTime struct {
+	E2EMS                      *int64 `json:"e2e_ms"`
+	TTFTMS                     *int64 `json:"ttft_ms"`
+	GenerationMS               *int64 `json:"generation_ms"`
+	LatencyMS                  *int64 `json:"latency_ms"`
+	ProviderLatencyMS          *int64 `json:"provider_latency_ms"`
+	SampleCount                int64  `json:"sample_count"`
+	TTFTSampleCount            int64  `json:"ttft_sample_count"`
+	GenerationSampleCount      int64  `json:"generation_sample_count"`
+	LatencySampleCount         int64  `json:"latency_sample_count"`
+	ProviderLatencySampleCount int64  `json:"provider_latency_sample_count"`
+	Partial                    bool   `json:"partial"`
+}
+
+type ModelCostComponents struct {
+	Model            string `json:"model"`
+	UncachedInputUSD string `json:"uncached_input_usd"`
+	CacheReadUSD     string `json:"cache_read_usd"`
+	CacheCreationUSD string `json:"cache_creation_usd"`
+	OutputUSD        string `json:"output_usd"`
+	TotalUSD         string `json:"total_usd"`
 }

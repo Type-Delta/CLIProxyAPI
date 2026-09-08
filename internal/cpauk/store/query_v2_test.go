@@ -137,6 +137,7 @@ func TestV2AnalysisLatencyStatisticsCoverRowsBeyondScatterLimit(t *testing.T) {
 			fmt.Sprintf("%032x", index+10), fmt.Sprintf("%032x", index+10_000), strings.Repeat("f", 64),
 			start.Add(time.Duration(index+1)*time.Second), true, nil, 0, 0, latency, latency,
 		)
+		additional[index].GenerationTimeMS = &latency
 	}
 	if err := database.WriteBatch(ctx, additional); err != nil {
 		t.Fatal(err)
@@ -147,6 +148,10 @@ func TestV2AnalysisLatencyStatisticsCoverRowsBeyondScatterLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	latency := analysis.Latency
+	generation := latency.Metrics["generation"]
+	if generation.SampleCount != 1100 || generation.P95MS == nil || *generation.P95MS != 10000 || generation.MedianMS == nil || *generation.MedianMS != 10 {
+		t.Fatalf("generation statistics excluded capped rows: %+v", generation)
+	}
 	if latency.SampleCount != 1103 || len(latency.Samples) != analysisLatencySampleLimit || !latency.Sampled {
 		t.Fatalf("latency sampling = count %d samples %d sampled %t", latency.SampleCount, len(latency.Samples), latency.Sampled)
 	}
@@ -220,7 +225,7 @@ func sumComponentUSD(values ...string) (model.NanoUSD, error) {
 	return total, nil
 }
 
-func TestV2AnalysisSectionsAreIndependentAndLongLatencyIsUnsupported(t *testing.T) {
+func TestV2AnalysisSectionsAreIndependentAndLongLatencyIsSupported(t *testing.T) {
 	database, events := openV2FixtureStore(t)
 	query := v2Query(model.OperationAnalysis, events[0].RequestedAt, events[0].RequestedAt.Add(15*time.Minute))
 	query.BucketWidth = "5m"
@@ -262,7 +267,7 @@ func TestV2AnalysisSectionsAreIndependentAndLongLatencyIsUnsupported(t *testing.
 		t.Fatal(err)
 	}
 	assertAllAnalysisSectionsPresent(t, longRange)
-	if longRange.Latency.UnsupportedReason == "" || len(longRange.Latency.Samples) != 0 {
+	if longRange.Latency.UnsupportedReason != "" || len(longRange.Latency.Samples) != 3 {
 		t.Fatalf("long-range latency = %+v", longRange.Latency)
 	}
 	if longRange.SeriesByCategory == nil || longRange.ModelByTime == nil || longRange.CostComponents == nil || longRange.KeyModelMatrix == nil {

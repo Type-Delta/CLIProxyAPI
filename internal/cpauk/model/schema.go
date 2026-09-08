@@ -50,6 +50,7 @@ var EventV1FieldSpecs = map[string]FieldSpec{
 	"error_class":             {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
 	"latency_ms":              {Type: "integer", Nullable: false},
 	"time_to_first_token_ms":  {Type: "integer", Nullable: true},
+	"generation_time_ms":      {Type: "integer", Nullable: true},
 	"service_tier_requested":  {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
 	"service_tier_used":       {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
 	"generated":               {Type: "boolean", Nullable: false},

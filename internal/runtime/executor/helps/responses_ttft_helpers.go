@@ -2,6 +2,7 @@ package helps
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/tidwall/gjson"
 )
@@ -10,6 +11,10 @@ import (
 // payload carries an actual output token, reasoning trace, tool call argument, or multimodal delta,
 // according to the official Responses API streaming / websocket specification plus Codex-compatible private events.
 func IsResponsesTokenEvent(payload []byte) bool {
+	return isResponsesTokenEvent(payload, true)
+}
+
+func isResponsesTokenEvent(payload []byte, terminalFallback bool) bool {
 	payload = bytes.TrimSpace(payload)
 	if len(payload) == 0 {
 		return false
@@ -28,6 +33,9 @@ func IsResponsesTokenEvent(payload []byte) bool {
 	}
 
 	eventType := gjson.GetBytes(payload, "type").String()
+	if !terminalFallback && (strings.HasSuffix(eventType, ".done") || eventType == "response.output_item.added") {
+		return false
+	}
 	switch eventType {
 	// Substantive text, reasoning, and tool argument streaming deltas
 	case "response.reasoning_summary_text.delta",
@@ -96,7 +104,7 @@ func IsResponsesTokenEvent(payload []byte) bool {
 		"response.incomplete",
 		"response.failed",
 		"error":
-		return true
+		return terminalFallback
 
 	// All other container lifecycles (added, created, in_progress, search state machines, metadata)
 	default:
@@ -106,10 +114,13 @@ func IsResponsesTokenEvent(payload []byte) bool {
 
 // ObserveResponsesTokenEvent inspects a Responses API frame payload and records TTFT if the frame
 // represents the first meaningful token event. It records the first packet arrival time as a fallback
-// and exits immediately with zero allocations once effective token TTFT is set.
+// and continues observing substantive token arrivals for generation duration.
 func ObserveResponsesTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
+	}
+	if isResponsesTokenEvent(payload, false) {
+		reporter.ObserveGenerationToken()
 	}
 	if reporter.IsTTFTSet() {
 		return

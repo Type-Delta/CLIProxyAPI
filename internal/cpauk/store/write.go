@@ -15,8 +15,8 @@ credential_id_algorithm, succeeded, upstream_status_code, error_class, latency_m
 time_to_first_token_ms, service_tier_requested, service_tier_used, generated,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano,
-unpriced_tokens, price_rule_id, price_source, import_batch_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+unpriced_tokens, price_rule_id, price_source, import_batch_id, generation_time_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 func (s *SQLiteStore) WriteBatch(ctx context.Context, events []model.Event) error {
 	_, err := s.writeBatch(ctx, events, "")
@@ -99,7 +99,7 @@ func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, so
 		nullInt64Pointer(event.TimeToFirstTokenMS), nullStringPointer(event.ServiceTierRequested), nullStringPointer(event.ServiceTierUsed), event.Generated,
 		event.Tokens.Input, event.Tokens.Output, event.Tokens.Reasoning, event.Tokens.Cached, event.Tokens.CacheRead,
 		event.Tokens.CacheCreation, event.Tokens.Total, event.Tokens.Schema, string(event.Tokens.Quality), knownCost,
-		unpriced, nullString(ruleID), nullString(source), batchID,
+		unpriced, nullString(ruleID), nullString(source), batchID, nullInt64Pointer(event.GenerationTimeMS),
 	}
 }
 

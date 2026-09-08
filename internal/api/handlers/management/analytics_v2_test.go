@@ -318,7 +318,7 @@ func TestAnalyticsExportRejectsCursorAndSupportsSanitizedCSVAndJSON(t *testing.T
 			if err != nil || len(rows) < 2 {
 				t.Fatalf("csv rows=%v err=%v", rows, err)
 			}
-			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "cache_read_tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
+			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "cache_read_tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
 				if !strings.Contains(strings.Join(rows[0], ","), required) {
 					t.Fatalf("csv header omitted %q: %v", required, rows[0])
 				}
@@ -329,7 +329,7 @@ func TestAnalyticsExportRejectsCursorAndSupportsSanitizedCSVAndJSON(t *testing.T
 			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil || len(payload) != 1 {
 				t.Fatalf("json export payload=%s err=%v", recorder.Body.String(), err)
 			}
-			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "cache_read_tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
+			for _, required := range []string{"attempt_id", "requested_at", "provider", "model", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "cache_read_tokens", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source"} {
 				if _, ok := payload[0][required]; !ok {
 					t.Fatalf("json export omitted %q: %v", required, payload[0])
 				}
