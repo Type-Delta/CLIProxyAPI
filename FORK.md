@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `0e5e17529c13e9c89c55860fc4d0aac365b80a5c`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, and the CPAUK-fidelity usage and management views.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `068724f69e4a1cb45acdedf9f0bb667c25769cc1`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, and the CPAUK-fidelity usage and management views.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -73,12 +73,24 @@ replacing charts or selections. Vite accepts all development hosts for the reque
 workspace. Provider timings and historical generation remain unavailable where measurements are
 absent; CPAMC does not estimate clock offsets from unrelated online UTC services.
 
-Validation for this pin: `bun run verify` passed 670 tests, ESLint, TypeScript, and production build.
+Validation for this pin: `bun run verify` passed 673 tests, ESLint, TypeScript, and production build.
 Isolated Chrome CDP at 1440px and 390px checked light/dark cost gradients, clockwise synchronized
 numbers, radar/heatmap modes, missing timing, numeric header alignment, dashed/solid tooltip markers,
 comparison hover and first-tap behavior, client timezone dates, and a full automatic refresh cycle.
 The cycle retained chart instances and controls; no page overflow or console errors were observed.
 A browser-only fixture verified complete timing axes without changing stored mock data.
+
+The refinement shares Auth Files' segmented control with analytics and moves sortable headers into
+the common Table component. Custom tooltip panels replace native title hints across CPAMC and
+preserve dynamic content, accessible names, focus, and touch behavior. Key catalog header styling
+is corrected. Quick Stats uses full-width trends and places Processing time before the two-column
+Daily average card. Cost summaries sit beside the radar when space permits; paired cards share
+height. All model-cost columns sort, latency metrics explain their measurements, radar axis delays
+are more visible, and refresh spinners no longer dim existing content. Per-comparison assumptions
+replace the standalone comparison section. The user's existing spacing changes are included.
+
+Additional browser verification covered 1024-pixel layouts, dynamic and touch tooltips, equal card
+heights, all added cost sorts, and empty-to-populated latency animation. The CPA compile check passes.
 
 **Last updated:** 2026-09-08
 
