@@ -1295,9 +1295,9 @@ func (r *UsageReporter) ObserveGenerationToken() {
 	if r == nil {
 		return
 	}
-	now := time.Now()
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
+	now := time.Now()
 	if r.firstTokenAt.IsZero() {
 		r.firstTokenAt = now
 	}

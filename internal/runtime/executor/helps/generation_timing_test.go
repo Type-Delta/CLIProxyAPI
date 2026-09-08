@@ -62,3 +62,61 @@ func TestTerminalOnlyResponseDoesNotFabricateGeneration(t *testing.T) {
 		t.Fatal("terminal fallback changed legacy TTFT")
 	}
 }
+
+func TestGenerationExcludesChatErrorsDoneAndClaudeSignatures(t *testing.T) {
+	for _, test := range []struct {
+		name, protocol, token, metadata string
+		observe                         func(*UsageReporter, []byte)
+	}{
+		{"chat_error", "openai", `{"choices":[{"delta":{"content":"hello"}}]}`, `{"error":{"message":"stream failed"}}`, ObserveChatTokenEvent},
+		{"chat_done", "openai", `{"choices":[{"delta":{"content":"hello"}}]}`, `[DONE]`, ObserveChatTokenEvent},
+		{"chat_sse_done", "openai", `{"choices":[{"delta":{"content":"hello"}}]}`, `data: [DONE]`, ObserveChatTokenEvent},
+		{"chat_spaced_sse_done", "openai", `{"choices":[{"delta":{"content":"hello"}}]}`, `data:  [DONE]`, ObserveChatTokenEvent},
+		{"claude_signature", "claude", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hello"}}`, `{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"opaque-signature"}}`, ObserveClaudeTokenEvent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reporter := NewUsageReporter(context.Background(), test.protocol, "model", nil)
+			reporter.StartResponseTTFT()
+			test.observe(reporter, []byte(test.metadata))
+			if reporter.generationDuration() != nil {
+				t.Error("metadata-only frame fabricated generation")
+			}
+			if !reporter.IsTTFTSet() {
+				t.Error("legacy TTFT fallback changed")
+			}
+			reporter = NewUsageReporter(context.Background(), test.protocol, "model", nil)
+			reporter.StartResponseTTFT()
+			test.observe(reporter, []byte(test.token))
+			want := *reporter.generationDuration()
+			time.Sleep(time.Millisecond)
+			test.observe(reporter, []byte(test.metadata))
+			if got := reporter.generationDuration(); got == nil || *got != want {
+				t.Errorf("delayed metadata extended generation: got %v, want %v", got, want)
+			}
+			// Plugin-host dispatch is the live Claude/chat path, and must agree with direct observers.
+			pluginReporter := NewUsageReporter(context.Background(), test.protocol, "model", nil)
+			pluginReporter.StartResponseTTFT()
+			ObservePluginExecutorStreamTTFT(test.protocol, pluginReporter, []byte(test.metadata))
+			if pluginReporter.generationDuration() != nil {
+				t.Error("plugin metadata-only frame fabricated generation")
+			}
+		})
+	}
+}
+
+func TestGenerationTimestampFollowsLockAcquisition(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "model", nil)
+	reporter.ttftMu.Lock()
+	started, finished := make(chan struct{}), make(chan struct{})
+	go func() { close(started); reporter.ObserveGenerationToken(); close(finished) }()
+	<-started
+	// Keep the observer blocked after it enters the method. The timestamp must
+	// belong to the serialized observation, not its earlier wait for the lock.
+	time.Sleep(10 * time.Millisecond)
+	releasedAt := time.Now()
+	reporter.ttftMu.Unlock()
+	<-finished
+	if reporter.firstTokenAt.Before(releasedAt) {
+		t.Fatal("generation timestamp was captured before the observation lock")
+	}
+}

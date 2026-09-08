@@ -52,7 +52,7 @@ func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 		if len(delta.Get("partial_json").String()) > 0 {
 			return true
 		}
-		if len(delta.Get("signature").String()) > 0 {
+		if terminalFallback && len(delta.Get("signature").String()) > 0 {
 			return true
 		}
 		return false

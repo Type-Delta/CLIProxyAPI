@@ -21,7 +21,7 @@ func isChatTokenEvent(payload []byte, terminalFallback bool) bool {
 
 	// Handle SSE stream terminal marker
 	if bytes.Equal(payload, []byte("data: [DONE]")) || bytes.Equal(payload, []byte("[DONE]")) {
-		return true
+		return terminalFallback
 	}
 
 	// Handle SSE line format (e.g., "data: {...}")
@@ -35,13 +35,13 @@ func isChatTokenEvent(payload []byte, terminalFallback bool) bool {
 			return false
 		}
 		if bytes.Equal(payload, []byte("[DONE]")) {
-			return true
+			return terminalFallback
 		}
 	}
 
 	// Terminal error envelope fallback
 	if gjson.GetBytes(payload, "error.message").Exists() || gjson.GetBytes(payload, "error").Exists() {
-		return true
+		return terminalFallback
 	}
 
 	choices := gjson.GetBytes(payload, "choices").Array()
