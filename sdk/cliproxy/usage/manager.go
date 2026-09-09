@@ -36,6 +36,18 @@ type Record struct {
 	Source            string
 	// EndpointClass is a bounded semantic route class, never a raw URL.
 	EndpointClass string
+	// ClientMethod and ClientPath describe the downstream request line (route path, never a query string).
+	ClientMethod string
+	ClientPath   string
+	// ReceivedAt is when the proxy accepted the downstream request.
+	ReceivedAt time.Time
+	// UpstreamMethod and UpstreamURL describe the provider request; the URL never carries a query string.
+	UpstreamMethod string
+	UpstreamURL    string
+	// UpstreamSentAt is when the provider request left the proxy.
+	UpstreamSentAt time.Time
+	// UpstreamStatusCode is the provider HTTP status for both successful and failed attempts.
+	UpstreamStatusCode int
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.
@@ -82,7 +94,16 @@ type Detail struct {
 	// TokenQuality distinguishes exact upstream usage from estimates and
 	// responses where token data was unavailable. An empty value is inferred.
 	TokenQuality TokenQuality
+	// RawUsage holds the provider usage node the detail was parsed from, bounded to MaxRawUsageBytes.
+	// It is a string so Detail stays comparable.
+	RawUsage string
 }
+
+// MaxRawUsageBytes bounds Detail.RawUsage.
+const MaxRawUsageBytes = 4096
+
+// MaxUpstreamURLBytes bounds Record.UpstreamURL.
+const MaxUpstreamURLBytes = 512
 
 // TokenQuality describes the reliability of normalized token accounting.
 type TokenQuality string
@@ -98,6 +119,55 @@ type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
 type generateContextKey struct{}
 type endpointClassContextKey struct{}
+type requestReceivedAtContextKey struct{}
+type clientRequestLineContextKey struct{}
+
+type clientRequestLine struct {
+	method string
+	path   string
+}
+
+// WithRequestReceivedAt stores when the proxy accepted the downstream request.
+func WithRequestReceivedAt(ctx context.Context, receivedAt time.Time) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if receivedAt.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, requestReceivedAtContextKey{}, receivedAt)
+}
+
+// RequestReceivedAtFromContext returns the downstream request arrival time, or zero.
+func RequestReceivedAtFromContext(ctx context.Context) time.Time {
+	if ctx == nil {
+		return time.Time{}
+	}
+	receivedAt, _ := ctx.Value(requestReceivedAtContextKey{}).(time.Time)
+	return receivedAt
+}
+
+// WithClientRequestLine stores the downstream HTTP method and route path (never a query string).
+func WithClientRequestLine(ctx context.Context, method, path string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	method = truncateUTF8(strings.TrimSpace(method), 16)
+	path = truncateUTF8(strings.TrimSpace(path), 256)
+	if method == "" && path == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientRequestLineContextKey{}, clientRequestLine{method: method, path: path})
+}
+
+// ClientRequestLineFromContext returns the downstream method and path stored in ctx.
+func ClientRequestLineFromContext(ctx context.Context) (method, path string) {
+	if ctx == nil {
+		return "", ""
+	}
+	line, _ := ctx.Value(clientRequestLineContextKey{}).(clientRequestLine)
+	return line.method, line.path
+}
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
 func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {

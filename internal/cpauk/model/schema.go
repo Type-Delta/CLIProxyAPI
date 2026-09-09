@@ -7,7 +7,9 @@ const (
 	QuerySchemaVersion   = 1
 	QuerySchemaVersionV2 = 2
 
-	MaxEventBytes        = 4 * 1024
+	MaxEventBytes        = 16 * 1024
+	MaxRawPayloadBytes   = 4 * 1024
+	MaxProxyErrorBytes   = 2 * 1024
 	MaxStoredStringBytes = 256
 	MaxQueryBodyBytes    = 64 * 1024
 	MaxCursorBytes       = 2 * 1024
@@ -55,6 +57,18 @@ var EventV1FieldSpecs = map[string]FieldSpec{
 	"service_tier_used":       {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
 	"generated":               {Type: "boolean", Nullable: false},
 	"tokens":                  {Type: "token-usage-v1", Nullable: false},
+	// Hop diagnostics: additive, nullable, absent from events recorded before they existed.
+	"client_method":       {Type: "string", Nullable: true, MaxBytes: 16, Truncate: true},
+	"client_path":         {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
+	"received_at":         {Type: "rfc3339-utc", Nullable: true, MaxBytes: 30},
+	"upstream_method":     {Type: "string", Nullable: true, MaxBytes: 16, Truncate: true},
+	"upstream_url":        {Type: "string", Nullable: true, MaxBytes: 512, Truncate: true},
+	"upstream_sent_at":    {Type: "rfc3339-utc", Nullable: true, MaxBytes: 30},
+	"upstream_usage_raw":  {Type: "json-text", Nullable: true, MaxBytes: MaxRawPayloadBytes, Truncate: true},
+	"upstream_error_body": {Type: "string", Nullable: true, MaxBytes: MaxRawPayloadBytes, Truncate: true},
+	"proxy_status_code":   {Type: "integer", Nullable: true},
+	"proxy_error":         {Type: "string", Nullable: true, MaxBytes: MaxProxyErrorBytes, Truncate: true},
+	"responded_at":        {Type: "rfc3339-utc", Nullable: true, MaxBytes: 30},
 }
 
 // TokenUsageV1FieldSpecs freezes every field nested below Event.tokens.

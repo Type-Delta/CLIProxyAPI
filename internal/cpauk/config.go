@@ -18,7 +18,7 @@ const (
 	DefaultMinFreeBytes            = int64(512 * 1024 * 1024)
 	DefaultStorageTimeZone         = "UTC"
 	DefaultShutdownDrain           = 5 * time.Second
-	MaxQueueBytes                  = int64(32 * 1024 * 1024)
+	MaxQueueBytes                  = int64(128 * 1024 * 1024)
 )
 
 type PrivacyConfig struct {

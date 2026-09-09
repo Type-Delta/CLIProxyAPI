@@ -329,7 +329,9 @@ credential_id, credential_id_algorithm, succeeded, upstream_status_code, error_c
 latency_ms, time_to_first_token_ms, service_tier_requested, service_tier_used, generated,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
-price_rule_id, price_source, import_batch_id, generation_time_ms`
+price_rule_id, price_source, import_batch_id, generation_time_ms,
+client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -817,6 +819,8 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var errorClass, tierRequested, tierUsed, priceRuleID, priceSource, importBatchID sql.NullString
 	var ttft, generation sql.NullInt64
 	var knownCost sql.NullInt64
+	var clientMethod, clientPath, upstreamMethod, upstreamURL, usageRaw, errorBody, proxyError sql.NullString
+	var receivedNS, sentNS, respondedNS, proxyStatus sql.NullInt64
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
 		&event.EndpointClass, &authType, &credentialID, &credentialAlgorithm, &event.Succeeded,
@@ -824,10 +828,29 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Input, &event.Tokens.Output, &event.Tokens.Reasoning, &event.Tokens.Cached,
 		&event.Tokens.CacheRead, &event.Tokens.CacheCreation, &event.Tokens.Total,
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
-		&priceRuleID, &priceSource, &importBatchID, &generation)
+		&priceRuleID, &priceSource, &importBatchID, &generation,
+		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
 	}
+	event.ClientMethod = scanNullableString(clientMethod)
+	event.ClientPath = scanNullableString(clientPath)
+	event.ReceivedAt = scanNullableTime(receivedNS)
+	event.UpstreamMethod = scanNullableString(upstreamMethod)
+	event.UpstreamURL = scanNullableString(upstreamURL)
+	event.UpstreamSentAt = scanNullableTime(sentNS)
+	if usageRaw.Valid && usageRaw.String != "" {
+		raw := model.RawJSON(usageRaw.String)
+		event.UpstreamUsageRaw = &raw
+	}
+	event.UpstreamErrorBody = scanNullableString(errorBody)
+	if proxyStatus.Valid {
+		value := int(proxyStatus.Int64)
+		event.ProxyStatusCode = &value
+	}
+	event.ProxyError = scanNullableString(proxyError)
+	event.RespondedAt = scanNullableTime(respondedNS)
 	event.RequestIDQuality = model.RequestIDQuality(requestQuality)
 	event.RequestedAt = time.Unix(0, requestedNS).UTC()
 	event.RequestedAlias = scanNullableString(requestedAlias)
@@ -866,6 +889,14 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		event.TimeToFirstTokenMS = &value
 	}
 	return event, nil
+}
+
+func scanNullableTime(value sql.NullInt64) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	at := time.Unix(0, value.Int64).UTC()
+	return &at
 }
 
 func combineQuality(current, next model.TokenQuality) model.TokenQuality {

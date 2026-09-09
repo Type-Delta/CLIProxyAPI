@@ -382,6 +382,88 @@ overlay makes the one-minute expiry test fail on excess provider calls.
 
 **Last updated:** 2026-09-06
 
+### DL015 - Per-hop event diagnostics and correct endpoint classes
+
+Analytics events now describe every leg of Client -> CPA -> Provider -> CPA ->
+Client so the CPAMC event detail sheet can show where a request stopped and
+what each side said. Each event carries the downstream method and path, the
+arrival time, the provider method and query-free URL, the send time, the
+provider status for successes as well as failures, the raw provider usage node
+(bounded to 4 KiB, emitted as JSON when valid), the raw provider error body
+(bounded, marked when truncated), and the status, error text, and completion
+time CPA returned to the client. The CPA -> Client leg is delivered through a
+process-wide `usage.SetProxyResponseObserver` hook fired by the handler cancel
+function and rides the same bounded FIFO collector queue as events, so the
+patch is applied in the same transaction after its insert and is dropped, never
+blocking, when the queue is saturated. The first completion for a proxy request
+wins.
+
+Two recording bugs are fixed. Handlers build their execution context on
+`context.Background()`, which discarded the proxy request ID and endpoint class
+assigned by the request middleware; `GetContextWithCancel` now carries those
+values (plus arrival time and request line) across, and the sanitizer accepts
+the middleware's class set verbatim, so `endpoint_class` is no longer `unknown`
+for every event. The upstream HTTP status is captured by the reporter's tracked
+round tripper, so successful attempts store `200` instead of `null`.
+
+Requests that never reach a provider because auth selection finds no usable
+credential (every candidate cooling down, none configured) previously left no
+analytics trace at all, even though the client received a 429 or 503. The
+handlers now publish a zero-token failure record with executor type
+`auth-selection`; the sanitizer classifies it as `auth_unavailable`, leaves the
+provider status and error body empty, and the proxy response patch supplies
+CPA's own error body, so the detail sheet marks the failure on the CPA node
+before any provider hop.
+
+`MaxEventBytes` grows to 16 KiB and the collector queue budget to 128 MiB so
+the default 8192-event capacity still fits. Migration 006 adds the nullable
+columns; older rows read back as `null` and the client renders them as not
+recorded.
+
+**Implementation evidence:** `sdk/cliproxy/usage/{manager.go,delivery.go,proxy_response.go}`,
+`sdk/api/handlers/{handlers.go,handlers_auth_unavailable_usage.go}`,
+`sdk/cliproxy/auth/conductor_selection.go`, `internal/api/request_id.go`,
+`internal/api/server.go`, `internal/runtime/executor/helps/usage_helpers.go`,
+`internal/cpauk/model/{event.go,schema.go}`,
+`internal/cpauk/collector/{adapter.go,sanitizer.go,collector.go,writer.go}`,
+`internal/cpauk/store/{migrations/006_hop_details.sql,write.go,query.go}`,
+`internal/cpauk/service.go`, and `docs/analytics-api-contract-v2.md`.
+
+**Recorded validation:** `go build ./...`, `go vet`, and
+`go test ./internal/cpauk/... ./sdk/... ./internal/api/... ./internal/runtime/...
+./internal/usagecontext/... ./internal/logging/... ./test/...` pass, including
+new tests for context inheritance, proxy response publication, round-tripper
+capture, raw usage capture, sanitizer bounds, patch queue ordering, and
+first-write-wins patching. A live CPA against a local stub provider recorded
+`endpoint_class=chat_completions`, `upstream_status_code=200`, the provider
+URL, the raw usage JSON, and `proxy_status_code=200` for a success, and
+`upstream_status_code=429`, the provider error body, `proxy_status_code=429`,
+and CPA's error for a failure. A follow-up request while that credential was
+cooling down recorded an `auth-selection` event with `error_class=auth_unavailable`,
+no provider status, and the `model_cooldown` body as `proxy_error`.
+
+CPAMC event details now end the timeline at CPA and display its returned status and response
+timestamp there, without inferring client delivery. Responsive fact grids hide the first row
+divider to avoid doubling the section heading rule.
+
+Stream usage parsers (`ParseOpenAIStreamUsage`, `ParseClaudeStreamUsage`,
+`ParseInteractionsStreamUsage`, `ParseGeminiStreamUsage`, `ParseCodexUsage`,
+`ParseAntigravityStreamUsage`) now store the sanitized final generation chunk as
+`Detail.RawUsage` instead of only the carved usage node, so the management center's
+"Raw generation data" drawer shows the provider's end-of-generation telemetry verbatim
+(usage, model id/slug, stop reason, timing). Response content, tool calls, prompts, and
+instructions are recursively stripped by `sanitizeGenerationChunk` before storage, and
+empty containers are pruned so a content-only chunk degrades to the bare usage node.
+Non-stream parsers keep storing just the usage node. The 4 KiB `MaxRawUsageBytes` bound
+and the `upstream_usage_raw` column are unchanged.
+
+CPAMC audit corrections align raw diagnostics with the `upstream_usage_raw` API field and
+prefer arrival-to-response timing for the total, falling back to attempt latency for older events.
+Validation includes 691 frontend tests, lint, production build, desktop/mobile CDP fixture checks,
+and the CPA server compile check.
+
+**Last updated:** 2026-09-09
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

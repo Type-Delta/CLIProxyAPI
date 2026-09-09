@@ -303,6 +303,9 @@ type fakeIntake struct {
 }
 
 func (f *fakeIntake) Generation() uint64 { return f.generation }
+func (f *fakeIntake) EnqueueProxyResponse(generation uint64, _ ProxyResponsePatch) bool {
+	return generation == f.generation
+}
 func (f *fakeIntake) Enqueue(generation uint64, _ Event) bool {
 	if f.panicOnEnqueue {
 		panic("injected enqueue panic")

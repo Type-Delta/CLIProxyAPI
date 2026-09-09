@@ -29,7 +29,7 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close(context.Background()) }()
-	if database.SchemaVersion() != 5 || database.IdentityEpoch() == "" {
+	if database.SchemaVersion() != 6 || database.IdentityEpoch() == "" {
 		t.Fatalf("schema=%d epoch=%q", database.SchemaVersion(), database.IdentityEpoch())
 	}
 	events := loadFixtureEvents(t)
@@ -310,4 +310,40 @@ func fixturePriceBook() aggregate.PriceBook {
 		ID: "price-04e81c", Model: "model-f93b", InputPerMillion: &input, OutputPerMillion: &output,
 		CacheReadMultiplier: "0", CacheCreationMultiplier: "0", Source: "fixture-9a70e2",
 	}}}
+}
+
+func TestProxyResponsePatchCompletesEveryAttemptOnce(t *testing.T) {
+	ctx := context.Background()
+	codec, err := model.NewCursorCodec(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20, CursorCodec: codec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close(ctx) }()
+	events := loadFixtureEvents(t)[:2]
+	events[1].ProxyRequestID = events[0].ProxyRequestID
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	respondedAt := time.Date(2026, 9, 9, 3, 0, 0, 0, time.UTC)
+	patches := []model.ProxyResponsePatch{
+		{ProxyRequestID: events[0].ProxyRequestID, StatusCode: 429, Error: "rate limited", RespondedAt: respondedAt},
+		{ProxyRequestID: events[0].ProxyRequestID, StatusCode: 200, RespondedAt: respondedAt.Add(time.Second)},
+	}
+	if err := database.WriteBatchWithPatches(ctx, nil, patches); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range events {
+		got, found, err := database.EventByAttemptID(ctx, expected.AttemptID, model.Query{SchemaVersion: 1, Operation: model.OperationEvents,
+			Start: expected.RequestedAt.Add(-time.Hour), End: expected.RequestedAt.Add(time.Hour), TimeZone: "UTC"})
+		if err != nil || !found {
+			t.Fatalf("event %s: found=%v err=%v", expected.AttemptID, found, err)
+		}
+		if got.ProxyStatusCode == nil || *got.ProxyStatusCode != 429 || got.ProxyError == nil || *got.ProxyError != "rate limited" || got.RespondedAt == nil || !got.RespondedAt.Equal(respondedAt) {
+			t.Fatalf("first patch did not win: %+v %v %v", got.ProxyStatusCode, got.ProxyError, got.RespondedAt)
+		}
+	}
 }

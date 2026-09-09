@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 )
@@ -15,8 +16,16 @@ credential_id_algorithm, succeeded, upstream_status_code, error_class, latency_m
 time_to_first_token_ms, service_tier_requested, service_tier_used, generated,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano,
-unpriced_tokens, price_rule_id, price_source, import_batch_id, generation_time_ms)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+unpriced_tokens, price_rule_id, price_source, import_batch_id, generation_time_ms,
+client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+// patchProxyResponseSQL records what the proxy returned to the client for every
+// attempt of one request. The first patch wins so retries cannot rewrite history.
+const patchProxyResponseSQL = `UPDATE events SET proxy_status_code = ?, proxy_error = ?, responded_at_ns = ?
+WHERE proxy_request_id = ? AND proxy_status_code IS NULL AND responded_at_ns IS NULL`
 
 func (s *SQLiteStore) WriteBatch(ctx context.Context, events []model.Event) error {
 	_, err := s.writeBatch(ctx, events, "")
@@ -100,7 +109,71 @@ func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, so
 		event.Tokens.Input, event.Tokens.Output, event.Tokens.Reasoning, event.Tokens.Cached, event.Tokens.CacheRead,
 		event.Tokens.CacheCreation, event.Tokens.Total, event.Tokens.Schema, string(event.Tokens.Quality), knownCost,
 		unpriced, nullString(ruleID), nullString(source), batchID, nullInt64Pointer(event.GenerationTimeMS),
+		nullStringPointer(event.ClientMethod), nullStringPointer(event.ClientPath), nullTimePointer(event.ReceivedAt),
+		nullStringPointer(event.UpstreamMethod), nullStringPointer(event.UpstreamURL), nullTimePointer(event.UpstreamSentAt),
+		nullRawJSONPointer(event.UpstreamUsageRaw), nullStringPointer(event.UpstreamErrorBody),
+		nullIntPointer(event.ProxyStatusCode), nullStringPointer(event.ProxyError), nullTimePointer(event.RespondedAt),
 	}
+}
+
+func nullTimePointer(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UnixNano()
+}
+
+func nullRawJSONPointer(value *model.RawJSON) any {
+	if value == nil || *value == "" {
+		return nil
+	}
+	return string(*value)
+}
+
+// WriteBatchWithPatches inserts events and then applies proxy response patches
+// in the same transaction, in queue order, so a patch that follows its event
+// in the collector queue always finds the row.
+func (s *SQLiteStore) WriteBatchWithPatches(ctx context.Context, events []model.Event, patches []model.ProxyResponsePatch) error {
+	if len(events) > 0 {
+		if _, err := s.writeBatch(ctx, events, ""); err != nil {
+			return err
+		}
+	}
+	if len(patches) == 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return ErrClosed
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin analytics patch batch: %w", err)
+	}
+	statement, err := tx.PrepareContext(ctx, patchProxyResponseSQL)
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("prepare analytics patch batch: %w", err)
+	}
+	defer func() { _ = statement.Close() }()
+	for index, patch := range patches {
+		if !model.IsCorrelationID(patch.ProxyRequestID) || patch.StatusCode < 100 || patch.StatusCode > 599 {
+			continue
+		}
+		respondedAt := patch.RespondedAt
+		if respondedAt.IsZero() {
+			respondedAt = time.Now()
+		}
+		if _, err := statement.ExecContext(ctx, patch.StatusCode, nullString(patch.Error), respondedAt.UnixNano(), patch.ProxyRequestID); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("patch analytics event %d: %w", index, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit analytics patch batch: %w", err)
+	}
+	return nil
 }
 
 func nullString(value string) any {

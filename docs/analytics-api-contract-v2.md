@@ -96,6 +96,35 @@ They never export raw keys, request bodies, headers, IP addresses, or other
 forbidden event fields. Event pages include filter-wide `total_count`; cursors
 remain bound to the exact resolved range and filter selection.
 
+### Hop diagnostics (schema v1, additive)
+
+Every event carries nullable per-hop fields describing
+Client -> CPA -> Provider -> CPA -> Client. Events recorded before these fields
+existed return `null` for all of them; clients must treat that as "not
+recorded", never as zero.
+
+| Field | Meaning |
+| --- | --- |
+| `client_method`, `client_path` | Downstream request line. The path never includes a query string. |
+| `received_at` | When CPA accepted the downstream request (RFC 3339 UTC). |
+| `upstream_method`, `upstream_url` | Provider request line. The URL never includes a query string or user info. |
+| `upstream_sent_at` | When the provider request left CPA. |
+| `upstream_status_code` | Provider HTTP status. Now recorded for successful attempts as well as failures. |
+| `upstream_usage_raw` | The provider usage node the token detail was parsed from, at most 4 KiB. Emitted as a JSON value when the stored text is valid JSON and as a JSON string otherwise. |
+| `upstream_error_body` | Provider error body for failed attempts, at most 4 KiB, suffixed `...[truncated]` when cut. |
+| `proxy_status_code`, `proxy_error`, `responded_at` | What CPA returned to the client. Applied to every attempt of the proxy request once the handler finishes; the first completion wins. |
+
+Requests refused before any provider request because no credential was
+available are recorded with `executor_type: "auth-selection"`,
+`error_class: "auth_unavailable"`, null provider fields, and CPA's client-facing
+error in `proxy_error`.
+
+`endpoint_class` uses the proxy middleware's bounded class set verbatim
+(`chat_completions`, `responses`, `messages`, `embeddings`, `images`, `audio`,
+`videos`, `moderations`, `realtime`, `live`, `search`, `gemini_generate`,
+`gemini_stream_generate`, `models`, `other`) and falls back to `unknown` only
+for records that carry none of them.
+
 ## Pricing and repricing
 
 Pricing GET returns per-rule `source` and `updated_at`, plus `missing` entries

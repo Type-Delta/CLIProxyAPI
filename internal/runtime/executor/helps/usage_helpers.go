@@ -3,14 +3,17 @@ package helps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
@@ -47,7 +50,78 @@ type UsageReporter struct {
 	ttftSet             bool
 	firstTokenAt        time.Time
 	lastTokenAt         time.Time
+	upstreamMu          sync.Mutex
+	upstreamMethod      string
+	upstreamURL         string
+	upstreamSentAt      time.Time
+	upstreamStatus      int
 	once                sync.Once
+}
+
+// recordUpstreamRequest keeps the first provider request line and send time so
+// retries inside one attempt do not overwrite where the request initially went.
+func (r *UsageReporter) recordUpstreamRequest(req *http.Request, sentAt time.Time) {
+	if r == nil || req == nil {
+		return
+	}
+	r.upstreamMu.Lock()
+	defer r.upstreamMu.Unlock()
+	if r.upstreamSentAt.IsZero() {
+		r.upstreamSentAt = sentAt
+		r.upstreamMethod = req.Method
+		r.upstreamURL = upstreamURLWithoutQuery(req.URL)
+	}
+}
+
+// RecordUpstreamStatus stores the provider HTTP status of the latest response.
+func (r *UsageReporter) RecordUpstreamStatus(status int) {
+	if r == nil || status <= 0 {
+		return
+	}
+	r.upstreamMu.Lock()
+	r.upstreamStatus = status
+	r.upstreamMu.Unlock()
+}
+
+// RecordUpstreamTarget records where a non-HTTP-client transport (for example a
+// websocket dial) sent the provider request.
+func (r *UsageReporter) RecordUpstreamTarget(method, rawURL string) {
+	if r == nil {
+		return
+	}
+	parsed, errParse := url.Parse(strings.TrimSpace(rawURL))
+	if errParse != nil {
+		return
+	}
+	r.upstreamMu.Lock()
+	defer r.upstreamMu.Unlock()
+	if r.upstreamSentAt.IsZero() {
+		r.upstreamSentAt = time.Now()
+		r.upstreamMethod = strings.TrimSpace(method)
+		r.upstreamURL = upstreamURLWithoutQuery(parsed)
+	}
+}
+
+func upstreamURLWithoutQuery(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	clean := *target
+	clean.RawQuery = ""
+	clean.ForceQuery = false
+	clean.Fragment = ""
+	clean.RawFragment = ""
+	clean.User = nil
+	return clean.String()
+}
+
+func (r *UsageReporter) upstreamSnapshot() (method, target string, sentAt time.Time, status int) {
+	if r == nil {
+		return "", "", time.Time{}, 0
+	}
+	r.upstreamMu.Lock()
+	defer r.upstreamMu.Unlock()
+	return r.upstreamMethod, r.upstreamURL, r.upstreamSentAt, r.upstreamStatus
 }
 
 type usageExecutor interface {
@@ -378,9 +452,14 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	if r == nil {
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
+	upstreamMethod, upstreamURL, upstreamSentAt, upstreamStatus := r.upstreamSnapshot()
 	return usage.Record{
 		Provider:            r.provider,
 		ExecutorType:        r.executorType,
+		UpstreamMethod:      upstreamMethod,
+		UpstreamURL:         upstreamURL,
+		UpstreamSentAt:      upstreamSentAt,
+		UpstreamStatusCode:  upstreamStatus,
 		Model:               model,
 		Alias:               r.alias,
 		Source:              r.source,
@@ -478,11 +557,13 @@ type usageTTFTRoundTripper struct {
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
+	t.reporter.recordUpstreamRequest(req, time.Now())
 	t.reporter.StartResponseTTFT()
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
+	t.reporter.RecordUpstreamStatus(resp.StatusCode)
 	if t.packetOnly {
 		t.reporter.ObserveResponsePacketOnly(resp)
 	} else {
@@ -677,6 +758,7 @@ func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 	}
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
+	applyGenerationChunkRawUsage(&detail, data)
 	return detail, true
 }
 
@@ -719,6 +801,104 @@ func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 		usageNode.Get("input_tokens_details.cache_creation_tokens").Exists() ||
 		usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() ||
 		usageNode.Get("output_tokens_details.reasoning_tokens").Exists()
+}
+
+// rawUsageNode returns the bounded raw JSON of the usage node a detail was parsed from.
+func rawUsageNode(node gjson.Result) string {
+	return boundRawUsage(strings.TrimSpace(node.Raw))
+}
+
+// boundRawUsage trims raw JSON to MaxRawUsageBytes without splitting a UTF-8 rune.
+func boundRawUsage(raw string) string {
+	if len(raw) <= usage.MaxRawUsageBytes {
+		return raw
+	}
+	raw = raw[:usage.MaxRawUsageBytes]
+	for raw != "" && !utf8.ValidString(raw) {
+		raw = raw[:len(raw)-1]
+	}
+	return raw
+}
+
+// sensitiveGenerationChunkKeys are response-content keys stripped from a
+// provider generation chunk before it is stored as hop diagnostics. Only
+// telemetry (usage, model, ids, timing) should survive.
+var sensitiveGenerationChunkKeys = map[string]struct{}{
+	"audio":         {},
+	"content":       {},
+	"function_call": {},
+	"instructions":  {},
+	"input":         {},
+	"logprobs":      {},
+	"output":        {},
+	"parts":         {},
+	"prompt":        {},
+	"system":        {},
+	"text":          {},
+	"thinking":      {},
+	"tool_calls":    {},
+	"tools":         {},
+}
+
+// sanitizeGenerationChunk returns the provider generation chunk as JSON with
+// response-content keys removed (recursively), or "" when the payload is not
+// a JSON object. Keys are stripped before empty containers are pruned, so a
+// chunk that carried only content degrades to the bare usage node fallback.
+func sanitizeGenerationChunk(payload []byte) string {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return ""
+	}
+	cleaned, ok := stripSensitiveGenerationValue(value)
+	if !ok {
+		return ""
+	}
+	sanitized, err := json.Marshal(cleaned)
+	if err != nil {
+		return ""
+	}
+	return string(sanitized)
+}
+
+func stripSensitiveGenerationValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if _, sensitive := sensitiveGenerationChunkKeys[key]; sensitive {
+				continue
+			}
+			if cleaned, keep := stripSensitiveGenerationValue(child); keep {
+				result[key] = cleaned
+			}
+		}
+		if len(result) == 0 {
+			return nil, false
+		}
+		return result, true
+	case []any:
+		result := make([]any, 0, len(typed))
+		for _, child := range typed {
+			if cleaned, keep := stripSensitiveGenerationValue(child); keep {
+				result = append(result, cleaned)
+			}
+		}
+		if len(result) == 0 {
+			return nil, false
+		}
+		return result, true
+	default:
+		return value, true
+	}
+}
+
+// applyGenerationChunkRawUsage replaces the detail's raw usage with the
+// sanitized final generation chunk when it can be produced, so stream
+// diagnostics keep provider telemetry verbatim without response content.
+func applyGenerationChunkRawUsage(detail *usage.Detail, payload []byte) {
+	if sanitized := sanitizeGenerationChunk(payload); sanitized != "" {
+		detail.RawUsage = boundRawUsage(sanitized)
+	}
 }
 
 func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
@@ -796,6 +976,7 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.TokenBreakdown.TotalTokens
 	}
+	detail.RawUsage = rawUsageNode(usageNode)
 	return detail
 }
 
@@ -814,6 +995,7 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	}
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
+	applyGenerationChunkRawUsage(&detail, payload)
 	return detail, true
 }
 
@@ -834,7 +1016,9 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 	if !usageNode.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseClaudeUsageNode(usageNode), true
+	detail := parseClaudeUsageNode(usageNode)
+	applyGenerationChunkRawUsage(&detail, payload)
+	return detail, true
 }
 
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
@@ -884,6 +1068,7 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
+	detail.RawUsage = rawUsageNode(usageNode)
 	return detail
 }
 
@@ -920,6 +1105,7 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
+	detail.RawUsage = rawUsageNode(node)
 	return detail
 }
 
@@ -963,6 +1149,7 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
+	detail.RawUsage = rawUsageNode(node)
 	return detail
 }
 
@@ -1014,6 +1201,7 @@ func ParseInteractionsStreamUsage(line []byte) (usage.Detail, bool) {
 	if !hasUsageDetail(detail) {
 		return usage.Detail{}, false
 	}
+	applyGenerationChunkRawUsage(&detail, payload)
 	return detail, true
 }
 
@@ -1045,6 +1233,7 @@ func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Detail{}, false
 	}
+	applyGenerationChunkRawUsage(&detail, payload)
 	return detail, true
 }
 
@@ -1111,7 +1300,9 @@ func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	applyGenerationChunkRawUsage(&detail, payload)
+	return detail, true
 }
 
 var stopChunkWithoutUsage sync.Map

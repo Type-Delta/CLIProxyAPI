@@ -2,6 +2,7 @@ package api
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagecontext"
@@ -23,10 +24,21 @@ func ProxyRequestIDMiddleware() gin.HandlerFunc {
 		}
 		ctx, requestID := coreusage.EnsureProxyRequestID(c.Request.Context())
 		ctx = coreusage.WithEndpointClass(ctx, usageEndpointClass(c.Request.URL.Path))
+		ctx = coreusage.WithRequestReceivedAt(ctx, time.Now())
+		ctx = coreusage.WithClientRequestLine(ctx, c.Request.Method, clientRoutePath(c))
 		c.Set(proxyRequestIDGinKey, requestID)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
+}
+
+// clientRoutePath returns the request path without its query string. The
+// middleware runs before routing, so the concrete URL path is used.
+func clientRoutePath(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.URL.Path)
 }
 
 func usageEndpointClass(path string) string {

@@ -51,6 +51,18 @@ type Source struct {
 	GenerationTime *time.Duration
 	Failed         bool
 	StatusCode     int
+	// UpstreamStatusCode is the observed provider status; zero when no provider request was made.
+	UpstreamStatusCode int
+	// FailureBody is the raw provider error body; it is bounded before storage.
+	FailureBody string
+	// Hop diagnostics; zero values mean "not observed".
+	ClientMethod   string
+	ClientPath     string
+	ReceivedAt     time.Time
+	UpstreamMethod string
+	UpstreamURL    string
+	UpstreamSentAt time.Time
+	RawUsage       string
 	Tokens         SourceTokens
 }
 
@@ -175,9 +187,20 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		value := record.StatusCode
 		statusCode = &value
 	}
+	hops, count := sanitizeHops(record)
+	truncated += count
+
 	var errorClass *string
 	if record.Failed {
 		value := classifyFailure(record.StatusCode)
+		// A failure with no provider request is CPA's own decision (no usable
+		// credential); do not attribute the status to the provider.
+		if hops.upstreamSentAt == nil && record.UpstreamStatusCode == 0 && strings.EqualFold(record.ExecutorType, "auth-selection") {
+			value = "auth_unavailable"
+			statusCode = nil
+			// The body is CPA's own message; the client-facing text arrives via the proxy response patch.
+			hops.errorBody = nil
+		}
 		errorClass = &value
 	}
 	var ttft, generation *int64
@@ -226,6 +249,14 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		ServiceTierRequested:  requestedTier,
 		ServiceTierUsed:       responseTier,
 		Generated:             generated(record.Generated),
+		ClientMethod:          hops.clientMethod,
+		ClientPath:            hops.clientPath,
+		ReceivedAt:            hops.receivedAt,
+		UpstreamMethod:        hops.upstreamMethod,
+		UpstreamURL:           hops.upstreamURL,
+		UpstreamSentAt:        hops.upstreamSentAt,
+		UpstreamUsageRaw:      hops.rawUsage,
+		UpstreamErrorBody:     hops.errorBody,
 		Tokens: model.TokenUsage{
 			Input:         record.Tokens.Input,
 			Output:        record.Tokens.Output,
@@ -257,6 +288,63 @@ func bounded(value string, required bool) (string, int64, error) {
 		value = value[:len(value)-1]
 	}
 	return value, 1, nil
+}
+
+type sanitizedHops struct {
+	clientMethod, clientPath, upstreamMethod, upstreamURL, errorBody *string
+	receivedAt, upstreamSentAt                                       *time.Time
+	rawUsage                                                         *model.RawJSON
+}
+
+const truncationMarker = "...[truncated]"
+
+// sanitizeHops bounds the hop diagnostics. Invalid UTF-8 or an upstream URL with
+// a query string is dropped rather than failing the whole event.
+func sanitizeHops(record Source) (sanitizedHops, int64) {
+	var hops sanitizedHops
+	truncated := int64(0)
+	optional := func(value string, limit int, marker bool) *string {
+		value = strings.TrimSpace(value)
+		if value == "" || !utf8.ValidString(value) {
+			return nil
+		}
+		if len(value) > limit {
+			cut := limit
+			if marker {
+				cut -= len(truncationMarker)
+			}
+			value = value[:cut]
+			for value != "" && !utf8.ValidString(value) {
+				value = value[:len(value)-1]
+			}
+			if marker {
+				value += truncationMarker
+			}
+			truncated++
+		}
+		return &value
+	}
+	utc := func(value time.Time) *time.Time {
+		if value.IsZero() {
+			return nil
+		}
+		value = value.UTC()
+		return &value
+	}
+	hops.clientMethod = optional(record.ClientMethod, 16, false)
+	hops.clientPath = optional(strings.SplitN(record.ClientPath, "?", 2)[0], model.MaxStoredStringBytes, false)
+	hops.receivedAt = utc(record.ReceivedAt)
+	hops.upstreamMethod = optional(record.UpstreamMethod, 16, false)
+	hops.upstreamURL = optional(strings.SplitN(record.UpstreamURL, "?", 2)[0], 512, false)
+	hops.upstreamSentAt = utc(record.UpstreamSentAt)
+	if raw := optional(record.RawUsage, model.MaxRawPayloadBytes, false); raw != nil {
+		value := model.RawJSON(*raw)
+		hops.rawUsage = &value
+	}
+	if record.Failed {
+		hops.errorBody = optional(record.FailureBody, model.MaxRawPayloadBytes, true)
+	}
+	return hops, truncated
 }
 
 func boundedOptional(value string) (*string, int64, error) {
@@ -299,8 +387,19 @@ func classifyFailure(status int) string {
 	}
 }
 
+// middlewareEndpointClasses is the bounded class set the proxy middleware assigns.
+var middlewareEndpointClasses = map[string]struct{}{
+	"chat_completions": {}, "responses": {}, "messages": {}, "embeddings": {}, "images": {},
+	"audio": {}, "videos": {}, "moderations": {}, "realtime": {}, "live": {}, "search": {},
+	"gemini_generate": {}, "gemini_stream_generate": {}, "models": {}, "other": {},
+	"generate_content": {},
+}
+
 func classifyEndpoint(endpoint string) string {
 	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if _, ok := middlewareEndpointClasses[endpoint]; ok {
+		return endpoint
+	}
 	switch {
 	case endpoint == "responses" || strings.Contains(endpoint, "/responses"):
 		return "responses"

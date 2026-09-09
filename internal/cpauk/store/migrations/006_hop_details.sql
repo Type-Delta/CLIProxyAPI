@@ -1,0 +1,11 @@
+ALTER TABLE events ADD COLUMN client_method TEXT;
+ALTER TABLE events ADD COLUMN client_path TEXT;
+ALTER TABLE events ADD COLUMN received_at_ns INTEGER;
+ALTER TABLE events ADD COLUMN upstream_method TEXT;
+ALTER TABLE events ADD COLUMN upstream_url TEXT;
+ALTER TABLE events ADD COLUMN upstream_sent_at_ns INTEGER;
+ALTER TABLE events ADD COLUMN upstream_usage_raw TEXT;
+ALTER TABLE events ADD COLUMN upstream_error_body TEXT;
+ALTER TABLE events ADD COLUMN proxy_status_code INTEGER CHECK(proxy_status_code IS NULL OR proxy_status_code BETWEEN 100 AND 599);
+ALTER TABLE events ADD COLUMN proxy_error TEXT;
+ALTER TABLE events ADD COLUMN responded_at_ns INTEGER;

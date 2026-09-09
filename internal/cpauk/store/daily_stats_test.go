@@ -86,7 +86,7 @@ func TestMigrationBackfillsDailyStatsFromRollups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, "ALTER TABLE events DROP COLUMN generation_time_ms; DROP TABLE daily_stats; DELETE FROM schema_migrations WHERE version>=2"); err != nil {
+	if _, err := direct.ExecContext(ctx, "ALTER TABLE events DROP COLUMN client_method; ALTER TABLE events DROP COLUMN client_path; ALTER TABLE events DROP COLUMN received_at_ns; ALTER TABLE events DROP COLUMN upstream_method; ALTER TABLE events DROP COLUMN upstream_url; ALTER TABLE events DROP COLUMN upstream_sent_at_ns; ALTER TABLE events DROP COLUMN upstream_usage_raw; ALTER TABLE events DROP COLUMN upstream_error_body; ALTER TABLE events DROP COLUMN proxy_status_code; ALTER TABLE events DROP COLUMN proxy_error; ALTER TABLE events DROP COLUMN responded_at_ns; ALTER TABLE events DROP COLUMN generation_time_ms; DROP TABLE daily_stats; DELETE FROM schema_migrations WHERE version>=2"); err != nil {
 		_ = direct.Close()
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ FROM daily_stats WHERE day_start_ns=? AND key_id=?`, day.UTC().UnixNano(), keyID
 	if requests != 2 || succeeded != 1 || failed != 1 || total != 210 {
 		t.Fatalf("backfilled daily stats requests=%d succeeded=%d failed=%d total=%d", requests, succeeded, failed, total)
 	}
-	if database.SchemaVersion() != 5 {
+	if database.SchemaVersion() != 6 {
 		t.Fatalf("schema version=%d", database.SchemaVersion())
 	}
 }
@@ -152,7 +152,7 @@ func TestMigrationFiveBackfillsDailyStatsCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, `ALTER TABLE daily_stats DROP COLUMN known_cost_nano;
+	if _, err := direct.ExecContext(ctx, `ALTER TABLE events DROP COLUMN client_method; ALTER TABLE events DROP COLUMN client_path; ALTER TABLE events DROP COLUMN received_at_ns; ALTER TABLE events DROP COLUMN upstream_method; ALTER TABLE events DROP COLUMN upstream_url; ALTER TABLE events DROP COLUMN upstream_sent_at_ns; ALTER TABLE events DROP COLUMN upstream_usage_raw; ALTER TABLE events DROP COLUMN upstream_error_body; ALTER TABLE events DROP COLUMN proxy_status_code; ALTER TABLE events DROP COLUMN proxy_error; ALTER TABLE events DROP COLUMN responded_at_ns; ALTER TABLE daily_stats DROP COLUMN known_cost_nano;
 ALTER TABLE daily_stats DROP COLUMN unpriced_tokens; DELETE FROM schema_migrations WHERE version>=5`); err != nil {
 		_ = direct.Close()
 		t.Fatal(err)

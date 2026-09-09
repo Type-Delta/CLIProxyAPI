@@ -69,6 +69,19 @@ type Event struct {
 	ServiceTierUsed       *string          `json:"service_tier_used"`
 	Generated             bool             `json:"generated"`
 	Tokens                TokenUsage       `json:"tokens"`
+	// Hop diagnostics describe each leg of Client -> CPA -> Provider -> CPA -> Client.
+	// They are additive and nullable; events recorded before they existed carry none.
+	ClientMethod      *string    `json:"client_method"`
+	ClientPath        *string    `json:"client_path"`
+	ReceivedAt        *time.Time `json:"received_at"`
+	UpstreamMethod    *string    `json:"upstream_method"`
+	UpstreamURL       *string    `json:"upstream_url"`
+	UpstreamSentAt    *time.Time `json:"upstream_sent_at"`
+	UpstreamUsageRaw  *RawJSON   `json:"upstream_usage_raw"`
+	UpstreamErrorBody *string    `json:"upstream_error_body"`
+	ProxyStatusCode   *int       `json:"proxy_status_code"`
+	ProxyError        *string    `json:"proxy_error"`
+	RespondedAt       *time.Time `json:"responded_at"`
 	// Query-time pricing enrichment is omitted from sanitized intake events and
 	// populated only when an event is read from durable storage.
 	KnownCost      *NanoUSD `json:"known_cost_usd,omitempty"`
@@ -125,6 +138,35 @@ func (e Event) Validate() error {
 	if e.UpstreamStatusCode != nil && (*e.UpstreamStatusCode < 100 || *e.UpstreamStatusCode > 599) {
 		return fmt.Errorf("invalid upstream status code")
 	}
+	if e.ProxyStatusCode != nil && (*e.ProxyStatusCode < 100 || *e.ProxyStatusCode > 599) {
+		return fmt.Errorf("invalid proxy status code")
+	}
+	for name, field := range map[string]struct {
+		value *string
+		limit int
+	}{
+		"client_method": {e.ClientMethod, 16}, "client_path": {e.ClientPath, MaxStoredStringBytes},
+		"upstream_method": {e.UpstreamMethod, 16}, "upstream_url": {e.UpstreamURL, 512},
+		"upstream_error_body": {e.UpstreamErrorBody, MaxRawPayloadBytes},
+		"proxy_error":         {e.ProxyError, MaxProxyErrorBytes},
+	} {
+		if field.value == nil {
+			continue
+		}
+		if !utf8.ValidString(*field.value) || len(*field.value) > field.limit {
+			return fmt.Errorf("%s must be valid UTF-8 within %d bytes", name, field.limit)
+		}
+	}
+	if e.UpstreamUsageRaw != nil && (!utf8.ValidString(string(*e.UpstreamUsageRaw)) || len(*e.UpstreamUsageRaw) > MaxRawPayloadBytes) {
+		return fmt.Errorf("upstream_usage_raw must be valid UTF-8 within %d bytes", MaxRawPayloadBytes)
+	}
+	for name, value := range map[string]*time.Time{
+		"received_at": e.ReceivedAt, "upstream_sent_at": e.UpstreamSentAt, "responded_at": e.RespondedAt,
+	} {
+		if value != nil && (value.IsZero() || value.Location() != time.UTC) {
+			return fmt.Errorf("%s must be a nonzero UTC timestamp", name)
+		}
+	}
 	if e.GenerationTimeMS != nil && *e.GenerationTimeMS < 0 {
 		return fmt.Errorf("generation time must not be negative")
 	}
@@ -176,5 +218,36 @@ func validateBoundedString(name, value string, nullable bool) error {
 	if len([]byte(value)) > MaxStoredStringBytes {
 		return fmt.Errorf("%s exceeds %d bytes", name, MaxStoredStringBytes)
 	}
+	return nil
+}
+
+// ProxyResponsePatch completes the CPA -> Client leg for every attempt that
+// shares one proxy request ID.
+type ProxyResponsePatch struct {
+	ProxyRequestID string
+	StatusCode     int
+	Error          string
+	RespondedAt    time.Time
+}
+
+// RawJSON is provider payload text captured verbatim. It serializes as a JSON
+// value when the text is valid JSON and as a JSON string otherwise, so clients
+// can render structured usage without choking on truncated or non-JSON bodies.
+type RawJSON string
+
+func (r RawJSON) MarshalJSON() ([]byte, error) {
+	if json.Valid([]byte(r)) {
+		return []byte(r), nil
+	}
+	return json.Marshal(string(r))
+}
+
+func (r *RawJSON) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*r = RawJSON(text)
+		return nil
+	}
+	*r = RawJSON(data)
 	return nil
 }

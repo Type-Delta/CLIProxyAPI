@@ -2,7 +2,9 @@ package collector
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -11,6 +13,7 @@ import (
 type Intake interface {
 	Generation() uint64
 	Enqueue(uint64, Event) bool
+	EnqueueProxyResponse(uint64, ProxyResponsePatch) bool
 	Rejected()
 	Truncated(int64)
 }
@@ -61,6 +64,46 @@ func (a *Adapter) HandleUsage(ctx context.Context, record coreusage.Record) {
 	}
 }
 
+// HandleProxyResponse queues the downstream outcome so the CPA -> Client leg of
+// every attempt for that request is completed. It never blocks.
+func (a *Adapter) HandleProxyResponse(response coreusage.ProxyResponse) {
+	if a == nil || a.intake == nil {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			a.dropped.Add(1)
+		}
+	}()
+	if !model.IsCorrelationID(response.ProxyRequestID) || response.StatusCode < 100 || response.StatusCode > 599 {
+		return
+	}
+	patch := ProxyResponsePatch{
+		ProxyRequestID: response.ProxyRequestID,
+		StatusCode:     response.StatusCode,
+		Error:          boundedProxyError(response.Error),
+		RespondedAt:    response.RespondedAt.UTC(),
+	}
+	if !a.intake.EnqueueProxyResponse(a.generation, patch) {
+		a.dropped.Add(1)
+	}
+}
+
+func boundedProxyError(value string) string {
+	value = strings.TrimSpace(value)
+	if !utf8.ValidString(value) {
+		return ""
+	}
+	if len(value) <= model.MaxProxyErrorBytes {
+		return value
+	}
+	value = value[:model.MaxProxyErrorBytes-len(truncationMarker)]
+	for value != "" && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value + truncationMarker
+}
+
 func adaptRecord(record coreusage.Record) Source {
 	detail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 	inputTokens := detail.InputTokens
@@ -86,7 +129,11 @@ func adaptRecord(record coreusage.Record) Source {
 		APIKey: record.APIKey, AuthID: record.AuthID, AuthIndex: record.AuthIndex,
 		AuthType: record.AuthType, ServiceTier: record.ServiceTier, ResponseTier: responseTier,
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
-		GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed, StatusCode: record.Fail.StatusCode,
+		GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed,
+		StatusCode: upstreamStatus(record), UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
+		ClientMethod: record.ClientMethod, ClientPath: record.ClientPath, ReceivedAt: record.ReceivedAt,
+		UpstreamMethod: record.UpstreamMethod, UpstreamURL: record.UpstreamURL, UpstreamSentAt: record.UpstreamSentAt,
+		RawUsage: detail.RawUsage,
 		Tokens: SourceTokens{
 			Input: inputTokens, Output: outputTokens,
 			Reasoning: detail.ReasoningTokens, Cached: detail.CachedTokens,
@@ -95,6 +142,15 @@ func adaptRecord(record coreusage.Record) Source {
 			Quality: model.TokenQuality(detail.TokenQuality),
 		},
 	}
+}
+
+// upstreamStatus prefers the observed provider status so successful attempts
+// record 200 too; failures without a transport status keep the failure code.
+func upstreamStatus(record coreusage.Record) int {
+	if record.UpstreamStatusCode != 0 {
+		return record.UpstreamStatusCode
+	}
+	return record.Fail.StatusCode
 }
 
 func (a *Adapter) Dropped() int64 {

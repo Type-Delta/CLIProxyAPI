@@ -1867,6 +1867,31 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	return authCopy, executor, providerKey, nil
 }
 
+// AuthUnavailableDetail reports whether err means no credential could serve the
+// request (none configured, all cooling down) and, if so, returns a short
+// machine-readable code, the client-facing message, and the HTTP status.
+func AuthUnavailableDetail(err error) (code, message string, status int, ok bool) {
+	if err == nil {
+		return "", "", 0, false
+	}
+	var cooldownErr *modelCooldownError
+	if errors.As(err, &cooldownErr) && cooldownErr != nil {
+		return "model_cooldown", cooldownErr.Error(), cooldownErr.StatusCode(), true
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		switch authErr.Code {
+		case "auth_unavailable", "auth_not_found", "model_cooldown":
+			status = authErr.HTTPStatus
+			if status <= 0 {
+				status = http.StatusServiceUnavailable
+			}
+			return authErr.Code, authErr.Error(), status, true
+		}
+	}
+	return "", "", 0, false
+}
+
 func isAuthUnavailableError(err error) bool {
 	if err == nil {
 		return false

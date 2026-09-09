@@ -2,6 +2,7 @@ package cpauk
 
 import (
 	"errors"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"math"
 	"testing"
 	"time"
@@ -15,8 +16,8 @@ func TestDefaultConfigMatchesBoundedCollectorContract(t *testing.T) {
 	if config.QueueCapacity != 8192 || config.BatchSize != 256 || config.FlushInterval != 250*time.Millisecond {
 		t.Fatalf("collector defaults = %#v", config)
 	}
-	if int64(config.QueueCapacity)*4096 != MaxQueueBytes {
-		t.Fatalf("queue byte budget = %d", int64(config.QueueCapacity)*4096)
+	if int64(config.QueueCapacity)*int64(model.MaxEventBytes) != MaxQueueBytes {
+		t.Fatalf("queue byte budget = %d", int64(config.QueueCapacity)*int64(model.MaxEventBytes))
 	}
 	if !config.Privacy.StoreCredentialID {
 		t.Fatal("credential pseudonyms should be enabled in the default config")

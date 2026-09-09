@@ -239,8 +239,13 @@ func NewInvalid(category, field string, config Config, factory BackendFactory) S
 }
 
 func (s *service) Observer() coreusage.Plugin { return s.observer }
-func (s *service) Reader() Reader             { return s.reader }
-func (s *service) Maintenance() Maintenance   { return s.maintProxy }
+
+// ProxyResponseObserver returns the hook that completes CPA -> Client legs.
+func (s *service) ProxyResponseObserver() coreusage.ProxyResponseObserver {
+	return s.observer.HandleProxyResponse
+}
+func (s *service) Reader() Reader           { return s.reader }
+func (s *service) Maintenance() Maintenance { return s.maintProxy }
 
 func (s *service) Capabilities() Capabilities {
 	value := s.snapshots.load().capabilities
@@ -1304,6 +1309,21 @@ func (p *observerProxy) set(plugin coreusage.Plugin) {
 func (p *observerProxy) clear() {
 	if p != nil {
 		p.target.Store(nil)
+	}
+}
+
+// HandleProxyResponse forwards the downstream outcome to the active adapter.
+func (p *observerProxy) HandleProxyResponse(response coreusage.ProxyResponse) {
+	if p == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	value := p.target.Load()
+	if value == nil {
+		return
+	}
+	if adapter, ok := value.plugin.(*collector.Adapter); ok {
+		adapter.HandleProxyResponse(response)
 	}
 }
 

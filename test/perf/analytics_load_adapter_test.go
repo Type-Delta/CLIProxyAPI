@@ -48,6 +48,12 @@ func (s *blockedSQLiteStore) WriteBatch(ctx context.Context, _ []model.Event) er
 	}
 }
 
+// WriteBatchWithPatches shadows the embedded store so the collector's patch
+// path also observes the injected block.
+func (s *blockedSQLiteStore) WriteBatchWithPatches(ctx context.Context, events []model.Event, _ []model.ProxyResponsePatch) error {
+	return s.WriteBatch(ctx, events)
+}
+
 type injectedBlockedStorageError struct{}
 
 func (injectedBlockedStorageError) Error() string    { return "injected blocked SQLite writer" }

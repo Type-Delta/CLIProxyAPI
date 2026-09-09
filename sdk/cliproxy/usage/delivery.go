@@ -577,6 +577,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		record.EndpointClass = EndpointClassFromContext(ctx)
 	}
 	record.EndpointClass = truncateUTF8(record.EndpointClass, 256)
+	record = fillHopMetadata(ctx, record)
 
 	m.mu.Lock()
 	if m.state == managerIdle {
@@ -837,12 +838,17 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.AuthType = copyString(record.AuthType)
 	record.Source = copyString(record.Source)
 	record.EndpointClass = copyString(record.EndpointClass)
+	record.ClientMethod = copyString(record.ClientMethod)
+	record.ClientPath = copyString(record.ClientPath)
+	record.UpstreamMethod = copyString(record.UpstreamMethod)
+	record.UpstreamURL = copyString(record.UpstreamURL)
 	record.ReasoningEffort = copyString(record.ReasoningEffort)
 	record.ServiceTier = copyString(record.ServiceTier)
 	record.RequestServiceTier = copyString(record.RequestServiceTier)
 	record.ResponseServiceTier = copyString(record.ResponseServiceTier)
 	record.Fail.Body = copyString(record.Fail.Body)
 	record.Detail.ResponseServiceTier = copyString(record.Detail.ResponseServiceTier)
+	record.Detail.RawUsage = copyString(record.Detail.RawUsage)
 	record.ResponseHeaders = copyHeaders(record.ResponseHeaders, &remaining)
 	if record.Generate != nil {
 		generate := *record.Generate
@@ -955,6 +961,23 @@ func copyHeaders(source http.Header, remaining *int) http.Header {
 		}
 	}
 	return result
+}
+
+// fillHopMetadata bounds the hop diagnostics and completes the downstream
+// request line from ctx when the publisher did not set it.
+func fillHopMetadata(ctx context.Context, record Record) Record {
+	record.ClientMethod = truncateUTF8(strings.TrimSpace(record.ClientMethod), 16)
+	record.ClientPath = truncateUTF8(strings.TrimSpace(record.ClientPath), 256)
+	if record.ClientMethod == "" && record.ClientPath == "" {
+		record.ClientMethod, record.ClientPath = ClientRequestLineFromContext(ctx)
+	}
+	if record.ReceivedAt.IsZero() {
+		record.ReceivedAt = RequestReceivedAtFromContext(ctx)
+	}
+	record.UpstreamMethod = truncateUTF8(strings.TrimSpace(record.UpstreamMethod), 16)
+	record.UpstreamURL = truncateUTF8(strings.TrimSpace(record.UpstreamURL), MaxUpstreamURLBytes)
+	record.Detail.RawUsage = truncateUTF8(record.Detail.RawUsage, MaxRawUsageBytes)
+	return record
 }
 
 func truncateUTF8(value string, limit int) string {

@@ -10,6 +10,14 @@ type Writer interface {
 	WriteBatch(context.Context, []model.Event) error
 }
 
+type ProxyResponsePatch = model.ProxyResponsePatch
+
+// PatchWriter is implemented by writers that can apply proxy response patches
+// after the events of the same batch. Writers without it silently drop patches.
+type PatchWriter interface {
+	WriteBatchWithPatches(context.Context, []model.Event, []ProxyResponsePatch) error
+}
+
 type classifiedError interface {
 	error
 	Permanent() bool

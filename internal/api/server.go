@@ -227,6 +227,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	} else {
 		s.analyticsDetach = detachAnalytics
 	}
+	if hook, ok := s.analytics.(interface {
+		ProxyResponseObserver() coreusage.ProxyResponseObserver
+	}); ok {
+		coreusage.SetProxyResponseObserver(hook.ProxyResponseObserver())
+	}
 	if s.usageLimitPath != "" {
 		if errLoad := s.usageLimitTracker.LoadFrom(s.usageLimitPath); errLoad != nil {
 			log.WithError(errLoad).Warn("failed to load usage limit snapshot")
@@ -467,6 +472,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Shutdown the HTTP server.
 	errShutdown := s.server.Shutdown(ctx)
+	coreusage.SetProxyResponseObserver(nil)
 	if s.analyticsDetach != nil {
 		if errDetach := s.analyticsDetach(ctx); errDetach != nil {
 			log.WithError(errDetach).Warn("failed to detach analytics intake")

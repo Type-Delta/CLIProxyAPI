@@ -410,6 +410,9 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
+	if requestCtx != nil {
+		parentCtx = inheritUsageCorrelation(parentCtx, requestCtx)
+	}
 	newCtx, cancel := context.WithCancel(parentCtx)
 
 	endpoint := ""
@@ -455,6 +458,11 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	return newCtx, func(params ...interface{}) {
 		if c != nil {
 			logging.SetResponseStatus(cancelCtx, c.Writer.Status())
+			coreusage.PublishProxyResponse(cancelCtx, coreusage.ProxyResponse{
+				StatusCode:  c.Writer.Status(),
+				Error:       proxyResponseErrorText(params...),
+				RespondedAt: time.Now(),
+			})
 		}
 		if h.Cfg.RequestLog && len(params) == 1 {
 			if captured, exists := c.Get(logging.APIResponseCapturedContextKey); exists {
@@ -579,3 +587,46 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // APIHandlerCancelFunc is a function type for canceling an API handler's context.
 // It can optionally accept parameters, which are used for logging the response.
 type APIHandlerCancelFunc func(params ...interface{})
+
+// inheritUsageCorrelation carries the request-scoped usage correlation values
+// (proxy request ID, endpoint class, arrival time, request line) from the
+// downstream request context into an execution context built on a fresh parent.
+func inheritUsageCorrelation(ctx, requestCtx context.Context) context.Context {
+	if coreusage.ProxyRequestIDFromContext(ctx) == "" {
+		if requestID := coreusage.ProxyRequestIDFromContext(requestCtx); requestID != "" {
+			ctx = coreusage.WithProxyRequestID(ctx, requestID)
+		}
+	}
+	if coreusage.EndpointClassFromContext(ctx) == "" {
+		ctx = coreusage.WithEndpointClass(ctx, coreusage.EndpointClassFromContext(requestCtx))
+	}
+	if coreusage.RequestReceivedAtFromContext(ctx).IsZero() {
+		ctx = coreusage.WithRequestReceivedAt(ctx, coreusage.RequestReceivedAtFromContext(requestCtx))
+	}
+	if method, path := coreusage.ClientRequestLineFromContext(ctx); method == "" && path == "" {
+		method, path = coreusage.ClientRequestLineFromContext(requestCtx)
+		ctx = coreusage.WithClientRequestLine(ctx, method, path)
+	}
+	return ctx
+}
+
+// proxyResponseErrorText extracts the error the handler is about to report to
+// the client from the cancel parameters; successful completions yield "".
+func proxyResponseErrorText(params ...interface{}) string {
+	if len(params) == 0 || params[0] == nil {
+		return ""
+	}
+	switch value := params[0].(type) {
+	case *interfaces.ErrorMessage:
+		if value == nil || value.Error == nil {
+			return ""
+		}
+		return value.Error.Error()
+	case error:
+		return value.Error()
+	case string:
+		return value
+	default:
+		return ""
+	}
+}

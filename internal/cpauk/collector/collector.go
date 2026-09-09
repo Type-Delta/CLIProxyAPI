@@ -32,9 +32,30 @@ type Options struct {
 	Callbacks        Callbacks
 }
 
+// queuedEvent carries either an event insert or a proxy response patch. Both
+// share one FIFO queue so a patch can never overtake the event it completes.
 type queuedEvent struct {
 	event model.Event
+	patch *ProxyResponsePatch
 }
+
+// batch keeps inserts and patches in arrival order until a flush.
+type batch struct {
+	events  []model.Event
+	patches []ProxyResponsePatch
+}
+
+func (b *batch) add(item queuedEvent) {
+	if item.patch != nil {
+		b.patches = append(b.patches, *item.patch)
+		return
+	}
+	b.events = append(b.events, item.event)
+}
+
+func (b *batch) size() int { return len(b.events) + len(b.patches) }
+
+func (b *batch) reset() { b.events = b.events[:0]; b.patches = b.patches[:0] }
 
 type Stats struct {
 	Capacity        int64
@@ -138,6 +159,22 @@ func (c *Collector) Enqueue(generation uint64, event Event) bool {
 	}
 	select {
 	case c.queue <- queuedEvent{event: event}:
+		return true
+	default:
+		c.drop()
+		return false
+	}
+}
+
+// EnqueueProxyResponse queues the downstream outcome of one proxy request. It
+// is lossy under the same rules as Enqueue.
+func (c *Collector) EnqueueProxyResponse(generation uint64, patch ProxyResponsePatch) bool {
+	if c == nil || c.closed.Load() || !c.accepting.Load() || generation != c.generation.Load() {
+		c.drop()
+		return false
+	}
+	select {
+	case c.queue <- queuedEvent{patch: &patch}:
 		return true
 	default:
 		c.drop()
@@ -327,7 +364,7 @@ func (c *Collector) runWorkerProtected() (panicked bool) {
 }
 
 func (c *Collector) runWorker() {
-	batch := make([]model.Event, 0, c.currentBatchSize())
+	pending := &batch{events: make([]model.Event, 0, c.currentBatchSize())}
 	timer := time.NewTimer(c.currentFlushInterval())
 	defer timer.Stop()
 	circuitState := newCircuit(c.currentThreshold())
@@ -335,24 +372,24 @@ func (c *Collector) runWorker() {
 	for {
 		select {
 		case item := <-c.queue:
-			batch = append(batch, item.event)
-			if len(batch) >= c.currentBatchSize() {
-				batch = c.write(batch, &circuitState)
+			pending.add(item)
+			if pending.size() >= c.currentBatchSize() {
+				c.write(pending, &circuitState)
 			}
 			c.safeQueue()
 		case <-timer.C:
-			batch = c.write(batch, &circuitState)
+			c.write(pending, &circuitState)
 			timer.Reset(c.currentFlushInterval())
 		case <-c.stop:
 			for {
 				select {
 				case item := <-c.queue:
-					batch = append(batch, item.event)
-					if len(batch) >= c.currentBatchSize() {
-						batch = c.write(batch, &circuitState)
+					pending.add(item)
+					if pending.size() >= c.currentBatchSize() {
+						c.write(pending, &circuitState)
 					}
 				default:
-					c.write(batch, &circuitState)
+					c.write(pending, &circuitState)
 					return
 				}
 			}
@@ -360,14 +397,15 @@ func (c *Collector) runWorker() {
 	}
 }
 
-func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
-	if len(batch) == 0 {
-		return batch[:0]
+func (c *Collector) write(pending *batch, state *circuit) {
+	if pending.size() == 0 {
+		pending.reset()
+		return
 	}
-	c.inFlight.Store(int64(len(batch)))
+	c.inFlight.Store(int64(pending.size()))
 	defer func() {
 		if value := recover(); value != nil {
-			c.dropped.Add(int64(len(batch)))
+			c.dropped.Add(int64(pending.size()))
 			c.safeQueue()
 			c.inFlight.Store(0)
 			panic(value)
@@ -382,10 +420,11 @@ func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
 				c.retryable.Store(false)
 				state.succeeded()
 			case <-c.stop:
-				return c.abandon(batch)
+				c.abandon(pending)
+				return
 			}
 		}
-		err := c.writer.WriteBatch(c.workerCtx, batch)
+		err := c.writeBatch(pending)
 		if err == nil {
 			state.succeeded()
 			now := c.now().UTC()
@@ -398,7 +437,8 @@ func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
 				c.attach()
 			}
 			c.safeState(model.StateReady, "")
-			return batch[:0]
+			pending.reset()
+			return
 		}
 		permanent, category := classifyWriteError(err)
 		opened := state.failed(permanent)
@@ -416,9 +456,25 @@ func (c *Collector) write(batch []model.Event, state *circuit) []model.Event {
 			continue
 		case <-c.stop:
 			stopAndDrainTimer(timer)
-			return c.abandon(batch)
+			c.abandon(pending)
+			return
 		}
 	}
+}
+
+// writeBatch hands inserts and patches to the writer; writers that cannot
+// patch only receive the events and the patches are dropped.
+func (c *Collector) writeBatch(pending *batch) error {
+	if patcher, ok := c.writer.(PatchWriter); ok {
+		return patcher.WriteBatchWithPatches(c.workerCtx, pending.events, pending.patches)
+	}
+	if len(pending.patches) > 0 {
+		c.dropped.Add(int64(len(pending.patches)))
+	}
+	if len(pending.events) == 0 {
+		return nil
+	}
+	return c.writer.WriteBatch(c.workerCtx, pending.events)
 }
 
 func (c *Collector) attach() {
@@ -449,19 +505,17 @@ func (c *Collector) drop() {
 	c.dropped.Add(1)
 }
 
-func (c *Collector) abandon(batch []model.Event) []model.Event {
-	if len(batch) == 0 {
-		return batch[:0]
-	}
-	if c.closeTimedOut.Load() {
-		return batch[:0]
+func (c *Collector) abandon(pending *batch) {
+	count := int64(pending.size())
+	pending.reset()
+	if count == 0 || c.closeTimedOut.Load() {
+		return
 	}
 	c.safeCall(func() {
 		if c.callbacks.Abandoned != nil {
-			c.callbacks.Abandoned(int64(len(batch)))
+			c.callbacks.Abandoned(count)
 		}
 	})
-	return batch[:0]
 }
 
 func (c *Collector) safeQueue() {
