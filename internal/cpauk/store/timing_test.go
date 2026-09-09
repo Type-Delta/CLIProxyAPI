@@ -51,7 +51,7 @@ func TestTimingCoverageAggregatesAndImportRoundTrip(t *testing.T) {
 	}
 	for _, key := range []string{"latency", "provider_latency"} {
 		value := analysis.Latency.Metrics[key]
-		if value.Source != "unavailable" || value.TotalMS != nil || value.SampleCount != 0 {
+		if value.Source == "unavailable" || value.TotalMS != nil || value.SampleCount != 0 {
 			t.Fatalf("provider timing fabricated: %+v", value)
 		}
 	}
@@ -118,5 +118,74 @@ func TestTimingSupportsLongRangeAndOddMedian(t *testing.T) {
 	metric := analysis.Latency.Metrics["generation"]
 	if metric.MedianMS == nil || *metric.MedianMS != 40 || metric.TotalMS == nil || *metric.TotalMS != 120 {
 		t.Fatalf("long-range timing=%+v", metric)
+	}
+}
+
+func TestLocalLatencyObservationsPersistAndAggregate(t *testing.T) {
+	database, events := openV2FixtureStore(t)
+	ctx := context.Background()
+	for index, values := range []string{`"first_token_latency_ms":0,"provider_latency_ms":0`, `"first_token_latency_ms":80,"provider_latency_ms":20`} {
+		event := events[0]
+		event.AttemptID = strings.Repeat(string(rune('8'+index)), 32)
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded = append(encoded[:len(encoded)-1], []byte(","+values+"}")...)
+		if err := json.Unmarshal(encoded, &event); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.WriteImportBatch(ctx, []model.Event{event}, "local-latency"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := v2Query(model.OperationAnalysis, events[0].RequestedAt, events[0].RequestedAt.Add(time.Hour))
+	analysis, err := database.Analysis(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, total := range map[string]int64{"latency": 80, "provider_latency": 20} {
+		metric := analysis.Latency.Metrics[key]
+		if metric.SampleCount != 2 || metric.TotalMS == nil || *metric.TotalMS != total || metric.MedianMS == nil || *metric.MedianMS != float64(total)/2 {
+			t.Fatalf("%s unavailable or incorrect: %+v", key, metric)
+		}
+	}
+	query.Operation = model.OperationSummary
+	summary, err := database.Summary(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ProcessingTime.LatencyMS == nil || *summary.ProcessingTime.LatencyMS != 80 || summary.ProcessingTime.ProviderLatencyMS == nil || *summary.ProcessingTime.ProviderLatencyMS != 20 || summary.ProcessingTime.LatencySampleCount != 2 || summary.ProcessingTime.ProviderLatencySampleCount != 2 {
+		t.Fatalf("summary=%+v", summary.ProcessingTime)
+	}
+	query.Operation = model.OperationEvents
+	page, err := database.Events(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"first_token_latency_ms":80`) || !strings.Contains(string(encoded), `"provider_latency_ms":0`) {
+		t.Fatalf("event read lost timing: %s", encoded)
+	}
+}
+
+func TestProcessingTimeCoverageCompleteZeroAndPartial(t *testing.T) {
+	zero := int64(0)
+	metrics := map[string]model.TimingMetric{}
+	for _, key := range []string{"e2e", "ttft", "generation", "latency", "provider_latency"} {
+		metrics[key] = model.TimingMetric{SampleCount: 1, TotalMS: &zero}
+	}
+	complete := processingTime(metrics, 1)
+	if complete.Partial || complete.LatencyMS == nil || *complete.LatencyMS != 0 || complete.ProviderLatencyMS == nil || *complete.ProviderLatencyMS != 0 {
+		t.Fatalf("complete zero observations=%+v", complete)
+	}
+	if !processingTime(metrics, 2).Partial {
+		t.Fatal("historical missing observations reported complete")
+	}
+	if processingTime(nil, 0).Partial {
+		t.Fatal("empty population reported partial")
 	}
 }

@@ -853,6 +853,12 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.Detail.ResponseServiceTier = copyString(record.Detail.ResponseServiceTier)
 	record.Detail.RawUsage = copyString(record.Detail.RawUsage)
 	record.ResponseHeaders = copyHeaders(record.ResponseHeaders, &remaining)
+	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency} {
+		if *field != nil {
+			value := **field
+			*field = &value
+		}
+	}
 	if record.Generate != nil {
 		generate := *record.Generate
 		record.Generate = &generate
@@ -912,6 +918,12 @@ func (s contextSnapshot) context() context.Context {
 
 func cloneRecord(record Record) Record {
 	record.ResponseHeaders = record.ResponseHeaders.Clone()
+	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency} {
+		if *field != nil {
+			value := **field
+			*field = &value
+		}
+	}
 	if record.Generate != nil {
 		generate := *record.Generate
 		record.Generate = &generate

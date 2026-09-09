@@ -31,26 +31,28 @@ type SanitizeResult struct {
 }
 
 type Source struct {
-	ProxyRequestID string
-	RequestQuality model.RequestIDQuality
-	EndpointClass  string
-	Provider       string
-	ExecutorType   string
-	Model          string
-	Alias          string
-	APIKey         string
-	AuthID         string
-	AuthIndex      string
-	AuthType       string
-	ServiceTier    string
-	ResponseTier   string
-	Generated      *bool
-	RequestedAt    time.Time
-	Latency        time.Duration
-	TTFT           time.Duration
-	GenerationTime *time.Duration
-	Failed         bool
-	StatusCode     int
+	ProxyRequestID    string
+	RequestQuality    model.RequestIDQuality
+	EndpointClass     string
+	Provider          string
+	ExecutorType      string
+	Model             string
+	Alias             string
+	APIKey            string
+	AuthID            string
+	AuthIndex         string
+	AuthType          string
+	ServiceTier       string
+	ResponseTier      string
+	Generated         *bool
+	RequestedAt       time.Time
+	Latency           time.Duration
+	TTFT              time.Duration
+	GenerationTime    *time.Duration
+	FirstTokenLatency *time.Duration
+	ProviderLatency   *time.Duration
+	Failed            bool
+	StatusCode        int
 	// UpstreamStatusCode is the observed provider status; zero when no provider request was made.
 	UpstreamStatusCode int
 	// FailureBody is the raw provider error body; it is bounded before storage.
@@ -106,7 +108,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if record.RequestedAt.IsZero() {
 		return SanitizeResult{}, fmt.Errorf("requested timestamp is missing")
 	}
-	if record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
+	if record.FirstTokenLatency != nil && *record.FirstTokenLatency < 0 || record.ProviderLatency != nil && *record.ProviderLatency < 0 || record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
 		return SanitizeResult{}, fmt.Errorf("latency is negative")
 	}
 	if err := validateTokens(record.Tokens); err != nil {
@@ -203,7 +205,15 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		}
 		errorClass = &value
 	}
-	var ttft, generation *int64
+	var ttft, generation, firstTokenLatency, providerLatency *int64
+	if record.FirstTokenLatency != nil {
+		value := record.FirstTokenLatency.Milliseconds()
+		firstTokenLatency = &value
+	}
+	if record.ProviderLatency != nil {
+		value := record.ProviderLatency.Milliseconds()
+		providerLatency = &value
+	}
 	if record.GenerationTime != nil {
 		value := record.GenerationTime.Milliseconds()
 		generation = &value
@@ -246,6 +256,8 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		LatencyMS:             record.Latency.Milliseconds(),
 		TimeToFirstTokenMS:    ttft,
 		GenerationTimeMS:      generation,
+		FirstTokenLatencyMS:   firstTokenLatency,
+		ProviderLatencyMS:     providerLatency,
 		ServiceTierRequested:  requestedTier,
 		ServiceTierUsed:       responseTier,
 		Generated:             generated(record.Generated),

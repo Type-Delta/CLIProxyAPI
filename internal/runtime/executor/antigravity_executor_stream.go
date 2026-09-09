@@ -219,6 +219,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				continue
 			}
 
+			helps.ObserveGeminiTokenEvent(reporter, payload)
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}

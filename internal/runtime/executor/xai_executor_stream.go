@@ -107,6 +107,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			}
 
 			if bytes.HasPrefix(line, xaiDataTag) {
+				helps.ObserveResponsesTokenEvent(reporter, bytes.TrimSpace(line[len(xaiDataTag):]))
 				eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
 				hasPendingEventLine := pendingEventLine != nil
 				for i, eventData := range eventDataList {

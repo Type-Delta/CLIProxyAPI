@@ -71,9 +71,15 @@ type Record struct {
 	// GenerationTime measures first-to-last substantive token arrivals on the local monotonic clock.
 	// nil means the request did not expose observable streaming token boundaries.
 	GenerationTime *time.Duration
-	Failed         bool
-	Fail           Failure
-	Detail         Detail
+	// FirstTokenLatency measures dispatch to the first substantive streaming token, without TTFT fallback.
+	// nil means no substantive token was observed on a measured transport.
+	FirstTokenLatency *time.Duration
+	// ProviderLatency measures dispatch to response headers or a WebSocket application frame, including network time.
+	// nil means no response was observed on a measured transport.
+	ProviderLatency *time.Duration
+	Failed          bool
+	Fail            Failure
+	Detail          Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

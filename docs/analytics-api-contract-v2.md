@@ -109,6 +109,8 @@ recorded", never as zero.
 | `received_at` | When CPA accepted the downstream request (RFC 3339 UTC). |
 | `upstream_method`, `upstream_url` | Provider request line. The URL never includes a query string or user info. |
 | `upstream_sent_at` | When the provider request left CPA. |
+| `first_token_latency_ms` | Local monotonic duration from dispatch to the first substantive token. Null when token boundaries were not observed; never falls back to a heartbeat or first packet. |
+| `provider_latency_ms` | Local monotonic duration from dispatch to HTTP response headers or the first application response frame for that WebSocket request. Includes network and provider waiting time, not a provider-reported acceptance timestamp. |
 | `upstream_status_code` | Provider HTTP status. Now recorded for successful attempts as well as failures. |
 | `upstream_usage_raw` | The provider usage node the token detail was parsed from, at most 4 KiB. Emitted as a JSON value when the stored text is valid JSON and as a JSON string otherwise. |
 | `upstream_error_body` | Provider error body for failed attempts, at most 4 KiB, suffixed `...[truncated]` when cut. |
@@ -245,3 +247,15 @@ envelope repeats it in a machine-readable field:
 
 A retained read requested in a different time zone than the storage zone
 returns the same code with both zone names and the bucket width in the message.
+
+### Local timing observations
+
+The `latency` and `provider_latency` timing aggregates use `first_token_latency_ms` and
+`provider_latency_ms`, with sources `observed_dispatch_to_first_token` and
+`observed_dispatch_to_response`. Analysis percentiles and processing-time totals/counts include
+only observed values. Zero is a valid measurement; historical or unsupported observations stay
+null and reduce coverage. Each retry restarts its local dispatch timer. These intervals use CPA's
+monotonic clock and never subtract timestamps supplied by another machine.
+
+Existing `latency_ms` remains E2E attempt duration. Existing TTFT behavior remains unchanged,
+including its first-packet fallback; the new first-token latency requires a substantive token.

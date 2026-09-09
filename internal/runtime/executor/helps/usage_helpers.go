@@ -51,6 +51,9 @@ type UsageReporter struct {
 	firstPacketSet      bool
 	ttftStart           time.Time
 	ttftSet             bool
+	dispatchAt          time.Time
+	firstTokenLatency   *time.Duration
+	providerLatency     *time.Duration
 	firstTokenAt        time.Time
 	lastTokenAt         time.Time
 	upstreamMu          sync.Mutex
@@ -508,6 +511,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	upstreamMethod, upstreamURL, upstreamSentAt, upstreamStatus := r.upstreamSnapshot()
+	firstTokenLatency, providerLatency := r.localLatencies()
 	return usage.Record{
 		Provider:            r.provider,
 		ExecutorType:        r.executorType,
@@ -534,6 +538,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
 		GenerationTime:      r.generationDuration(),
+		FirstTokenLatency:   firstTokenLatency,
+		ProviderLatency:     providerLatency,
 		Failed:              failed,
 		Fail:                fail,
 		Detail:              detail,
@@ -617,10 +623,12 @@ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.recordUpstreamRequest(req, time.Now())
 	t.reporter.StartResponseTTFT()
+	t.reporter.StartUpstreamTiming()
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {
 		return resp, errRoundTrip
 	}
+	t.reporter.ObserveUpstreamResponse()
 	t.reporter.RecordUpstreamStatus(resp.StatusCode)
 	if t.packetOnly {
 		t.reporter.ObserveResponsePacketOnly(resp)
@@ -1547,6 +1555,10 @@ func (r *UsageReporter) ObserveGenerationToken() {
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
 	now := time.Now()
+	if !r.dispatchAt.IsZero() && r.firstTokenLatency == nil {
+		elapsed := now.Sub(r.dispatchAt)
+		r.firstTokenLatency = &elapsed
+	}
 	if r.firstTokenAt.IsZero() {
 		r.firstTokenAt = now
 	}
@@ -1564,4 +1576,50 @@ func (r *UsageReporter) generationDuration() *time.Duration {
 	}
 	elapsed := r.lastTokenAt.Sub(r.firstTokenAt)
 	return &elapsed
+}
+
+// StartUpstreamTiming starts observations for the next provider dispatch. Internal
+// retries replace the previous dispatch so both durations refer to the same send.
+// WebSocket callers invoke this immediately before writing each request, even on reused connections.
+func (r *UsageReporter) StartUpstreamTiming() {
+	if r == nil {
+		return
+	}
+	r.ttftMu.Lock()
+	defer r.ttftMu.Unlock()
+	r.dispatchAt = time.Now()
+	r.firstTokenLatency = nil
+	r.providerLatency = nil
+}
+
+// ObserveUpstreamResponse records the first HTTP headers or WebSocket response
+// frame received for the dispatch. This includes network and provider waiting time.
+func (r *UsageReporter) ObserveUpstreamResponse() {
+	if r == nil {
+		return
+	}
+	r.ttftMu.Lock()
+	defer r.ttftMu.Unlock()
+	if r.dispatchAt.IsZero() || r.providerLatency != nil {
+		return
+	}
+	elapsed := time.Since(r.dispatchAt)
+	r.providerLatency = &elapsed
+}
+
+func (r *UsageReporter) localLatencies() (firstToken, provider *time.Duration) {
+	if r == nil {
+		return nil, nil
+	}
+	r.ttftMu.RLock()
+	defer r.ttftMu.RUnlock()
+	if r.firstTokenLatency != nil {
+		value := *r.firstTokenLatency
+		firstToken = &value
+	}
+	if r.providerLatency != nil {
+		value := *r.providerLatency
+		provider = &value
+	}
+	return firstToken, provider
 }

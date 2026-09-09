@@ -344,6 +344,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		defer streamUsage.Publish(ctx, reporter)
 		for scanner.Scan() {
 			line := scanner.Bytes()
+			helps.ObserveChatTokenEvent(reporter, line)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			streamUsage.ObserveOpenAIStream(line)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param, claudeInputTokens)
@@ -607,6 +608,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 
 			if bytes.HasPrefix(line, dataTag) {
 				dataBytes := bytes.TrimSpace(line[len(dataTag):])
+				helps.ObserveResponsesTokenEvent(reporter, dataBytes)
 				eventType := gjson.GetBytes(dataBytes, "type").String()
 				if eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.done" {
 					if usage, ok := helps.ParseCodexUsage(dataBytes); ok && (usage.TotalTokens > 0 || usage.InputTokens > 0) {

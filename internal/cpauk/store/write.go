@@ -18,9 +18,9 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano,
 unpriced_tokens, price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns)
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // patchProxyResponseSQL records what the proxy returned to the client for every
 // attempt of one request. The first patch wins so retries cannot rewrite history.
@@ -112,7 +112,7 @@ func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, so
 		nullStringPointer(event.ClientMethod), nullStringPointer(event.ClientPath), nullTimePointer(event.ReceivedAt),
 		nullStringPointer(event.UpstreamMethod), nullStringPointer(event.UpstreamURL), nullTimePointer(event.UpstreamSentAt),
 		nullRawJSONPointer(event.UpstreamUsageRaw), nullStringPointer(event.UpstreamErrorBody),
-		nullIntPointer(event.ProxyStatusCode), nullStringPointer(event.ProxyError), nullTimePointer(event.RespondedAt),
+		nullIntPointer(event.ProxyStatusCode), nullStringPointer(event.ProxyError), nullTimePointer(event.RespondedAt), nullInt64Pointer(event.FirstTokenLatencyMS), nullInt64Pointer(event.ProviderLatencyMS),
 	}
 }
 

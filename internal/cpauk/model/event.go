@@ -63,6 +63,8 @@ type Event struct {
 	UpstreamStatusCode    *int             `json:"upstream_status_code"`
 	ErrorClass            *string          `json:"error_class"`
 	LatencyMS             int64            `json:"latency_ms"`
+	FirstTokenLatencyMS   *int64           `json:"first_token_latency_ms,omitempty"`
+	ProviderLatencyMS     *int64           `json:"provider_latency_ms,omitempty"`
 	GenerationTimeMS      *int64           `json:"generation_time_ms,omitempty"`
 	TimeToFirstTokenMS    *int64           `json:"time_to_first_token_ms"`
 	ServiceTierRequested  *string          `json:"service_tier_requested"`
@@ -170,7 +172,7 @@ func (e Event) Validate() error {
 	if e.GenerationTimeMS != nil && *e.GenerationTimeMS < 0 {
 		return fmt.Errorf("generation time must not be negative")
 	}
-	if e.LatencyMS < 0 || e.TimeToFirstTokenMS != nil && *e.TimeToFirstTokenMS < 0 {
+	if e.FirstTokenLatencyMS != nil && *e.FirstTokenLatencyMS < 0 || e.ProviderLatencyMS != nil && *e.ProviderLatencyMS < 0 || e.LatencyMS < 0 || e.TimeToFirstTokenMS != nil && *e.TimeToFirstTokenMS < 0 {
 		return fmt.Errorf("latency values must not be negative")
 	}
 	if err := e.Tokens.Validate(); err != nil {

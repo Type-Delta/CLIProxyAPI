@@ -422,6 +422,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 				continue
 			}
 
+			helps.ObserveGeminiTokenEvent(reporter, payload)
 			if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}

@@ -341,3 +341,35 @@ func TestSanitizerPreservesGenerationNullAndMeasuredZero(t *testing.T) {
 		t.Fatal("accepted negative generation time")
 	}
 }
+
+func TestSanitizerPreservesLocalLatencyNullZeroAndRejectsNegative(t *testing.T) {
+	sanitizer := NewSanitizer(SanitizerOptions{})
+	record := validRecord()
+	result, err := sanitizer.Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.FirstTokenLatencyMS != nil || result.Event.ProviderLatencyMS != nil {
+		t.Fatal("legacy timing fabricated")
+	}
+	for _, duration := range []time.Duration{0, 42 * time.Millisecond} {
+		record.FirstTokenLatency, record.ProviderLatency = &duration, &duration
+		result, err = sanitizer.Sanitize(adaptRecord(record))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event.FirstTokenLatencyMS == nil || *result.Event.FirstTokenLatencyMS != duration.Milliseconds() || result.Event.ProviderLatencyMS == nil || *result.Event.ProviderLatencyMS != duration.Milliseconds() {
+			t.Fatalf("timing lost: %+v", result.Event)
+		}
+	}
+	negative := -time.Millisecond
+	record.FirstTokenLatency = &negative
+	if _, err := sanitizer.Sanitize(adaptRecord(record)); err == nil {
+		t.Fatal("accepted negative first token latency")
+	}
+	record.FirstTokenLatency = nil
+	record.ProviderLatency = &negative
+	if _, err := sanitizer.Sanitize(adaptRecord(record)); err == nil {
+		t.Fatal("accepted negative provider latency")
+	}
+}

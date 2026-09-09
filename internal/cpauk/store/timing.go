@@ -16,11 +16,11 @@ func (s *SQLiteStore) timingMetrics(ctx context.Context, query model.Query, perc
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]model.TimingMetric{
-		"latency": {Source: "unavailable"}, "provider_latency": {Source: "unavailable"},
-	}
+	result := map[string]model.TimingMetric{}
 	for _, item := range []struct{ name, column, source string }{
 		{"e2e", "latency_ms", "observed"},
+		{"latency", "first_token_latency_ms", "observed_dispatch_to_first_token"},
+		{"provider_latency", "provider_latency_ms", "observed_dispatch_to_response"},
 		{"ttft", "time_to_first_token_ms", "observed"},
 		{"generation", "generation_time_ms", "observed_first_to_last_token"},
 	} {
@@ -58,8 +58,9 @@ func processingTime(metrics map[string]model.TimingMetric, attempts int64) model
 	e2e, ttft, generation := metrics["e2e"], metrics["ttft"], metrics["generation"]
 	return model.ProcessingTime{E2EMS: e2e.TotalMS, TTFTMS: ttft.TotalMS, GenerationMS: generation.TotalMS,
 		SampleCount: e2e.SampleCount, TTFTSampleCount: ttft.SampleCount, GenerationSampleCount: generation.SampleCount,
-		// Provider timing is unavailable on current protocols.
-		Partial: attempts > 0}
+		LatencyMS: metrics["latency"].TotalMS, ProviderLatencyMS: metrics["provider_latency"].TotalMS,
+		LatencySampleCount: metrics["latency"].SampleCount, ProviderLatencySampleCount: metrics["provider_latency"].SampleCount,
+		Partial: e2e.SampleCount < attempts || ttft.SampleCount < attempts || generation.SampleCount < attempts || metrics["latency"].SampleCount < attempts || metrics["provider_latency"].SampleCount < attempts}
 }
 
 // keyUsageDetails combines retained token totals with raw timing observations.
