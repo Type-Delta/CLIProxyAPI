@@ -38,6 +38,8 @@ func Snapshot(source context.Context, limit int) (context.Context, int) {
 	metadata.ClientIP = copyString(metadata.ClientIP)
 	metadata.XForwardedFor = copyString(metadata.XForwardedFor)
 	metadata.UserAgent = copyString(metadata.UserAgent)
+	metadata.SessionID = copyString(metadata.SessionID)
+	metadata.ParentSessionID = copyString(metadata.ParentSessionID)
 	headers := snapshotHeaders(internallogging.GetResponseHeaders(source), &remaining)
 
 	result := context.Background()

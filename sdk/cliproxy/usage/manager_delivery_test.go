@@ -247,6 +247,43 @@ func TestManagerFreezesAndTruncatesGenericSnapshot(t *testing.T) {
 	}
 }
 
+func TestManagerBoundsSessionIDsInGenericSnapshot(t *testing.T) {
+	manager := NewManager(8)
+	records := make(chan Record, 1)
+	if _, errRegister := manager.RegisterNamed("snapshot", pluginFunc(func(_ context.Context, record Record) {
+		records <- record
+	})); errRegister != nil {
+		t.Fatalf("register observer: %v", errRegister)
+	}
+
+	manager.Publish(context.Background(), Record{
+		SessionID:       strings.Repeat("s", 1<<20),
+		ParentSessionID: strings.Repeat("p", 1<<20),
+	})
+	closeManager(t, manager)
+
+	got := <-records
+	if gotBytes := len(got.SessionID) + len(got.ParentSessionID); gotBytes > MaxObserverSnapshotBytes {
+		t.Fatalf("session snapshot strings use %d bytes, maximum %d", gotBytes, MaxObserverSnapshotBytes)
+	}
+}
+
+func TestManagerObserverSnapshotPreservesStreamContext(t *testing.T) {
+	manager := NewManager(8)
+	stream := make(chan bool, 1)
+	if _, errRegister := manager.RegisterNamed("snapshot", pluginFunc(func(ctx context.Context, _ Record) {
+		stream <- StreamFromContext(ctx)
+	})); errRegister != nil {
+		t.Fatalf("register observer: %v", errRegister)
+	}
+
+	manager.Publish(WithStream(context.Background(), true), Record{})
+	closeManager(t, manager)
+	if got := <-stream; !got {
+		t.Fatal("observer stream context = false, want true")
+	}
+}
+
 func TestManagerAssignsObservedAndUniqueSyntheticRequestIDs(t *testing.T) {
 	manager := NewManager(8)
 	records := make(chan Record, 3)

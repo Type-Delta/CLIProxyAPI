@@ -145,6 +145,7 @@ type contextSnapshot struct {
 	reasoning      string
 	serviceTier    string
 	generate       bool
+	stream         bool
 }
 
 // Manager delivers trusted callbacks inline and generic observers through
@@ -832,6 +833,8 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.Model = copyString(record.Model)
 	record.Alias = copyString(record.Alias)
 	record.APIKey = copyString(record.APIKey)
+	record.SessionID = copyString(record.SessionID)
+	record.ParentSessionID = copyString(record.ParentSessionID)
 	record.AuthID = copyString(record.AuthID)
 	record.AuthIndex = copyString(record.AuthIndex)
 	record.AccessTokenSHA256 = copyString(record.AccessTokenSHA256)
@@ -862,6 +865,7 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		reasoning:      copyString(ReasoningEffortFromContext(ctx)),
 		serviceTier:    copyString(ServiceTierFromContext(ctx)),
 		generate:       GenerateFromContext(ctx),
+		stream:         StreamFromContext(ctx),
 	}
 	snapshot.base, _ = snapshotObserverContext(ctx, &remaining)
 	return record, snapshot, int64(MaxObserverSnapshotBytes - remaining)
@@ -902,6 +906,7 @@ func (s contextSnapshot) context() context.Context {
 	ctx = WithReasoningEffort(ctx, s.reasoning)
 	ctx = WithServiceTier(ctx, s.serviceTier)
 	ctx = WithGenerate(ctx, s.generate)
+	ctx = WithStream(ctx, s.stream)
 	return ctx
 }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -145,6 +147,10 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(ctx, s.analytics, previousKeys, cfg.APIKeys); errAnalyticsKeys != nil {
 			log.WithError(errAnalyticsKeys).Warn("failed to update analytics key lifecycle")
 		}
+	}
+
+	if oldCfg != nil && !reflect.DeepEqual(oldCfg.Antigravity.ConnectionPool, cfg.Antigravity.ConnectionPool) {
+		executor.ResetAntigravityTransports()
 	}
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {

@@ -4,7 +4,7 @@ This fork keeps per-API-key request and token usage limits, failure-isolated CPA
 
 ## Divergence Log
 
-This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `81e1b5374f99c212f196f34956eeed964a46b8fa`. The 2026-08-31 integration merged that upstream commit without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
+This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974`. The 2026-09-09 integration merged 132 upstream commits after the 2026-08-31 baseline without rewriting the fork history. The prior integration had merged upstream through `81e1b5374f99c212f196f34956eeed964a46b8fa` without rewriting the six published fork commits `2037ab99`, `04cfb113`, `5758371b`, `b67c5e31`, `45a589fb`, and `53866c01`. Their former shared base was `a14dfc779f43aed588e68b31fb34ab5ced700851`.
 
 Gate 0 ended at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`, where the fork was 10 commits ahead and zero behind the recorded upstream base. The implementation commits after that baseline add the CPAUK package, control plane, CPAMC analytics workspace, runtime fixes, and reproducible release packaging described below. Release validation must confirm zero missing upstream commits, an exact `HEAD`/`origin/main` match, and a CPAMC gitlink that resolves from its pushed `origin/main`.
 
@@ -473,3 +473,17 @@ This is an append-only historical decision record. It provides context for integ
 Merged upstream `main` into the fork without rebasing or rewriting the six published fork commits. The merge resolved upstream's server and configuration file splits by moving DL001 hooks into the new route, reload, management, middleware, and config-load files instead of restoring the pre-refactor monoliths. Direct OpenAI Realtime routes receive the limiter after authentication. DL002 files remain unchanged from `53866c01`.
 
 The integration resolved content conflicts in `internal/api/server.go`, `internal/config/config.go`, and `internal/config/parse.go`. It kept upstream's refactored `server.go` and `config.go`, then reapplied the fork behavior in the split files listed under DL001.
+
+### 2026-09-09 - Merge upstream `main` at `7fac6b15`
+
+Integrated upstream's 132 commits since `81e1b537` with a no-fast-forward merge. The merge retains CPAUK analytics, per-key limits, management quota protection, hop diagnostics, and the CPAMC pin. Upstream's newer session hierarchy and stream metadata, Antigravity connection-pool handling, plugin-store release cache and GitHub rate-limit protection, health-probe logging, model metadata, Codex delegation compatibility, and provider protocol fixes are included.
+
+The content conflicts were limited to `AGENTS.md`, the management handler, server reload and tests, Redis usage-queue imports, and the usage record context declarations. Fork analytics and usage-delivery fields remain alongside upstream session and stream fields; upstream's replacement plugin-release cache supersedes the earlier fork-local cache fields. Both the fork's `usagecontext` installation and upstream session normalization remain active in the Redis queue. The CPAMC gitlink includes its corresponding upstream synchronization to `ed5f1c4`, preserving the fork analytics interface and both event diagnostic corrections.
+
+Validation: `go build -o test-output ./cmd/server && unlink test-output`, `go test ./...`, and `go vet ./...` pass. The full Go suite passes again after the observer metadata correction. Independent review reproduces bounded session metadata within the 16 KiB snapshot limit and preserved streaming context. CPAMC passes 708 tests, lint, TypeScript, production build, and isolated desktop/mobile Chrome CDP checks against the existing development server.
+
+Follow-up correction: the bounded generic observer snapshot now accounts for
+`Record.SessionID` and `Record.ParentSessionID`, bounds the corresponding
+`ClientRequestMetadata` fields in the detached context, and preserves the
+stream flag through observer delivery. Focused usage and usage-context
+regressions cover the byte limits and stream propagation.
