@@ -13,6 +13,19 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 - Fork: https://github.com/Type-Delta/CLIProxyAPI
 - Upstream: https://github.com/router-for-me/CLIProxyAPI
 
+## Syncing this fork with upstream repository
+
+If you are tasked with syncing this fork with the upstream repository, please do it with the following considerations:
+- Keep features from both sides
+- If both fixes the same issue, prefer fixes from theirs.
+- If some feature conflicts in a way that it is best to choose either theirs or ours, pause and ask me.
+- If you are unsure about how to proceed, please ask me for guidance.
+- This is not a "fix merge conflicts" task, you have to make sure that all features are behaving as expected and that those features make sense together both functionally, aesthetically and user experience. An app that works isn't necessarily a good app.
+- After all the code related changes are done (merged, fixed, verified, finalized/cleanup), do the following:
+  - Update "Divergence Log" and "Merge History" sections in FORK.md with the latest changes.
+  - Commit merge changes in a single commit with a clear message describing the merge decisions made.
+  - Move the "base" tag to the commit you just created. Force pushing this tag is fine since its only used for reference. (if `gdx` are available, you can use `gdx tag mv base ~0` to move "base" to the latest commit)
+
 ## Commands
 ```bash
 gofmt -w . # Format (required after Go changes)
