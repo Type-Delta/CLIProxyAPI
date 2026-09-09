@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
 )
@@ -119,9 +120,10 @@ func ObserveResponsesTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter == nil || len(payload) == 0 {
 		return
 	}
-	if isResponsesTokenEvent(payload, false) {
-		reporter.ObserveGenerationToken()
+	if reporter.readerOwnsGeneration() {
+		return
 	}
+	ObserveResponsesTokenEventAt(reporter, payload, time.Now())
 	if reporter.IsTTFTSet() {
 		return
 	}

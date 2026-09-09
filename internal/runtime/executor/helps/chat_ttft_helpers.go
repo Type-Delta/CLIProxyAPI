@@ -107,6 +107,9 @@ func isChatTokenEvent(payload []byte, terminalFallback bool) bool {
 // represents the first meaningful token event. It records first-packet arrival time as fallback
 // and continues observing substantive token arrivals for generation duration.
 func ObserveChatTokenEvent(reporter *UsageReporter, payload []byte) {
+	if reporter.readerOwnsGeneration() {
+		return
+	}
 	if reporter == nil || len(payload) == 0 {
 		return
 	}

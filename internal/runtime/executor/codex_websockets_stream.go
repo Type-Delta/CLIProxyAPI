@@ -190,6 +190,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	var readCh chan codexWebsocketRead
+	if sess == nil {
+		readCh = startCodexWebsocketReadAhead(conn, closer)
+	}
 	if sess != nil {
 		readCh = sess.activate(conn)
 	}
@@ -302,7 +305,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 				return nil, ctx.Err()
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh, reporter)
 			if errRead != nil {
 				mappedErr := mapCodexWebsocketReadError(errRead)
 				if sess != nil {
@@ -335,14 +338,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 
-			if len(payload) > 0 {
-				reporter.ObserveUpstreamResponse()
-			}
 			payload = bytes.TrimSpace(payload)
 			if len(payload) == 0 {
 				continue
 			}
-			observeCodexTokenEvent(reporter, payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
@@ -542,7 +541,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh, reporter)
 			if errRead != nil {
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
@@ -574,14 +573,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 
-			if len(payload) > 0 {
-				reporter.ObserveUpstreamResponse()
-			}
 			payload = bytes.TrimSpace(payload)
 			if len(payload) == 0 {
 				continue
 			}
-			observeCodexTokenEvent(reporter, payload)
 			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)

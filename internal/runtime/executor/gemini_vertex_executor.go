@@ -679,6 +679,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				log.Errorf("vertex executor: close response body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "gemini")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
@@ -829,6 +830,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				log.Errorf("vertex executor: close response body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "gemini")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)

@@ -123,7 +123,7 @@ recorded", never as zero.
 | `upstream_method`, `upstream_url` | Provider request line. The URL never includes a query string or user info. |
 | `upstream_sent_at` | Current provider dispatch, using the same origin as local latency measurements. It updates on retries. |
 | `routing_time_ms` | CPA receipt to the request's first provider dispatch, measured once and shared across retries. Null for historical records without that observation. |
-| `first_token_latency_ms` | Local monotonic duration from dispatch to the first substantive token. Null when token boundaries were not observed; never falls back to a heartbeat or first packet. |
+| `first_token_latency_ms` | Local monotonic duration from dispatch to the first substantive output observed. A populated Codex terminal output can establish this endpoint without establishing generation duration. Null when output was not observed before timing became unreliable; never falls back to a heartbeat or first packet. |
 | `provider_latency_ms` | Local monotonic duration from dispatch to HTTP response headers or the first application response frame for that WebSocket request. Includes network and provider waiting time, not a provider-reported acceptance timestamp. |
 | `upstream_status_code` | Provider HTTP status. Now recorded for successful attempts as well as failures. |
 | `upstream_usage_raw` | Sanitized provider generation telemetry or usage node, at most 40 KiB. Per-message attribution, request echoes, and recognized all-zero tool usage are omitted. Oversized JSON preserves complete fields with aggregate usage prioritized and `_truncated: true`; legacy non-JSON text remains a JSON string. |
@@ -273,3 +273,5 @@ monotonic clock and never subtract timestamps supplied by another machine.
 
 Existing `latency_ms` remains E2E attempt duration. Existing TTFT behavior remains unchanged,
 including its first-packet fallback; the new first-token latency requires a substantive token.
+
+Native HTTP generation observers read decoded upstream data independently of downstream forwarding. Codex WebSocket observations use socket-read timestamps. Bounded queue saturation invalidates the attempt's generation duration while retaining first-output latency already observed; timing cannot be reconstructed after backpressure stops upstream reads. No fixed duration or TPS threshold changes measured values. Codex nonstream requests can have measured generation duration because their upstream response is SSE. Terminal-only output cannot supply a generation interval. CPAMC labels its existing duration/TTFT throughput fallback `EST`; this does not replace missing generation duration with a fabricated measurement.

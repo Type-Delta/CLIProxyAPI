@@ -352,6 +352,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				log.Errorf("gemini executor: close response body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "gemini")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
@@ -549,6 +550,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 				log.Errorf("gemini executor: close interactions stream body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "gemini")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		originalRequest := opts.OriginalRequest

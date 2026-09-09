@@ -57,6 +57,8 @@ type UsageReporter struct {
 	providerLatency     *time.Duration
 	firstTokenAt        time.Time
 	lastTokenAt         time.Time
+	generationInvalid   bool
+	readerOwned         bool
 	upstreamMu          sync.Mutex
 	upstreamMethod      string
 	upstreamURL         string
@@ -1565,13 +1567,27 @@ func jsonPayload(line []byte) []byte {
 
 // ObserveGenerationToken records token arrivals using one local monotonic clock.
 // Metadata and terminal-only frames must not call this method.
-func (r *UsageReporter) ObserveGenerationToken() {
+func (r *UsageReporter) ObserveGenerationToken() { r.ObserveGenerationTokenAt(time.Time{}) }
+
+// ObserveGenerationTokenAt records an upstream-observed token timestamp.
+func (r *UsageReporter) ObserveGenerationTokenAt(at time.Time) {
 	if r == nil {
 		return
 	}
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
-	now := time.Now()
+	if r.generationInvalid {
+		return
+	}
+	now := at
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if !r.ttftSet && !r.ttftStart.IsZero() {
+		r.ttft = now.Sub(r.ttftStart)
+		r.ttftSet = true
+		r.ttftStart = time.Time{}
+	}
 	if !r.dispatchAt.IsZero() && r.firstTokenLatency == nil {
 		elapsed := now.Sub(r.dispatchAt)
 		r.firstTokenLatency = &elapsed
@@ -1580,6 +1596,33 @@ func (r *UsageReporter) ObserveGenerationToken() {
 		r.firstTokenAt = now
 	}
 	r.lastTokenAt = now
+
+}
+
+// InvalidateGenerationTiming marks token timing unreliable for this dispatch.
+func (r *UsageReporter) InvalidateGenerationTiming() {
+	if r != nil {
+		r.ttftMu.Lock()
+		r.generationInvalid = true
+
+		r.ttftMu.Unlock()
+	}
+}
+
+func (r *UsageReporter) ObserveUpstreamResponseAt(at time.Time) {
+	if r == nil {
+		return
+	}
+	r.ttftMu.Lock()
+	defer r.ttftMu.Unlock()
+	if r.dispatchAt.IsZero() || r.providerLatency != nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	elapsed := at.Sub(r.dispatchAt)
+	r.providerLatency = &elapsed
 }
 
 func (r *UsageReporter) generationDuration() *time.Duration {
@@ -1588,7 +1631,7 @@ func (r *UsageReporter) generationDuration() *time.Duration {
 	}
 	r.ttftMu.RLock()
 	defer r.ttftMu.RUnlock()
-	if r.firstTokenAt.IsZero() {
+	if r.generationInvalid || r.firstTokenAt.IsZero() {
 		return nil
 	}
 	elapsed := r.lastTokenAt.Sub(r.firstTokenAt)
@@ -1611,6 +1654,10 @@ func (r *UsageReporter) StartUpstreamTiming() {
 	r.upstreamSentAt = now
 	r.upstreamMu.Unlock()
 	r.firstTokenLatency = nil
+	r.firstTokenAt = time.Time{}
+	r.lastTokenAt = time.Time{}
+	r.generationInvalid = false
+	r.readerOwned = false
 	r.providerLatency = nil
 }
 

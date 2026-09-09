@@ -336,6 +336,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				log.Errorf("kimi executor: close response body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "chat")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 1_048_576) // 1MB
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
@@ -577,6 +578,7 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 			}
 		}()
 
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any

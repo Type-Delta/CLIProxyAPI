@@ -123,20 +123,32 @@ func buildCodexWebsocketRequestBody(body []byte) []byte {
 	return body
 }
 
-func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (int, []byte, error) {
-	if sess == nil {
-		if conn == nil {
-			return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")
+// startCodexWebsocketReadAhead observes frames before downstream forwarding can stall.
+// The request-owned closer stops both a blocked socket read and a blocked queue send.
+func startCodexWebsocketReadAhead(conn *websocket.Conn, closer *websocketConnectionCloser) chan codexWebsocketRead {
+	ch := make(chan codexWebsocketRead, 64)
+	go func() {
+		defer close(ch)
+		unreliable := false
+		budget := newCodexWebsocketReadBudget()
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
+			kind, payload, err := conn.ReadMessage()
+			event := codexWebsocketRead{conn: conn, msgType: kind, payload: payload, err: err, observedAt: time.Now(), timingUnreliable: unreliable}
+			if !enqueueCodexWebsocketRead(ch, closer.done, event, budget, &unreliable) {
+				return
+			}
+			if err != nil {
+				return
+			}
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
-		msgType, payload, errRead := conn.ReadMessage()
-		return msgType, payload, errRead
-	}
-	if conn == nil {
-		return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")
-	}
-	if readCh == nil {
-		return 0, nil, fmt.Errorf("codex websockets executor: session read channel is nil")
+	}()
+	return ch
+}
+
+func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead, reporter *helps.UsageReporter) (int, []byte, error) {
+	if conn == nil || readCh == nil {
+		return 0, nil, fmt.Errorf("codex websockets executor: missing connection or read channel")
 	}
 	for {
 		select {
@@ -146,11 +158,21 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 			if !ok {
 				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
 			}
+			if ev.budget != nil {
+				ev.budget.release(len(ev.payload))
+			}
 			if ev.conn != conn {
 				continue
 			}
+			if ev.timingUnreliable {
+				reporter.InvalidateGenerationTiming()
+			}
 			if ev.err != nil {
 				return 0, nil, ev.err
+			}
+			if ev.msgType == websocket.TextMessage && len(ev.payload) > 0 {
+				reporter.ObserveUpstreamResponseAt(ev.observedAt)
+				helps.ObserveResponsesTokenEventAt(reporter, ev.payload, ev.observedAt)
 			}
 			return ev.msgType, ev.payload, nil
 		}

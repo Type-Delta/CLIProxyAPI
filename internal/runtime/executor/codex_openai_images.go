@@ -264,6 +264,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 			}
 		}
 
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		outputItemsByIndex := make(map[int64][]byte)

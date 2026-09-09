@@ -74,6 +74,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				log.Errorf("xai executor: close response body error: %v", errClose)
 			}
 		}()
+		httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses")
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		claudeInputTokens := helps.NewClaudeInputTokenState(prepared.from, prepared.to, prepared.responseFormat, prepared.originalPayload)

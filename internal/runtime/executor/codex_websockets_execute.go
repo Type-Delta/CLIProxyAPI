@@ -186,6 +186,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	var readCh chan codexWebsocketRead
+	if sess == nil {
+		readCh = startCodexWebsocketReadAhead(conn, closer)
+	}
 	if sess != nil {
 		readCh = sess.activate(conn)
 		defer func() {
@@ -275,7 +278,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
 		}
-		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh, reporter)
 		if errRead != nil {
 			mappedErr := mapCodexWebsocketReadError(errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
@@ -293,14 +296,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 
-		if len(payload) > 0 {
-			reporter.ObserveUpstreamResponse()
-		}
 		payload = bytes.TrimSpace(payload)
 		if len(payload) == 0 {
 			continue
 		}
-		observeCodexTokenEvent(reporter, payload)
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
 		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)

@@ -134,6 +134,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 
+	httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses")
 	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
 
 	scanner := bufio.NewScanner(httpResp.Body)

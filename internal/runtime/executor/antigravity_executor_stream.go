@@ -199,6 +199,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				log.Errorf("antigravity executor: close response line error: %v", errClose)
 			}
 		}()
+		resp.Body = reporter.TrackGenerationBody(ctx, resp.Body, "gemini")
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)

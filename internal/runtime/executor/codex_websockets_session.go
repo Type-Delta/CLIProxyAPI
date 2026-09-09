@@ -27,13 +27,14 @@ type websocketConnectionCloser struct {
 	conn *websocket.Conn
 	once sync.Once
 	err  error
+	done chan struct{}
 }
 
 func newWebsocketConnectionCloser(conn *websocket.Conn) *websocketConnectionCloser {
 	if conn == nil {
 		return nil
 	}
-	return &websocketConnectionCloser{conn: conn}
+	return &websocketConnectionCloser{conn: conn, done: make(chan struct{})}
 }
 
 func (c *websocketConnectionCloser) Close() error {
@@ -41,6 +42,7 @@ func (c *websocketConnectionCloser) Close() error {
 		return nil
 	}
 	c.once.Do(func() {
+		close(c.done)
 		c.err = c.conn.Close()
 	})
 	return c.err
@@ -79,10 +81,70 @@ type codexWebsocketSession struct {
 }
 
 type codexWebsocketRead struct {
-	conn    *websocket.Conn
-	msgType int
-	payload []byte
-	err     error
+	conn             *websocket.Conn
+	msgType          int
+	payload          []byte
+	err              error
+	observedAt       time.Time
+	timingUnreliable bool
+	budget           *codexWebsocketReadBudget
+}
+
+// A queue holds at most 1 MiB of payload, or one larger frame. One additional
+// frame may be held by the socket reader while it waits for downstream progress.
+type codexWebsocketReadBudget struct {
+	mu       sync.Mutex
+	bytes    int
+	released chan struct{}
+}
+
+func newCodexWebsocketReadBudget() *codexWebsocketReadBudget {
+	return &codexWebsocketReadBudget{released: make(chan struct{}, 1)}
+}
+
+func (b *codexWebsocketReadBudget) release(n int) {
+	b.mu.Lock()
+	b.bytes -= n
+	b.mu.Unlock()
+	select {
+	case b.released <- struct{}{}:
+	default:
+	}
+}
+
+func enqueueCodexWebsocketRead(ch chan codexWebsocketRead, done <-chan struct{}, event codexWebsocketRead, budget *codexWebsocketReadBudget, unreliable *bool) bool {
+	for {
+		budget.mu.Lock()
+		fits := budget.bytes == 0 || budget.bytes+len(event.payload) <= 1024*1024
+		if fits {
+			budget.bytes += len(event.payload)
+		}
+		budget.mu.Unlock()
+		if fits {
+			break
+		}
+		*unreliable = true
+		select {
+		case <-budget.released:
+		case <-done:
+			return false
+		}
+	}
+	event.budget = budget
+	event.timingUnreliable = *unreliable
+	select {
+	case ch <- event:
+		return true
+	default:
+		*unreliable, event.timingUnreliable = true, true
+		select {
+		case ch <- event:
+			return true
+		case <-done:
+			budget.release(len(event.payload))
+			return false
+		}
+	}
 }
 
 func (s *codexWebsocketSession) setActive(conn *websocket.Conn, ch chan codexWebsocketRead) {
@@ -548,9 +610,13 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 	if e == nil || sess == nil || conn == nil {
 		return
 	}
+	var previousCh chan codexWebsocketRead
+	budget := newCodexWebsocketReadBudget()
+	unreliable := false
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
+		observedAt := time.Now()
 		if errRead != nil {
 			invalidate := func() {
 				e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
@@ -595,10 +661,12 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		if ch == nil {
 			continue
 		}
-		select {
-		case ch <- codexWebsocketRead{conn: conn, msgType: msgType, payload: payload}:
-		case <-done:
+		if ch != previousCh {
+			previousCh, unreliable = ch, false
+			budget = newCodexWebsocketReadBudget()
 		}
+		event := codexWebsocketRead{conn: conn, msgType: msgType, payload: payload, observedAt: observedAt, timingUnreliable: unreliable}
+		enqueueCodexWebsocketRead(ch, done, event, budget, &unreliable)
 	}
 }
 
