@@ -14,7 +14,8 @@ import (
 )
 
 func TestLocalLatencySeparatesHeadersTokensAndLegacyFallback(t *testing.T) {
-	reporter := NewUsageReporter(context.Background(), "openai", "model", nil)
+	receivedAt := time.Now()
+	reporter := NewUsageReporter(usage.WithRequestReceivedAt(context.Background(), receivedAt), "openai", "model", nil)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -37,6 +38,9 @@ func TestLocalLatencySeparatesHeadersTokensAndLegacyFallback(t *testing.T) {
 		}
 	}()
 	record := reporter.buildRecord(usage.Detail{}, false)
+	if record.RoutingTime == nil || *record.RoutingTime != record.UpstreamSentAt.Sub(receivedAt) {
+		t.Fatalf("HTTP routing observation=%+v", record)
+	}
 	if record.ProviderLatency == nil || *record.ProviderLatency < 0 || record.FirstTokenLatency != nil {
 		t.Fatalf("header observation=%+v", record)
 	}
@@ -110,4 +114,44 @@ type localLatencyFailedTransport struct{}
 
 func (localLatencyFailedTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, io.ErrUnexpectedEOF
+}
+
+func TestDispatchTimestampMatchesLocalLatencyOrigin(t *testing.T) {
+	for _, provider := range []string{"codex", "xai", "openai"} {
+		t.Run(provider, func(t *testing.T) {
+			reporter := NewUsageReporter(context.Background(), provider, "model", nil)
+			if provider == "openai" {
+				req, _ := http.NewRequest(http.MethodPost, "https://example.com/first", nil)
+				reporter.recordUpstreamRequest(req, time.Unix(100, 0))
+			}
+			reporter.StartUpstreamTiming()
+			record := reporter.buildRecord(usage.Detail{}, false)
+			if !record.UpstreamSentAt.Equal(reporter.dispatchAt) {
+				t.Fatalf("dispatch timestamp %v does not match latency origin %v", record.UpstreamSentAt, reporter.dispatchAt)
+			}
+		})
+	}
+}
+
+func TestRoutingObservationSharedAcrossDispatchesAndReporters(t *testing.T) {
+	received := time.Unix(100, 0)
+	ctx := usage.WithRequestReceivedAt(context.Background(), received)
+	// Seed the first dispatch explicitly to avoid wall-clock ordering assumptions.
+	usage.ObserveRequestRouting(ctx, received.Add(12*time.Millisecond))
+	for range 2 {
+		reporter := NewUsageReporter(ctx, "codex", "model", nil)
+		for range 2 {
+			reporter.StartUpstreamTiming()
+			record := reporter.buildRecord(usage.Detail{}, false)
+			if record.RoutingTime == nil || *record.RoutingTime != 12*time.Millisecond {
+				t.Fatalf("retry included earlier provider wait in routing: %+v", record.RoutingTime)
+			}
+			*record.RoutingTime = time.Hour
+		}
+	}
+	reporter := NewUsageReporter(context.Background(), "codex", "model", nil)
+	reporter.StartUpstreamTiming()
+	if reporter.buildRecord(usage.Detail{}, false).RoutingTime != nil {
+		t.Fatal("unknown request receipt fabricated routing")
+	}
 }

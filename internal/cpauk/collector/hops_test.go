@@ -146,3 +146,39 @@ func TestSanitizerClassifiesAuthSelectionFailureAsCPASide(t *testing.T) {
 		t.Fatalf("auth selection failure attributed to the provider: %+v", event)
 	}
 }
+
+func TestSanitizerPreservesLargeGenerationDiagnostics(t *testing.T) {
+	record := validRecord()
+	record.Detail.RawUsage = `{"usage":{"input_tokens":123},"telemetry":"` + strings.Repeat("x", 12000) + `"}`
+	result, err := newHopSanitizer().Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.UpstreamUsageRaw == nil || string(*result.Event.UpstreamUsageRaw) != coreusage.BoundRawUsage(record.Detail.RawUsage) {
+		t.Fatal("large generation diagnostics were lost")
+	}
+	if err := result.Event.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerationDiagnosticsEnvelopeAllowsEscaping(t *testing.T) {
+	record := validRecord()
+	record.Failed = true
+	record.Fail.Body = strings.Repeat("<", 4096)
+	record.Detail.RawUsage = `{"usage":{"total_tokens":123},"telemetry":"` + strings.Repeat("x", 40000) + `"}`
+	record.Model = strings.Repeat("<", 256)
+	result, err := newHopSanitizer().Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.Event.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.UpstreamUsageRaw == nil || len(*result.Event.UpstreamUsageRaw) < 40000 {
+		t.Fatal("generation was truncated early")
+	}
+	if result.Event.UpstreamErrorBody == nil || len(*result.Event.UpstreamErrorBody) != 4096 {
+		t.Fatal("error cap changed")
+	}
+}

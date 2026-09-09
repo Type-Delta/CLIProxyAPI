@@ -7,19 +7,20 @@ const (
 	QuerySchemaVersion   = 1
 	QuerySchemaVersionV2 = 2
 
-	MaxEventBytes        = 16 * 1024
-	MaxRawPayloadBytes   = 4 * 1024
-	MaxProxyErrorBytes   = 2 * 1024
-	MaxStoredStringBytes = 256
-	MaxQueryBodyBytes    = 64 * 1024
-	MaxCursorBytes       = 2 * 1024
-	MaxFilterValues      = 50
-	MaxKeyFilters        = 100
-	DefaultPageSize      = 100
-	MaxPageSize          = 500
-	MaxBuckets           = 10_000
-	MaxExportRows        = 100_000
-	MaxQueryRangeDays    = 400
+	MaxEventBytes         = 96 * 1024
+	MaxRawPayloadBytes    = 4 * 1024
+	MaxRawGenerationBytes = 40 * 1024
+	MaxProxyErrorBytes    = 2 * 1024
+	MaxStoredStringBytes  = 256
+	MaxQueryBodyBytes     = 64 * 1024
+	MaxCursorBytes        = 2 * 1024
+	MaxFilterValues       = 50
+	MaxKeyFilters         = 100
+	DefaultPageSize       = 100
+	MaxPageSize           = 500
+	MaxBuckets            = 10_000
+	MaxExportRows         = 100_000
+	MaxQueryRangeDays     = 400
 )
 
 // FieldSpec freezes the storage contract for one Event v1 field.
@@ -53,6 +54,7 @@ var EventV1FieldSpecs = map[string]FieldSpec{
 	"latency_ms":              {Type: "integer", Nullable: false},
 	"time_to_first_token_ms":  {Type: "integer", Nullable: true},
 	"generation_time_ms":      {Type: "integer", Nullable: true},
+	"routing_time_ms":         {Type: "integer", Nullable: true},
 	"first_token_latency_ms":  {Type: "integer", Nullable: true},
 	"provider_latency_ms":     {Type: "integer", Nullable: true},
 	"service_tier_requested":  {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
@@ -66,7 +68,7 @@ var EventV1FieldSpecs = map[string]FieldSpec{
 	"upstream_method":     {Type: "string", Nullable: true, MaxBytes: 16, Truncate: true},
 	"upstream_url":        {Type: "string", Nullable: true, MaxBytes: 512, Truncate: true},
 	"upstream_sent_at":    {Type: "rfc3339-utc", Nullable: true, MaxBytes: 30},
-	"upstream_usage_raw":  {Type: "json-text", Nullable: true, MaxBytes: MaxRawPayloadBytes, Truncate: true},
+	"upstream_usage_raw":  {Type: "json-text", Nullable: true, MaxBytes: MaxRawGenerationBytes, Truncate: true},
 	"upstream_error_body": {Type: "string", Nullable: true, MaxBytes: MaxRawPayloadBytes, Truncate: true},
 	"proxy_status_code":   {Type: "integer", Nullable: true},
 	"proxy_error":         {Type: "string", Nullable: true, MaxBytes: MaxProxyErrorBytes, Truncate: true},

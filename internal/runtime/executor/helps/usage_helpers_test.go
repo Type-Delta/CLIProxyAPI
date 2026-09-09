@@ -1009,3 +1009,20 @@ func TestUsageReporterPropagatesSessionHierarchy(t *testing.T) {
 		t.Fatalf("SetSessionHierarchy cross prefix alias emitted as parent: (%q, %q), want (pck:key-999, empty)", recordAlias2.SessionID, recordAlias2.ParentSessionID)
 	}
 }
+
+func TestGenerationDiagnosticsPrunesAttributionAndOnlyKnownZeroTools(t *testing.T) {
+	for _, tc := range []struct {
+		tools string
+		keep  bool
+	}{
+		{`{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"total_tokens":0},"web_search":{"num_requests":0}}`, false},
+		{`{"web_search":{"num_requests":1}}`, true},
+		{`{"web_search":{"unknown":0}}`, true},
+	} {
+		payload := []byte(`{"response":{"temperature":1,"safety_identifier":"secret","usage":{"attribution":["` + strings.Repeat("message", 1000) + `"],"input_tokens":123,"output_tokens_details":{"reasoning_tokens":45}},"tool_usage":` + tc.tools + `}}`)
+		got := sanitizeGenerationChunk(payload)
+		if strings.Contains(got, "attribution") || strings.Contains(got, "safety_identifier") || strings.Contains(got, "temperature") || !strings.Contains(got, `"input_tokens":123`) || strings.Contains(got, `"tool_usage"`) != tc.keep {
+			t.Fatalf("unexpected diagnostics: %.300s", got)
+		}
+	}
+}

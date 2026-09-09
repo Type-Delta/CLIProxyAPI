@@ -90,11 +90,24 @@ range-local `first_activity_at` and `last_activity_at`, lifetime
 
 Events accept `result: "success"|"failure"`, `error_class`, and `source`
 filters in addition to existing filters. CSV and JSON exports accept the same
-filter body without a cursor and emit the same flat set of stored, sanitized
+filter body without a cursor and emit the same set of stored, sanitized
 event fields.
 They never export raw keys, request bodies, headers, IP addresses, or other
 forbidden event fields. Event pages include filter-wide `total_count`; cursors
 remain bound to the exact resolved range and filter selection.
+
+CSV and JSON exports preserve all recorded event fields, including routing, strict
+first-token and provider latency, request/response timestamps, statuses, sanitized
+raw generation diagnostics, and recorded error bodies. Existing flat token columns
+remain compatible; the canonical token breakdown is also retained. JSON preserves
+nulls and structured raw values; CSV uses empty cells for missing values and JSON
+inside quoted cells for structured values. Export does not add another raw-payload
+truncation limit. Already truncated historical data cannot be recovered.
+
+The authenticated single-event detail response additionally includes nullable
+`credential_filename`, resolved against currently loaded credentials. It contains
+only the backing filename, without a host directory. Missing or deleted credentials
+return null. Stored events, exports, and shared viewer responses retain hashed IDs.
 
 ### Hop diagnostics (schema v1, additive)
 
@@ -108,11 +121,12 @@ recorded", never as zero.
 | `client_method`, `client_path` | Downstream request line. The path never includes a query string. |
 | `received_at` | When CPA accepted the downstream request (RFC 3339 UTC). |
 | `upstream_method`, `upstream_url` | Provider request line. The URL never includes a query string or user info. |
-| `upstream_sent_at` | When the provider request left CPA. |
+| `upstream_sent_at` | Current provider dispatch, using the same origin as local latency measurements. It updates on retries. |
+| `routing_time_ms` | CPA receipt to the request's first provider dispatch, measured once and shared across retries. Null for historical records without that observation. |
 | `first_token_latency_ms` | Local monotonic duration from dispatch to the first substantive token. Null when token boundaries were not observed; never falls back to a heartbeat or first packet. |
 | `provider_latency_ms` | Local monotonic duration from dispatch to HTTP response headers or the first application response frame for that WebSocket request. Includes network and provider waiting time, not a provider-reported acceptance timestamp. |
 | `upstream_status_code` | Provider HTTP status. Now recorded for successful attempts as well as failures. |
-| `upstream_usage_raw` | The provider usage node the token detail was parsed from, at most 4 KiB. Emitted as a JSON value when the stored text is valid JSON and as a JSON string otherwise. |
+| `upstream_usage_raw` | Sanitized provider generation telemetry or usage node, at most 40 KiB. Per-message attribution, request echoes, and recognized all-zero tool usage are omitted. Oversized JSON preserves complete fields with aggregate usage prioritized and `_truncated: true`; legacy non-JSON text remains a JSON string. |
 | `upstream_error_body` | Provider error body for failed attempts, at most 4 KiB, suffixed `...[truncated]` when cut. |
 | `proxy_status_code`, `proxy_error`, `responded_at` | What CPA returned to the client. Applied to every attempt of the proxy request once the handler finishes; the first completion wins. |
 

@@ -18,7 +18,8 @@ const (
 	DefaultMinFreeBytes            = int64(512 * 1024 * 1024)
 	DefaultStorageTimeZone         = "UTC"
 	DefaultShutdownDrain           = 5 * time.Second
-	MaxQueueBytes                  = int64(128 * 1024 * 1024)
+	// Conservative serialized ceiling; queue strings are allocated on demand.
+	MaxQueueBytes = int64(768 * 1024 * 1024)
 )
 
 type PrivacyConfig struct {

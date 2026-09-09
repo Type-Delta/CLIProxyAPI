@@ -349,16 +349,16 @@ func TestSanitizerPreservesLocalLatencyNullZeroAndRejectsNegative(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event.FirstTokenLatencyMS != nil || result.Event.ProviderLatencyMS != nil {
+	if result.Event.RoutingTimeMS != nil || result.Event.FirstTokenLatencyMS != nil || result.Event.ProviderLatencyMS != nil {
 		t.Fatal("legacy timing fabricated")
 	}
 	for _, duration := range []time.Duration{0, 42 * time.Millisecond} {
-		record.FirstTokenLatency, record.ProviderLatency = &duration, &duration
+		record.FirstTokenLatency, record.ProviderLatency, record.RoutingTime = &duration, &duration, &duration
 		result, err = sanitizer.Sanitize(adaptRecord(record))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Event.FirstTokenLatencyMS == nil || *result.Event.FirstTokenLatencyMS != duration.Milliseconds() || result.Event.ProviderLatencyMS == nil || *result.Event.ProviderLatencyMS != duration.Milliseconds() {
+		if result.Event.RoutingTimeMS == nil || *result.Event.RoutingTimeMS != duration.Milliseconds() || result.Event.FirstTokenLatencyMS == nil || *result.Event.FirstTokenLatencyMS != duration.Milliseconds() || result.Event.ProviderLatencyMS == nil || *result.Event.ProviderLatencyMS != duration.Milliseconds() {
 			t.Fatalf("timing lost: %+v", result.Event)
 		}
 	}

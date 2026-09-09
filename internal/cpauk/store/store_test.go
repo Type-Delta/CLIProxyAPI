@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,10 +30,12 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close(context.Background()) }()
-	if database.SchemaVersion() != 7 || database.IdentityEpoch() == "" {
+	if database.SchemaVersion() != 8 || database.IdentityEpoch() == "" {
 		t.Fatalf("schema=%d epoch=%q", database.SchemaVersion(), database.IdentityEpoch())
 	}
 	events := loadFixtureEvents(t)
+	generationRaw := model.RawJSON(`{"usage":{"total_tokens":400},"telemetry":"` + strings.Repeat("x", 39000) + `"}`)
+	events[1].UpstreamUsageRaw = &generationRaw
 	if err := database.WriteBatch(ctx, events); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +109,9 @@ func TestCreateWriteQueryBackupRestoreAndRetention(t *testing.T) {
 	event, found, err := database.EventByAttemptID(ctx, events[1].AttemptID, eventsQuery)
 	if err != nil || !found || event.AttemptID != events[1].AttemptID {
 		t.Fatalf("indexed event=%+v found=%t err=%v", event, found, err)
+	}
+	if event.UpstreamUsageRaw == nil || *event.UpstreamUsageRaw != generationRaw {
+		t.Fatal("large generation diagnostics did not round trip")
 	}
 	eventsQuery.Filters = map[string]json.RawMessage{"provider": json.RawMessage(`["not-the-provider"]`)}
 	if _, found, err = database.EventByAttemptID(ctx, events[1].AttemptID, eventsQuery); err != nil || found {

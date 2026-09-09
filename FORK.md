@@ -389,6 +389,14 @@ aggregation: first-token latency 381 ms, provider latency 121 ms, unchanged TTFT
 generation 80 ms. Mixed historical/new coverage remained partial. CPAMC displayed these actual
 API values at desktop and mobile sizes. No deployment or existing dev process was restarted.
 
+Routing follow-up: CPA stores nullable `routing_time_ms` from receipt to the request's first
+provider dispatch. A request-scoped observation shared across execution contexts and credential
+attempts keeps later retries from being counted as routing. `upstream_sent_at` now follows the
+current dispatch for HTTP and WebSockets and matches the local latency origin. Migration v8
+adds routing duration without inventing values for historical events. TTFT measurement is unchanged.
+The full Go suite and server build pass; independent end-to-end verification through a fresh
+local streaming proxy confirms routing and provider-phase values in desktop/mobile CPAMC.
+
 ### DL015 - Per-hop event diagnostics and correct endpoint classes
 
 Analytics events now describe every leg of Client -> CPA -> Provider -> CPA ->
@@ -396,7 +404,7 @@ Client so the CPAMC event detail sheet can show where a request stopped and
 what each side said. Each event carries the downstream method and path, the
 arrival time, the provider method and query-free URL, the send time, the
 provider status for successes as well as failures, the raw provider usage node
-(bounded to 4 KiB, emitted as JSON when valid), the raw provider error body
+(bounded to 40 KiB, emitted as JSON when valid), the raw provider error body
 (bounded, marked when truncated), and the status, error text, and completion
 time CPA returned to the client. The CPA -> Client leg is delivered through a
 process-wide `usage.SetProxyResponseObserver` hook fired by the handler cancel
@@ -422,8 +430,10 @@ provider status and error body empty, and the proxy response patch supplies
 CPA's own error body, so the detail sheet marks the failure on the CPA node
 before any provider hop.
 
-`MaxEventBytes` grows to 16 KiB and the collector queue budget to 128 MiB so
-the default 8192-event capacity still fits. Migration 006 adds the nullable
+`MaxEventBytes` is 96 KiB, allowing 40 KiB generation diagnostics plus escaped
+error bodies and event metadata. The conservative collector queue ceiling is
+768 MiB so the default 8192-event capacity still fits; payload memory is allocated
+as events arrive. Migration 006 adds the nullable
 columns; older rows read back as `null` and the client renders them as not
 recorded.
 
@@ -461,8 +471,35 @@ Stream usage parsers (`ParseOpenAIStreamUsage`, `ParseClaudeStreamUsage`,
 (usage, model id/slug, stop reason, timing). Response content, tool calls, prompts, and
 instructions are recursively stripped by `sanitizeGenerationChunk` before storage, and
 empty containers are pruned so a content-only chunk degrades to the bare usage node.
-Non-stream parsers keep storing just the usage node. The 4 KiB `MaxRawUsageBytes` bound
-and the `upstream_usage_raw` column are unchanged.
+Non-stream parsers keep storing just the usage node. Generation diagnostics are
+bounded to 40 KiB throughout parsing, SDK delivery, and collection; error bodies
+retain their separate 4 KiB bound. The `upstream_usage_raw` column is unchanged.
+Per-message usage attribution and low-value request echoes are removed before
+storage. Recognized all-zero tool counters are omitted; nonzero or unknown tool
+telemetry is retained. Oversized JSON falls back to complete fields with aggregate
+usage prioritized and an `_truncated` marker, rather than a broken JSON fragment.
+Generic observer snapshots accommodate the larger payload while retaining their
+shared 64 MiB byte budget.
+
+The authenticated event-detail response resolves the hashed credential identity
+against currently loaded credentials and supplies the backing filename for CPAMC.
+Only the filename is exposed, without its host directory. Historical entries with
+no matching live credential keep the existing ID fallback; stored events and
+exports retain their privacy-preserving identities.
+Validation: full Go tests and server build pass. Independent review covers
+40 KiB overflow, aggregate-counter priority, zero/nonzero tool telemetry,
+a 39 KiB SQLite round-trip, and authenticated credential filename resolution.
+Replay of a saved Codex completion preserves all aggregate token counts.
+
+CSV and JSON event exports include every recorded event field, including the
+nullable local timing observations, hop timestamps, sanitized raw generation
+diagnostics, and errors. Existing flat token columns remain available alongside
+the canonical token breakdown. CSV encodes structured values as JSON. Completeness
+regressions compare the export fields against the event schema so additive
+diagnostics cannot silently disappear from exports.
+Validation: HTTP export tests retain an exact 40 KiB payload in JSON and CSV,
+including quoting, timestamps, nulls, and measured zero values. The full Go suite
+and server build pass; independent review also verifies legacy truncated raw text.
 
 CPAMC audit corrections align raw diagnostics with the `upstream_usage_raw` API field and
 prefer arrival-to-response timing for the total, falling back to attempt latency for older events.

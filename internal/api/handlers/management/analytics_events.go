@@ -49,7 +49,36 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 	}
 	if found {
 		setAnalyticsNoStore(c)
-		c.JSON(http.StatusOK, event)
+		var filename *string
+		identityProvider, canHash := service.(interface {
+			CredentialID(provider, authIndex, authID string) (*string, error)
+		})
+		h.mu.Lock()
+		manager := h.authManager
+		h.mu.Unlock()
+		if canHash && manager != nil && event.CredentialID != nil {
+			for _, credential := range manager.List() {
+				if credential == nil || !strings.EqualFold(strings.TrimSpace(credential.Provider), event.Provider) {
+					continue
+				}
+				id, errID := identityProvider.CredentialID(credential.Provider, credential.Index, credential.ID)
+				if errID != nil || id == nil || *id != *event.CredentialID {
+					continue
+				}
+				name := strings.TrimSpace(credential.FileName)
+				if index := strings.LastIndexAny(name, `/\`); index >= 0 {
+					name = name[index+1:]
+				}
+				if name != "" && name != "." && name != ".." {
+					filename = &name
+				}
+				break
+			}
+		}
+		c.JSON(http.StatusOK, struct {
+			model.Event
+			CredentialFilename *string `json:"credential_filename"`
+		}{Event: event, CredentialFilename: filename})
 		return
 	}
 	writeAnalyticsEnvelope(c, http.StatusNotFound, model.ErrorAnalyticsInvalidQuery, "The analytics event was not found.")
@@ -131,6 +160,8 @@ func (h *Handler) CreateAnalyticsExport(c *gin.Context) {
 
 var analyticsEventExportColumns = []string{
 	"schema_version", "attempt_id", "proxy_request_id", "request_id_quality", "key_id", "requested_at", "provider", "executor_type", "model", "requested_alias", "endpoint_class", "auth_type", "credential_id", "credential_id_algorithm", "succeeded", "upstream_status_code", "error_class", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "service_tier_requested", "service_tier_used", "generated", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "accounting_schema", "token_quality", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source",
+	"first_token_latency_ms", "provider_latency_ms", "routing_time_ms", "tokens",
+	"client_method", "client_path", "received_at", "upstream_method", "upstream_url", "upstream_sent_at", "upstream_usage_raw", "upstream_error_body", "proxy_status_code", "proxy_error", "responded_at",
 }
 
 func analyticsEventExportValues(event model.Event) map[string]any {
@@ -145,6 +176,11 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 		"cached_tokens": event.Tokens.Cached, "cache_read_tokens": event.Tokens.CacheRead, "cache_creation_tokens": event.Tokens.CacheCreation,
 		"total_tokens": event.Tokens.Total, "accounting_schema": event.Tokens.Schema, "token_quality": event.Tokens.Quality,
 		"known_cost_usd": event.KnownCost, "unpriced_tokens": event.UnpricedTokens,
+		"first_token_latency_ms": event.FirstTokenLatencyMS, "provider_latency_ms": event.ProviderLatencyMS, "routing_time_ms": event.RoutingTimeMS,
+		"tokens": event.Tokens, "client_method": event.ClientMethod, "client_path": event.ClientPath, "received_at": event.ReceivedAt,
+		"upstream_method": event.UpstreamMethod, "upstream_url": event.UpstreamURL, "upstream_sent_at": event.UpstreamSentAt,
+		"upstream_usage_raw": event.UpstreamUsageRaw, "upstream_error_body": event.UpstreamErrorBody,
+		"proxy_status_code": event.ProxyStatusCode, "proxy_error": event.ProxyError, "responded_at": event.RespondedAt,
 	}
 	values["price_rule_id"], values["price_source"], values["import_batch_id"], values["source"] = event.PriceRuleID, event.PriceSource, event.ImportBatchID, event.Source
 	return values

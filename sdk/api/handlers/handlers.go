@@ -638,7 +638,7 @@ func inheritUsageCorrelation(ctx, requestCtx context.Context) context.Context {
 		ctx = coreusage.WithEndpointClass(ctx, coreusage.EndpointClassFromContext(requestCtx))
 	}
 	if coreusage.RequestReceivedAtFromContext(ctx).IsZero() {
-		ctx = coreusage.WithRequestReceivedAt(ctx, coreusage.RequestReceivedAtFromContext(requestCtx))
+		ctx = coreusage.InheritRequestTiming(ctx, requestCtx)
 	}
 	if method, path := coreusage.ClientRequestLineFromContext(ctx); method == "" && path == "" {
 		method, path = coreusage.ClientRequestLineFromContext(requestCtx)

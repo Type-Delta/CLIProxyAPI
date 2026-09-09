@@ -38,6 +38,10 @@ func TestGetContextWithCancelInheritsUsageCorrelation(t *testing.T) {
 	if got := coreusage.EndpointClassFromContext(ctx); got != "chat_completions" {
 		t.Fatalf("endpoint class = %q", got)
 	}
+	coreusage.ObserveRequestRouting(requestCtx, receivedAt.Add(12*time.Millisecond))
+	if got := coreusage.ObserveRequestRouting(ctx, receivedAt.Add(time.Hour)); got == nil || *got != 12*time.Millisecond {
+		t.Fatalf("routing observation not shared: %v", got)
+	}
 	if got := coreusage.RequestReceivedAtFromContext(ctx); !got.Equal(receivedAt) {
 		t.Fatalf("received at = %v", got)
 	}

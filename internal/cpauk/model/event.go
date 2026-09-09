@@ -63,6 +63,7 @@ type Event struct {
 	UpstreamStatusCode    *int             `json:"upstream_status_code"`
 	ErrorClass            *string          `json:"error_class"`
 	LatencyMS             int64            `json:"latency_ms"`
+	RoutingTimeMS         *int64           `json:"routing_time_ms,omitempty"`
 	FirstTokenLatencyMS   *int64           `json:"first_token_latency_ms,omitempty"`
 	ProviderLatencyMS     *int64           `json:"provider_latency_ms,omitempty"`
 	GenerationTimeMS      *int64           `json:"generation_time_ms,omitempty"`
@@ -159,8 +160,8 @@ func (e Event) Validate() error {
 			return fmt.Errorf("%s must be valid UTF-8 within %d bytes", name, field.limit)
 		}
 	}
-	if e.UpstreamUsageRaw != nil && (!utf8.ValidString(string(*e.UpstreamUsageRaw)) || len(*e.UpstreamUsageRaw) > MaxRawPayloadBytes) {
-		return fmt.Errorf("upstream_usage_raw must be valid UTF-8 within %d bytes", MaxRawPayloadBytes)
+	if e.UpstreamUsageRaw != nil && (!utf8.ValidString(string(*e.UpstreamUsageRaw)) || len(*e.UpstreamUsageRaw) > MaxRawGenerationBytes) {
+		return fmt.Errorf("upstream_usage_raw must be valid UTF-8 within %d bytes", MaxRawGenerationBytes)
 	}
 	for name, value := range map[string]*time.Time{
 		"received_at": e.ReceivedAt, "upstream_sent_at": e.UpstreamSentAt, "responded_at": e.RespondedAt,
@@ -172,7 +173,7 @@ func (e Event) Validate() error {
 	if e.GenerationTimeMS != nil && *e.GenerationTimeMS < 0 {
 		return fmt.Errorf("generation time must not be negative")
 	}
-	if e.FirstTokenLatencyMS != nil && *e.FirstTokenLatencyMS < 0 || e.ProviderLatencyMS != nil && *e.ProviderLatencyMS < 0 || e.LatencyMS < 0 || e.TimeToFirstTokenMS != nil && *e.TimeToFirstTokenMS < 0 {
+	if e.RoutingTimeMS != nil && *e.RoutingTimeMS < 0 || e.FirstTokenLatencyMS != nil && *e.FirstTokenLatencyMS < 0 || e.ProviderLatencyMS != nil && *e.ProviderLatencyMS < 0 || e.LatencyMS < 0 || e.TimeToFirstTokenMS != nil && *e.TimeToFirstTokenMS < 0 {
 		return fmt.Errorf("latency values must not be negative")
 	}
 	if err := e.Tokens.Validate(); err != nil {

@@ -666,6 +666,14 @@ func analyticsExportValueString(value any) string {
 			return ""
 		}
 		return strconv.FormatInt(*typed, 10)
+	case *model.RawJSON:
+		if typed == nil {
+			return ""
+		}
+		return string(*typed)
+	case model.TokenUsage:
+		encoded, _ := json.Marshal(typed)
+		return string(encoded)
 	case model.NanoUSD:
 		return typed.String()
 	case *model.NanoUSD:

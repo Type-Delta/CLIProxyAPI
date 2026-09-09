@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,7 +47,7 @@ type Record struct {
 	// UpstreamMethod and UpstreamURL describe the provider request; the URL never carries a query string.
 	UpstreamMethod string
 	UpstreamURL    string
-	// UpstreamSentAt is when the provider request left the proxy.
+	// UpstreamSentAt is the current provider dispatch, matching the local latency origin.
 	UpstreamSentAt time.Time
 	// UpstreamStatusCode is the provider HTTP status for both successful and failed attempts.
 	UpstreamStatusCode int
@@ -74,6 +75,8 @@ type Record struct {
 	// FirstTokenLatency measures dispatch to the first substantive streaming token, without TTFT fallback.
 	// nil means no substantive token was observed on a measured transport.
 	FirstTokenLatency *time.Duration
+	// RoutingTime measures request receipt to the first provider dispatch, shared across retries.
+	RoutingTime *time.Duration
 	// ProviderLatency measures dispatch to response headers or a WebSocket application frame, including network time.
 	// nil means no response was observed on a measured transport.
 	ProviderLatency *time.Duration
@@ -110,7 +113,7 @@ type Detail struct {
 }
 
 // MaxRawUsageBytes bounds Detail.RawUsage.
-const MaxRawUsageBytes = 4096
+const MaxRawUsageBytes = 40 * 1024
 
 // MaxUpstreamURLBytes bounds Record.UpstreamURL.
 const MaxUpstreamURLBytes = 512
@@ -133,6 +136,12 @@ type endpointClassContextKey struct{}
 type requestReceivedAtContextKey struct{}
 type clientRequestLineContextKey struct{}
 
+type requestRoutingTiming struct {
+	receivedAt time.Time
+	once       sync.Once
+	duration   time.Duration
+}
+
 type clientRequestLine struct {
 	method string
 	path   string
@@ -146,7 +155,7 @@ func WithRequestReceivedAt(ctx context.Context, receivedAt time.Time) context.Co
 	if receivedAt.IsZero() {
 		return ctx
 	}
-	return context.WithValue(ctx, requestReceivedAtContextKey{}, receivedAt)
+	return context.WithValue(ctx, requestReceivedAtContextKey{}, &requestRoutingTiming{receivedAt: receivedAt})
 }
 
 // RequestReceivedAtFromContext returns the downstream request arrival time, or zero.
@@ -154,8 +163,36 @@ func RequestReceivedAtFromContext(ctx context.Context) time.Time {
 	if ctx == nil {
 		return time.Time{}
 	}
-	receivedAt, _ := ctx.Value(requestReceivedAtContextKey{}).(time.Time)
-	return receivedAt
+	timing, _ := ctx.Value(requestReceivedAtContextKey{}).(*requestRoutingTiming)
+	if timing == nil {
+		return time.Time{}
+	}
+	return timing.receivedAt
+}
+
+// InheritRequestTiming preserves the shared first-dispatch observation across execution contexts.
+func InheritRequestTiming(ctx, source context.Context) context.Context {
+	if source == nil {
+		return ctx
+	}
+	if timing, ok := source.Value(requestReceivedAtContextKey{}).(*requestRoutingTiming); ok {
+		return context.WithValue(ctx, requestReceivedAtContextKey{}, timing)
+	}
+	return ctx
+}
+
+// ObserveRequestRouting records receipt to the first dispatch once for all request attempts.
+func ObserveRequestRouting(ctx context.Context, dispatchAt time.Time) *time.Duration {
+	if ctx == nil {
+		return nil
+	}
+	timing, _ := ctx.Value(requestReceivedAtContextKey{}).(*requestRoutingTiming)
+	if timing == nil || dispatchAt.Before(timing.receivedAt) {
+		return nil
+	}
+	timing.once.Do(func() { timing.duration = dispatchAt.Sub(timing.receivedAt) })
+	duration := timing.duration
+	return &duration
 }
 
 // WithClientRequestLine stores the downstream HTTP method and route path (never a query string).

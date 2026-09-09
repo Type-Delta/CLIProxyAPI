@@ -130,6 +130,7 @@ func adaptRecord(record coreusage.Record) Source {
 		AuthType: record.AuthType, ServiceTier: record.ServiceTier, ResponseTier: responseTier,
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
 		FirstTokenLatency: record.FirstTokenLatency,
+		RoutingTime:       record.RoutingTime,
 		ProviderLatency:   record.ProviderLatency,
 		GenerationTime:    record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed,
 		StatusCode: upstreamStatus(record), UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
@@ -173,3 +174,6 @@ func safeReject(intake Intake) {
 		intake.Rejected()
 	}
 }
+
+// boundRawUsage shares the SDK diagnostic limit with imported source records.
+func boundRawUsage(raw string) string { return coreusage.BoundRawUsage(raw) }

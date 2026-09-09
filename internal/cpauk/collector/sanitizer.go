@@ -50,6 +50,7 @@ type Source struct {
 	TTFT              time.Duration
 	GenerationTime    *time.Duration
 	FirstTokenLatency *time.Duration
+	RoutingTime       *time.Duration
 	ProviderLatency   *time.Duration
 	Failed            bool
 	StatusCode        int
@@ -108,7 +109,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if record.RequestedAt.IsZero() {
 		return SanitizeResult{}, fmt.Errorf("requested timestamp is missing")
 	}
-	if record.FirstTokenLatency != nil && *record.FirstTokenLatency < 0 || record.ProviderLatency != nil && *record.ProviderLatency < 0 || record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
+	if record.RoutingTime != nil && *record.RoutingTime < 0 || record.FirstTokenLatency != nil && *record.FirstTokenLatency < 0 || record.ProviderLatency != nil && *record.ProviderLatency < 0 || record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
 		return SanitizeResult{}, fmt.Errorf("latency is negative")
 	}
 	if err := validateTokens(record.Tokens); err != nil {
@@ -205,7 +206,11 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		}
 		errorClass = &value
 	}
-	var ttft, generation, firstTokenLatency, providerLatency *int64
+	var ttft, generation, firstTokenLatency, providerLatency, routingTime *int64
+	if record.RoutingTime != nil {
+		value := record.RoutingTime.Milliseconds()
+		routingTime = &value
+	}
 	if record.FirstTokenLatency != nil {
 		value := record.FirstTokenLatency.Milliseconds()
 		firstTokenLatency = &value
@@ -257,6 +262,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		TimeToFirstTokenMS:    ttft,
 		GenerationTimeMS:      generation,
 		FirstTokenLatencyMS:   firstTokenLatency,
+		RoutingTimeMS:         routingTime,
 		ProviderLatencyMS:     providerLatency,
 		ServiceTierRequested:  requestedTier,
 		ServiceTierUsed:       responseTier,
@@ -349,7 +355,11 @@ func sanitizeHops(record Source) (sanitizedHops, int64) {
 	hops.upstreamMethod = optional(record.UpstreamMethod, 16, false)
 	hops.upstreamURL = optional(strings.SplitN(record.UpstreamURL, "?", 2)[0], 512, false)
 	hops.upstreamSentAt = utc(record.UpstreamSentAt)
-	if raw := optional(record.RawUsage, model.MaxRawPayloadBytes, false); raw != nil {
+	boundedRaw := boundRawUsage(record.RawUsage)
+	if len(boundedRaw) < len(record.RawUsage) && len(record.RawUsage) > model.MaxRawGenerationBytes {
+		truncated++
+	}
+	if raw := optional(boundedRaw, model.MaxRawGenerationBytes, false); raw != nil {
 		value := model.RawJSON(*raw)
 		hops.rawUsage = &value
 	}

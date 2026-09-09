@@ -331,7 +331,7 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
 price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms`
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -817,7 +817,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var requestedAlias, authType, credentialID, credentialAlgorithm sql.NullString
 	var status sql.NullInt64
 	var errorClass, tierRequested, tierUsed, priceRuleID, priceSource, importBatchID sql.NullString
-	var ttft, generation, firstTokenLatency, providerLatency sql.NullInt64
+	var ttft, generation, firstTokenLatency, providerLatency, routingTime sql.NullInt64
 	var knownCost sql.NullInt64
 	var clientMethod, clientPath, upstreamMethod, upstreamURL, usageRaw, errorBody, proxyError sql.NullString
 	var receivedNS, sentNS, respondedNS, proxyStatus sql.NullInt64
@@ -830,9 +830,12 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
 		&priceRuleID, &priceSource, &importBatchID, &generation,
 		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
-		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency)
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
+	}
+	if routingTime.Valid {
+		event.RoutingTimeMS = &routingTime.Int64
 	}
 	event.ClientMethod = scanNullableString(clientMethod)
 	event.ClientPath = scanNullableString(clientPath)

@@ -21,7 +21,7 @@ const (
 	// observer deliveries across all lanes.
 	DefaultObserverQueueCapacity = 4096
 	// MaxObserverSnapshotBytes bounds one copied generic observer record.
-	MaxObserverSnapshotBytes = 16 * 1024
+	MaxObserverSnapshotBytes = 64 * 1024
 	// DefaultObserverByteCapacity bounds queued records and lane buffers.
 	DefaultObserverByteCapacity = 64 * 1024 * 1024
 	// DefaultObserverDrainTimeout bounds legacy Stop calls.
@@ -851,9 +851,13 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.ResponseServiceTier = copyString(record.ResponseServiceTier)
 	record.Fail.Body = copyString(record.Fail.Body)
 	record.Detail.ResponseServiceTier = copyString(record.Detail.ResponseServiceTier)
-	record.Detail.RawUsage = copyString(record.Detail.RawUsage)
+	if len(record.Detail.RawUsage) <= remaining {
+		record.Detail.RawUsage = copyString(record.Detail.RawUsage)
+	} else {
+		record.Detail.RawUsage = ""
+	}
 	record.ResponseHeaders = copyHeaders(record.ResponseHeaders, &remaining)
-	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency} {
+	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency, &record.RoutingTime} {
 		if *field != nil {
 			value := **field
 			*field = &value
@@ -918,7 +922,7 @@ func (s contextSnapshot) context() context.Context {
 
 func cloneRecord(record Record) Record {
 	record.ResponseHeaders = record.ResponseHeaders.Clone()
-	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency} {
+	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency, &record.RoutingTime} {
 		if *field != nil {
 			value := **field
 			*field = &value
@@ -993,7 +997,7 @@ func fillHopMetadata(ctx context.Context, record Record) Record {
 	}
 	record.UpstreamMethod = truncateUTF8(strings.TrimSpace(record.UpstreamMethod), 16)
 	record.UpstreamURL = truncateUTF8(strings.TrimSpace(record.UpstreamURL), MaxUpstreamURLBytes)
-	record.Detail.RawUsage = truncateUTF8(record.Detail.RawUsage, MaxRawUsageBytes)
+	record.Detail.RawUsage = BoundRawUsage(record.Detail.RawUsage)
 	return record
 }
 

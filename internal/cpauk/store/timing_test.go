@@ -124,7 +124,7 @@ func TestTimingSupportsLongRangeAndOddMedian(t *testing.T) {
 func TestLocalLatencyObservationsPersistAndAggregate(t *testing.T) {
 	database, events := openV2FixtureStore(t)
 	ctx := context.Background()
-	for index, values := range []string{`"first_token_latency_ms":0,"provider_latency_ms":0`, `"first_token_latency_ms":80,"provider_latency_ms":20`} {
+	for index, values := range []string{`"first_token_latency_ms":0,"provider_latency_ms":0,"routing_time_ms":0`, `"first_token_latency_ms":80,"provider_latency_ms":20,"routing_time_ms":12`} {
 		event := events[0]
 		event.AttemptID = strings.Repeat(string(rune('8'+index)), 32)
 		encoded, err := json.Marshal(event)
@@ -167,7 +167,7 @@ func TestLocalLatencyObservationsPersistAndAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"first_token_latency_ms":80`) || !strings.Contains(string(encoded), `"provider_latency_ms":0`) {
+	if !strings.Contains(string(encoded), `"routing_time_ms":12`) || !strings.Contains(string(encoded), `"routing_time_ms":0`) || !strings.Contains(string(encoded), `"first_token_latency_ms":80`) || !strings.Contains(string(encoded), `"provider_latency_ms":0`) {
 		t.Fatalf("event read lost timing: %s", encoded)
 	}
 }

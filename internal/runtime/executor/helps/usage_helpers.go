@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
@@ -45,6 +44,8 @@ type UsageReporter struct {
 	generate            bool
 	stream              bool
 	requestedAt         time.Time
+	requestContext      context.Context
+	routingTime         *time.Duration
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
 	firstPacketDuration time.Duration
@@ -64,15 +65,15 @@ type UsageReporter struct {
 	once                sync.Once
 }
 
-// recordUpstreamRequest keeps the first provider request line and send time so
-// retries inside one attempt do not overwrite where the request initially went.
+// recordUpstreamRequest keeps the first provider request target across retries.
+// StartUpstreamTiming supplies the current dispatch timestamp.
 func (r *UsageReporter) recordUpstreamRequest(req *http.Request, sentAt time.Time) {
 	if r == nil || req == nil {
 		return
 	}
 	r.upstreamMu.Lock()
 	defer r.upstreamMu.Unlock()
-	if r.upstreamSentAt.IsZero() {
+	if r.upstreamMethod == "" && r.upstreamURL == "" {
 		r.upstreamSentAt = sentAt
 		r.upstreamMethod = req.Method
 		r.upstreamURL = upstreamURLWithoutQuery(req.URL)
@@ -101,7 +102,7 @@ func (r *UsageReporter) RecordUpstreamTarget(method, rawURL string) {
 	}
 	r.upstreamMu.Lock()
 	defer r.upstreamMu.Unlock()
-	if r.upstreamSentAt.IsZero() {
+	if r.upstreamMethod == "" && r.upstreamURL == "" {
 		r.upstreamSentAt = time.Now()
 		r.upstreamMethod = strings.TrimSpace(method)
 		r.upstreamURL = upstreamURLWithoutQuery(parsed)
@@ -165,6 +166,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		model:           model,
 		alias:           strings.TrimSpace(alias),
 		requestedAt:     time.Now(),
+		requestContext:  ctx,
 		apiKey:          apiKey,
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
@@ -511,7 +513,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	upstreamMethod, upstreamURL, upstreamSentAt, upstreamStatus := r.upstreamSnapshot()
-	firstTokenLatency, providerLatency := r.localLatencies()
+	firstTokenLatency, providerLatency, routingTime := r.localLatencies()
 	return usage.Record{
 		Provider:            r.provider,
 		ExecutorType:        r.executorType,
@@ -539,6 +541,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		TTFT:                r.ttftDuration(),
 		GenerationTime:      r.generationDuration(),
 		FirstTokenLatency:   firstTokenLatency,
+		RoutingTime:         routingTime,
 		ProviderLatency:     providerLatency,
 		Failed:              failed,
 		Fail:                fail,
@@ -871,19 +874,15 @@ func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 
 // rawUsageNode returns the bounded raw JSON of the usage node a detail was parsed from.
 func rawUsageNode(node gjson.Result) string {
-	return boundRawUsage(strings.TrimSpace(node.Raw))
+	raw := strings.TrimSpace(node.Raw)
+	if node.Get("attribution").Exists() {
+		raw, _ = sjson.Delete(raw, "attribution")
+	}
+	return boundRawUsage(raw)
 }
 
-// boundRawUsage trims raw JSON to MaxRawUsageBytes without splitting a UTF-8 rune.
 func boundRawUsage(raw string) string {
-	if len(raw) <= usage.MaxRawUsageBytes {
-		return raw
-	}
-	raw = raw[:usage.MaxRawUsageBytes]
-	for raw != "" && !utf8.ValidString(raw) {
-		raw = raw[:len(raw)-1]
-	}
-	return raw
+	return usage.BoundRawUsage(raw)
 }
 
 // sensitiveGenerationChunkKeys are response-content keys stripped from a
@@ -904,6 +903,11 @@ var sensitiveGenerationChunkKeys = map[string]struct{}{
 	"thinking":      {},
 	"tool_calls":    {},
 	"tools":         {},
+	"temperature":   {}, "top_p": {}, "top_k": {}, "tool_choice": {},
+	"parallel_tool_calls": {}, "store": {}, "safety_identifier": {},
+	"prompt_cache_key": {}, "prompt_cache_retention": {}, "max_output_tokens": {},
+	"max_tokens": {}, "presence_penalty": {}, "frequency_penalty": {},
+	"truncation": {}, "text_format": {}, "background": {}, "user": {},
 }
 
 // sanitizeGenerationChunk returns the provider generation chunk as JSON with
@@ -912,7 +916,12 @@ var sensitiveGenerationChunkKeys = map[string]struct{}{
 // chunk that carried only content degrades to the bare usage node fallback.
 func sanitizeGenerationChunk(payload []byte) string {
 	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if !json.Valid(payload) {
+		return ""
+	}
+	if err := decoder.Decode(&value); err != nil {
 		return ""
 	}
 	cleaned, ok := stripSensitiveGenerationValue(value)
@@ -931,6 +940,14 @@ func stripSensitiveGenerationValue(value any) (any, bool) {
 	case map[string]any:
 		result := make(map[string]any, len(typed))
 		for key, child := range typed {
+			if key == "usage" {
+				if node, ok := child.(map[string]any); ok {
+					delete(node, "attribution")
+				}
+			}
+			if key == "tool_usage" && zeroToolUsage(child) {
+				continue
+			}
 			if _, sensitive := sensitiveGenerationChunkKeys[key]; sensitive {
 				continue
 			}
@@ -1587,7 +1604,12 @@ func (r *UsageReporter) StartUpstreamTiming() {
 	}
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
-	r.dispatchAt = time.Now()
+	now := time.Now()
+	r.dispatchAt = now
+	r.routingTime = usage.ObserveRequestRouting(r.requestContext, now)
+	r.upstreamMu.Lock()
+	r.upstreamSentAt = now
+	r.upstreamMu.Unlock()
 	r.firstTokenLatency = nil
 	r.providerLatency = nil
 }
@@ -1607,9 +1629,9 @@ func (r *UsageReporter) ObserveUpstreamResponse() {
 	r.providerLatency = &elapsed
 }
 
-func (r *UsageReporter) localLatencies() (firstToken, provider *time.Duration) {
+func (r *UsageReporter) localLatencies() (firstToken, provider, routing *time.Duration) {
 	if r == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	r.ttftMu.RLock()
 	defer r.ttftMu.RUnlock()
@@ -1621,5 +1643,58 @@ func (r *UsageReporter) localLatencies() (firstToken, provider *time.Duration) {
 		value := *r.providerLatency
 		provider = &value
 	}
-	return firstToken, provider
+	if r.routingTime != nil {
+		value := *r.routingTime
+		routing = &value
+	}
+	return firstToken, provider, routing
+}
+
+// Only known counters can prove tool telemetry is empty; unknown fields survive.
+func zeroToolUsage(value any) bool {
+	tools, ok := value.(map[string]any)
+	if !ok || len(tools) == 0 {
+		return false
+	}
+	for name, value := range tools {
+		switch name {
+		case "image_gen", "web_search", "file_search", "code_interpreter":
+		default:
+			return false
+		}
+		counters, ok := value.(map[string]any)
+		if !ok || len(counters) == 0 {
+			return false
+		}
+		for key, value := range counters {
+			if key == "input_tokens_details" || key == "output_tokens_details" {
+				details, ok := value.(map[string]any)
+				if !ok || len(details) == 0 {
+					return false
+				}
+				for name, value := range details {
+					if name != "image_tokens" && name != "text_tokens" && name != "cached_tokens" && name != "reasoning_tokens" {
+						return false
+					}
+					count, ok := value.(json.Number)
+					number, err := count.Float64()
+					if !ok || err != nil || number != 0 {
+						return false
+					}
+				}
+				continue
+			}
+			switch key {
+			case "input_tokens", "output_tokens", "total_tokens", "num_requests", "requests", "calls":
+			default:
+				return false
+			}
+			count, ok := value.(json.Number)
+			number, err := count.Float64()
+			if !ok || err != nil || number != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
