@@ -121,6 +121,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				auth.Attributes[coreauth.AttributePath] = fullPath
 				auth.Attributes[coreauth.AttributeSource] = fullPath
 				auth.Attributes[coreauth.AttributeSourceBackend] = coreauth.AuthSourceFile
+				applyAuthFileLabel(auth, metadata)
 				if disabled {
 					auth.Disabled = true
 					auth.Status = coreauth.StatusDisabled
@@ -199,6 +200,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	applyAuthFileLabel(a, metadata)
 	// Read priority from auth file.
 	if rawPriority, ok := metadata["priority"]; ok {
 		switch v := rawPriority.(type) {
@@ -237,6 +239,21 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		}
 	}
 	return []*coreauth.Auth{a}, nil
+}
+
+func applyAuthFileLabel(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil {
+		return
+	}
+	label, ok := metadata["label"].(string)
+	if !ok || strings.TrimSpace(label) == "" {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Label = label
+	auth.Attributes["label"] = label
 }
 
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {

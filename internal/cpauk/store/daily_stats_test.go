@@ -108,7 +108,7 @@ FROM daily_stats WHERE day_start_ns=? AND key_id=?`, day.UTC().UnixNano(), keyID
 	if requests != 2 || succeeded != 1 || failed != 1 || total != 210 {
 		t.Fatalf("backfilled daily stats requests=%d succeeded=%d failed=%d total=%d", requests, succeeded, failed, total)
 	}
-	if database.SchemaVersion() != 8 {
+	if database.SchemaVersion() != 9 {
 		t.Fatalf("schema version=%d", database.SchemaVersion())
 	}
 }

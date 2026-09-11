@@ -3,12 +3,38 @@ package cpauk
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
 )
+
+type serviceBindingFetcher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *serviceBindingFetcher) Fetch(context.Context) (store.PricingCatalog, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	input, output := model.NanoUSD(1), model.NanoUSD(2)
+	return store.PricingCatalog{Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Rules: []aggregate.PricingRule{{
+		Provider: "codex", ID: "models.dev:codex:gpt-5", Model: "gpt-5", InputPerMillion: &input, OutputPerMillion: &output,
+		CacheReadMultiplier: "1", CacheCreationMultiplier: "1", Source: store.ModelsDevSource, Catalog: true,
+	}}}, nil
+}
+
+func (f *serviceBindingFetcher) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
 
 type servicePricingBackend struct {
 	*fakeBackend
@@ -119,6 +145,41 @@ func TestPricingDemandInvalidatesOnReconfigure(t *testing.T) {
 	}
 	serviceFacade.requestPricingRefresh()
 	waitPricingRefreshCalls(t, serviceBackend, 2)
+}
+
+func TestPricingReconfigureCatalogBindingsTriggersRefresh(t *testing.T) {
+	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	fetcher := &serviceBindingFetcher{}
+	config := smallConfig()
+	config.Path = filepath.Join(t.TempDir(), "analytics.db")
+	config.CatalogBindings = []CatalogBinding{{Provider: "openai-compatible-zai", Catalog: "zai"}}
+	serviceFacade := New(context.Background(), config, func(ctx context.Context, cfg Config) (Backend, [32]byte, error) {
+		bindings := make([]store.CatalogBinding, 0, len(cfg.CatalogBindings))
+		for _, binding := range cfg.CatalogBindings {
+			bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
+		}
+		backend, err := store.Open(ctx, store.Config{Path: cfg.Path, MaxStorageBytes: cfg.MaxStorageBytes,
+			PricingFetcher: fetcher, PricingNow: func() time.Time { return now }, CatalogBindings: bindings})
+		return backend, [32]byte{1}, err
+	})
+	t.Cleanup(func() { _ = serviceFacade.Close(context.Background()) })
+	waitServiceState(t, serviceFacade, StateReady)
+	service := serviceFacade.(*service)
+	if _, err := service.RefreshPricing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updated := config
+	updated.CatalogBindings = []CatalogBinding{{Provider: "openai-compatible-groq", Catalog: "groq"}}
+	result := service.Reconfigure(updated)
+	if !result.Applied || result.Error != nil || len(result.RestartRequired) != 0 {
+		t.Fatalf("binding reconfigure=%+v", result)
+	}
+	if _, err := service.RefreshPricing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fetcher.count(); calls != 2 {
+		t.Fatalf("refresh calls after binding change=%d, want 2", calls)
+	}
 }
 
 func newPricingDemandService(t *testing.T, backend *servicePricingBackend) (*service, *servicePricingBackend) {

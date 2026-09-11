@@ -541,6 +541,9 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	method = strings.ToUpper(strings.TrimSpace(method))
+	if strings.EqualFold(strings.TrimSpace(authAttribute(auth, "usage_probe")), "zai") && method == http.MethodGet && exactQuotaURL(rawURL, zaiUsageQuotaURL) {
+		return quotaRequestCacheable
+	}
 	switch provider {
 	case "claude":
 		if method == http.MethodGet && exactQuotaURL(rawURL, claudeProfileQuotaURL, claudeUsageQuotaURL) {

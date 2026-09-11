@@ -508,6 +508,60 @@ and the CPA server compile check.
 
 **Last updated:** 2026-09-09
 
+### DL016 - Catalog pricing, usage probes, and display labels for API-key credentials
+
+Requests served by OpenAI-compatible providers carry the synthetic provider
+key `openai-compatible-<name>`, which the models.dev import never produced
+rules for, so their cost was always unpriced. Each `openai-compatibility` entry
+may now set `pricing-catalog` to a models.dev provider id (for example
+`zai-coding-plan`). CPA derives `{provider key, catalog id}` bindings from the
+configuration, and the CPAUK fetcher emits catalog rules under the compat key
+for every bound provider in addition to the static vendor table. An entry
+without a binding falls back to the compat name with the
+`openai-compatible-` prefix removed when that id exists in models.dev, so
+providers named after their models.dev id (`openrouter`, `deepseek`, `zai`)
+price without configuration. The bindings digest is persisted with the catalog
+and included in the fetched catalog, so changing a binding through hot reload
+or the management API refetches on the next demand-driven pricing read, even
+when the change lands during an in-flight fetch. Every successful fetch also
+persists the full models.dev provider list, served secret-free by
+`GET /v0/management/analytics/pricing/catalog-providers` from the stored
+catalog without contacting models.dev; CPAMC uses it to populate a searchable
+pricing-catalog dropdown in the provider form. Migration 009 adds the
+`pricing_catalog_bindings` and `pricing_catalog_providers` tables.
+
+Entries may also set `usage-probe: zai`. Credentials carrying that attribute
+are probed through the management api-call path with the plain API key against
+`https://api.z.ai/api/monitor/usage/quota/limit`, which reports the Z.ai coding
+plan five-hour and weekly credit windows. Results ride the existing one-minute
+quota result cache, run concurrently with a bound of eight, and fill
+`quota.windows` on analytics credential rows while keeping the single-meter
+fields populated from the weekly window. CPAMC gains a Z.ai quota tab that
+renders one meter per window for auth files with the probe attribute.
+
+Every API-key credential type (`claude-api-key`, `codex-api-key`,
+`gemini-api-key`, `interactions-api-key`, `xai-api-key`, `vertex-api-key`, and
+`api-key-entries` under `openai-compatibility`) accepts an optional `label`,
+unique within its list, and auth JSON files honour a top-level `label` that
+can be set through `PATCH /v0/management/auth-files/fields`. Labels never feed
+credential identity, so relabeling keeps statistics and analytics history.
+Analytics credential rows, auth-file entries, and event detail expose
+`display_name` / `credential_label` resolved as label, then file name, then a
+non-generic auth label, then the provider with a masked key; the hashed
+credential id remains the stable key. CPAMC shows the display name in the
+Providers, Quotas, Events, and Auth Files views and offers a rename action on
+the auth-file detail sheet.
+
+Validation: `go build`, `go vet`, and `go test ./...` pass, including
+deterministic tests for binding refetch after an in-flight reconfigure, the
+Z.ai payload parser, and display-name precedence. A local CPA with a real Z.ai
+coding-plan key priced a `glm-4.7` request from the bound catalog, refetched
+the catalog after the binding changed through the management API, and served
+live five-hour and weekly windows. The bundled panel was rebuilt from CPAMC
+commit `b07189943449a9c0002dd153caf4e7dd0b231007` (CPAMC DL043).
+
+**Last updated:** 2026-09-11
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

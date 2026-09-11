@@ -314,7 +314,10 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 		return nil
 	}
 	auth.EnsureIndex()
-	runtimeOnly := isRuntimeOnlyAuth(auth)
+	// Config-synthesised credentials with a usage probe are listed like
+	// runtime-only entries so the quota page can poll them; they still have
+	// no file to download or delete.
+	runtimeOnly := isRuntimeOnlyAuth(auth) || strings.TrimSpace(authAttribute(auth, "usage_probe")) != ""
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
@@ -330,6 +333,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 		"id":             auth.ID,
 		"auth_index":     auth.Index,
 		"name":           name,
+		"display_name":   credentialDisplayName(auth),
 		"type":           strings.TrimSpace(auth.Provider),
 		"provider":       strings.TrimSpace(auth.Provider),
 		"label":          auth.Label,
@@ -345,6 +349,11 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
+	for _, attribute := range []string{"usage_probe", "pricing_catalog"} {
+		if value := strings.TrimSpace(authAttribute(auth, attribute)); value != "" {
+			entry[attribute] = value
+		}
+	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}

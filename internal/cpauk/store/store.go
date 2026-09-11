@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -89,15 +90,15 @@ func Open(ctx context.Context, config Config) (*SQLiteStore, error) {
 		return nil, err
 	}
 	pricingFetcher := config.PricingFetcher
-	if pricingFetcher == nil {
-		pricingFetcher = newModelsDevFetcher(nil)
-	}
 	pricingNow := config.PricingNow
 	if pricingNow == nil {
 		pricingNow = time.Now
 	}
-	store := &SQLiteStore{db: db, config: config, identityKey: identityKey,
-		pricingFetcher: pricingFetcher, pricingNow: pricingNow}
+	store := &SQLiteStore{db: db, config: config, identityKey: identityKey, pricingNow: pricingNow}
+	if pricingFetcher == nil {
+		pricingFetcher = modelsDevFetcher{client: &http.Client{}, store: store}
+	}
+	store.pricingFetcher = pricingFetcher
 	if err := store.initialize(ctx, newDatabase); err != nil {
 		_ = db.Close()
 		return nil, err

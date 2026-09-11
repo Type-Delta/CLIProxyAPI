@@ -566,6 +566,64 @@ func TestNormalizeAuthFilePatchFieldsCanonicalizesLegacyRoots(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFields_LabelPersistsAndSyncsRuntime(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	fileName := "labeled.json"
+	filePath := filepath.Join(authDir, fileName)
+	store := fileauth.NewFileTokenStore()
+	store.SetBaseDir(authDir)
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Provider: "claude",
+		Label:    "old label",
+		Attributes: map[string]string{
+			"path": filePath,
+		},
+		Metadata: map[string]any{
+			"type":  "claude",
+			"email": "account@example.com",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":"labeled.json","label":"billing"}`))
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID(fileName)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth record")
+	}
+	if updated.Label != "billing" || updated.Attributes["label"] != "billing" {
+		t.Fatalf("runtime label/attribute = %q/%q, want billing/billing", updated.Label, updated.Attributes["label"])
+	}
+	if got, _ := updated.Metadata["label"].(string); got != "billing" {
+		t.Fatalf("metadata.label = %q, want billing", got)
+	}
+	persisted, errRead := os.ReadFile(filePath)
+	if errRead != nil {
+		t.Fatalf("failed to read updated auth file: %v", errRead)
+	}
+	var fields map[string]any
+	if errUnmarshal := json.Unmarshal(persisted, &fields); errUnmarshal != nil {
+		t.Fatalf("failed to decode updated auth file: %v", errUnmarshal)
+	}
+	if got := fields["label"]; got != "billing" {
+		t.Fatalf("persisted label = %#v, want billing", got)
+	}
+}
+
 func TestSetSourceAuthFileDisabledNormalizesLegacyMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.json")
 	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","request-retry":2,"disable-cooling":true}`), 0o600); errWrite != nil {

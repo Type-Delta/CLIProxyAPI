@@ -562,11 +562,39 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["note"]; ok {
 		syncAuthFileNoteAttribute(auth)
 	}
+	if _, ok := touchedRoots["label"]; ok {
+		syncAuthFileLabelAttribute(auth)
+	}
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
 	}
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
+	}
+}
+
+func syncAuthFileLabelAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	label, ok := auth.Metadata["label"].(string)
+	if ok && strings.TrimSpace(label) != "" {
+		auth.Label = label
+		auth.Attributes["label"] = label
+		return
+	}
+	delete(auth.Attributes, "label")
+	if provider, okProvider := auth.Metadata["type"].(string); okProvider && strings.TrimSpace(provider) != "" {
+		auth.Label = strings.ToLower(strings.TrimSpace(provider))
+		if auth.Label == "gemini" {
+			auth.Label = "gemini-cli"
+		}
+	}
+	if email, okEmail := auth.Metadata["email"].(string); okEmail && strings.TrimSpace(email) != "" {
+		auth.Label = email
 	}
 }
 

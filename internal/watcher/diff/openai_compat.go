@@ -89,6 +89,15 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if !optionalIntEqual(oldEntry.RequestRetry, newEntry.RequestRetry) {
 		details = append(details, fmt.Sprintf("request-retry %s -> %s", formatOptionalInt(oldEntry.RequestRetry), formatOptionalInt(newEntry.RequestRetry)))
 	}
+	if oldEntry.PricingCatalog != newEntry.PricingCatalog {
+		details = append(details, "pricing-catalog updated")
+	}
+	if oldEntry.UsageProbe != newEntry.UsageProbe {
+		details = append(details, "usage-probe updated")
+	}
+	if !openAICompatLabelsEqual(oldEntry.APIKeyEntries, newEntry.APIKeyEntries) {
+		details = append(details, "api-key-labels updated")
+	}
 	if oldKeyCount != newKeyCount {
 		details = append(details, fmt.Sprintf("api-keys %d -> %d", oldKeyCount, newKeyCount))
 	}
@@ -102,6 +111,18 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 		return ""
 	}
 	return "(" + strings.Join(details, ", ") + ")"
+}
+
+func openAICompatLabelsEqual(oldEntries, newEntries []config.OpenAICompatibilityAPIKey) bool {
+	if len(oldEntries) != len(newEntries) {
+		return true
+	}
+	for index := range oldEntries {
+		if oldEntries[index].Label != newEntries[index].Label {
+			return false
+		}
+	}
+	return true
 }
 
 func countAPIKeys(entry config.OpenAICompatibility) int {

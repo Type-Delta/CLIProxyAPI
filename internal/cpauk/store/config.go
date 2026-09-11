@@ -102,10 +102,16 @@ type Config struct {
 	RetentionTimeZone string
 	PriceBook         aggregate.PriceBook
 	CursorCodec       *model.CursorCodec
+	CatalogBindings   []CatalogBinding
 	// PricingFetcher and PricingNow are internal seams used by the lazy
 	// catalog refresher and its deterministic tests. They are not user config.
 	PricingFetcher PricingFetcher
 	PricingNow     func() time.Time
+}
+
+type CatalogBinding struct {
+	Provider string
+	Catalog  string
 }
 
 func (c *Config) normalize() error {

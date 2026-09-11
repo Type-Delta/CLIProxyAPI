@@ -432,6 +432,8 @@ type ClaudeKey struct {
 	// ExperimentalCCHSigning is retained for configuration compatibility.
 	// CCH signing is automatic for Claude OAuth and supported direct upstreams.
 	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
+	// Label is an optional operator-defined display name for this credential.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 func (k ClaudeKey) GetAPIKey() string { return k.APIKey }
@@ -528,6 +530,8 @@ type CodexKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+	// Label is an optional operator-defined display name for this credential.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string { return k.APIKey }
@@ -625,6 +629,8 @@ type GeminiKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+	// Label is an optional operator-defined display name for this credential.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string { return k.APIKey }
@@ -712,6 +718,11 @@ type OpenAICompatibility struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
+	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
+
+	// UsageProbe optionally names a built-in usage probe for this provider (currently "zai").
+	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -725,6 +736,8 @@ type OpenAICompatibilityAPIKey struct {
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	// Label is an optional operator-defined display name for this credential.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,

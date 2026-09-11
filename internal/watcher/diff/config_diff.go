@@ -197,6 +197,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.GeminiKey {
 			o := oldCfg.GeminiKey[i]
 			n := newCfg.GeminiKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("gemini[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}
@@ -232,6 +235,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.InteractionsKey {
 			o := oldCfg.InteractionsKey[i]
 			n := newCfg.InteractionsKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("interactions[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("interactions[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}
@@ -269,6 +275,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.ClaudeKey {
 			o := oldCfg.ClaudeKey[i]
 			n := newCfg.ClaudeKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("claude[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("claude[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}
@@ -323,6 +332,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.CodexKey {
 			o := oldCfg.CodexKey[i]
 			n := newCfg.CodexKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("codex[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("codex[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}
@@ -366,6 +378,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.XAIKey {
 			o := oldCfg.XAIKey[i]
 			n := newCfg.XAIKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("xai[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("xai[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}
@@ -453,6 +468,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		for i := range oldCfg.VertexCompatAPIKey {
 			o := oldCfg.VertexCompatAPIKey[i]
 			n := newCfg.VertexCompatAPIKey[i]
+			if o.Label != n.Label {
+				changes = append(changes, fmt.Sprintf("vertex[%d].label: updated", i))
+			}
 			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
 			}

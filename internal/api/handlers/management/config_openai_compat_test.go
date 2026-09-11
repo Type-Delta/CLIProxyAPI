@@ -18,10 +18,12 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 	h := NewHandlerWithoutConfigFilePath(&config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{
-				Name:    "Mimo CN",
-				BaseURL: "https://token-plan-cn.xiaomimimo.com/v1",
+				Name:           "Mimo CN",
+				BaseURL:        "https://token-plan-cn.xiaomimimo.com/v1",
+				PricingCatalog: "zai-coding-plan",
+				UsageProbe:     "zai",
 				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-					{APIKey: "test-key"},
+					{APIKey: "test-key", Label: "Mimo account"},
 				},
 				Models: []config.OpenAICompatibilityModel{
 					{Name: "mimo-v2.5", Alias: ""},
@@ -44,9 +46,14 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 
 	var body struct {
 		OpenAICompatibility []struct {
-			SupportPromptCacheKey *bool `json:"support-prompt-cache-key"`
-			DisableCooling        *bool `json:"disable-cooling"`
-			RequestRetry          *int  `json:"request-retry"`
+			SupportPromptCacheKey *bool  `json:"support-prompt-cache-key"`
+			DisableCooling        *bool  `json:"disable-cooling"`
+			RequestRetry          *int   `json:"request-retry"`
+			PricingCatalog        string `json:"pricing-catalog"`
+			UsageProbe            string `json:"usage-probe"`
+			APIKeyEntries         []struct {
+				Label string `json:"label"`
+			} `json:"api-key-entries"`
 		} `json:"openai-compatibility"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -63,5 +70,11 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 	}
 	if body.OpenAICompatibility[0].RequestRetry == nil || *body.OpenAICompatibility[0].RequestRetry != 0 {
 		t.Fatalf("expected request-retry to be present and 0, got %#v", body.OpenAICompatibility[0].RequestRetry)
+	}
+	if body.OpenAICompatibility[0].PricingCatalog != "zai-coding-plan" || body.OpenAICompatibility[0].UsageProbe != "zai" {
+		t.Fatalf("selectors = %q/%q, want zai-coding-plan/zai", body.OpenAICompatibility[0].PricingCatalog, body.OpenAICompatibility[0].UsageProbe)
+	}
+	if len(body.OpenAICompatibility[0].APIKeyEntries) != 1 || body.OpenAICompatibility[0].APIKeyEntries[0].Label != "Mimo account" {
+		t.Fatalf("api-key labels = %#v, want Mimo account", body.OpenAICompatibility[0].APIKeyEntries)
 	}
 }

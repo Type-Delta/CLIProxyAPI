@@ -345,6 +345,7 @@ type PricingMissing struct {
 
 type ProviderCredential struct {
 	CredentialID   string         `json:"credential_id"`
+	DisplayName    string         `json:"display_name"`
 	Provider       string         `json:"provider"`
 	AuthType       string         `json:"auth_type"`
 	Status         string         `json:"status"`
@@ -357,9 +358,21 @@ type ProviderCredential struct {
 }
 
 type ProviderQuota struct {
+	Limit     *int64                `json:"limit"`
+	Used      *int64                `json:"used"`
+	Remaining *int64                `json:"remaining"`
+	ResetsAt  *time.Time            `json:"resets_at"`
+	Windows   []ProviderQuotaWindow `json:"windows,omitempty"`
+}
+
+// ProviderQuotaWindow is one rolling usage window reported by a provider usage
+// probe (for example the Z.ai five-hour and weekly credit limits).
+type ProviderQuotaWindow struct {
+	Label     string     `json:"label"`
 	Limit     *int64     `json:"limit"`
 	Used      *int64     `json:"used"`
 	Remaining *int64     `json:"remaining"`
+	Percent   *float64   `json:"percent"`
 	ResetsAt  *time.Time `json:"resets_at"`
 }
 

@@ -38,7 +38,7 @@ func (s *SQLiteStore) RefreshPricing(ctx context.Context) (result PricingRefresh
 		return PricingRefreshResult{State: "unavailable", Err: err}, err
 	}
 	result = pricingRefreshResult(book, provenance, now)
-	if !resultShouldRefresh(result, now) {
+	if !s.resultShouldRefresh(result, now) {
 		return result, nil
 	}
 
@@ -62,7 +62,7 @@ func (s *SQLiteStore) RefreshPricing(ctx context.Context) (result PricingRefresh
 		return PricingRefreshResult{State: "unavailable", Err: err}, err
 	}
 	result = pricingRefreshResult(book, provenance, now)
-	if !resultShouldRefresh(result, now) {
+	if !s.resultShouldRefresh(result, now) {
 		s.pricingRefreshMu.Unlock()
 		return result, nil
 	}
@@ -114,11 +114,49 @@ func (s *SQLiteStore) nowPricing() time.Time {
 	return now().UTC()
 }
 
-func resultShouldRefresh(result PricingRefreshResult, now time.Time) bool {
-	if result.State == "fresh" || (!result.Snapshot.Provenance.CatalogRetryAt.IsZero() && now.Before(result.Snapshot.Provenance.CatalogRetryAt)) {
+func (s *SQLiteStore) resultShouldRefresh(result PricingRefreshResult, now time.Time) bool {
+	if !result.Snapshot.Provenance.CatalogRetryAt.IsZero() && now.Before(result.Snapshot.Provenance.CatalogRetryAt) {
 		return false
 	}
-	return true
+	return result.State != "fresh" || result.Snapshot.Provenance.CatalogBindingsDigest != s.catalogBindingsDigest()
+}
+
+func (s *SQLiteStore) catalogBindingsDigest() string {
+	s.mu.RLock()
+	bindings := append([]CatalogBinding(nil), s.config.CatalogBindings...)
+	s.mu.RUnlock()
+	return catalogBindingsDigest(bindings)
+}
+
+func catalogBindingsDigest(bindings []CatalogBinding) string {
+	canonical := normalizeCatalogBindings(bindings)
+	encoded, _ := json.Marshal(canonical)
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func normalizeCatalogBindings(bindings []CatalogBinding) []CatalogBinding {
+	canonical := make([]CatalogBinding, 0, len(bindings))
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		binding.Provider = strings.ToLower(strings.TrimSpace(binding.Provider))
+		binding.Catalog = strings.ToLower(strings.TrimSpace(binding.Catalog))
+		if binding.Provider == "" {
+			continue
+		}
+		if _, exists := seen[binding.Provider]; exists {
+			continue
+		}
+		seen[binding.Provider] = struct{}{}
+		canonical = append(canonical, binding)
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		if canonical[i].Provider != canonical[j].Provider {
+			return canonical[i].Provider < canonical[j].Provider
+		}
+		return canonical[i].Catalog < canonical[j].Catalog
+	})
+	return canonical
 }
 
 func pricingRefreshResult(book aggregate.PriceBook, provenance PricingProvenance, now time.Time) PricingRefreshResult {
@@ -236,6 +274,10 @@ func (s *SQLiteStore) replacePricingCatalog(ctx context.Context, catalog Pricing
 	provenance.CatalogExpiresAt = now.Add(PricingCatalogTTL)
 	provenance.CatalogRetryAt = time.Time{}
 	provenance.CatalogLastError = ""
+	provenance.CatalogBindingsDigest = catalog.BindingsDigest
+	if provenance.CatalogBindingsDigest == "" {
+		provenance.CatalogBindingsDigest = catalogBindingsDigest(s.config.CatalogBindings)
+	}
 	if provenance.Source == "" {
 		provenance.Source = "management-api"
 	}
@@ -258,10 +300,21 @@ func (s *SQLiteStore) replacePricingCatalog(ctx context.Context, catalog Pricing
 		_ = tx.Rollback()
 		return fmt.Errorf("clear pricing catalog rules: %w", err)
 	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pricing_catalog_providers"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear pricing catalog providers: %w", err)
+	}
 	for index := range catalog.Rules {
 		if err := insertPricingRule(ctx, tx, catalog.Rules[index], true); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert pricing catalog rule %d: %w", index, err)
+		}
+	}
+	for index := range catalog.Providers {
+		provider := catalog.Providers[index]
+		if _, err = tx.ExecContext(ctx, "INSERT INTO pricing_catalog_providers(id,name) VALUES (?,?)", provider.ID, provider.Name); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert pricing catalog provider %d: %w", index, err)
 		}
 	}
 	if err := writePricingProvenance(ctx, tx, provenance); err != nil {
@@ -285,7 +338,9 @@ func (s *SQLiteStore) replacePricingCatalog(ctx context.Context, catalog Pricing
 }
 
 type modelsDevFetcher struct {
-	client *http.Client
+	client   *http.Client
+	store    *SQLiteStore
+	bindings []CatalogBinding
 }
 
 func newModelsDevFetcher(client *http.Client) PricingFetcher {
@@ -296,6 +351,7 @@ func newModelsDevFetcher(client *http.Client) PricingFetcher {
 }
 
 type modelsDevProvider struct {
+	Name   string                    `json:"name"`
 	Models map[string]modelsDevModel `json:"models"`
 }
 
@@ -338,6 +394,15 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 		return PricingCatalog{}, fmt.Errorf("decode models.dev catalog: %w", err)
 	}
 	rules := make([]aggregate.PricingRule, 0)
+	providersList := make([]CatalogProvider, 0, len(providers))
+	for providerID, provider := range providers {
+		name := strings.TrimSpace(provider.Name)
+		if name == "" {
+			name = providerID
+		}
+		providersList = append(providersList, CatalogProvider{ID: providerID, Name: name})
+	}
+	sort.Slice(providersList, func(i, j int) bool { return providersList[i].ID < providersList[j].ID })
 	for _, mapping := range modelsDevProviderMappings {
 		provider, ok := providers[mapping.modelsDev]
 		if !ok {
@@ -354,14 +419,49 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 			rules = append(rules, rule)
 		}
 	}
+	bindings := append([]CatalogBinding(nil), f.bindings...)
+	if f.store != nil {
+		f.store.mu.RLock()
+		bindings = append(bindings, f.store.config.CatalogBindings...)
+		f.store.mu.RUnlock()
+	}
+	bindings = normalizeCatalogBindings(bindings)
+	for _, binding := range bindings {
+		providerID := binding.Provider
+		catalogID := binding.Catalog
+		if catalogID == "" {
+			catalogID = strings.TrimPrefix(providerID, "openai-compatible-")
+		}
+		provider, ok := providers[catalogID]
+		if !ok || providerID == "" {
+			continue
+		}
+		for modelID, entry := range provider.Models {
+			if entry.ID == "" {
+				entry.ID = modelID
+			}
+			rule, err := modelsDevRule(providerID, entry)
+			if err != nil {
+				return PricingCatalog{}, err
+			}
+			rules = append(rules, rule)
+		}
+	}
 	sort.Slice(rules, func(i, j int) bool {
 		if rules[i].Provider != rules[j].Provider {
 			return rules[i].Provider < rules[j].Provider
 		}
 		return rules[i].Model < rules[j].Model
 	})
-	digest := sha256.Sum256(body)
-	return PricingCatalog{Rules: rules, Digest: fmt.Sprintf("%x", digest[:])}, nil
+	digestInput, err := json.Marshal(struct {
+		Body     []byte
+		Bindings []CatalogBinding
+	}{Body: body, Bindings: bindings})
+	if err != nil {
+		return PricingCatalog{}, fmt.Errorf("encode models.dev catalog digest: %w", err)
+	}
+	digest := sha256.Sum256(digestInput)
+	return PricingCatalog{Rules: rules, Digest: fmt.Sprintf("%x", digest[:]), Providers: providersList, BindingsDigest: catalogBindingsDigest(bindings)}, nil
 }
 
 type modelsDevProviderMapping struct {

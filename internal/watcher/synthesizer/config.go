@@ -90,6 +90,11 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
 			"config_index": strconv.Itoa(i),
 		}
+		authLabel := label
+		if entry.Label != "" {
+			authLabel = entry.Label
+			attrs["label"] = entry.Label
+		}
 		if key != "" {
 			attrs["api_key"] = key
 		}
@@ -113,7 +118,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   provider,
-			Label:      label,
+			Label:      authLabel,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -152,6 +157,11 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			"source":       fmt.Sprintf("config:claude[%s]", token),
 			"config_index": strconv.Itoa(i),
 		}
+		authLabel := "claude-apikey"
+		if ck.Label != "" {
+			authLabel = ck.Label
+			attrs["label"] = ck.Label
+		}
 		if key != "" {
 			attrs["api_key"] = key
 		}
@@ -181,7 +191,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
-			Label:      "claude-apikey",
+			Label:      authLabel,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -229,6 +239,11 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
 			"config_index": strconv.Itoa(i),
 		}
+		authLabel := provider + "-apikey"
+		if entry.Label != "" {
+			authLabel = entry.Label
+			attrs["label"] = entry.Label
+		}
 		if key != "" {
 			attrs["api_key"] = key
 		}
@@ -258,7 +273,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   provider,
-			Label:      provider + "-apikey",
+			Label:      authLabel,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   strings.TrimSpace(entry.ProxyURL),
@@ -312,6 +327,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
 			}
+			authLabel := compat.Name
+			if entry.Label != "" {
+				authLabel = entry.Label
+				attrs["label"] = entry.Label
+			}
+			addOpenAICompatSelectors(compat, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -332,7 +353,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   internalProviderKey,
-				Label:      compat.Name,
+				Label:      authLabel,
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
@@ -358,6 +379,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
 			}
+			addOpenAICompatSelectors(compat, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -414,6 +436,11 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"provider_key": providerName,
 			"config_index": strconv.Itoa(i),
 		}
+		authLabel := "vertex-apikey"
+		if compat.Label != "" {
+			authLabel = compat.Label
+			attrs["label"] = compat.Label
+		}
 		if compat.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(compat.Priority)
 		}
@@ -433,7 +460,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
-			Label:      "vertex-apikey",
+			Label:      authLabel,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -449,4 +476,16 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		out = append(out, a)
 	}
 	return out
+}
+
+func addOpenAICompatSelectors(compat *config.OpenAICompatibility, attrs map[string]string) {
+	if compat == nil {
+		return
+	}
+	if catalog := strings.ToLower(strings.TrimSpace(compat.PricingCatalog)); catalog != "" {
+		attrs["pricing_catalog"] = catalog
+	}
+	if probe := strings.ToLower(strings.TrimSpace(compat.UsageProbe)); probe != "" {
+		attrs["usage_probe"] = probe
+	}
 }

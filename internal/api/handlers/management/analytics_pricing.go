@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type analyticsPricingSnapshot struct {
@@ -372,6 +373,7 @@ func (h *Handler) analyticsProviderRows(ctx context.Context, service cpauk.Servi
 	for _, row := range rows {
 		byIdentity[row.Provider+"\x00"+row.CredentialID] = row
 	}
+	probeCredentials := make(map[string]*coreauth.Auth)
 	for _, credential := range manager.List() {
 		if credential == nil {
 			continue
@@ -390,6 +392,7 @@ func (h *Handler) analyticsProviderRows(ctx context.Context, service cpauk.Servi
 		key := providerName + "\x00" + *credentialID
 		row := byIdentity[key]
 		row.CredentialID, row.Provider, row.AuthType = *credentialID, providerName, credential.AuthKind()
+		row.DisplayName = credentialDisplayName(credential)
 		row.Status = string(credential.Status)
 		switch {
 		case credential.Disabled:
@@ -425,7 +428,11 @@ func (h *Handler) analyticsProviderRows(ctx context.Context, service cpauk.Servi
 		}
 		row.Quota = observedProviderQuota(credential.Quota.Signals, credential.Quota.NextRecoverAt, row.Quota)
 		byIdentity[key] = row
+		if strings.TrimSpace(authAttribute(credential, "usage_probe")) != "" {
+			probeCredentials[key] = credential
+		}
 	}
+	h.applyUsageProbes(ctx, probeCredentials, byIdentity)
 	rows = rows[:0]
 	for _, row := range byIdentity {
 		rows = append(rows, row)

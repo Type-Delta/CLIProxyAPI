@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
 
 func newAnalyticsService(ctx context.Context, cfg *config.Config) cpauk.Service {
@@ -72,6 +74,21 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 	if path == "" {
 		path = filepath.Join(cfg.AuthDir, "state", "analytics", "analytics.db")
 	}
+	bindings := make([]cpauk.CatalogBinding, 0, len(cfg.OpenAICompatibility))
+	seenBindings := make(map[string]struct{}, len(cfg.OpenAICompatibility))
+	for _, entry := range cfg.OpenAICompatibility {
+		name := strings.ToLower(strings.TrimSpace(entry.Name))
+		if name == "" || entry.Disabled {
+			continue
+		}
+		provider := util.OpenAICompatibleProviderKey(name)
+		if _, exists := seenBindings[provider]; exists {
+			continue
+		}
+		seenBindings[provider] = struct{}{}
+		bindings = append(bindings, cpauk.CatalogBinding{Provider: provider, Catalog: strings.ToLower(strings.TrimSpace(entry.PricingCatalog))})
+	}
+	slices.SortFunc(bindings, func(left, right cpauk.CatalogBinding) int { return strings.Compare(left.Provider, right.Provider) })
 	return cpauk.Config{
 		Enabled:                 value.Enabled,
 		Path:                    path,
@@ -86,6 +103,7 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 		Privacy: cpauk.PrivacyConfig{
 			StoreCredentialID: value.Privacy.StoreCredentialID,
 		},
+		CatalogBindings: bindings,
 	}
 }
 
@@ -98,6 +116,10 @@ func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend,
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("create analytics cursor codec: %w", err)
 	}
+	bindings := make([]store.CatalogBinding, 0, len(cfg.CatalogBindings))
+	for _, binding := range cfg.CatalogBindings {
+		bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
+	}
 	database, err := store.Open(ctx, store.Config{
 		Path:              cfg.Path,
 		IdentityKeyPath:   filepath.Join(filepath.Dir(cfg.Path), "identity.key"),
@@ -106,6 +128,7 @@ func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend,
 		RetentionTimeZone: cfg.StorageTimeZone,
 		PriceBook:         aggregate.PriceBook{},
 		CursorCodec:       cursorCodec,
+		CatalogBindings:   bindings,
 	})
 	if err != nil {
 		return nil, [32]byte{}, err

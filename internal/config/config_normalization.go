@@ -157,6 +157,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
 		return
 	}
+	cfg.NormalizeOpenAICompatibilityFields()
 	out := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
 	for i := range cfg.OpenAICompatibility {
 		e := cfg.OpenAICompatibility[i]

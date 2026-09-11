@@ -24,15 +24,16 @@ const (
 )
 
 type PricingProvenance struct {
-	Source           string
-	SourceDigest     string
-	SyncedAt         time.Time
-	CatalogSource    string
-	CatalogDigest    string
-	CatalogSyncedAt  time.Time
-	CatalogExpiresAt time.Time
-	CatalogRetryAt   time.Time
-	CatalogLastError string
+	Source                string
+	SourceDigest          string
+	SyncedAt              time.Time
+	CatalogSource         string
+	CatalogDigest         string
+	CatalogSyncedAt       time.Time
+	CatalogExpiresAt      time.Time
+	CatalogRetryAt        time.Time
+	CatalogLastError      string
+	CatalogBindingsDigest string
 }
 
 type PricingSnapshot struct {
@@ -54,8 +55,17 @@ type PricingFetcher interface {
 }
 
 type PricingCatalog struct {
-	Rules  []aggregate.PricingRule
-	Digest string
+	Rules     []aggregate.PricingRule
+	Digest    string
+	Providers []CatalogProvider
+	// BindingsDigest identifies the catalog bindings the rules were built
+	// from so a reconfigure during an in-flight fetch still triggers a refetch.
+	BindingsDigest string
+}
+
+type CatalogProvider struct {
+	ID   string
+	Name string
 }
 
 // PricingCatalogStore is the persistence contract used by the service layer.
@@ -110,6 +120,7 @@ func (s *SQLiteStore) UpdatePriceBook(ctx context.Context, book aggregate.PriceB
 	provenance.CatalogExpiresAt = currentProvenance.CatalogExpiresAt
 	provenance.CatalogRetryAt = currentProvenance.CatalogRetryAt
 	provenance.CatalogLastError = currentProvenance.CatalogLastError
+	provenance.CatalogBindingsDigest = currentProvenance.CatalogBindingsDigest
 	if err := replaceManualPricingRules(ctx, s.db, manual, provenance); err != nil {
 		return aggregate.PriceBook{}, err
 	}
@@ -371,12 +382,16 @@ ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=exclud
 		provenance.Source, provenance.SourceDigest, provenance.SyncedAt.UnixNano()); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO pricing_catalog_provenance(singleton,source,source_digest,synced_at_ns,expires_at_ns,retry_at_ns,last_error)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pricing_catalog_provenance(singleton,source,source_digest,synced_at_ns,expires_at_ns,retry_at_ns,last_error)
 VALUES (1,?,?,?,?,?,?)
 ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,source_digest=excluded.source_digest,synced_at_ns=excluded.synced_at_ns,
-expires_at_ns=excluded.expires_at_ns,retry_at_ns=excluded.retry_at_ns,last_error=excluded.last_error`,
+	expires_at_ns=excluded.expires_at_ns,retry_at_ns=excluded.retry_at_ns,last_error=excluded.last_error`,
 		provenance.CatalogSource, provenance.CatalogDigest, unixNanoOrZero(provenance.CatalogSyncedAt),
-		unixNanoOrZero(provenance.CatalogExpiresAt), unixNanoOrZero(provenance.CatalogRetryAt), provenance.CatalogLastError)
+		unixNanoOrZero(provenance.CatalogExpiresAt), unixNanoOrZero(provenance.CatalogRetryAt), provenance.CatalogLastError); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO pricing_catalog_bindings(singleton,bindings_digest) VALUES (1,?)
+ON CONFLICT(singleton) DO UPDATE SET bindings_digest=excluded.bindings_digest`, provenance.CatalogBindingsDigest)
 	return err
 }
 
@@ -492,7 +507,45 @@ FROM pricing_catalog_provenance WHERE singleton=1`).Scan(&provenance.CatalogSour
 	if catalogRetryAt != 0 {
 		provenance.CatalogRetryAt = time.Unix(0, catalogRetryAt).UTC()
 	}
+	if err := database.QueryRowContext(ctx, "SELECT bindings_digest FROM pricing_catalog_bindings WHERE singleton=1").Scan(&provenance.CatalogBindingsDigest); err != nil && err != sql.ErrNoRows {
+		return PricingProvenance{}, fmt.Errorf("load catalog bindings provenance: %w", err)
+	}
 	return provenance, nil
+}
+
+func (s *SQLiteStore) CatalogProviders(ctx context.Context) (providers []CatalogProvider, updatedAt time.Time, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil, time.Time{}, ErrClosed
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id,name FROM pricing_catalog_providers ORDER BY id")
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("load pricing catalog providers: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			providers = nil
+			updatedAt = time.Time{}
+			err = fmt.Errorf("close pricing catalog providers: %w", closeErr)
+		}
+	}()
+	providers = make([]CatalogProvider, 0)
+	for rows.Next() {
+		var provider CatalogProvider
+		if err := rows.Scan(&provider.ID, &provider.Name); err != nil {
+			return nil, time.Time{}, fmt.Errorf("scan pricing catalog provider: %w", err)
+		}
+		providers = append(providers, provider)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf("read pricing catalog providers: %w", err)
+	}
+	provenance, err := loadPricingProvenance(ctx, s.db)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return providers, provenance.CatalogSyncedAt, nil
 }
 
 func clonePricingRules(rules []aggregate.PricingRule) []aggregate.PricingRule {

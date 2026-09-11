@@ -50,6 +50,7 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 	if found {
 		setAnalyticsNoStore(c)
 		var filename *string
+		var credentialLabel *string
 		identityProvider, canHash := service.(interface {
 			CredentialID(provider, authIndex, authID string) (*string, error)
 		})
@@ -72,13 +73,17 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 				if name != "" && name != "." && name != ".." {
 					filename = &name
 				}
+				if label := credentialDisplayName(credential); label != "" {
+					credentialLabel = &label
+				}
 				break
 			}
 		}
 		c.JSON(http.StatusOK, struct {
 			model.Event
 			CredentialFilename *string `json:"credential_filename"`
-		}{Event: event, CredentialFilename: filename})
+			CredentialLabel    *string `json:"credential_label"`
+		}{Event: event, CredentialFilename: filename, CredentialLabel: credentialLabel})
 		return
 	}
 	writeAnalyticsEnvelope(c, http.StatusNotFound, model.ErrorAnalyticsInvalidQuery, "The analytics event was not found.")

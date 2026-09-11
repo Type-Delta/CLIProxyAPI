@@ -592,6 +592,11 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	candidate := &config.Config{GeminiKey: arr}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.GeminiKey = append([]config.GeminiKey(nil), arr...)
 	h.cfg.SanitizeGeminiKeys()
 	h.persistLocked(c)
@@ -608,6 +613,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		Label               *string                          `json:"label"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -690,10 +696,19 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	if entry.APIKey == "" && entry.BaseURL == "" {
 		h.cfg.GeminiKey = append(h.cfg.GeminiKey[:targetIndex], h.cfg.GeminiKey[targetIndex+1:]...)
 		h.cfg.SanitizeGeminiKeys()
 		h.persistLocked(c)
+		return
+	}
+	candidate := &config.Config{GeminiKey: append([]config.GeminiKey(nil), h.cfg.GeminiKey...)}
+	candidate.GeminiKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
 		return
 	}
 	h.cfg.GeminiKey[targetIndex] = entry
@@ -794,6 +809,11 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	candidate := &config.Config{InteractionsKey: arr}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.InteractionsKey = append([]config.GeminiKey(nil), arr...)
 	h.cfg.SanitizeInteractionsKeys()
 	h.persistLocked(c)
@@ -810,6 +830,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		Label               *string                          `json:"label"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -893,10 +914,19 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	if entry.APIKey == "" && entry.BaseURL == "" {
 		h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:targetIndex], h.cfg.InteractionsKey[targetIndex+1:]...)
 		h.cfg.SanitizeInteractionsKeys()
 		h.persistLocked(c)
+		return
+	}
+	candidate := &config.Config{InteractionsKey: append([]config.GeminiKey(nil), h.cfg.InteractionsKey...)}
+	candidate.InteractionsKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
 		return
 	}
 	h.cfg.InteractionsKey[targetIndex] = entry
@@ -1019,6 +1049,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		DisableCooling          json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry            *int                             `json:"request-retry"`
 		RequestScopedErrors     *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		Label                   *string                          `json:"label"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -1098,7 +1129,16 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	normalizeClaudeKey(&entry)
+	candidate := &config.Config{ClaudeKey: append([]config.ClaudeKey(nil), h.cfg.ClaudeKey...)}
+	candidate.ClaudeKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.ClaudeKey[targetIndex] = entry
 	h.cfg.SanitizeClaudeKeys()
 	h.persistLocked(c)
@@ -1192,6 +1232,15 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 		}
 		filtered = append(filtered, arr[i])
 	}
+	candidate := &config.Config{OpenAICompatibility: filtered}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
+	if errValidate := candidate.ValidateOpenAICompatibilityFields(); errValidate != nil {
+		c.JSON(400, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.OpenAICompatibility = filtered
@@ -1211,6 +1260,8 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		SupportPromptCacheKey *bool                               `json:"support-prompt-cache-key"`
 		RequestRetry          *int                                `json:"request-retry"`
 		RequestScopedErrors   *[]config.RequestScopedErrorRule    `json:"request-scoped-errors"`
+		PricingCatalog        *string                             `json:"pricing-catalog"`
+		UsageProbe            *string                             `json:"usage-probe"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -1289,7 +1340,23 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.PricingCatalog != nil {
+		entry.PricingCatalog = *body.Value.PricingCatalog
+	}
+	if body.Value.UsageProbe != nil {
+		entry.UsageProbe = *body.Value.UsageProbe
+	}
 	normalizeOpenAICompatibilityEntry(&entry)
+	candidate := &config.Config{OpenAICompatibility: append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)}
+	candidate.OpenAICompatibility[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
+	if errValidate := candidate.ValidateOpenAICompatibilityFields(); errValidate != nil {
+		c.JSON(400, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.OpenAICompatibility[targetIndex] = entry
 	h.cfg.SanitizeOpenAICompatibility()
 	h.persistLocked(c)
@@ -1356,6 +1423,11 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	candidate := &config.Config{VertexCompatAPIKey: arr}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.VertexCompatAPIKey = append([]config.VertexCompatKey(nil), arr...)
 	h.cfg.SanitizeVertexCompatKeys()
 	h.persistLocked(c)
@@ -1372,6 +1444,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		ExcludedModels *[]string                   `json:"excluded-models"`
 		DisableCooling json.RawMessage             `json:"disable-cooling"`
 		RequestRetry   *int                        `json:"request-retry"`
+		Label          *string                     `json:"label"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -1448,7 +1521,16 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	if body.Value.RequestRetry != nil {
 		entry.RequestRetry = body.Value.RequestRetry
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	normalizeVertexCompatKey(&entry)
+	candidate := &config.Config{VertexCompatAPIKey: append([]config.VertexCompatKey(nil), h.cfg.VertexCompatAPIKey...)}
+	candidate.VertexCompatAPIKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.VertexCompatAPIKey[targetIndex] = entry
 	h.cfg.SanitizeVertexCompatKeys()
 	h.persistLocked(c)
@@ -1820,6 +1902,11 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 		}
 		filtered = append(filtered, entry)
 	}
+	candidate := &config.Config{CodexKey: filtered}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.CodexKey = filtered
@@ -1840,6 +1927,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		Label               *string                          `json:"label"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1920,7 +2008,16 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	normalizeCodexKey(&entry)
+	candidate := &config.Config{CodexKey: append([]config.CodexKey(nil), h.cfg.CodexKey...)}
+	candidate.CodexKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.CodexKey[targetIndex] = entry
 	h.cfg.SanitizeCodexKeys()
 	h.persistLocked(c)
@@ -2013,6 +2110,11 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 		}
 		filtered = append(filtered, entry)
 	}
+	candidate := &config.Config{XAIKey: filtered}
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.XAIKey = filtered
@@ -2035,6 +2137,7 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		DisableCooling      json.RawMessage                  `json:"disable-cooling"`
 		RequestRetry        *int                             `json:"request-retry"`
 		RequestScopedErrors *[]config.RequestScopedErrorRule `json:"request-scoped-errors"`
+		Label               *string                          `json:"label"`
 	}
 	var body struct {
 		Index *int         `json:"index"`
@@ -2118,7 +2221,16 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	if body.Value.RequestScopedErrors != nil {
 		entry.RequestScopedErrors = append([]config.RequestScopedErrorRule(nil), *body.Value.RequestScopedErrors...)
 	}
+	if body.Value.Label != nil {
+		entry.Label = *body.Value.Label
+	}
 	normalizeCodexKey(&entry)
+	candidate := &config.Config{XAIKey: append([]config.CodexKey(nil), h.cfg.XAIKey...)}
+	candidate.XAIKey[targetIndex] = entry
+	if errValidate := candidate.ValidateCredentialLabels(); errValidate != nil {
+		c.JSON(409, gin.H{"error": errValidate.Error()})
+		return
+	}
 	h.cfg.XAIKey[targetIndex] = entry
 	h.cfg.SanitizeXAIKeys()
 	h.persistLocked(c)
@@ -2199,6 +2311,9 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 		return
 	}
 	// Trim base-url; empty base-url indicates provider should be removed by sanitization
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.PricingCatalog = strings.ToLower(strings.TrimSpace(entry.PricingCatalog))
+	entry.UsageProbe = strings.ToLower(strings.TrimSpace(entry.UsageProbe))
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))

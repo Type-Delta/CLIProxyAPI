@@ -79,6 +79,16 @@ type PricingRefreshBackend interface {
 	RefreshPricing(context.Context) (store.PricingRefreshResult, error)
 }
 
+type CatalogProvider = store.CatalogProvider
+
+type CatalogProvidersBackend interface {
+	CatalogProviders(context.Context) ([]CatalogProvider, time.Time, error)
+}
+
+type CatalogBindingsReconfigurer interface {
+	SetCatalogBindings([]store.CatalogBinding)
+}
+
 // PricingRefreshRequester is additive so discovery remains outside the core
 // Service contract used by existing integrations.
 type PricingRefreshRequester interface {
@@ -420,6 +430,15 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 			return ReconfigureResult{Error: err}
 		}
 	}
+	if !catalogBindingsEqual(previous.CatalogBindings, config.CatalogBindings) {
+		if reconfigurer, ok := backend.(CatalogBindingsReconfigurer); ok {
+			bindings := make([]store.CatalogBinding, 0, len(config.CatalogBindings))
+			for _, binding := range config.CatalogBindings {
+				bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
+			}
+			reconfigurer.SetCatalogBindings(bindings)
+		}
+	}
 	s.mu.Lock()
 	s.config = config
 	s.invalidatePricingDemandLocked()
@@ -507,6 +526,25 @@ func (s *service) PricingSnapshot(ctx context.Context) (snapshot store.PricingSn
 		}
 	}()
 	return pricing.PricingSnapshot(ctx)
+}
+
+func (s *service) CatalogProviders(ctx context.Context) (providers []store.CatalogProvider, updatedAt time.Time, err error) {
+	backend, err := s.backendForRead()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	providerStore, ok := backend.(CatalogProvidersBackend)
+	if !ok {
+		return nil, time.Time{}, ErrUnavailable
+	}
+	defer func() {
+		if recover() != nil {
+			providers = nil
+			updatedAt = time.Time{}
+			err = ErrInternal
+		}
+	}()
+	return providerStore.CatalogProviders(ctx)
 }
 
 // RefreshPricing performs one demand-driven refresh for callers that can wait
@@ -1166,6 +1204,18 @@ func restartRequiredFields(previous, next Config) []string {
 		fields = append(fields, "privacy.store-credential-id")
 	}
 	return fields
+}
+
+func catalogBindingsEqual(left, right []CatalogBinding) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func callFactory(ctx context.Context, factory BackendFactory, config Config) (backend Backend, key [32]byte, err error) {

@@ -9,6 +9,12 @@ import (
 
 const sqliteMaximumPageCount int64 = 4_294_967_294
 
+func (s *SQLiteStore) SetCatalogBindings(bindings []CatalogBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config.CatalogBindings = normalizeCatalogBindings(bindings)
+}
+
 func (s *SQLiteStore) ReconfigureStorageBudget(ctx context.Context, maxBytes, minFreeBytes int64) error {
 	if maxBytes < 0 || minFreeBytes < 0 || maxBytes == 0 && minFreeBytes == 0 {
 		return fmt.Errorf("analytics storage limits cannot both be disabled")

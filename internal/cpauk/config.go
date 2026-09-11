@@ -26,21 +26,27 @@ type PrivacyConfig struct {
 	StoreCredentialID bool `yaml:"store-credential-id" json:"store_credential_id"`
 }
 
+type CatalogBinding struct {
+	Provider string
+	Catalog  string
+}
+
 // Config is the validated analytics configuration passed by CPA. The module
 // does not read or decode CPA configuration files itself.
 type Config struct {
-	Enabled                 bool          `yaml:"enabled" json:"enabled"`
-	Path                    string        `yaml:"path" json:"path"`
-	QueueCapacity           int           `yaml:"queue-capacity" json:"queue_capacity"`
-	BatchSize               int           `yaml:"batch-size" json:"batch_size"`
-	FlushInterval           time.Duration `yaml:"flush-interval" json:"flush_interval"`
-	HotRetentionDays        int           `yaml:"hot-retention-days" json:"hot_retention_days"`
-	CircuitFailureThreshold int           `yaml:"circuit-failure-threshold" json:"circuit_failure_threshold"`
-	MaxStorageBytes         int64         `yaml:"max-storage-bytes" json:"max_storage_bytes"`
-	MinFreeBytes            int64         `yaml:"min-free-bytes" json:"min_free_bytes"`
-	StorageTimeZone         string        `yaml:"storage-time-zone" json:"storage_time_zone"`
-	Privacy                 PrivacyConfig `yaml:"privacy" json:"privacy"`
-	ShutdownDrain           time.Duration `yaml:"-" json:"-"`
+	Enabled                 bool             `yaml:"enabled" json:"enabled"`
+	Path                    string           `yaml:"path" json:"path"`
+	QueueCapacity           int              `yaml:"queue-capacity" json:"queue_capacity"`
+	BatchSize               int              `yaml:"batch-size" json:"batch_size"`
+	FlushInterval           time.Duration    `yaml:"flush-interval" json:"flush_interval"`
+	HotRetentionDays        int              `yaml:"hot-retention-days" json:"hot_retention_days"`
+	CircuitFailureThreshold int              `yaml:"circuit-failure-threshold" json:"circuit_failure_threshold"`
+	MaxStorageBytes         int64            `yaml:"max-storage-bytes" json:"max_storage_bytes"`
+	MinFreeBytes            int64            `yaml:"min-free-bytes" json:"min_free_bytes"`
+	StorageTimeZone         string           `yaml:"storage-time-zone" json:"storage_time_zone"`
+	Privacy                 PrivacyConfig    `yaml:"privacy" json:"privacy"`
+	CatalogBindings         []CatalogBinding `yaml:"-" json:"-"`
+	ShutdownDrain           time.Duration    `yaml:"-" json:"-"`
 }
 
 func DefaultConfig() Config {

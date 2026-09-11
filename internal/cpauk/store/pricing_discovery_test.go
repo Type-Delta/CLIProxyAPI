@@ -202,3 +202,40 @@ func TestPricingDiscoveryPersistsAndManualOverridesSurviveRefresh(t *testing.T) 
 		t.Fatalf("post-refresh snapshot catalog=%d overrides=%d err=%v", len(snapshot.Catalog), len(snapshot.Overrides), err)
 	}
 }
+
+func TestPricingDiscoveryRefetchesWhenBindingsChangeDuringFetch(t *testing.T) {
+	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	input, output := model.NanoUSD(1), model.NanoUSD(2)
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	catalog := testPricingCatalog(input, output)
+	catalog.BindingsDigest = catalogBindingsDigest(nil)
+	fetcher := &testPricingFetcher{catalog: catalog, started: started, release: release}
+	database := openDiscoveryStore(t, filepath.Join(t.TempDir(), "analytics.db"), fetcher, &now)
+	results := make(chan error, 1)
+	go func() { _, err := database.RefreshPricing(context.Background()); results <- err }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first refresh did not start")
+	}
+	// A reconfigure lands while the fetch built from the old bindings is in flight.
+	database.SetCatalogBindings([]CatalogBinding{{Provider: "openai-compatible-zai", Catalog: "zai"}})
+	close(release)
+	select {
+	case err := <-results:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+	fetcher.mu.Lock()
+	fetcher.started, fetcher.release = nil, nil
+	fetcher.mu.Unlock()
+	if _, err := database.RefreshPricing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fetcher.count(); calls != 2 {
+		t.Fatalf("fetch calls after in-flight binding change = %d, want 2", calls)
+	}
+}
