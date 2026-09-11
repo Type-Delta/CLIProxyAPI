@@ -37,6 +37,36 @@ go build -o test-output ./cmd/server && unlink test-output # Verify compile (REQ
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
+## Remote-reachable dev server (BlackAmber)
+
+Use this when the owner needs to try a change in a real browser. It runs CPA from source with the owner's `config.yaml` and publishes it on the tailnet through Tailscale Serve (`aila` is the Serve operator). Nothing here is reachable from the public internet.
+
+```bash
+# 1. Build and render the dev config (auth-dir points at the repo's ./auths; config.yaml is git-ignored, never commit it)
+go build -o cli-proxy-api ./cmd/server
+mkdir -p /tmp/cpa-dev
+sed 's#auth-dir: .*#auth-dir: "/home/aila/Workspaces/Forks/CLIProxyAPI/auths"#' config.yaml > /tmp/cpa-dev/config.dev.yaml
+
+# 2. Start CPA on :8317 (detached; logs in /tmp/cpa-dev/cpa.log)
+setsid nohup ./cli-proxy-api -config /tmp/cpa-dev/config.dev.yaml > /tmp/cpa-dev/cpa.log 2>&1 < /dev/null &
+
+# 3. Publish on the tailnet: https://blackamber.tailc5ef75.ts.net/ -> CPA
+tailscale serve --bg --https=443 http://127.0.0.1:8317
+tailscale serve status
+
+# 4. Verify (401 means up and unauthenticated)
+curl -s -o /dev/null -w '%{http_code}\n' https://blackamber.tailc5ef75.ts.net/v0/management/capabilities
+
+# Stop: kill CPA and remove the Serve mapping
+pkill -x cli-proxy-api; tailscale serve --https=443 off
+```
+
+- UI: `https://blackamber.tailc5ef75.ts.net/management.html`. The owner logs in with just the management password; the panel uses the page origin as API base.
+- CPA serves the bundled CPAMC panel from `internal/managementasset/bundled/`. To test CPAMC changes, rebuild it (`bun run build` in `web/management-center`, then copy `dist/index.html` to `<static dir>/management.html` with a matching `management-artifact.json`, or run `scripts/build-management-center.sh` for the canonical artifact) and restart CPA. Set `MANAGEMENT_STATIC_PATH=<dir>` to serve an artifact from outside the repo.
+- Do not point the tailnet at the Vite dev server (`bun run dev`). `vite.config.ts` has no `/v0` proxy, so every management call from that origin fails and credentials appear missing. If Vite is needed for hot reload, the browser must be given CPA's URL as a custom connection URL on the login page, and CPA must be published on a second port (`tailscale serve --bg --https=8443 http://127.0.0.1:8317`).
+- `/tmp` is tmpfs and is wiped on reboot; keep nothing there that you cannot regenerate from the commands above.
+- Secrets such as the Z.ai key live in `pass` (`services/cli-proxy-api/zai-api-key`); render them into `config.yaml` at setup time, never into tracked files.
+
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory

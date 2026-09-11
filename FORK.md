@@ -558,7 +558,7 @@ Z.ai payload parser, and display-name precedence. A local CPA with a real Z.ai
 coding-plan key priced a `glm-4.7` request from the bound catalog, refetched
 the catalog after the binding changed through the management API, and served
 live five-hour and weekly windows. The bundled panel was rebuilt from CPAMC
-commit `b07189943449a9c0002dd153caf4e7dd0b231007` (CPAMC DL043).
+commit `a2eaf19e53f96b321dc51d25d6d7316c9222ecef` (CPAMC DL043).
 
 **Last updated:** 2026-09-11
 
