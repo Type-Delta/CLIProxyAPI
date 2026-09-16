@@ -609,6 +609,71 @@ disposable server build pass.
 
 **Last updated:** 2026-09-16
 
+### DL019 - Credential-labelled distributions, quota window gating, and Analysis chart metrics
+
+The Analysis credential distribution plotted the hashed credential id while every
+other dimension already showed something a person could read. Credential
+dimension rows now carry admin-only `credential_label` and `credential_filename`
+fields, resolved through the same loaded-credential lookup that event details
+use. The panel prefers the label, then the file name, then a compact id for
+credentials that are no longer configured. Viewer routes keep the previous
+behaviour and never receive either field.
+
+Top Models gained a tokens / price / generation segmented control. Tokens and
+price stay stacked bars; generation switches to a line of average per-bucket
+generation time, with `null` gaps where a bucket recorded no timing sample and
+a sample count beside each ranked model. `TimeseriesPoint` and `AnalysisModel`
+carry `generation_time_ms` and `generation_sample_count`, and the SQLite store
+aggregates the raw per-event timings into model and bucket totals so the average
+is weighted by samples instead of averaging bucket averages.
+
+Quota windows on one credential are gates, not independent buckets: whichever
+window runs out first decides when the credential works again. A new
+`windowGating` helper marks a window that still has headroom as unusable when a
+sibling that also governs the same requests is spent, and `QuotaMeter` keeps the
+remaining width while desaturating the fill into candy stripes, so the level
+stays legible and the row reads as temporarily unusable rather than empty.
+Codex groups the standard allowance, the code-review allowance, and each
+additional model allowance (Codex Spark) into independent families that gate
+only themselves. Claude treats the five-hour and seven-day windows as the
+family blockers, so exhausting either greys the model-scoped allowances such as
+Fable while spending Fable leaves the base windows alone. Z.AI credit windows
+gate each other. Monthly second windows follow the same rule as weekly ones.
+The stripe fill was added to both quota hosts and the blocked-window hint to all
+four locales.
+
+Smaller analytics changes in the same pass: Request Health now reaches amber
+below a 90% success rate (red below 50%, orange below 70%, amber below 90%,
+green above it), the Latency Diagnostics radar uses a linear millisecond axis
+instead of log10 so a vertex sits at the share of the slowest timing it actually
+represents, and the Active key badge breathes by modulating its colour, with a
+`prefers-reduced-motion` opt-out.
+
+**Implementation evidence:** `internal/cpauk/model/result.go`,
+`internal/cpauk/store/query.go`, `internal/cpauk/store/analysis.go`,
+`internal/api/handlers/management/credential_display.go`,
+`internal/api/handlers/management/analytics.go`,
+`internal/api/handlers/management/analytics_events.go`, and the CPAMC
+`src/features/quota/windowGating.ts`, `src/features/quota/providers/*/data.ts`,
+`src/features/analytics/views/analysis/*`, and `src/features/quota/QuotaMeter`.
+
+**Recorded validation:** `go test ./...`, `go build`, and the disposable server
+build pass, alongside 743 CPAMC tests, type-check, lint, and the production
+bundle build. A dev CPA served the rebuilt panel against a copy of the real
+analytics database: the credential dimension returned `credential_label` for the
+loadable Z.ai credential and the chart rendered that label instead of the hash;
+Top Models ranked by all three metrics with weighted averages (2 sec and 901 ms
+over 30 samples each); the radar placed a 2.2 sec generation vertex on the outer
+ring with 874 ms, 614 ms, and 457 ms proportionally inside it; the Z.ai card
+striped its 100% five-hour bar because the weekly window was exhausted; and
+desktop and 390 px mobile captures showed no horizontal overflow.
+
+The bundled panel was rebuilt from CPAMC commit
+`2bb3c54e7bbf35a8c0ffedb4ea0c26f9dc4a4de7` with artifact digest
+`06e082ab3c85d1d662977037f6878a3686ce93251d38cd4c20a3d48544e30d1c`.
+
+**Last updated:** 2026-09-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

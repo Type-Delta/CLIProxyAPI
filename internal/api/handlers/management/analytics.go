@@ -113,6 +113,21 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query model.Query) {
 		writeAnalyticsError(c, classifyAnalyticsReadError(err))
 		return
 	}
+	if query.Operation == model.OperationDimensions && query.Dimension == "credential" {
+		if page, ok := result.(model.DimensionPage); ok {
+			ids := make([]string, 0, len(page.Rows))
+			for _, row := range page.Rows {
+				ids = append(ids, row.Value)
+			}
+			displays := h.analyticsCredentialDisplays(service, "", ids)
+			for index := range page.Rows {
+				display := displays[page.Rows[index].Value]
+				page.Rows[index].CredentialLabel = display.label
+				page.Rows[index].CredentialFilename = display.filename
+			}
+			result = page
+		}
+	}
 	result = analyticsResultWithRange(result, query)
 	setAnalyticsNoStore(c)
 	c.JSON(http.StatusOK, result)

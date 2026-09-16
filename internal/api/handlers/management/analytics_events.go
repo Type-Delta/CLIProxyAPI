@@ -51,33 +51,10 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 		setAnalyticsNoStore(c)
 		var filename *string
 		var credentialLabel *string
-		identityProvider, canHash := service.(interface {
-			CredentialID(provider, authIndex, authID string) (*string, error)
-		})
-		h.mu.Lock()
-		manager := h.authManager
-		h.mu.Unlock()
-		if canHash && manager != nil && event.CredentialID != nil {
-			for _, credential := range manager.List() {
-				if credential == nil || !strings.EqualFold(strings.TrimSpace(credential.Provider), event.Provider) {
-					continue
-				}
-				id, errID := identityProvider.CredentialID(credential.Provider, credential.Index, credential.ID)
-				if errID != nil || id == nil || *id != *event.CredentialID {
-					continue
-				}
-				name := strings.TrimSpace(credential.FileName)
-				if index := strings.LastIndexAny(name, `/\`); index >= 0 {
-					name = name[index+1:]
-				}
-				if name != "" && name != "." && name != ".." {
-					filename = &name
-				}
-				if label := credentialDisplayName(credential); label != "" {
-					credentialLabel = &label
-				}
-				break
-			}
+		if event.CredentialID != nil {
+			display := h.analyticsCredentialDisplays(service, event.Provider, []string{*event.CredentialID})[*event.CredentialID]
+			filename = display.filename
+			credentialLabel = display.label
 		}
 		c.JSON(http.StatusOK, struct {
 			model.Event

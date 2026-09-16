@@ -148,13 +148,15 @@ type Summary struct {
 }
 
 type TimeseriesPoint struct {
-	Start            time.Time  `json:"start"`
-	End              time.Time  `json:"end"`
-	ProxyRequests    int64      `json:"proxy_requests"`
-	UpstreamAttempts int64      `json:"upstream_attempts"`
-	Tokens           TokenUsage `json:"tokens"`
-	KnownCost        NanoUSD    `json:"known_cost_usd"`
-	UnpricedTokens   int64      `json:"unpriced_tokens"`
+	Start                 time.Time  `json:"start"`
+	End                   time.Time  `json:"end"`
+	ProxyRequests         int64      `json:"proxy_requests"`
+	UpstreamAttempts      int64      `json:"upstream_attempts"`
+	Tokens                TokenUsage `json:"tokens"`
+	KnownCost             NanoUSD    `json:"known_cost_usd"`
+	UnpricedTokens        int64      `json:"unpriced_tokens"`
+	GenerationTimeMS      *int64     `json:"generation_time_ms,omitempty"`
+	GenerationSampleCount int64      `json:"generation_sample_count,omitempty"`
 }
 
 type Timeseries struct {
@@ -163,12 +165,14 @@ type Timeseries struct {
 }
 
 type DimensionRow struct {
-	Value            string     `json:"value"`
-	ProxyRequests    int64      `json:"proxy_requests"`
-	UpstreamAttempts int64      `json:"upstream_attempts"`
-	Tokens           TokenUsage `json:"tokens"`
-	KnownCost        NanoUSD    `json:"known_cost_usd"`
-	UnpricedTokens   int64      `json:"unpriced_tokens"`
+	Value              string     `json:"value"`
+	ProxyRequests      int64      `json:"proxy_requests"`
+	UpstreamAttempts   int64      `json:"upstream_attempts"`
+	Tokens             TokenUsage `json:"tokens"`
+	KnownCost          NanoUSD    `json:"known_cost_usd"`
+	UnpricedTokens     int64      `json:"unpriced_tokens"`
+	CredentialLabel    *string    `json:"credential_label,omitempty"`
+	CredentialFilename *string    `json:"credential_filename,omitempty"`
 }
 
 type DimensionPage struct {
@@ -292,17 +296,19 @@ type ActivityBucket struct {
 }
 
 type AnalysisModel struct {
-	Model               string  `json:"model"`
-	Requests            int64   `json:"requests"`
-	InputTokens         int64   `json:"input_tokens"`
-	OutputTokens        int64   `json:"output_tokens"`
-	CachedTokens        int64   `json:"cached_tokens"`
-	CacheReadTokens     int64   `json:"cache_read_tokens"`
-	CacheCreationTokens int64   `json:"cache_creation_tokens"`
-	ReasoningTokens     int64   `json:"reasoning_tokens"`
-	TotalTokens         int64   `json:"total_tokens"`
-	KnownCost           NanoUSD `json:"known_cost_usd"`
-	UnpricedTokens      int64   `json:"unpriced_tokens"`
+	Model                 string  `json:"model"`
+	Requests              int64   `json:"requests"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	CacheReadTokens       int64   `json:"cache_read_tokens"`
+	CacheCreationTokens   int64   `json:"cache_creation_tokens"`
+	ReasoningTokens       int64   `json:"reasoning_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	KnownCost             NanoUSD `json:"known_cost_usd"`
+	UnpricedTokens        int64   `json:"unpriced_tokens"`
+	GenerationTimeMS      *int64  `json:"generation_time_ms"`
+	GenerationSampleCount int64   `json:"generation_sample_count"`
 }
 
 type AnalysisModelBucket struct {

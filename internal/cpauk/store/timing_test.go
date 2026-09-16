@@ -49,6 +49,29 @@ func TestTimingCoverageAggregatesAndImportRoundTrip(t *testing.T) {
 	if metric.SampleCount != 4 || metric.TotalMS == nil || *metric.TotalMS != 220 || metric.MedianMS == nil || *metric.MedianMS != 60 || metric.P95MS == nil || *metric.P95MS != 100 || metric.MaxMS == nil || *metric.MaxMS != 100 {
 		t.Fatalf("generation metrics=%+v", metric)
 	}
+	var modelGenerationTotal, modelGenerationSamples int64
+	for _, item := range analysis.ModelByTime.Models {
+		if item.Model != "model-v2" {
+			continue
+		}
+		if item.GenerationTimeMS == nil || *item.GenerationTimeMS != 220 || item.GenerationSampleCount != 4 {
+			t.Fatalf("model generation metrics=%+v", item)
+		}
+	}
+	for _, bucket := range analysis.ModelByTime.Buckets {
+		for _, item := range bucket.Models {
+			if item.Model != "model-v2" {
+				continue
+			}
+			if item.GenerationTimeMS != nil {
+				modelGenerationTotal += *item.GenerationTimeMS
+			}
+			modelGenerationSamples += item.GenerationSampleCount
+		}
+	}
+	if modelGenerationTotal != 220 || modelGenerationSamples != 4 {
+		t.Fatalf("model bucket generation total=%d samples=%d, want 220/4", modelGenerationTotal, modelGenerationSamples)
+	}
 	for _, key := range []string{"latency", "provider_latency"} {
 		value := analysis.Latency.Metrics[key]
 		if value.Source == "unavailable" || value.TotalMS != nil || value.SampleCount != 0 {

@@ -112,7 +112,7 @@ func TestSummaryMarshalsFrozenV2Fields(t *testing.T) {
 }
 
 func TestAnalysisRowsExposeUnpricedTokens(t *testing.T) {
-	assertJSONFields(t, AnalysisModel{}, []string{"unpriced_tokens"})
+	assertJSONFields(t, AnalysisModel{}, []string{"unpriced_tokens", "generation_time_ms", "generation_sample_count"})
 	assertJSONFields(t, AnalysisMatrixCell{}, []string{"unpriced_tokens"})
 	assertJSONFields(t, ActivityBucket{}, []string{"unpriced_tokens"})
 }

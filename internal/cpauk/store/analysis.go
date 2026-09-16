@@ -78,6 +78,7 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 		return model.AnalysisModelByTime{}, fmt.Errorf("query analysis models: %w", err)
 	}
 	result := model.AnalysisModelByTime{Models: make([]model.AnalysisModel, 0, len(dimensions.Rows))}
+	modelIndexes := make(map[string]int, len(dimensions.Rows))
 	for _, row := range dimensions.Rows {
 		item := model.AnalysisModel{
 			Model: row.Value, Requests: row.ProxyRequests, InputTokens: row.Tokens.Input,
@@ -86,6 +87,7 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 			ReasoningTokens: row.Tokens.Reasoning, TotalTokens: row.Tokens.Total, KnownCost: row.KnownCost,
 			UnpricedTokens: row.UnpricedTokens,
 		}
+		modelIndexes[row.Value] = len(result.Models)
 		result.Models = append(result.Models, item)
 	}
 	width := analysisBucketWidth(query)
@@ -112,6 +114,8 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 		if errSeries != nil {
 			return model.AnalysisModelByTime{}, fmt.Errorf("query analysis model buckets: %w", errSeries)
 		}
+		var generationTotal int64
+		var generationSamples int64
 		for _, point := range timeseries.Points {
 			bucket := buckets[point.Start.UnixNano()]
 			if bucket == nil {
@@ -123,9 +127,19 @@ func (s *SQLiteStore) analysisModels(ctx context.Context, query model.Query) (mo
 				OutputTokens: point.Tokens.Output, CachedTokens: point.Tokens.Cached,
 				CacheReadTokens: point.Tokens.CacheRead, CacheCreationTokens: point.Tokens.CacheCreation,
 				ReasoningTokens: point.Tokens.Reasoning, TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost,
-				UnpricedTokens: point.UnpricedTokens,
+				UnpricedTokens: point.UnpricedTokens, GenerationTimeMS: point.GenerationTimeMS,
+				GenerationSampleCount: point.GenerationSampleCount,
 			}
 			bucket.Models = append(bucket.Models, modelPoint)
+			if point.GenerationTimeMS != nil {
+				generationTotal += *point.GenerationTimeMS
+			}
+			generationSamples += point.GenerationSampleCount
+		}
+		if generationSamples > 0 {
+			index := modelIndexes[item.Model]
+			result.Models[index].GenerationTimeMS = &generationTotal
+			result.Models[index].GenerationSampleCount = generationSamples
 		}
 	}
 	starts := make([]int64, 0, len(buckets))

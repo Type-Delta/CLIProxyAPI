@@ -194,7 +194,8 @@ func (s *SQLiteStore) Timeseries(ctx context.Context, query model.Query) (model.
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns, proxy_request_id,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
-cache_creation_tokens, total_tokens, token_quality, known_cost_nano, unpriced_tokens
+cache_creation_tokens, total_tokens, token_quality, known_cost_nano, unpriced_tokens,
+generation_time_ms
 FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 	if err != nil {
 		return model.Timeseries{}, fmt.Errorf("query analytics timeseries: %w", err)
@@ -205,8 +206,8 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 		var requestedNS int64
 		var requestID, quality string
 		var input, output, reasoning, cached, cacheRead, cacheCreation, totalTokens, unpriced int64
-		var cost sql.NullInt64
-		if err := rows.Scan(&requestedNS, &requestID, &input, &output, &reasoning, &cached, &cacheRead, &cacheCreation, &totalTokens, &quality, &cost, &unpriced); err != nil {
+		var cost, generation sql.NullInt64
+		if err := rows.Scan(&requestedNS, &requestID, &input, &output, &reasoning, &cached, &cacheRead, &cacheCreation, &totalTokens, &quality, &cost, &unpriced, &generation); err != nil {
 			return model.Timeseries{}, fmt.Errorf("scan analytics timeseries row: %w", err)
 		}
 		start, end, err := aggregate.BucketBounds(time.Unix(0, requestedNS).UTC(), query.TimeZone, query.BucketWidth)
@@ -229,6 +230,14 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 		state.point.Tokens.Total += totalTokens
 		if cost.Valid {
 			state.point.KnownCost += model.NanoUSD(cost.Int64)
+		}
+		if generation.Valid {
+			total := generation.Int64
+			if state.point.GenerationTimeMS != nil {
+				total += *state.point.GenerationTimeMS
+			}
+			state.point.GenerationTimeMS = &total
+			state.point.GenerationSampleCount++
 		}
 		state.point.UnpricedTokens += unpriced
 		state.quality = combineQuality(state.quality, model.TokenQuality(quality))
