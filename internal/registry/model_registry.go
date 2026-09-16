@@ -1075,7 +1075,7 @@ func modelRegistrationAvailability(registration *ModelRegistration, now time.Tim
 	otherSuspended := 0
 	if registration.SuspendedClients != nil {
 		for _, reason := range registration.SuspendedClients {
-			if strings.EqualFold(reason, "quota") {
+			if modelListCooldownReason(reason) {
 				cooldownSuspended++
 				continue
 			}
@@ -1090,6 +1090,17 @@ func modelRegistrationAvailability(registration *ModelRegistration, now time.Tim
 
 	available := effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0)
 	return available, expiresAt
+}
+
+// modelListCooldownReason reports whether a suspension only cools down routing.
+// Temporary rate limits and upstream failures do not mean the model is unsupported.
+func modelListCooldownReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "quota", "credential_quota", "transient":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetAvailableModelInfos returns cloned metadata for all currently available models.
@@ -1266,7 +1277,7 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 					if p, okProvider := r.clientProviders[clientID]; !okProvider || p != provider {
 						continue
 					}
-					if strings.EqualFold(reason, "quota") {
+					if modelListCooldownReason(reason) {
 						cooldownSuspended++
 						continue
 					}

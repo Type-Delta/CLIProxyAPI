@@ -562,6 +562,26 @@ commit `a2eaf19e53f96b321dc51d25d6d7316c9222ecef` (CPAMC DL043).
 
 **Last updated:** 2026-09-11
 
+### DL017 - Temporary upstream failures stay in model lists
+
+HTTP 429 and 5xx responses still cool down request routing, but they no longer
+remove the affected model from registry-backed client model lists. A
+credential-scoped 429 also keeps sibling models listed when it propagates
+credential quota state. Disabled credentials remain hidden and the temporary
+failure normalization does not apply to terminal errors such as 401, 403, or
+404.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_models.go`,
+`internal/registry/model_registry.go`, and
+`sdk/cliproxy/auth/conductor_model_list_visibility_test.go`.
+
+**Recorded validation:** focused regression tests cover credential-scoped 429
+siblings plus HTTP 500, 503, and 599, while also verifying that routing remains
+blocked during each cooldown and disabled credentials remain hidden.
+`go test ./... -count=1` and the disposable server build check pass.
+
+**Last updated:** 2026-09-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

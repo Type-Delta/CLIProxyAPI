@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -236,20 +237,26 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 
 	state := existingModelState(auth, targetKey)
 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
+	suspendReason := ""
+	if isSuspended {
+		suspendReason = "disabled"
+	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		isSuspended = true
 	}
 	isQuotaExceeded := false
-	var suspendReason string
 	if state != nil {
-		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
+		if state.Status == StatusDisabled {
+			isSuspended = true
+			suspendReason = "disabled"
+		} else if state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
 			isSuspended = true
 		}
 		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
 			isQuotaExceeded = true
 		}
-		if isSuspended {
-			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+		if isSuspended && suspendReason == "" {
+			suspendReason = registrySuspendReason(state.StatusMessage, state.Quota, state.LastError)
 		}
 	}
 	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
@@ -260,7 +267,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		isSuspended = true
 	}
 	if isSuspended && suspendReason == "" {
-		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+		suspendReason = registrySuspendReason(auth.StatusMessage, auth.Quota, auth.LastError)
 	}
 
 	return registry.ClientModelProjection{
@@ -269,6 +276,20 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 		SuspendReason: suspendReason,
 		QuotaExceeded: isQuotaExceeded,
 	}
+}
+
+// registrySuspendReason keeps cooldown state visible in model lists for temporary
+// upstream failures, while the scheduler continues using the original error state.
+func registrySuspendReason(statusMessage string, quota QuotaState, lastErr *Error) string {
+	if lastErr != nil {
+		switch {
+		case lastErr.HTTPStatus == http.StatusTooManyRequests:
+			return "quota"
+		case lastErr.HTTPStatus >= http.StatusInternalServerError && lastErr.HTTPStatus < 600:
+			return "transient"
+		}
+	}
+	return cooldownReason(statusMessage, quota, lastErr)
 }
 
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {
