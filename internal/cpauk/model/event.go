@@ -93,6 +93,61 @@ type Event struct {
 	PriceSource    string   `json:"price_source,omitempty"`
 	ImportBatchID  string   `json:"import_batch_id,omitempty"`
 	Source         string   `json:"source,omitempty"`
+	// Query-time throughput enrichment, filled only when an event is read from durable storage.
+	// TokensPerSecond stays absent when CPA cannot publish an observed or estimated rate.
+	TokensPerSecond *float64 `json:"tokens_per_second,omitempty"`
+	SpeedEstimated  bool     `json:"speed_estimated,omitempty"`
+}
+
+// ThroughputEstimationRatio is the share of the pre-generation wait below which a recorded
+// generation interval is treated as an observation artefact instead of real throughput. A
+// provider cannot finish a response in less than this fraction of the time it spent
+// acknowledging the request and waiting for the first token.
+const ThroughputEstimationRatio = 0.08
+
+// Throughput is the event's output rate in tokens per second. medianAckMS is the provider
+// acknowledgement median for the event's credential; the estimate cannot be published without
+// it. estimated reports whether the value came from the estimation branch, and ok reports
+// whether CPA can publish a rate at all.
+//
+// A recorded generation interval shorter than ThroughputEstimationRatio of the pre-generation
+// wait is implausible, so the rate is derived from the whole measured span minus the credential's
+// median acknowledgement instead. The pre-generation wait is what remains of the measured
+// first-token latency after the acknowledgement, so a missing acknowledgement leaves the whole
+// first-token latency as wait and an unavailable wait or generation contributes zero. Missing,
+// zero, or negative acknowledgement and median inputs make the estimate unavailable.
+func (e Event) Throughput(medianAckMS *float64) (value float64, estimated bool, ok bool) {
+	output := e.Tokens.Output
+	if output <= 0 {
+		return 0, false, false
+	}
+	ackMS := 0.0
+	ackOK := e.ProviderLatencyMS != nil && *e.ProviderLatencyMS > 0
+	if ackOK {
+		ackMS = float64(*e.ProviderLatencyMS)
+	}
+	waitMS := 0.0
+	if e.FirstTokenLatencyMS != nil && float64(*e.FirstTokenLatencyMS) >= ackMS {
+		waitMS = float64(*e.FirstTokenLatencyMS) - ackMS
+	}
+	generationMS := 0.0
+	if e.GenerationTimeMS != nil && *e.GenerationTimeMS > 0 {
+		generationMS = float64(*e.GenerationTimeMS)
+	}
+	if (ackMS+waitMS)*ThroughputEstimationRatio > generationMS {
+		if !ackOK || medianAckMS == nil || *medianAckMS <= 0 {
+			return 0, false, false
+		}
+		durationMS := ackMS + waitMS + generationMS - *medianAckMS
+		if durationMS <= 0 {
+			return 0, false, false
+		}
+		return float64(output) / (durationMS / 1000), true, true
+	}
+	if generationMS <= 0 {
+		return 0, false, false
+	}
+	return float64(output) / (generationMS / 1000), false, true
 }
 
 func (e Event) Validate() error {

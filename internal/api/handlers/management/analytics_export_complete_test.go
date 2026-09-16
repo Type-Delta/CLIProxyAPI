@@ -37,6 +37,13 @@ func TestAnalyticsExportsRetainRecordedEventFields(t *testing.T) {
 	if err = json.Unmarshal(canonicalBytes, &canonical); err != nil {
 		t.Fatal(err)
 	}
+	// Throughput is derived at read time from the surrounding credential history rather than
+	// recorded on the event, so exports of recorded fields deliberately omit it.
+	if _, ok := canonical["tokens_per_second"]; !ok {
+		t.Fatal("response-only field tokens_per_second is missing from the event JSON")
+	}
+	delete(canonical, "tokens_per_second")
+	delete(canonical, "speed_estimated")
 	reader := &analyticsHandlerReader{events: model.EventPage{Events: []model.Event{event}}}
 	handler := &Handler{analytics: &analyticsHandlerService{reader: reader, state: model.StateReady}}
 	export := func(format string) []byte {

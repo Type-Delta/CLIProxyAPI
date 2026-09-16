@@ -109,6 +109,10 @@ The authenticated single-event detail response additionally includes nullable
 only the backing filename, without a host directory. Missing or deleted credentials
 return null. Stored events, exports, and shared viewer responses retain hashed IDs.
 
+Every event read also carries the CPA-derived throughput described under
+[Throughput estimation](#throughput-estimation). Both fields are response-only;
+intake and storage never persist them.
+
 ### Hop diagnostics (schema v1, additive)
 
 Every event carries nullable per-hop fields describing
@@ -274,4 +278,24 @@ monotonic clock and never subtract timestamps supplied by another machine.
 Existing `latency_ms` remains E2E attempt duration. Existing TTFT behavior remains unchanged,
 including its first-packet fallback; the new first-token latency requires a substantive token.
 
-Native HTTP generation observers read decoded upstream data independently of downstream forwarding. Codex WebSocket observations use socket-read timestamps. Bounded queue saturation invalidates the attempt's generation duration while retaining first-output latency already observed; timing cannot be reconstructed after backpressure stops upstream reads. No fixed duration or TPS threshold changes measured values. Codex nonstream requests can have measured generation duration because their upstream response is SSE. Terminal-only output cannot supply a generation interval. CPAMC labels its existing duration/TTFT throughput fallback `EST`; this does not replace missing generation duration with a fabricated measurement.
+Native HTTP generation observers read decoded upstream data independently of downstream forwarding. Codex WebSocket observations use socket-read timestamps. Bounded queue saturation invalidates the attempt's generation duration while retaining first-output latency already observed; timing cannot be reconstructed after backpressure stops upstream reads. A recorded generation interval below eight percent of the pre-generation wait is treated as an observation artefact and replaced by the credential-baselined estimate described below. Codex nonstream requests can have measured generation duration because their upstream response is SSE. Terminal-only output cannot supply a generation interval. CPAMC renders the CPA-derived rate and marks estimated values `EST`.
+
+### Throughput estimation
+
+CPA derives `tokens_per_second` for each event it reads, rather than letting each client invent its
+own rate. A recorded generation interval below eight percent of the pre-generation wait is not
+physically reachable, so those events publish
+`output tokens / (provider_latency_ms + wait + generation_time_ms - median provider latency)`
+instead, with `speed_estimated` set. The estimated span expresses the whole measured request minus
+the credential's normal acknowledgement overhead.
+
+The baseline is the median `provider_latency_ms` for the **same credential** over the twenty-four
+hours ending at the query range end. One credential backs one upstream account, so a baseline mixed
+across credentials would skew the result. The estimate stays unavailable when the event has no
+usable provider acknowledgement, its credential has no observation in that window, or the span is
+not positive. The wait is `first_token_latency_ms - provider_latency_ms`, and a missing
+acknowledgement leaves the whole first-token latency as wait. Wait and generation intervals that
+were not recorded count as zero, matching the request. Events that do not trigger the estimate keep
+their measured generation rate, and events with no recorded first-token latency stay measured
+because nothing suggests the interval was compressed. CPAMC renders an estimated rate with `EST`
+and never recomputes it.

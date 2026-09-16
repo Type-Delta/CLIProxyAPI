@@ -668,9 +668,55 @@ ring with 874 ms, 614 ms, and 457 ms proportionally inside it; the Z.ai card
 striped its 100% five-hour bar because the weekly window was exhausted; and
 desktop and 390 px mobile captures showed no horizontal overflow.
 
+The bundled panel is rebuilt from the current CPAMC pin; see the latest
+divergence entry for its recorded commit and artifact digest.
+
+**Last updated:** 2026-09-16
+
+### DL020 - Credential-scoped throughput estimation
+
+The event throughput column only replaced a recorded generation duration when it was missing or
+zero, so compressed observations of a millisecond or a few milliseconds survived as physically
+impossible rates. CPA now treats a recorded generation interval as unusable when
+`(provider_latency_ms + wait) * 0.08 > generation_time_ms`, where the wait is
+`first_token_latency_ms - provider_latency_ms`, and publishes
+`output tokens / (provider_latency_ms + wait + generation_time_ms - median provider latency)`
+instead. The estimate expresses the whole measured request minus the credential's normal
+acknowledgement overhead. This replaces the earlier rule that no TPS threshold rejected fast
+generation.
+
+The baseline is the median `provider_latency_ms` for the **same credential** over the twenty-four
+hours ending at the query range end, because one credential backs one upstream account and a
+baseline mixed across credentials would skew the result. The store computes it with one windowed
+query per event read and applies it to both the events list and the single-event detail. A
+credential with no observation in that window, a missing or non-positive provider acknowledgement,
+or a non-positive span leaves the rate unpublished rather than guessed; the wait and generation
+intervals count as zero when they were not recorded, and an event with no recorded first-token
+latency keeps its measured rate because nothing suggests compression.
+
+The derivation moved out of CPAMC so the table, the detail chart, the export path, and any other
+client agree on one value. Events now carry response-only `tokens_per_second` and
+`speed_estimated`; intake and storage still persist neither. CPAMC renders the published rate and
+marks an estimate with its compact `EST` badge, and shows `Unavailable` when a server publishes no
+rate.
+
+**Implementation evidence:** `internal/cpauk/model/event.go`,
+`internal/cpauk/model/throughput_test.go`, `internal/cpauk/store/timing.go`,
+`internal/cpauk/store/query.go`, `internal/cpauk/store/throughput_test.go`, and the CPAMC
+`src/features/analytics/views/events/eventDiagnostics.ts` and `src/types/analytics.ts`.
+
+**Recorded validation:** focused model tests cover the observed branch, the threshold boundary, the
+compressed-generation estimate, the zero-valued inputs, and every unavailable input; store tests
+cover the credential-scoped median, the trailing-day window, and the detail lookup. `go test
+./...`, the required disposable server build, and the CPAMC suite, type-check, lint, and production
+bundle pass. A temporary CPA served a fixture copied from the real analytics database: the events
+API published the expected `1000` estimated tokens per second for a compressed 10 ms generation,
+and the bundled panel and event detail rendered `1,000 tokens/s` with the `EST`/`Estimated` label
+at desktop and 390 px widths without overflow.
+
 The bundled panel was rebuilt from CPAMC commit
-`2bb3c54e7bbf35a8c0ffedb4ea0c26f9dc4a4de7` with artifact digest
-`06e082ab3c85d1d662977037f6878a3686ce93251d38cd4c20a3d48544e30d1c`.
+`8fabf52c5a223352c3cd16eb9f91ae680190e947` with artifact digest
+`ce3e9e4883d157dd60873bbbe247e264300d9832d59c60ad0dcbbeb60b87c5ad`.
 
 **Last updated:** 2026-09-16
 

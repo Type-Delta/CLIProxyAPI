@@ -379,6 +379,10 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+countWhere, countArguments...).Scan(&totalCount); err != nil {
 		return model.EventPage{}, fmt.Errorf("count analytics events: %w", err)
 	}
+	medians, err := s.credentialAckMedians(ctx, query)
+	if err != nil {
+		return model.EventPage{}, err
+	}
 	rows, err := s.db.QueryContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" ORDER BY requested_at_ns DESC, attempt_id ASC LIMIT ?", arguments...)
 	if err != nil {
 		return model.EventPage{}, fmt.Errorf("query analytics events: %w", err)
@@ -403,6 +407,9 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 		if err != nil {
 			return model.EventPage{}, err
 		}
+	}
+	for index := range result.Events {
+		applyThroughput(&result.Events[index], medians)
 	}
 	return result, nil
 }
@@ -436,6 +443,11 @@ func (s *SQLiteStore) EventByAttemptID(ctx context.Context, attemptID string, qu
 	if err != nil {
 		return model.Event{}, false, err
 	}
+	medians, err := s.credentialAckMedians(ctx, query)
+	if err != nil {
+		return model.Event{}, false, err
+	}
+	applyThroughput(&event, medians)
 	return event, true, nil
 }
 
