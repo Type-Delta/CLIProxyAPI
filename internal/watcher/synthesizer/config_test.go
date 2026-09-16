@@ -1123,6 +1123,101 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_ProjectsCredentialSelectors(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			GeminiKey: []config.GeminiKey{{
+				APIKey:         "gemini-key",
+				PricingCatalog: " GEMINI-CATALOG ",
+				UsageProbe:     " ZAI ",
+			}},
+			InteractionsKey: []config.GeminiKey{{
+				APIKey:         "interactions-key",
+				PricingCatalog: " INTERACTIONS-CATALOG ",
+				UsageProbe:     " OPENCODE-GO ",
+			}},
+			ClaudeKey: []config.ClaudeKey{{
+				APIKey:         "claude-key",
+				PricingCatalog: " CLAUDE-CATALOG ",
+				UsageProbe:     " ZAI ",
+			}},
+			CodexKey: []config.CodexKey{{
+				APIKey:         "codex-key",
+				PricingCatalog: " CODEX-CATALOG ",
+				UsageProbe:     " OPENCODE-GO ",
+			}},
+			XAIKey: []config.XAIKey{{
+				APIKey:         "xai-key",
+				PricingCatalog: " XAI-CATALOG ",
+				UsageProbe:     " ZAI ",
+			}},
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:           "compat",
+					BaseURL:        "https://compat.example.com",
+					PricingCatalog: " COMPAT-CATALOG ",
+					UsageProbe:     " ZAI ",
+				},
+				{
+					Name:    "plain",
+					BaseURL: "https://plain.example.com",
+				},
+			},
+			VertexCompatAPIKey: []config.VertexCompatKey{{
+				APIKey:         "vertex-key",
+				BaseURL:        "https://vertex.example.com",
+				PricingCatalog: " VERTEX-CATALOG ",
+				UsageProbe:     " OPENCODE-GO ",
+			}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
+	}
+	want := map[string]struct {
+		pricingCatalog string
+		usageProbe     string
+	}{
+		"gemini":                   {"gemini-catalog", "zai"},
+		"gemini-interactions":      {"interactions-catalog", "opencode-go"},
+		"claude":                   {"claude-catalog", "zai"},
+		"codex":                    {"codex-catalog", "opencode-go"},
+		"xai":                      {"xai-catalog", "zai"},
+		"openai-compatible-compat": {"compat-catalog", "zai"},
+		"vertex":                   {"vertex-catalog", "opencode-go"},
+	}
+	for _, auth := range auths {
+		if auth.Provider == "openai-compatible-plain" {
+			if _, exists := auth.Attributes["pricing_catalog"]; exists {
+				t.Errorf("empty pricing_catalog attribute was not omitted")
+			}
+			if _, exists := auth.Attributes["usage_probe"]; exists {
+				t.Errorf("empty usage_probe attribute was not omitted")
+			}
+			continue
+		}
+		expected, ok := want[auth.Provider]
+		if !ok {
+			continue
+		}
+		if got := auth.Attributes["pricing_catalog"]; got != expected.pricingCatalog {
+			t.Errorf("%s pricing_catalog = %q, want %q", auth.Provider, got, expected.pricingCatalog)
+		}
+		if got := auth.Attributes["usage_probe"]; got != expected.usageProbe {
+			t.Errorf("%s usage_probe = %q, want %q", auth.Provider, got, expected.usageProbe)
+		}
+		delete(want, auth.Provider)
+	}
+	for provider := range want {
+		t.Errorf("missing synthesized provider %q", provider)
+	}
+}
+
 func TestConfigSynthesizer_RequestRetry(t *testing.T) {
 	zero := 0
 	positive := 2

@@ -90,6 +90,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
 			"config_index": strconv.Itoa(i),
 		}
+		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
 		authLabel := label
 		if entry.Label != "" {
 			authLabel = entry.Label
@@ -157,6 +158,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			"source":       fmt.Sprintf("config:claude[%s]", token),
 			"config_index": strconv.Itoa(i),
 		}
+		addCredentialSelectorsToAttrs(ck.PricingCatalog, ck.UsageProbe, attrs)
 		authLabel := "claude-apikey"
 		if ck.Label != "" {
 			authLabel = ck.Label
@@ -239,6 +241,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
 			"config_index": strconv.Itoa(i),
 		}
+		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
 		authLabel := provider + "-apikey"
 		if entry.Label != "" {
 			authLabel = entry.Label
@@ -332,7 +335,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				authLabel = entry.Label
 				attrs["label"] = entry.Label
 			}
-			addOpenAICompatSelectors(compat, attrs)
+			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -379,7 +382,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
 			}
-			addOpenAICompatSelectors(compat, attrs)
+			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -436,6 +439,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"provider_key": providerName,
 			"config_index": strconv.Itoa(i),
 		}
+		addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 		authLabel := "vertex-apikey"
 		if compat.Label != "" {
 			authLabel = compat.Label
@@ -478,14 +482,11 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 	return out
 }
 
-func addOpenAICompatSelectors(compat *config.OpenAICompatibility, attrs map[string]string) {
-	if compat == nil {
-		return
-	}
-	if catalog := strings.ToLower(strings.TrimSpace(compat.PricingCatalog)); catalog != "" {
+func addCredentialSelectorsToAttrs(pricingCatalog, usageProbe string, attrs map[string]string) {
+	if catalog := strings.ToLower(strings.TrimSpace(pricingCatalog)); catalog != "" {
 		attrs["pricing_catalog"] = catalog
 	}
-	if probe := strings.ToLower(strings.TrimSpace(compat.UsageProbe)); probe != "" {
+	if probe := strings.ToLower(strings.TrimSpace(usageProbe)); probe != "" {
 		attrs["usage_probe"] = probe
 	}
 }

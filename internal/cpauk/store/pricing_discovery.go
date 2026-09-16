@@ -403,7 +403,23 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 		providersList = append(providersList, CatalogProvider{ID: providerID, Name: name})
 	}
 	sort.Slice(providersList, func(i, j int) bool { return providersList[i].ID < providersList[j].ID })
+	bindings := append([]CatalogBinding(nil), f.bindings...)
+	if f.store != nil {
+		f.store.mu.RLock()
+		bindings = append(bindings, f.store.config.CatalogBindings...)
+		f.store.mu.RUnlock()
+	}
+	bindings = normalizeCatalogBindings(bindings)
+	explicitCatalogProviders := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding.Catalog != "" {
+			explicitCatalogProviders[binding.Provider] = struct{}{}
+		}
+	}
 	for _, mapping := range modelsDevProviderMappings {
+		if _, overridden := explicitCatalogProviders[mapping.cpa]; overridden {
+			continue
+		}
 		provider, ok := providers[mapping.modelsDev]
 		if !ok {
 			continue
@@ -419,13 +435,6 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 			rules = append(rules, rule)
 		}
 	}
-	bindings := append([]CatalogBinding(nil), f.bindings...)
-	if f.store != nil {
-		f.store.mu.RLock()
-		bindings = append(bindings, f.store.config.CatalogBindings...)
-		f.store.mu.RUnlock()
-	}
-	bindings = normalizeCatalogBindings(bindings)
 	for _, binding := range bindings {
 		providerID := binding.Provider
 		catalogID := binding.Catalog

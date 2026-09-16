@@ -227,6 +227,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("gemini[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
 			changes = appendOptionalIntChange(changes, fmt.Sprintf("gemini[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			changes = appendCredentialSelectorChanges(changes, "gemini", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 		}
 	}
 	if len(oldCfg.InteractionsKey) != len(newCfg.InteractionsKey) {
@@ -265,6 +266,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("interactions[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
 			changes = appendOptionalIntChange(changes, fmt.Sprintf("interactions[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			changes = appendCredentialSelectorChanges(changes, "interactions", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 		}
 	}
 
@@ -311,6 +313,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("claude[%d].fingerprint-profile: %s -> %s", i, strings.TrimSpace(o.FingerprintProfile), strings.TrimSpace(n.FingerprintProfile)))
 			}
 			changes = appendOptionalIntChange(changes, fmt.Sprintf("claude[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			changes = appendCredentialSelectorChanges(changes, "claude", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 			if o.Cloak != nil && n.Cloak != nil {
 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {
 					changes = append(changes, fmt.Sprintf("claude[%d].cloak.mode: %s -> %s", i, o.Cloak.Mode, n.Cloak.Mode))
@@ -368,6 +371,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("codex[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
 			changes = appendOptionalIntChange(changes, fmt.Sprintf("codex[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			changes = appendCredentialSelectorChanges(changes, "codex", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 		}
 	}
 
@@ -414,6 +418,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("xai[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
+			changes = appendCredentialSelectorChanges(changes, "xai", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 		}
 	}
 
@@ -498,6 +503,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 				changes = append(changes, fmt.Sprintf("vertex[%d].headers: updated", i))
 			}
 			changes = appendOptionalIntChange(changes, fmt.Sprintf("vertex[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			changes = appendCredentialSelectorChanges(changes, "vertex", i, o.PricingCatalog, n.PricingCatalog, o.UsageProbe, n.UsageProbe)
 		}
 	}
 
@@ -548,6 +554,16 @@ func appendOptionalIntChange(changes []string, field string, oldVal, newVal *int
 		return changes
 	}
 	return append(changes, fmt.Sprintf("%s: %s -> %s", field, formatOptionalInt(oldVal), formatOptionalInt(newVal)))
+}
+
+func appendCredentialSelectorChanges(changes []string, section string, index int, oldPricingCatalog, newPricingCatalog, oldUsageProbe, newUsageProbe string) []string {
+	if oldPricingCatalog != newPricingCatalog {
+		changes = append(changes, fmt.Sprintf("%s[%d].pricing-catalog updated", section, index))
+	}
+	if oldUsageProbe != newUsageProbe {
+		changes = append(changes, fmt.Sprintf("%s[%d].usage-probe updated", section, index))
+	}
+	return changes
 }
 
 func appendOptionalBoolChange(changes []string, field string, oldVal, newVal *bool) []string {

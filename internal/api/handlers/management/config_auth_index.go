@@ -10,27 +10,37 @@ import (
 
 type geminiKeyWithAuthIndex struct {
 	config.GeminiKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	PricingCatalog string `json:"pricing-catalog,omitempty"`
+	UsageProbe     string `json:"usage-probe,omitempty"`
+	AuthIndex      string `json:"auth-index,omitempty"`
 }
 
 type claudeKeyWithAuthIndex struct {
 	config.ClaudeKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	PricingCatalog string `json:"pricing-catalog,omitempty"`
+	UsageProbe     string `json:"usage-probe,omitempty"`
+	AuthIndex      string `json:"auth-index,omitempty"`
 }
 
 type codexKeyWithAuthIndex struct {
 	config.CodexKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	PricingCatalog string `json:"pricing-catalog,omitempty"`
+	UsageProbe     string `json:"usage-probe,omitempty"`
+	AuthIndex      string `json:"auth-index,omitempty"`
 }
 
 type xaiKeyWithAuthIndex struct {
 	config.XAIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	PricingCatalog string `json:"pricing-catalog,omitempty"`
+	UsageProbe     string `json:"usage-probe,omitempty"`
+	AuthIndex      string `json:"auth-index,omitempty"`
 }
 
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	PricingCatalog string `json:"pricing-catalog,omitempty"`
+	UsageProbe     string `json:"usage-probe,omitempty"`
+	AuthIndex      string `json:"auth-index,omitempty"`
 }
 
 type openAICompatibilityAPIKeyWithAuthIndex struct {
@@ -114,8 +124,10 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:      entry,
+			PricingCatalog: entry.PricingCatalog,
+			UsageProbe:     entry.UsageProbe,
+			AuthIndex:      authIndex,
 		}
 	}
 	return out
@@ -147,8 +159,10 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:      entry,
+			PricingCatalog: entry.PricingCatalog,
+			UsageProbe:     entry.UsageProbe,
+			AuthIndex:      authIndex,
 		}
 	}
 	return out
@@ -180,8 +194,10 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = claudeKeyWithAuthIndex{
-			ClaudeKey: entry,
-			AuthIndex: authIndex,
+			ClaudeKey:      entry,
+			PricingCatalog: entry.PricingCatalog,
+			UsageProbe:     entry.UsageProbe,
+			AuthIndex:      authIndex,
 		}
 	}
 	return out
@@ -213,8 +229,10 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = codexKeyWithAuthIndex{
-			CodexKey:  entry,
-			AuthIndex: authIndex,
+			CodexKey:       entry,
+			PricingCatalog: entry.PricingCatalog,
+			UsageProbe:     entry.UsageProbe,
+			AuthIndex:      authIndex,
 		}
 	}
 	return out
@@ -246,8 +264,10 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = xaiKeyWithAuthIndex{
-			XAIKey:    entry,
-			AuthIndex: authIndex,
+			XAIKey:         entry,
+			PricingCatalog: entry.PricingCatalog,
+			UsageProbe:     entry.UsageProbe,
+			AuthIndex:      authIndex,
 		}
 	}
 	return out
@@ -273,6 +293,8 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		authIndex := liveIndexByID[id]
 		out[i] = vertexCompatKeyWithAuthIndex{
 			VertexCompatKey: entry,
+			PricingCatalog:  entry.PricingCatalog,
+			UsageProbe:      entry.UsageProbe,
 			AuthIndex:       authIndex,
 		}
 	}

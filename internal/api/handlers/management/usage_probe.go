@@ -36,6 +36,18 @@ type zaiQuotaResponse struct {
 	} `json:"data"`
 }
 
+type opencodeGoQuotaResponse struct {
+	Usage json.RawMessage `json:"usage"`
+}
+
+type opencodeGoQuotaWindowResponse struct {
+	Percent   *float64 `json:"percent"`
+	ResetsAt  *string  `json:"resetsAt"`
+	Limit     *int64   `json:"limit"`
+	Used      *int64   `json:"used"`
+	Remaining *int64   `json:"remaining"`
+}
+
 func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error) {
 	var response zaiQuotaResponse
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -75,32 +87,56 @@ func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error
 	return windows, nil
 }
 
-func probeUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.ProviderQuota, error) {
-	if auth == nil || !strings.EqualFold(strings.TrimSpace(authAttribute(auth, "usage_probe")), "zai") {
-		return nil, fmt.Errorf("unsupported usage probe")
+func parseOpenCodeGoQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
+	var response opencodeGoQuotaResponse
+	if errUnmarshal := json.Unmarshal(body, &response); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode OpenCode Go quota response: %w", errUnmarshal)
 	}
-	parsedURL, errParseURL := url.Parse(zaiUsageQuotaURL)
-	if errParseURL != nil {
-		return nil, fmt.Errorf("parse Z.ai quota URL: %w", errParseURL)
+	rawUsage := strings.TrimSpace(string(response.Usage))
+	if rawUsage == "" || rawUsage == "null" {
+		return nil, nil
 	}
-	headers := map[string]string{
-		"Accept":        "application/json",
-		"Authorization": "Bearer $TOKEN$",
+
+	var usage map[string]json.RawMessage
+	if errUnmarshalUsage := json.Unmarshal(response.Usage, &usage); errUnmarshalUsage != nil {
+		return nil, nil
 	}
-	key := buildQuotaCacheKey(h, auth, http.MethodGet, parsedURL, "", headers, "")
-	outcome := h.getQuotaCache().do(ctx, key, func(requestContext context.Context) quotaCallOutcome {
-		return h.executeAPICall(requestContext, http.MethodGet, zaiUsageQuotaURL, auth, "", headers, "")
-	})
-	if outcome.outerError != "" {
-		return nil, fmt.Errorf("Z.ai usage request failed: %s", outcome.outerError)
+
+	windows := make([]model.ProviderQuotaWindow, 0, len(usage))
+	for _, label := range []string{"rolling", "weekly", "monthly"} {
+		rawWindow, ok := usage[label]
+		if !ok {
+			continue
+		}
+		var responseWindow opencodeGoQuotaWindowResponse
+		if errUnmarshalWindow := json.Unmarshal(rawWindow, &responseWindow); errUnmarshalWindow != nil {
+			continue
+		}
+		if responseWindow.Percent == nil || *responseWindow.Percent < 0 || *responseWindow.Percent > 100 {
+			continue
+		}
+
+		window := model.ProviderQuotaWindow{
+			Label:     label,
+			Limit:     responseWindow.Limit,
+			Used:      responseWindow.Used,
+			Remaining: responseWindow.Remaining,
+			Percent:   responseWindow.Percent,
+		}
+		if responseWindow.ResetsAt != nil {
+			reset, errParseReset := time.Parse(time.RFC3339, strings.TrimSpace(*responseWindow.ResetsAt))
+			if errParseReset != nil {
+				continue
+			}
+			reset = reset.UTC()
+			window.ResetsAt = &reset
+		}
+		windows = append(windows, window)
 	}
-	if !outcome.successfulResponse() {
-		return nil, fmt.Errorf("Z.ai usage request returned status %d", outcome.response.StatusCode)
-	}
-	windows, errParseQuota := parseZaiQuota([]byte(outcome.response.Body), time.Now().UTC())
-	if errParseQuota != nil {
-		return nil, errParseQuota
-	}
+	return windows, nil
+}
+
+func providerQuotaFromWindows(windows []model.ProviderQuotaWindow) *model.ProviderQuota {
 	quota := &model.ProviderQuota{Windows: windows}
 	selected := -1
 	for index := range windows {
@@ -116,7 +152,57 @@ func probeUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.Pr
 		window := windows[selected]
 		quota.Limit, quota.Used, quota.Remaining, quota.ResetsAt = window.Limit, window.Used, window.Remaining, window.ResetsAt
 	}
-	return quota, nil
+	return quota
+}
+
+func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) (*model.ProviderQuota, error) {
+	parsedURL, errParseURL := url.Parse(targetURL)
+	if errParseURL != nil {
+		return nil, fmt.Errorf("parse %s quota URL: %w", name, errParseURL)
+	}
+	headers := map[string]string{
+		"Accept":        "application/json",
+		"Authorization": "Bearer $TOKEN$",
+	}
+	key := buildQuotaCacheKey(h, auth, http.MethodGet, parsedURL, "", headers, "")
+	outcome := h.getQuotaCache().do(ctx, key, func(requestContext context.Context) quotaCallOutcome {
+		return h.executeAPICall(requestContext, http.MethodGet, targetURL, auth, "", headers, "")
+	})
+	if outcome.outerError != "" {
+		return nil, fmt.Errorf("%s usage request failed: %s", name, outcome.outerError)
+	}
+	if !outcome.successfulResponse() {
+		return nil, fmt.Errorf("%s usage request returned status %d", name, outcome.response.StatusCode)
+	}
+	windows, errParseQuota := parse([]byte(outcome.response.Body))
+	if errParseQuota != nil {
+		return nil, errParseQuota
+	}
+	return providerQuotaFromWindows(windows), nil
+}
+
+func probeZaiUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.ProviderQuota, error) {
+	return runUsageProbe(ctx, h, auth, "Z.ai", zaiUsageQuotaURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
+		return parseZaiQuota(body, time.Now().UTC())
+	})
+}
+
+func probeOpenCodeGoUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.ProviderQuota, error) {
+	return runUsageProbe(ctx, h, auth, "OpenCode Go", opencodeGoUsageQuotaURL, parseOpenCodeGoQuota)
+}
+
+var usageProbes = map[string]func(context.Context, *Handler, *coreauth.Auth) (*model.ProviderQuota, error){
+	"zai":         probeZaiUsage,
+	"opencode-go": probeOpenCodeGoUsage,
+}
+
+func probeUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.ProviderQuota, error) {
+	probeName := strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe")))
+	probe, ok := usageProbes[probeName]
+	if !ok || probe == nil {
+		return nil, fmt.Errorf("unsupported usage probe %q", probeName)
+	}
+	return probe(ctx, h, auth)
 }
 
 type usageProbeResult struct {

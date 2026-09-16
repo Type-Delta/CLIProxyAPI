@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +14,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
 )
+
+type pricingDiscoveryTransport func(*http.Request) (*http.Response, error)
+
+func (transport pricingDiscoveryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
 
 type testPricingFetcher struct {
 	mu      sync.Mutex
@@ -237,5 +245,29 @@ func TestPricingDiscoveryRefetchesWhenBindingsChangeDuringFetch(t *testing.T) {
 	}
 	if calls := fetcher.count(); calls != 2 {
 		t.Fatalf("fetch calls after in-flight binding change = %d, want 2", calls)
+	}
+}
+
+func TestPricingDiscoveryExplicitCatalogBindingSuppressesStaticMapping(t *testing.T) {
+	client := &http.Client{Transport: pricingDiscoveryTransport(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{
+			"xai":{"models":{"xai-static":{"id":"xai-static","cost":{"input":1,"output":2}}}},
+			"custom-xai":{"models":{"xai-explicit":{"id":"xai-explicit","cost":{"input":3,"output":4}}}}
+		}`))}, nil
+	})}
+	fetcher := modelsDevFetcher{client: client, bindings: []CatalogBinding{
+		{Provider: "xai", Catalog: "custom-xai"},
+	}}
+
+	catalog, err := fetcher.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Rules) != 1 {
+		t.Fatalf("catalog rules=%+v, want one explicit rule", catalog.Rules)
+	}
+	rule := catalog.Rules[0]
+	if rule.Provider != "xai" || rule.Model != "xai-explicit" {
+		t.Fatalf("explicit rule=%+v", rule)
 	}
 }

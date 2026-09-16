@@ -515,18 +515,19 @@ func digestQuotaKey(value string) string {
 }
 
 const (
-	claudeProfileQuotaURL = "https://api.anthropic.com/api/oauth/profile"
-	claudeUsageQuotaURL   = "https://api.anthropic.com/api/oauth/usage"
-	codexUsageQuotaURL    = "https://chatgpt.com/backend-api/wham/usage"
-	codexResetCreditsURL  = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
-	codexConsumeURL       = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
-	kimiUsageQuotaURL     = "https://api.kimi.com/coding/v1/usages"
-	xaiWeeklyQuotaURL     = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
-	xaiMonthlyQuotaURL    = "https://cli-chat-proxy.grok.com/v1/billing"
-	xaiProfileQuotaURL    = "https://api.x.ai/v1/me"
-	xaiHealthURL          = "https://api.x.ai/v1/chat/completions"
-	xaiHealthModel        = "grok-4.5"
-	antigravityCodeAssist = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	claudeProfileQuotaURL   = "https://api.anthropic.com/api/oauth/profile"
+	claudeUsageQuotaURL     = "https://api.anthropic.com/api/oauth/usage"
+	codexUsageQuotaURL      = "https://chatgpt.com/backend-api/wham/usage"
+	codexResetCreditsURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	codexConsumeURL         = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	kimiUsageQuotaURL       = "https://api.kimi.com/coding/v1/usages"
+	xaiWeeklyQuotaURL       = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+	xaiMonthlyQuotaURL      = "https://cli-chat-proxy.grok.com/v1/billing"
+	xaiProfileQuotaURL      = "https://api.x.ai/v1/me"
+	xaiHealthURL            = "https://api.x.ai/v1/chat/completions"
+	xaiHealthModel          = "grok-4.5"
+	antigravityCodeAssist   = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	opencodeGoUsageQuotaURL = "https://opencode.ai/zen/go/v1/usage"
 )
 
 var antigravityQuotaHosts = map[string]struct{}{
@@ -541,8 +542,14 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	method = strings.ToUpper(strings.TrimSpace(method))
-	if strings.EqualFold(strings.TrimSpace(authAttribute(auth, "usage_probe")), "zai") && method == http.MethodGet && exactQuotaURL(rawURL, zaiUsageQuotaURL) {
-		return quotaRequestCacheable
+	if method == http.MethodGet {
+		usageProbe := strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe")))
+		if usageProbe == "zai" && exactQuotaURL(rawURL, zaiUsageQuotaURL) {
+			return quotaRequestCacheable
+		}
+		if usageProbe == "opencode-go" && exactQuotaURL(rawURL, opencodeGoUsageQuotaURL) {
+			return quotaRequestCacheable
+		}
 	}
 	switch provider {
 	case "claude":

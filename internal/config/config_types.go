@@ -411,6 +411,12 @@ type ClaudeKey struct {
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
 
+	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
+	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
+
+	// UsageProbe optionally names a built-in usage probe for this provider.
+	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -530,6 +536,12 @@ type CodexKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
+	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
+
+	// UsageProbe optionally names a built-in usage probe for this provider.
+	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -629,6 +641,12 @@ type GeminiKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
+	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
+
+	// UsageProbe optionally names a built-in usage probe for this provider.
+	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -721,7 +739,7 @@ type OpenAICompatibility struct {
 	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
 	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
 
-	// UsageProbe optionally names a built-in usage probe for this provider (currently "zai").
+	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 }
 

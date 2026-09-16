@@ -159,6 +159,86 @@ func TestBuildConfigChangeDetails_GeminiVertexHeaders(t *testing.T) {
 	expectContains(t, details, "gemini[0].excluded-models: updated (1 -> 2 entries)")
 }
 
+func TestBuildConfigChangeDetails_CredentialSelectors(t *testing.T) {
+	oldCfg := &config.Config{
+		GeminiKey: []config.GeminiKey{{
+			APIKey:         "gemini-key",
+			PricingCatalog: "gemini-old",
+			UsageProbe:     "zai",
+		}},
+		InteractionsKey: []config.GeminiKey{{
+			APIKey:         "interactions-key",
+			PricingCatalog: "interactions-old",
+			UsageProbe:     "zai",
+		}},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "claude-key",
+		}},
+		CodexKey: []config.CodexKey{{
+			APIKey:         "codex-key",
+			PricingCatalog: "codex-old",
+		}},
+		XAIKey: []config.XAIKey{{
+			APIKey:         "xai-key",
+			PricingCatalog: "xai-old",
+			UsageProbe:     "zai",
+		}},
+		VertexCompatAPIKey: []config.VertexCompatKey{{
+			APIKey:         "vertex-key",
+			PricingCatalog: "vertex-old",
+			UsageProbe:     "zai",
+		}},
+	}
+	newCfg := &config.Config{
+		GeminiKey: []config.GeminiKey{{
+			APIKey:         "gemini-key",
+			PricingCatalog: "gemini-new",
+			UsageProbe:     "opencode-go",
+		}},
+		InteractionsKey: []config.GeminiKey{{
+			APIKey: "interactions-key",
+		}},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey:         "claude-key",
+			PricingCatalog: "claude-new",
+			UsageProbe:     "zai",
+		}},
+		CodexKey: []config.CodexKey{{
+			APIKey:         "codex-key",
+			PricingCatalog: "codex-new",
+			UsageProbe:     "opencode-go",
+		}},
+		XAIKey: []config.XAIKey{{
+			APIKey:         "xai-key",
+			PricingCatalog: "xai-new",
+			UsageProbe:     "opencode-go",
+		}},
+		VertexCompatAPIKey: []config.VertexCompatKey{{
+			APIKey:         "vertex-key",
+			PricingCatalog: "vertex-new",
+			UsageProbe:     "opencode-go",
+		}},
+	}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	for _, expected := range []string{
+		"gemini[0].pricing-catalog updated",
+		"gemini[0].usage-probe updated",
+		"interactions[0].pricing-catalog updated",
+		"interactions[0].usage-probe updated",
+		"claude[0].pricing-catalog updated",
+		"claude[0].usage-probe updated",
+		"codex[0].pricing-catalog updated",
+		"codex[0].usage-probe updated",
+		"xai[0].pricing-catalog updated",
+		"xai[0].usage-probe updated",
+		"vertex[0].pricing-catalog updated",
+		"vertex[0].usage-probe updated",
+	} {
+		expectContains(t, changes, expected)
+	}
+}
+
 func TestBuildConfigChangeDetails_ModelPrefixes(t *testing.T) {
 	oldCfg := &config.Config{
 		GeminiKey: []config.GeminiKey{

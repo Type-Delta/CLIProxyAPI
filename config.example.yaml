@@ -375,6 +375,8 @@ nonstream-keepalive-interval: 0
 # gemini-api-key:
 #   - api-key: "AIzaSy...01"
 #     label: "primary Gemini" # optional display label; must be unique in this list
+#     pricing-catalog: "google" # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai" # optional credential-scoped built-in usage probe (zai or opencode-go)
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/gemini-3-pro-preview" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
@@ -418,6 +420,8 @@ nonstream-keepalive-interval: 0
 # interactions-api-key:
 #   - api-key: "AIzaSy...03"
 #     label: "native Interactions" # optional display label; must be unique in this list
+#     pricing-catalog: "google" # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai" # optional credential-scoped built-in usage probe (zai or opencode-go)
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "native" # optional: require calls like "native/gemini-3-pro-preview" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
@@ -449,6 +453,8 @@ nonstream-keepalive-interval: 0
 # codex-api-key:
 #   - api-key: "sk-atSM..."
 #     label: "primary Codex" # optional display label; must be unique in this list
+#     pricing-catalog: "openai" # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai" # optional credential-scoped built-in usage probe (zai or opencode-go)
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
@@ -492,6 +498,8 @@ nonstream-keepalive-interval: 0
 # xai-api-key:
 #   - api-key: "xai-..."
 #     label: "primary xAI" # optional display label; must be unique in this list
+#     pricing-catalog: "xai" # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai" # optional credential-scoped built-in usage probe (zai or opencode-go)
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "xai" # optional: require calls like "xai/grok-4.5" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
@@ -527,6 +535,8 @@ nonstream-keepalive-interval: 0
 # claude-api-key:
 #   - api-key: "sk-atSM..." # use the official claude API key, no need to set the base url
 #     label: "primary Claude" # optional display label; must be unique in this list
+#     pricing-catalog: "anthropic" # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai" # optional credential-scoped built-in usage probe (zai or opencode-go)
 #   - api-key: "sk-atSM..."
 #     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/claude-sonnet-latest" to target this credential
@@ -677,7 +687,7 @@ nonstream-keepalive-interval: 0
 #     prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     pricing-catalog: "openrouter" # optional models.dev provider id used for pricing
-#     usage-probe: "zai" # optional built-in usage probe
+#     usage-probe: "opencode-go" # optional built-in usage probe (zai or opencode-go)
 #     support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
 #     disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
 #     request-retry: 3 # optional per-provider override; 0 disables additional rounds; omit or set < 0 to inherit global
@@ -731,6 +741,8 @@ nonstream-keepalive-interval: 0
 # vertex-api-key:
 #   - api-key: "vk-123..."                        # x-goog-api-key header
 #     label: "primary Vertex"                     # optional display label; must be unique in this list
+#     pricing-catalog: "google-vertex"             # optional provider-scoped models.dev provider id used for pricing; overrides the built-in mapping
+#     usage-probe: "zai"                            # optional credential-scoped built-in usage probe (zai or opencode-go)
 #     weight: 5                                    # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test"                              # optional: require calls like "test/vertex-pro" to target this credential
 #     disable-cooling: false                       # optional override: true disables cooling, false enables it; omit to inherit global

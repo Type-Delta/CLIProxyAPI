@@ -53,6 +53,13 @@ type VertexCompatKey struct {
 	// RequestRetry optionally overrides the global request-retry for this credential.
 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// PricingCatalog optionally names the models.dev provider id whose prices apply to this provider (e.g. "zai-coding-plan").
+	PricingCatalog string `yaml:"pricing-catalog,omitempty" json:"pricing-catalog,omitempty"`
+
+	// UsageProbe optionally names a built-in usage probe for this provider.
+	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
+
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }

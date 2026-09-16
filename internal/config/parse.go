@@ -53,11 +53,11 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
-	cfg.NormalizeOpenAICompatibilityFields()
+	cfg.NormalizeProviderSelectorFields()
 	if errValidate := cfg.ValidateCredentialLabels(); errValidate != nil {
 		return nil, errValidate
 	}
-	if errValidate := cfg.ValidateOpenAICompatibilityFields(); errValidate != nil {
+	if errValidate := cfg.ValidateProviderSelectorFields(); errValidate != nil {
 		return nil, errValidate
 	}
 

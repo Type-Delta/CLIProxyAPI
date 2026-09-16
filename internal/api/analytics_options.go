@@ -74,8 +74,63 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 	if path == "" {
 		path = filepath.Join(cfg.AuthDir, "state", "analytics", "analytics.db")
 	}
-	bindings := make([]cpauk.CatalogBinding, 0, len(cfg.OpenAICompatibility))
-	seenBindings := make(map[string]struct{}, len(cfg.OpenAICompatibility))
+	bindingCapacity := len(cfg.GeminiKey) +
+		len(cfg.InteractionsKey) +
+		len(cfg.ClaudeKey) +
+		len(cfg.CodexKey) +
+		len(cfg.XAIKey) +
+		len(cfg.VertexCompatAPIKey) +
+		len(cfg.OpenAICompatibility)
+	bindings := make([]cpauk.CatalogBinding, 0, bindingCapacity)
+	seenBindings := make(map[string]struct{}, bindingCapacity)
+	addBinding := func(provider, catalog string) {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		catalog = strings.ToLower(strings.TrimSpace(catalog))
+		if provider == "" || catalog == "" {
+			return
+		}
+		if _, exists := seenBindings[provider]; exists {
+			return
+		}
+		seenBindings[provider] = struct{}{}
+		bindings = append(bindings, cpauk.CatalogBinding{Provider: provider, Catalog: catalog})
+	}
+	for _, entry := range cfg.GeminiKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("gemini", entry.PricingCatalog)
+	}
+	for _, entry := range cfg.InteractionsKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("gemini-interactions", entry.PricingCatalog)
+	}
+	for _, entry := range cfg.ClaudeKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("claude", entry.PricingCatalog)
+	}
+	for _, entry := range cfg.CodexKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("codex", entry.PricingCatalog)
+	}
+	for _, entry := range cfg.XAIKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("xai", entry.PricingCatalog)
+	}
+	for _, entry := range cfg.VertexCompatAPIKey {
+		if strings.TrimSpace(entry.APIKey) == "" && strings.TrimSpace(entry.BaseURL) == "" {
+			continue
+		}
+		addBinding("vertex", entry.PricingCatalog)
+	}
 	for _, entry := range cfg.OpenAICompatibility {
 		name := strings.ToLower(strings.TrimSpace(entry.Name))
 		if name == "" || entry.Disabled {

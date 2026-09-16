@@ -720,6 +720,25 @@ The bundled panel was rebuilt from CPAMC commit
 
 **Last updated:** 2026-09-16
 
+### DL021 - Provider selectors and OpenCode Go usage tracking
+
+`pricing-catalog` and `usage-probe` now apply to every API-key provider section:
+`claude-api-key`, `codex-api-key`, `xai-api-key`, `gemini-api-key`,
+`interactions-api-key`, and `vertex-api-key`, in addition to the existing
+`openai-compatibility` selectors. Configuration normalization, management
+PUT/PATCH validation, auth synthesis, auth-index responses, hot-reload diffs,
+and analytics catalog bindings all cover the expanded provider set. New catalog
+bindings are emitted only when the selector is configured, while an explicit
+binding suppresses the static models.dev mapping for the same CPA provider key.
+
+The management usage-probe registry adds `opencode-go` alongside `zai`. An
+OpenCode Go credential is probed at `https://opencode.ai/zen/go/v1/usage`; the
+rolling, weekly, and monthly windows are exposed as provider quota windows,
+with weekly preferred for the headline values when present. The request uses
+the existing quota cache and API-call execution path.
+
+**Last updated:** 2026-09-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
