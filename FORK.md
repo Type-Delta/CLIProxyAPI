@@ -582,6 +582,33 @@ blocked during each cooldown and disabled credentials remain hidden.
 
 **Last updated:** 2026-09-16
 
+### DL018 - OpenAI-compatible providers receive downstream request headers
+
+OpenAI-compatible executors now forward downstream client request headers to
+the provider instead of rebuilding each upstream request from a small fixed
+set. This preserves protocol and vendor session headers such as `Session-Id`,
+`X-Session-Id`, `X-Session-Affinity`, and `x-opencode-session` for harnesses
+that rely on them. Chat, image, streaming, and non-streaming generated requests
+share the same header preparation path.
+
+Transport and body-framing headers, hop-by-hop headers and their
+`Connection`-scoped fields, `Host`, `Accept-Encoding`, and downstream CPA
+credentials are omitted. The selected provider credential replaces
+`Authorization`, the downstream `User-Agent` is retained with the existing
+fallback, and configured custom headers are applied last so they retain
+precedence.
+
+**Implementation evidence:** `internal/runtime/executor/openai_compat_executor.go`
+and `internal/runtime/executor/openai_compat_executor_headers_test.go`.
+
+**Recorded validation:** focused execute/stream regressions preserve the Codex
+and OpenCode session headers, multiple arbitrary header values, and the client
+User-Agent while replacing credentials and dropping transport or connection
+headers. The full `internal/runtime/executor` package, `go test ./...`, and the
+disposable server build pass.
+
+**Last updated:** 2026-09-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

@@ -691,6 +691,8 @@ nonstream-keepalive-interval: 0
 #           - "^context_length_exceeded"
 #         action: "stop" # "stop", "stop-and-cooldown", "continue", "continue-and-cooldown"
 #     headers:
+#       # Client request headers are forwarded upstream except transport headers
+#       # and credentials managed by CPA. Configured headers below are applied last.
 #       X-Custom-Header: "custom-value"
 #       # Values starting with "$" dynamically copy the header value from downstream client requests.
 #       # If the client did not send the specified header, the header is omitted.
