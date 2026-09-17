@@ -748,6 +748,33 @@ Z.ai cards; the `opencode_go_quota.percent_used` string is retired.
 
 **Last updated:** 2026-09-17
 
+### DL022 - Usage refresh synchronizes routing cooldowns
+
+Successful Z.ai and OpenCode Go quota refreshes now drive the same routing
+cooldown state as upstream execution results. If a refreshed usage report shows
+an exhausted window, CPA replaces the cached credential cooldown with the
+earliest future reset time reported by that window; this can shorten an older,
+longer provider `Retry-After` cooldown. If the report shows all parsed windows
+healthy, CPA clears stale quota cooldowns so a manually reset credential can
+rejoin rotation immediately. A report is ignored when an exhausted window lacks
+a future reset time, when the report cannot be parsed, or when cooling is
+disabled for the credential.
+
+The behavior is centralized in the auth manager and runs after successful
+management quota API calls and analytics usage probes, so the existing
+"Refresh quota" flow needs no separate reset action.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go`,
+`internal/api/handlers/management/usage_probe.go`, and
+`internal/api/handlers/management/api_tools.go`.
+
+**Recorded validation:** focused auth-manager tests cover exhausted-overwrite,
+healthy-clear, and past-reset no-op behavior; management tests cover the
+Z.ai/OpenCode Go window decision and successful usage-response cooldown sync.
+`go test ./...` and the disposable `cmd/server` build check pass.
+
+**Last updated:** 2026-09-17
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

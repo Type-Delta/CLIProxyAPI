@@ -551,6 +551,153 @@ func modelsForRegisteredAuth(authID string) []string {
 	return models
 }
 
+// ApplyProviderQuotaReport synchronizes persisted routing cooldowns with a
+// freshly fetched provider usage report. A healthy report clears quota
+// cooldowns so a manually reset credential can rejoin routing immediately.
+func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, exhausted bool, resetAt time.Time) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return false, fmt.Errorf("auth id is required")
+	}
+
+	now := time.Now()
+	if exhausted {
+		resetAt = resetAt.Round(0)
+		if !resetAt.After(now) {
+			return false, nil
+		}
+	} else {
+		resetAt = time.Time{}
+	}
+
+	m.mu.Lock()
+	auth, ok := m.auths[authID]
+	if !ok || auth == nil {
+		m.mu.Unlock()
+		return false, nil
+	}
+	if auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
+		m.mu.Unlock()
+		return false, nil
+	}
+
+	var cooldownRecordsBefore []CooldownStateRecord
+	trackCooldownState := m.cooldownStore != nil
+	if trackCooldownState {
+		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
+	}
+
+	changed := false
+	if exhausted {
+		for _, state := range auth.ModelStates {
+			if state == nil || state.Status == StatusDisabled {
+				continue
+			}
+			state.Unavailable = true
+			state.Status = StatusError
+			state.StatusMessage = "quota exhausted"
+			state.NextRetryAfter = resetAt
+			applyCooldownFields(&state.Quota, QuotaState{
+				Exceeded:      true,
+				Reason:        "quota",
+				NextRecoverAt: resetAt,
+			})
+			state.UpdatedAt = now
+			changed = true
+		}
+		if len(auth.ModelStates) == 0 {
+			auth.Unavailable = true
+			auth.Status = StatusError
+			auth.StatusMessage = "quota exhausted"
+			auth.NextRetryAfter = resetAt
+			applyCooldownFields(&auth.Quota, QuotaState{
+				Exceeded:      true,
+				Reason:        "quota",
+				NextRecoverAt: resetAt,
+			})
+			changed = true
+		} else {
+			// The report is credential-scoped, so discard stale aggregated
+			// cooldown fields before deriving them from authoritative states.
+			auth.Unavailable = false
+			auth.NextRetryAfter = time.Time{}
+			applyCooldownFields(&auth.Quota, QuotaState{})
+			updateAggregatedAvailability(auth, now)
+			auth.Status = StatusError
+			auth.StatusMessage = "quota exhausted"
+		}
+	} else {
+		for _, state := range auth.ModelStates {
+			if state == nil || state.Status == StatusDisabled {
+				continue
+			}
+			if !state.Quota.Exceeded && state.Quota.Reason == "" && state.Quota.NextRecoverAt.IsZero() {
+				continue
+			}
+			resetModelState(state, now)
+			changed = true
+		}
+		if auth.Quota.Exceeded || auth.Quota.Reason != "" || !auth.Quota.NextRecoverAt.IsZero() {
+			applyCooldownFields(&auth.Quota, QuotaState{})
+			auth.Unavailable = false
+			auth.NextRetryAfter = time.Time{}
+			changed = true
+		}
+		if len(auth.ModelStates) > 0 {
+			updateAggregatedAvailability(auth, now)
+		}
+		if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
+			auth.LastError = nil
+			auth.StatusMessage = ""
+			auth.Status = StatusActive
+		}
+	}
+
+	if !changed {
+		m.mu.Unlock()
+		return false, nil
+	}
+
+	auth.Generation++
+	auth.UpdatedAt = now
+	snapshot := auth.Clone()
+	cooldownStateChanged := false
+	if trackCooldownState {
+		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
+		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+	}
+	errPersist := m.persist(ctx, auth)
+	m.mu.Unlock()
+
+	defer func() {
+		if cooldownStateChanged {
+			m.persistCooldownStates(context.Background())
+		}
+	}()
+
+	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(authID)
+	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+	for _, sm := range supportedModels {
+		if sm == nil || strings.TrimSpace(sm.ID) == "" {
+			continue
+		}
+		projections = append(projections, m.clientModelProjectionForAuth(snapshot, sm.ID, now))
+	}
+	if len(projections) > 0 {
+		registry.GetGlobalRegistry().ApplyClientModelProjections(authID, regEpoch, snapshot.Generation, projections)
+	}
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
+	if errPersist != nil {
+		return true, errPersist
+	}
+	return true, nil
+}
+
 func (m *Manager) persistCooldownStates(ctx context.Context) {
 	if m == nil {
 		return

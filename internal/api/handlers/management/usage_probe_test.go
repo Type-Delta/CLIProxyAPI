@@ -164,6 +164,83 @@ func TestProviderQuotaFromWindowsHeadline(t *testing.T) {
 	}
 }
 
+func TestProviderQuotaCooldownDecision(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	future := now.Add(91 * time.Hour)
+	earlierFuture := now.Add(5 * time.Hour)
+	tests := []struct {
+		name           string
+		quota          *model.ProviderQuota
+		wantExhausted  bool
+		wantResetAt    time.Time
+		wantActionable bool
+	}{
+		{
+			name:  "no windows",
+			quota: &model.ProviderQuota{},
+		},
+		{
+			name: "healthy clears cooldown",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "weekly", Percent: usageProbeTestPtr(float64(65)),
+			}}},
+			wantActionable: true,
+		},
+		{
+			name: "exhausted percentage uses future reset",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "weekly", Percent: usageProbeTestPtr(float64(100)), ResetsAt: usageProbeTestPtr(future),
+			}}},
+			wantExhausted: true, wantResetAt: future, wantActionable: true,
+		},
+		{
+			name: "zero remaining is exhausted",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "rolling", Remaining: usageProbeTestPtr(int64(0)), ResetsAt: usageProbeTestPtr(future),
+			}}},
+			wantExhausted: true, wantResetAt: future, wantActionable: true,
+		},
+		{
+			name: "used reaches limit is exhausted",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "monthly", Limit: usageProbeTestPtr(int64(100)), Used: usageProbeTestPtr(int64(100)),
+				ResetsAt: usageProbeTestPtr(future),
+			}}},
+			wantExhausted: true, wantResetAt: future, wantActionable: true,
+		},
+		{
+			name: "earliest exhausted reset wins",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{
+				{Label: "rolling", Percent: usageProbeTestPtr(float64(100)), ResetsAt: usageProbeTestPtr(future)},
+				{Label: "weekly", Remaining: usageProbeTestPtr(int64(0)), ResetsAt: usageProbeTestPtr(earlierFuture)},
+			}},
+			wantExhausted: true, wantResetAt: earlierFuture, wantActionable: true,
+		},
+		{
+			name: "past exhausted reset is not actionable",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "weekly", Percent: usageProbeTestPtr(float64(100)), ResetsAt: usageProbeTestPtr(now.Add(-time.Minute)),
+			}}},
+			wantExhausted: true,
+		},
+		{
+			name: "exhausted without reset is not actionable",
+			quota: &model.ProviderQuota{Windows: []model.ProviderQuotaWindow{{
+				Label: "weekly", Percent: usageProbeTestPtr(float64(100)),
+			}}},
+			wantExhausted: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exhausted, resetAt, actionable := providerQuotaCooldownDecision(test.quota, now)
+			if exhausted != test.wantExhausted || !resetAt.Equal(test.wantResetAt) || actionable != test.wantActionable {
+				t.Fatalf("decision = exhausted %v reset %v actionable %v, want %v/%v/%v", exhausted, resetAt, actionable, test.wantExhausted, test.wantResetAt, test.wantActionable)
+			}
+		})
+	}
+}
+
 func TestClassifyUsageProbeQuotaRequest(t *testing.T) {
 	tests := []struct {
 		name   string

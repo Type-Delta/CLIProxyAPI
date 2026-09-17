@@ -155,6 +155,91 @@ func providerQuotaFromWindows(windows []model.ProviderQuotaWindow) *model.Provid
 	return quota
 }
 
+// providerQuotaCooldownDecision treats every parsed window as evidence about
+// the credential. It avoids changing routing when an exhausted window has no
+// reliable future reset time.
+func providerQuotaCooldownDecision(quota *model.ProviderQuota, now time.Time) (bool, time.Time, bool) {
+	if quota == nil || len(quota.Windows) == 0 {
+		return false, time.Time{}, false
+	}
+
+	exhausted := false
+	resetAt := time.Time{}
+	for _, window := range quota.Windows {
+		windowExhausted := false
+		if window.Percent != nil && *window.Percent >= 100 {
+			windowExhausted = true
+		}
+		if window.Remaining != nil && *window.Remaining <= 0 {
+			windowExhausted = true
+		}
+		if window.Limit != nil && *window.Limit > 0 && window.Used != nil && *window.Used >= *window.Limit {
+			windowExhausted = true
+		}
+		if !windowExhausted {
+			continue
+		}
+
+		exhausted = true
+		if window.ResetsAt == nil || !window.ResetsAt.After(now) {
+			return exhausted, time.Time{}, false
+		}
+		if resetAt.IsZero() || window.ResetsAt.Before(resetAt) {
+			resetAt = *window.ResetsAt
+		}
+	}
+	if !exhausted {
+		return false, time.Time{}, true
+	}
+	return exhausted, resetAt, !resetAt.IsZero()
+}
+
+func (h *Handler) applyProviderQuotaCooldownDecision(ctx context.Context, auth *coreauth.Auth, quota *model.ProviderQuota) {
+	if h == nil || h.authManager == nil || auth == nil || quota == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	exhausted, resetAt, actionable := providerQuotaCooldownDecision(quota, time.Now())
+	if !actionable {
+		return
+	}
+	if _, errApply := h.authManager.ApplyProviderQuotaReport(ctx, auth.ID, exhausted, resetAt); errApply != nil {
+		log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to sync provider quota cooldown")
+	}
+}
+
+func (h *Handler) syncUsageProbeCooldown(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil {
+		return
+	}
+	var parse func([]byte) ([]model.ProviderQuotaWindow, error)
+	switch strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe"))) {
+	case "zai":
+		if !exactQuotaURL(parsedURL, zaiUsageQuotaURL) {
+			return
+		}
+		parse = func(requestBody []byte) ([]model.ProviderQuotaWindow, error) {
+			return parseZaiQuota(requestBody, time.Now().UTC())
+		}
+	case "opencode-go":
+		if !exactQuotaURL(parsedURL, opencodeGoUsageQuotaURL) {
+			return
+		}
+		parse = parseOpenCodeGoQuota
+	default:
+		return
+	}
+
+	windows, errParse := parse(body)
+	if errParse != nil {
+		log.WithError(errParse).WithField("auth_id", auth.ID).Debug("failed to parse refreshed provider usage")
+		return
+	}
+	h.applyProviderQuotaCooldownDecision(ctx, auth, providerQuotaFromWindows(windows))
+}
+
 func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) (*model.ProviderQuota, error) {
 	parsedURL, errParseURL := url.Parse(targetURL)
 	if errParseURL != nil {
@@ -241,6 +326,9 @@ func (h *Handler) applyUsageProbes(ctx context.Context, credentials map[string]*
 		if result.err != nil {
 			log.WithError(result.err).Debug("management usage probe failed")
 			continue
+		}
+		if credential := credentials[result.key]; credential != nil {
+			h.applyProviderQuotaCooldownDecision(ctx, credential, result.quota)
 		}
 		row, ok := rows[result.key]
 		if ok {
