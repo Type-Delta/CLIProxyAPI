@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,9 +20,29 @@ func TestBundledArtifactIsValid(t *testing.T) {
 	if asset.Source != "bundled" || len(asset.HTML) == 0 {
 		t.Fatalf("Resolve() = source %q bytes %d", asset.Source, len(asset.HTML))
 	}
-	if asset.Manifest.CPAMCCommit != "6424042155efff1af98f3139898a66cf1f603a9d" {
-		t.Fatalf("CPAMC commit = %q", asset.Manifest.CPAMCCommit)
+	wantCommit := cpamcGitlinkCommit(t)
+	if asset.Manifest.CPAMCCommit != wantCommit {
+		t.Fatalf("CPAMC commit = %q, want submodule revision %q; rebuild with scripts/build-management-center.sh", asset.Manifest.CPAMCCommit, wantCommit)
 	}
+}
+
+// cpamcGitlinkCommit returns the CPAMC revision recorded in the repository so the
+// bundled panel can be checked against its source without hardcoding a commit here.
+// Tests run outside a Git checkout (module cache, source tarball) are skipped.
+func cpamcGitlinkCommit(t *testing.T) string {
+	t.Helper()
+	root, errAbs := filepath.Abs("../..")
+	if errAbs != nil {
+		t.Skipf("resolve repository root: %v", errAbs)
+	}
+	if _, errGit := exec.LookPath("git"); errGit != nil {
+		t.Skipf("git unavailable: %v", errGit)
+	}
+	out, errRev := exec.Command("git", "-C", root, "rev-parse", "HEAD:web/management-center").Output()
+	if errRev != nil {
+		t.Skipf("CPAMC submodule revision unavailable: %v", errRev)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestResolveUsesOnlyValidatedMutableArtifact(t *testing.T) {

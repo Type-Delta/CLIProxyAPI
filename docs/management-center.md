@@ -33,9 +33,11 @@ scripts/build-management-center.sh
 
 That command replaces `internal/managementasset/bundled/management.html` and its
 compatibility manifest. Commit those bytes with the later CPA gitlink commit.
-Docker builds rebuild the submodule with the same pinned builder and compare the
-result byte-for-byte with the bundled artifact. After the package cache is
-primed, `Dockerfile.management` can rebuild with BuildKit networking disabled.
+`Dockerfile.management` rebuilds the canonical artifact from the pinned
+submodule. Runtime images copy that committed artifact and manifest directly;
+they do not rebuild the panel or compare generated artifacts byte-for-byte.
+After the package cache is primed, `Dockerfile.management` can rebuild with
+BuildKit networking disabled.
 
 ## Runtime selection and rollback
 

@@ -22,6 +22,7 @@ import (
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -1916,8 +1917,12 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 		if !strings.Contains(strings.ToLower(rr.Body.String()), "<!doctype html>") {
 			t.Fatalf("bundled management panel body missing")
 		}
-		if got := rr.Header().Get("X-CPAMC-Commit"); got != "6424042155efff1af98f3139898a66cf1f603a9d" {
-			t.Fatalf("X-CPAMC-Commit = %q", got)
+		asset, errAsset := managementasset.Resolve(server.configFilePath)
+		if errAsset != nil {
+			t.Fatalf("resolve management asset: %v", errAsset)
+		}
+		if got := rr.Header().Get("X-CPAMC-Commit"); got != asset.Manifest.CPAMCCommit {
+			t.Fatalf("X-CPAMC-Commit = %q, want %q", got, asset.Manifest.CPAMCCommit)
 		}
 	})
 
