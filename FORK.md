@@ -737,7 +737,11 @@ rolling, weekly, and monthly windows are exposed as provider quota windows,
 with weekly preferred for the headline values when present. The request uses
 the existing quota cache and API-call execution path.
 
-**Last updated:** 2026-09-16
+The CPAMC OpenCode Go card renders its tier as `Plan` with a bold value and
+reports every window as a remaining percentage, matching the Claude, Codex, and
+Z.ai cards; the `opencode_go_quota.percent_used` string is retired.
+
+**Last updated:** 2026-09-17
 
 ## Merge History
 
