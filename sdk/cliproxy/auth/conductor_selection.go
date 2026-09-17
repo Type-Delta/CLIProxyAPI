@@ -2078,6 +2078,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	registryRef := registry.GetGlobalRegistry()
 
 	coolingSummaries := make([]string, 0)
+	blockedSummaries := make([]string, 0)
 	totalCandidates := 0
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
@@ -2109,8 +2110,13 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		totalCandidates++
 		checkModel := m.selectionModelForAuth(candidate, model)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
-		if blocked && reason == blockReasonCooldown {
+		if !blocked {
+			continue
+		}
+		if reason == blockReasonCooldown {
 			coolingSummaries = append(coolingSummaries, authCoolingSummary(candidate, checkModel, next, now))
+		} else {
+			blockedSummaries = append(blockedSummaries, authCoolingSummary(candidate, checkModel, next, now))
 		}
 	}
 
@@ -2122,6 +2128,17 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
 		} else {
 			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in cooldown: %s", len(coolingSummaries), totalCandidates, model, providerText, strings.Join(coolingSummaries, ", "))
+		}
+	}
+
+	if len(blockedSummaries) > 0 {
+		sort.Strings(blockedSummaries)
+		entry := logEntryWithRequestID(ctx)
+		providerText := strings.Join(providers, ",")
+		if len(providers) == 1 {
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (provider=%s) are in error backoff: %s", len(blockedSummaries), totalCandidates, model, providerText, strings.Join(blockedSummaries, ", "))
+		} else {
+			entry.Warnf("auth unavailable: %d of %d candidate(s) for model %q (providers=%s) are in error backoff: %s", len(blockedSummaries), totalCandidates, model, providerText, strings.Join(blockedSummaries, ", "))
 		}
 	}
 }

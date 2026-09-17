@@ -580,7 +580,12 @@ siblings plus HTTP 500, 503, and 599, while also verifying that routing remains
 blocked during each cooldown and disabled credentials remain hidden.
 `go test ./... -count=1` and the disposable server build check pass.
 
-**Last updated:** 2026-09-16
+When routing finds no ready credential, the selection warning now reports
+credentials blocked by transient upstream failures in a separate "error
+backoff" summary next to the quota cooldown summary, so mixed outage windows
+are no longer misread as missing failover.
+
+**Last updated:** 2026-09-17
 
 ### DL018 - OpenAI-compatible providers receive downstream request headers
 
