@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -1627,7 +1629,28 @@ func isConnectionLifecycleError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	return isConnectionLifecycleMessage(err.Error())
+	return isTransportFailure(err) || isConnectionLifecycleMessage(err.Error())
+}
+
+// isTransportFailure reports typed transport-level failures (connection,
+// TLS, DNS, timeout, and stream I/O errors) without matching error messages.
+// Errors carrying an HTTP status are provider responses, not transport failures.
+func isTransportFailure(err error) bool {
+	if err == nil || statusCodeFromError(err) != 0 {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return false
 }
 
 func isConnectionLifecycleResultError(err *Error) bool {

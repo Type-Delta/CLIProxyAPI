@@ -775,6 +775,39 @@ Z.ai/OpenCode Go window decision and successful usage-response cooldown sync.
 
 **Last updated:** 2026-09-17
 
+### DL023 - Retry rounds cover transport and status-less failures
+
+Credential retry rounds (`request-retry`) previously started only for HTTP
+statuses 403/408/429/500/502/503/504. A request that died at the transport
+layer (connection reset, DNS failure, mid-stream disconnect such as
+`http2: response body closed`) returned no HTTP status, so the retry loop
+exited after a single pass through the credential pool regardless of
+configuration.
+
+Status-less failures are now retry-round eligible: after the usual exclusions
+(caller cancellation, request-scoped and invalid-request faults), the retry
+gate treats a missing HTTP status as a transport-level failure and allows
+additional rounds subject to the same `request-retry`, `max-retry-credentials`,
+and `max-retry-interval` limits as status-based retries. Credential cooldown
+state recorded from a status-less failure also stays retry-round eligible, and
+typed transport errors (`*url.Error`, `net.Error`, EOF family) are classified
+as connection-lifecycle failures so a network blip does not cool the
+credential. Classification is type-based via `errors.Is`/`errors.As`; the
+remaining message matching applies only to legacy results that carry no typed
+error information.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_selection.go`
+(`isRetryRoundEligibleError`, `credentialRetryRoundStateEligible`) and
+`sdk/cliproxy/auth/conductor_cooldown.go` (`isTransportFailure`,
+connection-lifecycle classification).
+
+**Recorded validation:** new auth-manager tests cover status-less retry rounds,
+caller cancellation exclusion, status-less cooldown waits bounded by
+`max-retry-interval`, and transport failures skipping credential cooldown.
+`go test ./...` and the disposable `cmd/server` build check pass.
+
+**Last updated:** 2026-09-18
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

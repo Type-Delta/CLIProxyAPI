@@ -1008,7 +1008,10 @@ func credentialRetryRoundStateEligible(lastErr *Error, quotaExceeded bool) bool 
 	if lastErr == nil {
 		return quotaExceeded
 	}
-	return isCredentialRetryRoundStatus(statusCodeFromResult(lastErr))
+	status := statusCodeFromResult(lastErr)
+	// Status-less failures are transport-level errors; their cooldowns stay
+	// retry-round eligible even though they have no HTTP status.
+	return isCredentialRetryRoundStatus(status) || status == 0
 }
 
 func (m *Manager) closestCooldownWait(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) (time.Duration, bool) {
@@ -1227,7 +1230,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	if !isCredentialRetryRoundStatus(status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
+	if !isRetryRoundEligibleError(err, status) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
 	}
 	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
@@ -1244,6 +1247,23 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 		return *retryAfter, true
 	}
 	return 0, true
+}
+
+// isRetryRoundEligibleError reports whether a failure may start another
+// credential retry round. Status-less failures are treated as transport-level
+// errors and stay eligible without relying on error message matching; caller
+// cancellation and request-scoped faults never retry.
+func isRetryRoundEligibleError(err error, status int) bool {
+	if isCredentialRetryRoundStatus(status) {
+		return true
+	}
+	if status != 0 || err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return !isRequestScopedError(err)
 }
 
 func (m *Manager) homeRetryAllowed(attempt int, retryLimit int) bool {
