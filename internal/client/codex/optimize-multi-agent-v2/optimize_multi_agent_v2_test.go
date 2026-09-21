@@ -644,6 +644,17 @@ func TestRewriteCodexMultiAgentV2InputConditions(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("plaintext agent message", func(t *testing.T) {
+		payload := []byte(`{"input":[{"type":"agent_message","author":"/root","recipient":"/root/worker","content":[{"type":"input_text","text":"task"}]}]}`)
+		got := RewriteCodexMultiAgentV2Input(context.Background(), nil, payload, &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}})
+		if messageType := gjson.GetBytes(got, "input.0.type").String(); messageType != "message" {
+			t.Fatalf("plaintext agent_message type = %q, want message; payload=%s", messageType, got)
+		}
+		if role := gjson.GetBytes(got, "input.0.role").String(); role != "user" {
+			t.Fatalf("plaintext agent_message role = %q, want user; payload=%s", role, got)
+		}
+	})
 }
 
 func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
@@ -700,6 +711,13 @@ func TestTranslateRequestWithCodexMultiAgentV2Conditions(t *testing.T) {
 			}
 		})
 	}
+	t.Run("plaintext child message reaches OpenAI compatible upstream", func(t *testing.T) {
+		payload := []byte(`{"model":"deepseek-v4.1-flash","input":[{"type":"agent_message","author":"/root","recipient":"/root/worker","content":[{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\nDEEPSEEK_CPA_OK"}]}]}`)
+		got := TranslateRequestWithCodexMultiAgentV2(context.Background(), nil, enabledCfg, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "deepseek-v4.1-flash", payload, true)
+		if value := gjson.GetBytes(got, "messages.0.content.0.text").String(); value != "Message Type: NEW_TASK\nPayload:\nDEEPSEEK_CPA_OK" {
+			t.Fatalf("upstream child message = %q, want plaintext task; output=%s", value, got)
+		}
+	})
 }
 
 func TestRewriteCodexSpawnAgentDescriptionDisabledLeavesPayloadUnchanged(t *testing.T) {

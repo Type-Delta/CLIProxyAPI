@@ -142,7 +142,7 @@ func codexMultiAgentV2RequestEnabled(ctx context.Context, payload []byte, cfg *c
 	if cfg == nil || !cfg.Codex.OptimizeMultiAgentV2 {
 		return false
 	}
-	return codexMultiAgentV2ToolsPrepared(ctx) || hasCodexMultiAgentV2ToolSignature(payload) || hasCodexEncryptedAgentMessage(payload) || hasCodexOptimizedMultiAgentV2ToolSignature(payload)
+	return codexMultiAgentV2ToolsPrepared(ctx) || hasCodexMultiAgentV2ToolSignature(payload) || hasCodexAgentMessage(payload) || hasCodexOptimizedMultiAgentV2ToolSignature(payload)
 }
 
 func codexMultiAgentV2ToolsPrepared(ctx context.Context) bool {
@@ -855,19 +855,14 @@ func hasCodexOptimizedMultiAgentV2ToolSignature(payload []byte) bool {
 	return len(paths) > 0
 }
 
-func hasCodexEncryptedAgentMessage(payload []byte) bool {
+func hasCodexAgentMessage(payload []byte) bool {
 	input := gjson.GetBytes(payload, "input")
 	if !input.IsArray() {
 		return false
 	}
 	for _, item := range input.Array() {
-		if strings.TrimSpace(item.Get("type").String()) != "agent_message" {
-			continue
-		}
-		for _, part := range item.Get("content").Array() {
-			if strings.TrimSpace(part.Get("type").String()) == "encrypted_content" && part.Get("encrypted_content").Type == gjson.String {
-				return true
-			}
+		if strings.TrimSpace(item.Get("type").String()) == "agent_message" {
+			return true
 		}
 	}
 	return false
