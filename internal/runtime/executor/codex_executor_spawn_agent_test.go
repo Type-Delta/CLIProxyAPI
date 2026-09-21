@@ -202,6 +202,51 @@ func TestCodexExecutorIsCompatConvertsAgentMessage(t *testing.T) {
 	}
 }
 
+func TestCodexExecutorMarksPlaintextSpawnForCodexAndDeepSeekParents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		namespace := gjson.GetBytes(body, "input.0.tools.0.name").String()
+		w.Header().Set("Content-Type", "text/event-stream")
+		completed := fmt.Sprintf(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","name":"spawn_agent","namespace":%q,"arguments":"{\"message\":\"delegated task\",\"task_name\":\"worker\"}","call_id":"call_1"}]}}`+"\n\n", namespace)
+		_, _ = w.Write([]byte(completed))
+	}))
+	defer server.Close()
+
+	for _, model := range []string{"gpt-5.4", "deepseek-v4-flash"} {
+		t.Run(model, func(t *testing.T) {
+			cfg := &config.Config{
+				Codex: config.CodexConfig{OptimizeMultiAgentV2: true},
+				CodexKey: []config.CodexKey{{
+					APIKey:  "test",
+					BaseURL: server.URL,
+					Models:  []config.CodexModel{{Name: "deepseek-v4-flash", IsCompat: true}},
+				}},
+			}
+			executor := NewCodexExecutor(cfg)
+			auth := &cliproxyauth.Auth{Provider: "codex", Attributes: map[string]string{
+				"base_url": server.URL,
+				"api_key":  "test",
+			}}
+			result, errExecute := executor.ExecuteStream(
+				codexSpawnAgentTestContext(),
+				auth,
+				cliproxyexecutor.Request{Model: model, Payload: codexSpawnAgentTestPayload()},
+				cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")},
+			)
+			if errExecute != nil {
+				t.Fatalf("ExecuteStream() error = %v", errExecute)
+			}
+			var clientPayload []byte
+			for chunk := range result.Chunks {
+				clientPayload = append(clientPayload, chunk.Payload...)
+			}
+			if !strings.Contains(string(clientPayload), `"encrypted_function_args":[]`) {
+				t.Fatalf("plaintext marker missing for %s parent: %s", model, clientPayload)
+			}
+		})
+	}
+}
+
 func codexSpawnAgentTestPayload() []byte {
 	return []byte(`{
 		"model":"gpt-5.4",

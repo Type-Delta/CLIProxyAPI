@@ -733,8 +733,10 @@ func restoreCodexCollaborationValue(value any) bool {
 	case map[string]any:
 		itemType := strings.TrimSpace(mapString(typed, "type"))
 		isToolCall := itemType == "function_call" || itemType == "custom_tool_call"
+		wasOptimizedCollaborationCall := false
 		if isToolCall {
 			if namespace, ok := typed["namespace"].(string); ok && namespace == codexOptimizedCollaborationNamespace {
+				wasOptimizedCollaborationCall = true
 				typed["namespace"] = codexCollaborationNamespace
 				changed = true
 			}
@@ -747,12 +749,20 @@ func restoreCodexCollaborationValue(value any) bool {
 			case isToolCall && strings.HasPrefix(name, codexOptimizedCollaborationDotPrefix):
 				toolName := strings.TrimPrefix(name, codexOptimizedCollaborationDotPrefix)
 				if toolName != "" {
+					wasOptimizedCollaborationCall = true
 					typed["namespace"] = codexCollaborationNamespace
 					typed["name"] = toolName
 					changed = true
 				}
 			case isToolCall && strings.HasPrefix(name, codexOptimizedCollaborationNamePrefix):
+				wasOptimizedCollaborationCall = true
 				typed["name"] = codexCollaborationNamespace + "__" + strings.TrimPrefix(name, codexOptimizedCollaborationNamePrefix)
+				changed = true
+			}
+		}
+		if itemType == "function_call" && wasOptimizedCollaborationCall && isPlaintextCollaborationTool(mapString(typed, "name")) {
+			if _, exists := typed["encrypted_function_args"]; !exists {
+				typed["encrypted_function_args"] = []any{}
 				changed = true
 			}
 		}
@@ -766,6 +776,12 @@ func restoreCodexCollaborationValue(value any) bool {
 		}
 	}
 	return changed
+}
+
+func isPlaintextCollaborationTool(name string) bool {
+	name = strings.TrimPrefix(name, codexCollaborationNamespace+"__")
+	_, ok := codexCollaborationMessageTools[name]
+	return ok
 }
 
 func rewriteCodexAgentMessageInput(payload []byte) []byte {

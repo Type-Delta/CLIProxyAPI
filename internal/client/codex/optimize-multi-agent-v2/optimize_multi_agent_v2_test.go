@@ -441,7 +441,9 @@ func TestRestoreCodexMultiAgentV2Response(t *testing.T) {
 		"response":{
 			"output":[
 				{"type":"function_call","name":"spawn_agent","namespace":"collaboration-optimize","arguments":{"namespace":"collaboration-optimize","name":"collaboration-optimize__opaque"}},
-				{"type":"function_call","name":"collaboration-optimize__send_message"},
+				{"type":"function_call","name":"collaboration-optimize__send_message","encrypted_function_args":["message"]},
+				{"type":"function_call","name":"followup_task","namespace":"collaboration-optimize"},
+				{"type":"function_call","name":"list_agents","namespace":"collaboration-optimize"},
 				{"type":"message","namespace":"collaboration-optimize","name":"collaboration-optimize__plain"}
 			],
 			"tools":[{"type":"namespace","name":"collaboration-optimize"}]
@@ -454,16 +456,28 @@ func TestRestoreCodexMultiAgentV2Response(t *testing.T) {
 	if name := gjson.GetBytes(got, "response.output.1.name").String(); name != "collaboration__send_message" {
 		t.Fatalf("qualified function name = %q, want collaboration__send_message", name)
 	}
+	if args := gjson.GetBytes(got, "response.output.0.encrypted_function_args"); !args.IsArray() || len(args.Array()) != 0 {
+		t.Fatalf("spawn_agent encrypted_function_args = %s, want []", args.Raw)
+	}
+	if args := gjson.GetBytes(got, "response.output.1.encrypted_function_args"); !args.IsArray() || len(args.Array()) != 1 || args.Array()[0].String() != "message" {
+		t.Fatalf("existing encrypted_function_args changed: %s", args.Raw)
+	}
+	if args := gjson.GetBytes(got, "response.output.2.encrypted_function_args"); !args.IsArray() || len(args.Array()) != 0 {
+		t.Fatalf("followup_task encrypted_function_args = %s, want []", args.Raw)
+	}
+	if args := gjson.GetBytes(got, "response.output.3.encrypted_function_args"); args.Exists() {
+		t.Fatalf("list_agents unexpectedly received encrypted_function_args: %s", args.Raw)
+	}
 	if name := gjson.GetBytes(got, "response.tools.0.name").String(); name != codexCollaborationNamespace {
 		t.Fatalf("namespace tool name = %q, want collaboration", name)
 	}
 	if namespace := gjson.GetBytes(got, "response.output.0.arguments.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("opaque arguments namespace was unexpectedly rewritten: %q", namespace)
 	}
-	if namespace := gjson.GetBytes(got, "response.output.2.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
+	if namespace := gjson.GetBytes(got, "response.output.4.namespace").String(); namespace != codexOptimizedCollaborationNamespace {
 		t.Fatalf("ordinary namespace field was unexpectedly rewritten: %q", namespace)
 	}
-	if name := gjson.GetBytes(got, "response.output.2.name").String(); name != "collaboration-optimize__plain" {
+	if name := gjson.GetBytes(got, "response.output.4.name").String(); name != "collaboration-optimize__plain" {
 		t.Fatalf("ordinary name field was unexpectedly rewritten: %q", name)
 	}
 	if unchanged := RestoreCodexMultiAgentV2Response(payload, false); string(unchanged) != string(payload) {

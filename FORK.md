@@ -808,6 +808,26 @@ caller cancellation exclusion, status-less cooldown waits bounded by
 
 **Last updated:** 2026-09-18
 
+### DL024 - Plaintext collaboration metadata for optimized Codex calls
+
+The optimized Codex multi-agent request path removes encrypted message arguments
+so compatible upstream models can read collaboration tasks. Response restoration
+now adds `encrypted_function_args: []` to restored `spawn_agent`, `send_message`,
+and `followup_task` function calls when the upstream did not provide metadata.
+Existing nonempty encryption metadata is preserved, and unrelated function calls
+are unchanged. This lets Codex select plaintext inter-agent delivery before it
+constructs an encrypted child message.
+
+**Implementation evidence:** `internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2.go`,
+`internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2_test.go`,
+and `internal/runtime/executor/codex_executor_spawn_agent_test.go`.
+
+**Recorded validation:** focused optimization and executor tests pass for GPT and
+DeepSeek-compatible parent model names, including preservation of existing
+encrypted-function metadata.
+
+**Last updated:** 2026-09-21
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
