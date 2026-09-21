@@ -818,12 +818,21 @@ Existing nonempty encryption metadata is preserved, and unrelated function calls
 are unchanged. This lets Codex select plaintext inter-agent delivery before it
 constructs an encrypted child message.
 
+Optimization eligibility uses the request payload rather than the HTTP
+`User-Agent`. CPA recognizes the exact encrypted `collaboration.spawn_agent`
+tool schema, encrypted `agent_message` input, the boundary-prepared request
+marker, or its reserved optimized namespace. Same-named top-level functions and
+functions in other namespaces remain untouched. This supports Codex app-server
+embedders whose client name becomes a custom `User-Agent`, including T3 Code,
+without broadening rewrites to unrelated tool definitions.
+
 **Implementation evidence:** `internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2.go`,
 `internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2_test.go`,
 and `internal/runtime/executor/codex_executor_spawn_agent_test.go`.
 
-**Recorded validation:** focused optimization and executor tests pass for GPT and
-DeepSeek-compatible parent model names, including preservation of existing
+**Recorded validation:** focused Responses-boundary, optimization, and executor
+tests pass for custom client identities, GPT and DeepSeek-compatible parent model
+names, unrelated same-named tools, and preservation of existing
 encrypted-function metadata.
 
 **Last updated:** 2026-09-21

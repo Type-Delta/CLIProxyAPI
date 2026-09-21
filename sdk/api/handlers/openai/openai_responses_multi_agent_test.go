@@ -26,7 +26,7 @@ func TestPrepareCodexMultiAgentV2ToolsAtResponsesBoundary(t *testing.T) {
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{CodexOptimizeMultiAgentV2: true}, nil)
 	handler := NewOpenAIResponsesAPIHandler(base)
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	request.Header.Set("User-Agent", "codex_cli_rs/0.144.1")
+	request.Header.Set("User-Agent", "t3code_desktop/0.154.0")
 	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginContext.Request = request
 
@@ -64,7 +64,7 @@ func TestResponsesPreparesCodexMultiAgentV2ToolsForHTTPAndSSE(t *testing.T) {
 
 			payload := fmt.Sprintf(`{"model":%q,"stream":%t,"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","description":"Spawns an agent.","parameters":{"properties":{"message":{"encrypted":true}}}}]}]}`, modelID, stream)
 			request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(payload))
-			request.Header.Set("User-Agent", "codex_cli_rs/0.144.1")
+			request.Header.Set("User-Agent", "t3code_desktop/0.154.0")
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusOK {
@@ -177,7 +177,7 @@ func TestResponsesWebsocketPreparesCodexMultiAgentV2Tools(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexMultiAgentV2ToolsAtResponsesBoundarySkipsOtherClients(t *testing.T) {
+func TestPrepareCodexMultiAgentV2ToolsAtResponsesBoundarySkipsMissingSignature(t *testing.T) {
 	t.Parallel()
 
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{CodexOptimizeMultiAgentV2: true}, nil)
@@ -191,10 +191,10 @@ func TestPrepareCodexMultiAgentV2ToolsAtResponsesBoundarySkipsOtherClients(t *te
 	got := handler.prepareCodexMultiAgentV2Tools(ginContext, payload)
 
 	if string(got) != string(payload) {
-		t.Fatalf("other client payload changed: %s", got)
+		t.Fatalf("payload without spawn_agent signature changed: %s", got)
 	}
 	if _, exists := ginContext.Get(multiagentv2.CodexMultiAgentV2ToolsPreparedContextKey); exists {
-		t.Fatal("other client unexpectedly received prepared marker")
+		t.Fatal("payload without spawn_agent signature unexpectedly received prepared marker")
 	}
 }
 

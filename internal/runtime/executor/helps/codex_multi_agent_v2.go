@@ -17,13 +17,13 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
-// RewriteCodexSpawnAgentDescription optimizes spawn_agent definitions for
-// official Codex clients when multi-agent v2 optimization is enabled.
+// RewriteCodexSpawnAgentDescription optimizes matching Codex spawn_agent definitions
+// when multi-agent v2 optimization is enabled.
 func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
 	return multiagentv2.RewriteCodexSpawnAgentDescription(ctx, headers, payload, cfg)
 }
 
-// RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
+// RewriteCodexMultiAgentV2Input converts matching Codex multi-agent input into
 // standard Responses API messages when multi-agent v2 optimization is enabled.
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
 	return multiagentv2.RewriteCodexMultiAgentV2Input(ctx, headers, payload, cfg)
@@ -36,7 +36,7 @@ func RewriteCodexOrphanDelegationInput(ctx context.Context, headers http.Header,
 	return multiagentv2.RewriteCodexOrphanDelegationInputForConfig(ctx, headers, payload, cfg)
 }
 
-// TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
+// TranslateRequestWithCodexMultiAgentV2 normalizes matching Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
 	return multiagentv2.TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)

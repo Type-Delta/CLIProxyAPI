@@ -56,17 +56,17 @@ type codexClientModelsCatalog struct {
 	Models []map[string]any `json:"models"`
 }
 
-// RewriteCodexSpawnAgentDescription optimizes spawn_agent definitions for
-// official Codex clients when multi-agent v2 optimization is enabled.
+// RewriteCodexSpawnAgentDescription optimizes matching Codex spawn_agent definitions
+// when multi-agent v2 optimization is enabled.
 func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
 	updated, _ := OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
 	return updated
 }
 
-// RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
+// RewriteCodexMultiAgentV2Input converts matching Codex multi-agent input into
 // standard Responses API messages when multi-agent v2 optimization is enabled.
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
-	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+	if !codexMultiAgentV2RequestEnabled(ctx, payload, cfg) {
 		return payload
 	}
 	return rewriteCodexAgentMessageInput(payload)
@@ -81,7 +81,7 @@ func RewriteCodexOrphanDelegationInputForConfig(ctx context.Context, headers htt
 	return RewriteCodexOrphanDelegationInput(ctx, headers, payload, true)
 }
 
-// TranslateRequestWithCodexMultiAgentV2 normalizes official Codex multi-agent
+// TranslateRequestWithCodexMultiAgentV2 normalizes matching Codex multi-agent
 // input before translating it to a non-Codex target protocol.
 func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream bool) []byte {
 	if from == sdktranslator.FormatOpenAIResponse {
@@ -96,7 +96,7 @@ func TranslateRequestWithCodexMultiAgentV2(ctx context.Context, headers http.Hea
 // PrepareCodexMultiAgentV2Tools prepares collaboration tool definitions at the
 // Responses API boundary without changing the collaboration namespace.
 func PrepareCodexMultiAgentV2Tools(ctx context.Context, headers http.Header, payload []byte, enabled, homeEnabled bool) ([]byte, bool) {
-	if !codexMultiAgentV2ClientEnabled(ctx, headers, enabled) {
+	if !enabled || !hasCodexMultiAgentV2ToolSignature(payload) {
 		return payload, false
 	}
 
@@ -122,7 +122,7 @@ func PrepareCodexMultiAgentV2Tools(ctx context.Context, headers http.Header, pay
 // OptimizeCodexMultiAgentV2Request rewrites an eligible spawn_agent request and
 // reports whether the collaboration namespace was renamed for upstream use.
 func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) ([]byte, bool) {
-	if !codexMultiAgentV2Enabled(ctx, headers, cfg) {
+	if !codexMultiAgentV2RequestEnabled(ctx, payload, cfg) {
 		return payload, false
 	}
 	updated := rewriteCodexAgentMessageContent(payload)
@@ -138,12 +138,11 @@ func OptimizeCodexMultiAgentV2Request(ctx context.Context, headers http.Header, 
 	return optimizeCodexCollaborationNamespace(updated, toolPaths)
 }
 
-func codexMultiAgentV2Enabled(ctx context.Context, headers http.Header, cfg *config.Config) bool {
-	return cfg != nil && codexMultiAgentV2ClientEnabled(ctx, headers, cfg.Codex.OptimizeMultiAgentV2)
-}
-
-func codexMultiAgentV2ClientEnabled(ctx context.Context, headers http.Header, enabled bool) bool {
-	return enabled && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers))
+func codexMultiAgentV2RequestEnabled(ctx context.Context, payload []byte, cfg *config.Config) bool {
+	if cfg == nil || !cfg.Codex.OptimizeMultiAgentV2 {
+		return false
+	}
+	return codexMultiAgentV2ToolsPrepared(ctx) || hasCodexMultiAgentV2ToolSignature(payload) || hasCodexEncryptedAgentMessage(payload) || hasCodexOptimizedMultiAgentV2ToolSignature(payload)
 }
 
 func codexMultiAgentV2ToolsPrepared(ctx context.Context) bool {
@@ -157,15 +156,6 @@ func codexMultiAgentV2ToolsPrepared(ctx context.Context) bool {
 	prepared, ok := ginCtx.Get(CodexMultiAgentV2ToolsPreparedContextKey)
 	isPrepared, _ := prepared.(bool)
 	return ok && isPrepared
-}
-
-func codexClientUserAgent(ctx context.Context, headers http.Header) string {
-	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			return headerValueCaseInsensitive(ginCtx.Request.Header, "User-Agent")
-		}
-	}
-	return headerValueCaseInsensitive(headers, "User-Agent")
 }
 
 func headerValueCaseInsensitive(headers http.Header, name string) string {
@@ -195,10 +185,6 @@ func IsCodexClientUserAgent(userAgent string) bool {
 		strings.HasPrefix(userAgent, "codex-tui/") ||
 		userAgent == "codex_cli_rs" ||
 		strings.HasPrefix(userAgent, "codex_cli_rs/")
-}
-
-func isCodexMultiAgentClient(userAgent string) bool {
-	return IsCodexClientUserAgent(userAgent)
 }
 
 var (
@@ -855,16 +841,52 @@ func codexSpawnAgentToolPaths(payload []byte) []string {
 	return codexToolPathsByNames(payload, map[string]struct{}{"spawn_agent": {}})
 }
 
-// codexCollaborationMessageToolPaths discovers function tools named
-// spawn_agent, send_message, or followup_task inside top-level tools arrays and
-// input[].additional_tools arrays, including nested namespace tools.
+func hasCodexMultiAgentV2ToolSignature(payload []byte) bool {
+	for _, toolPath := range codexSpawnAgentToolPaths(payload) {
+		if gjson.GetBytes(payload, toolPath+".parameters.properties.message.encrypted").Bool() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCodexOptimizedMultiAgentV2ToolSignature(payload []byte) bool {
+	paths := codexNamespacedToolPathsByNames(payload, codexOptimizedCollaborationNamespace, map[string]struct{}{"spawn_agent": {}})
+	return len(paths) > 0
+}
+
+func hasCodexEncryptedAgentMessage(payload []byte) bool {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "agent_message" {
+			continue
+		}
+		for _, part := range item.Get("content").Array() {
+			if strings.TrimSpace(part.Get("type").String()) == "encrypted_content" && part.Get("encrypted_content").Type == gjson.String {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codexCollaborationMessageToolPaths discovers collaboration namespace function
+// tools named spawn_agent, send_message, or followup_task in top-level tools and
+// input[].additional_tools arrays.
 func codexCollaborationMessageToolPaths(payload []byte) []string {
 	return codexToolPathsByNames(payload, codexCollaborationMessageTools)
 }
 
 func codexToolPathsByNames(payload []byte, names map[string]struct{}) []string {
+	return codexNamespacedToolPathsByNames(payload, codexCollaborationNamespace, names)
+}
+
+func codexNamespacedToolPathsByNames(payload []byte, namespace string, names map[string]struct{}) []string {
 	paths := make([]string, 0, len(names))
-	collectCodexToolPathsByNames(gjson.GetBytes(payload, "tools"), "tools", &paths, names)
+	collectCodexNamespacedToolPathsByNames(gjson.GetBytes(payload, "tools"), "tools", namespace, &paths, names)
 
 	input := gjson.GetBytes(payload, "input")
 	if input.IsArray() {
@@ -872,10 +894,23 @@ func codexToolPathsByNames(payload []byte, names map[string]struct{}) []string {
 			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
 				continue
 			}
-			collectCodexToolPathsByNames(item.Get("tools"), fmt.Sprintf("input.%d.tools", index), &paths, names)
+			collectCodexNamespacedToolPathsByNames(item.Get("tools"), fmt.Sprintf("input.%d.tools", index), namespace, &paths, names)
 		}
 	}
 	return paths
+}
+
+func collectCodexNamespacedToolPathsByNames(tools gjson.Result, path, namespace string, paths *[]string, names map[string]struct{}) {
+	if !tools.IsArray() {
+		return
+	}
+	for index, tool := range tools.Array() {
+		if strings.TrimSpace(tool.Get("type").String()) != "namespace" || strings.TrimSpace(tool.Get("name").String()) != namespace {
+			continue
+		}
+		toolPath := fmt.Sprintf("%s.%d", path, index)
+		collectCodexToolPathsByNames(tool.Get("tools"), toolPath+".tools", paths, names)
+	}
 }
 
 func collectCodexToolPathsByNames(tools gjson.Result, path string, paths *[]string, names map[string]struct{}) {
