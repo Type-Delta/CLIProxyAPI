@@ -866,12 +866,16 @@ When enabled, CPA requires a current capture for its private Claude Code
 version. It checks the native Claude Messages client format and captured static
 headers before preparing the OAuth credential, then checks the final Anthropic
 destination, bearer authentication, OAuth beta, request shape, and session
-identity before any inference request reaches upstream. CPA also uses the
-captured user agent, package version, runtime version, OS, and architecture for
-the outgoing request. Optional fields and beta values vary across legitimate
-Claude Code requests, so one capture does not define an exhaustive request
-shape. This guard compares observable request properties; a client that copies
-them can impersonate Claude Code. TLS fingerprints are outside its scope.
+identity before any inference request reaches upstream. The incoming User-Agent
+must use the `claude-cli/X.X.X` shape, but its version may differ from the
+captured release. Package, runtime, OS, and architecture headers are not
+compared to the capture. The captured profile does not replace configured `Claude Header Defaults`;
+configured package and runtime versions supply the outgoing values. Optional
+fields and beta values vary across legitimate Claude Code requests, so one
+capture does not define an exhaustive request shape. This guard compares
+observable request properties; a client that copies them can impersonate Claude
+Code. TLS fingerprints are outside its scope. Rejections return a request-scoped
+403 with the reason and log the same non-secret reason.
 
 **Implementation evidence:** `internal/claudecapture/`,
 `internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,

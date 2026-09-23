@@ -15,9 +15,12 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/claudecapture"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 )
 
@@ -153,8 +156,118 @@ func TestClaudeOAuthSafeguardScopeAndCaptureFailure(t *testing.T) {
 			t.Fatalf("%s %s: guard = %v, error = %v; want unguarded", test.baseURL, test.key, guard, err)
 		}
 	}
+	if effective, _, err := executor.loadClaudeOAuthSafeguard("https://api.anthropic.com", "sk-ant-api03-key"); err != nil {
+		t.Fatal(err)
+	} else if effective == nil || effective.ClaudeHeaderDefaults.OAuthSafeguard {
+		t.Fatal("unguarded API-key detection retained the OAuth safeguard relaxation")
+	} else {
+		req, opts := testClaudeOAuthSafeguardRequest()
+		opts.Headers.Set("User-Agent", "claude-cli/999.0.0 (external, cli)")
+		if detection := helps.DetectClaudeCodeRequest(opts.Headers, req.Payload, false, effective); detection.Confirmed {
+			t.Fatal("unguarded API-key request accepted an unmeasured Claude CLI version")
+		}
+	}
 	if loads != 2 {
 		t.Fatalf("capture loads = %d, want 2", loads)
+	}
+}
+
+func TestClaudeOAuthSafeguardPreservesConfiguredDefaults(t *testing.T) {
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		OAuthSafeguard: true,
+		UserAgent:      "claude-cli/2.1.70 (external, cli)",
+		PackageVersion: "0.80.0",
+		RuntimeVersion: "v24.5.0",
+		OS:             "Linux",
+		Arch:           "x64",
+	}}
+	executor := NewClaudeExecutor(cfg)
+	executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) {
+		profile := testClaudeOAuthSafeguardProfile()
+		delete(profile.Headers, "X-Stainless-Package-Version")
+		delete(profile.Headers, "X-Stainless-Runtime-Version")
+		return profile, nil
+	}
+	effective, guard, err := executor.loadClaudeOAuthSafeguard("https://api.anthropic.com", "sk-ant-oat-guard-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guard == nil {
+		t.Fatal("safeguard = nil, want loaded guard")
+	}
+	if effective != cfg {
+		t.Fatal("effective config is a copy; want original config to preserve header defaults")
+	}
+	if got := effective.ClaudeHeaderDefaults; got != cfg.ClaudeHeaderDefaults {
+		t.Fatalf("Claude header defaults changed: got %+v, want %+v", got, cfg.ClaudeHeaderDefaults)
+	}
+}
+
+func TestClaudeOAuthSafeguardAcceptsCurrentNativeSoftwareVersions(t *testing.T) {
+	profile := testClaudeOAuthSafeguardProfile()
+	headers := make(http.Header)
+	for name, value := range profile.Headers {
+		headers.Set(name, value)
+	}
+	headers.Set("User-Agent", "claude-cli/9.8.7 (external, cli)")
+	headers.Set("X-Stainless-Package-Version", "0.999.0")
+	headers.Set("X-Stainless-Runtime-Version", "v99.1.2")
+	guard := &claudeOAuthSafeguard{profile: profile}
+	detection := helps.ClaudeCodeRequestDetection{Confirmed: true, NativeClient: true}
+	if err := guard.checkIncoming(sdktranslator.FormatClaude, headers, detection); err != nil {
+		t.Fatalf("checkIncoming() rejected current native software versions: %v", err)
+	}
+}
+
+func TestClaudeOAuthSafeguardForeignUserAgentErrorAndLog(t *testing.T) {
+	const foreignUserAgent = "OpenAI/secret-test-token"
+	previousLevel := log.GetLevel()
+	log.SetLevel(log.WarnLevel)
+	hook := logrustest.NewLocal(log.StandardLogger())
+	t.Cleanup(func() {
+		hook.Reset()
+		log.SetLevel(previousLevel)
+	})
+	guard := &claudeOAuthSafeguard{profile: testClaudeOAuthSafeguardProfile()}
+	headers := make(http.Header)
+	headers.Set("User-Agent", foreignUserAgent)
+	err := guard.checkIncoming(sdktranslator.FromString("openai"), headers, helps.ClaudeCodeRequestDetection{})
+	if err == nil || !strings.Contains(err.Error(), "expects User-Agent to be 'claude-cli/X.X.X'") || !strings.Contains(err.Error(), "received '"+foreignUserAgent+"'.") {
+		t.Fatalf("checkIncoming() error = %v, want expected format and received User-Agent", err)
+	}
+	entries := hook.AllEntries()
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.Data["reason"] != "client User-Agent does not match claude-cli/X.X.X" {
+		t.Fatalf("logged rejection reason = %v", entry.Data["reason"])
+	}
+	if strings.Contains(entry.Message, foreignUserAgent) || strings.Contains(fmt.Sprint(entry.Data), foreignUserAgent) {
+		t.Fatalf("log leaked received User-Agent: %+v", entry)
+	}
+}
+
+func TestClaudeOAuthSafeguardExplainsMissingNativeSignal(t *testing.T) {
+	guard := &claudeOAuthSafeguard{profile: testClaudeOAuthSafeguardProfile()}
+	headers := make(http.Header)
+	headers.Set("User-Agent", "claude-cli/9.8.7 (external, cli)")
+	for _, test := range []struct {
+		name      string
+		detection helps.ClaudeCodeRequestDetection
+		want      string
+	}{
+		{"unsupported entrypoint", helps.ClaudeCodeRequestDetection{}, "supported Claude Code client entrypoint"},
+		{"missing X-App", helps.ClaudeCodeRequestDetection{NativeClient: true}, "X-App to be 'cli'"},
+		{"missing beta", helps.ClaudeCodeRequestDetection{NativeClient: true, XAppCLI: true}, "Claude Code beta or a supported native helper request"},
+		{"missing metadata", helps.ClaudeCodeRequestDetection{NativeClient: true, XAppCLI: true, BetasPresent: true}, "valid Claude Code session metadata"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := guard.checkIncoming(sdktranslator.FormatClaude, headers, test.detection)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("checkIncoming() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -293,6 +406,45 @@ func TestClaudeOAuthSafeguardAllowsMatchingNativeRequest(t *testing.T) {
 	req, opts := testClaudeOAuthSafeguardRequest()
 	if _, err := executor.Execute(ctx, auth, req, opts); err != nil {
 		t.Fatalf("Execute native request: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("upstream attempts = %d, want 1", attempts)
+	}
+}
+
+func TestClaudeOAuthSafeguardAllowsDifferentClientVersionAndConfiguredVersions(t *testing.T) {
+	profile := testClaudeOAuthSafeguardMatchingProfile(t)
+	attempts := 0
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if got := req.Header.Get("User-Agent"); got != "claude-cli/9.8.7 (external, cli)" {
+			t.Errorf("outbound User-Agent = %q", got)
+		}
+		if got := req.Header.Get("X-Stainless-Package-Version"); got != "0.80.0" {
+			t.Errorf("outbound package version = %q", got)
+		}
+		if got := req.Header.Get("X-Stainless-Runtime-Version"); got != "v24.5.0" {
+			t.Errorf("outbound runtime version = %q", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)), Request: req}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		OAuthSafeguard: true,
+		PackageVersion: "0.80.0",
+		RuntimeVersion: "v24.5.0",
+	}}
+	executor := NewClaudeExecutor(cfg)
+	executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) { return profile, nil }
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-guard-test"}, Metadata: claudeOAuthTestMetadata()}
+	req, opts := testClaudeOAuthSafeguardRequest()
+	opts.Headers.Set("User-Agent", "claude-cli/9.8.7 (external, cli)")
+	opts.Headers.Set("X-Stainless-Package-Version", "0.99.0")
+	opts.Headers.Set("X-Stainless-Runtime-Version", "v25.0.0")
+	opts.Headers.Set("X-Stainless-OS", "Windows")
+	opts.Headers.Set("X-Stainless-Arch", "x64")
+	if _, err := executor.Execute(ctx, auth, req, opts); err != nil {
+		t.Fatalf("Execute native request with a different version and platform: %v", err)
 	}
 	if attempts != 1 {
 		t.Fatalf("upstream attempts = %d, want 1", attempts)

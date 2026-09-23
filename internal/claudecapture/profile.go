@@ -17,6 +17,7 @@ const schemaVersion = 1
 var versionPattern = regexp.MustCompile(`\b[0-9]+\.[0-9]+\.[0-9]+\b`)
 var exactVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 var bodyKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+var claudeCodeUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
 
 var allowedHeaders = map[string]bool{
 	"User-Agent":                  true,
@@ -156,8 +157,12 @@ func (p *Profile) CheckHeaders(headers http.Header) error {
 	if err := p.validate(p.ClaudeVersion); err != nil {
 		return err
 	}
+	if !claudeCodeUserAgentPattern.MatchString(strings.TrimSpace(headers.Get("User-Agent"))) {
+		return errors.New("Claude Code OAuth header User-Agent must match claude-cli/X.X.X")
+	}
 	for key, want := range p.Headers {
-		if key == "Anthropic-Beta" {
+		if key == "Anthropic-Beta" || key == "User-Agent" || key == "X-Stainless-Package-Version" ||
+			key == "X-Stainless-Runtime-Version" || key == "X-Stainless-OS" || key == "X-Stainless-Arch" {
 			continue
 		}
 		if got := headers.Get(key); got != want {
@@ -170,9 +175,9 @@ func (p *Profile) CheckHeaders(headers http.Header) error {
 	return nil
 }
 
-// CheckRequest pins the captured software headers and validates the stable
-// Messages protocol fields. Optional fields, betas, and streaming vary across
-// genuine Claude Code requests, so a single probe cannot enumerate them.
+// CheckRequest validates stable headers and Messages protocol fields. CLI,
+// package, and runtime versions may change independently of the capture.
+// Optional fields, betas, and streaming vary across genuine Claude Code requests.
 func (p *Profile) CheckRequest(headers http.Header, body []byte, endpoint string) error {
 	if err := p.CheckHeaders(headers); err != nil {
 		return err

@@ -74,6 +74,48 @@ func TestProfileCheckRequestAndVersion(t *testing.T) {
 	}
 }
 
+func TestProfileCheckHeadersAllowsClaudeCLIVersionChanges(t *testing.T) {
+	profile := referenceFixture()
+	profile.Headers["X-Stainless-Package-Version"] = "0.80.1"
+	profile.Headers["X-Stainless-Runtime-Version"] = "v20.11.0"
+	profile.Headers["X-Stainless-OS"] = "Linux"
+	profile.Headers["X-Stainless-Lang"] = "js"
+
+	headers := http.Header{}
+	headers.Set("User-Agent", "claude-cli/99.0.0 (external, sdk-cli)")
+	headers.Set("Anthropic-Version", profile.Headers["Anthropic-Version"])
+	headers.Set("Anthropic-Beta", profile.Variants[0].Beta)
+	headers.Set("X-Stainless-Package-Version", "0.95.0")
+	headers.Set("X-Stainless-Runtime-Version", "v24.3.0")
+	headers.Set("X-Stainless-OS", "Linux")
+	headers.Set("X-Stainless-Lang", "js")
+	if err := profile.CheckHeaders(headers); err != nil {
+		t.Fatalf("valid version changes were rejected: %v", err)
+	}
+
+	headers.Set("User-Agent", "other-client/99.0.0")
+	if err := profile.CheckHeaders(headers); err == nil {
+		t.Fatal("non-Claude User-Agent was accepted")
+	}
+	headers.Set("User-Agent", "claude-cli/99.0.0 (external, sdk-cli)")
+	headers.Set("X-Stainless-OS", "Darwin")
+	if err := profile.CheckHeaders(headers); err != nil {
+		t.Fatalf("different client platform was rejected: %v", err)
+	}
+	headers.Set("User-Agent", "claude-cli/not-a-version (external, sdk-cli)")
+	if err := profile.CheckHeaders(headers); err == nil {
+		t.Fatal("malformed Claude User-Agent was accepted")
+	}
+	headers.Set("User-Agent", "CLAUDE-CLI/99.0.0 (external, sdk-cli)")
+	if err := profile.CheckHeaders(headers); err != nil {
+		t.Fatalf("case-insensitive Claude User-Agent was rejected: %v", err)
+	}
+	headers.Set("X-Stainless-Lang", "python")
+	if err := profile.CheckHeaders(headers); err == nil {
+		t.Fatal("changed stable header was accepted")
+	}
+}
+
 func TestProfileFromRequestDoesNotPersistRequestValues(t *testing.T) {
 	secret := "secret-access-token-do-not-save"
 	prompt := "private-prompt-do-not-save"

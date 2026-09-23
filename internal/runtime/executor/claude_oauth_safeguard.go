@@ -3,14 +3,18 @@ package executor
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/claudecapture"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
+
+var claudeOAuthSafeguardUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
 
 type claudeOAuthSafeguardError struct {
 	statusErr
@@ -19,6 +23,11 @@ type claudeOAuthSafeguardError struct {
 func (claudeOAuthSafeguardError) IsRequestScoped() bool { return true }
 
 func newClaudeOAuthSafeguardError(message string) error {
+	return newClaudeOAuthSafeguardErrorWithReason(message, message)
+}
+
+func newClaudeOAuthSafeguardErrorWithReason(message, reason string) error {
+	log.WithField("reason", reason).Warn("Claude OAuth safeguard rejected request")
 	return claudeOAuthSafeguardError{statusErr{code: http.StatusForbidden, msg: message}}
 }
 
@@ -27,12 +36,12 @@ type claudeOAuthSafeguard struct {
 }
 
 // loadClaudeOAuthSafeguard runs only for direct Anthropic requests using real
-// Claude OAuth credentials. The captured software tuple replaces the fallback
-// header baseline for this request, so native client detection remains current.
+// Claude OAuth credentials. Captured headers validate the wire profile without
+// changing the configured Claude header defaults.
 func (e *ClaudeExecutor) loadClaudeOAuthSafeguard(baseURL, apiKey string) (*config.Config, *claudeOAuthSafeguard, error) {
 	if e.cfg == nil || !e.cfg.ClaudeHeaderDefaults.OAuthSafeguard ||
 		!isClaudeOAuthToken(apiKey) || !isAnthropicUpstreamBase(baseURL) {
-		return e.cfg, nil, nil
+		return claudeOAuthDetectionConfig(e.cfg), nil, nil
 	}
 	load := e.oauthSafeguardLoader
 	if load == nil {
@@ -40,48 +49,81 @@ func (e *ClaudeExecutor) loadClaudeOAuthSafeguard(baseURL, apiKey string) (*conf
 	}
 	profile, errLoad := load()
 	if errLoad != nil {
-		return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard requires a current Claude Code capture: " + errLoad.Error())
+		return nil, nil, newClaudeOAuthSafeguardErrorWithReason(
+			"Claude OAuth safeguard requires a current Claude Code capture: "+errLoad.Error(),
+			"current Claude Code capture unavailable",
+		)
 	}
 	if profile == nil {
 		return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard requires a current Claude Code capture")
 	}
-	profileHeaders := make(http.Header, len(profile.Headers))
-	for name, value := range profile.Headers {
-		profileHeaders.Set(name, value)
+	if profile.Headers["User-Agent"] == "" {
+		return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard capture lacks User-Agent")
 	}
-	for _, name := range []string{
-		"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version",
-		"X-Stainless-OS", "X-Stainless-Arch",
-	} {
-		if profileHeaders.Get(name) == "" {
-			return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard capture lacks " + name)
-		}
+	return e.cfg, &claudeOAuthSafeguard{profile: profile}, nil
+}
+
+// claudeOAuthDetectionConfig keeps the full runtime configuration available to
+// header reconstruction while preventing an enabled safeguard from relaxing
+// client detection on requests that are outside its OAuth scope.
+func claudeOAuthDetectionConfig(cfg *config.Config) *config.Config {
+	if cfg == nil || !cfg.ClaudeHeaderDefaults.OAuthSafeguard {
+		return cfg
 	}
-	effective := *e.cfg
-	effective.ClaudeHeaderDefaults.UserAgent = profileHeaders.Get("User-Agent")
-	effective.ClaudeHeaderDefaults.PackageVersion = profileHeaders.Get("X-Stainless-Package-Version")
-	effective.ClaudeHeaderDefaults.RuntimeVersion = profileHeaders.Get("X-Stainless-Runtime-Version")
-	effective.ClaudeHeaderDefaults.OS = profileHeaders.Get("X-Stainless-OS")
-	effective.ClaudeHeaderDefaults.Arch = profileHeaders.Get("X-Stainless-Arch")
-	return &effective, &claudeOAuthSafeguard{profile: profile}, nil
+	copyCfg := *cfg
+	copyCfg.ClaudeHeaderDefaults.OAuthSafeguard = false
+	return &copyCfg
 }
 
 func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, headers http.Header, detection helps.ClaudeCodeRequestDetection) error {
 	if s == nil {
 		return nil
 	}
-	if source != sdktranslator.FormatClaude {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard requires a native Claude Messages client")
+	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
+	if !claudeOAuthSafeguardUserAgentPattern.MatchString(userAgent) {
+		return newClaudeOAuthSafeguardErrorWithReason(
+			fmt.Sprintf("Claude OAuth safeguard flagged this request because Claude expects User-Agent to be 'claude-cli/X.X.X' but received '%s'.", userAgent),
+			"client User-Agent does not match claude-cli/X.X.X",
+		)
 	}
-	if !detection.Confirmed || !detection.NativeClient {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard requires a matching Claude Code request profile")
+	if source != sdktranslator.FormatClaude {
+		return newClaudeOAuthSafeguardErrorWithReason(
+			fmt.Sprintf("Claude OAuth safeguard requires a native Claude Messages client; expected a claude-cli/X.X.X User-Agent, received %q", userAgent),
+			"request source is not Claude Messages",
+		)
+	}
+	if !detection.NativeClient {
+		return newClaudeOAuthSafeguardErrorWithReason(
+			"Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk-cli, or claude-vscode).",
+			"client entrypoint is not supported for native Claude Code requests",
+		)
+	}
+	if !detection.Confirmed {
+		message, reason := "Claude OAuth safeguard requires a matching Claude Code request profile.", "native Claude Code request signals were not confirmed"
+		switch {
+		case !detection.XAppCLI:
+			message, reason = "Claude OAuth safeguard expects X-App to be 'cli'.", "client X-App is not cli"
+		case !detection.BetasPresent && !detection.HelperProfile:
+			message, reason = "Claude OAuth safeguard expects the Claude Code beta or a supported native helper request.", "client lacks Claude Code beta and supported helper profile"
+		case !detection.MetadataUserID:
+			message, reason = "Claude OAuth safeguard expects valid Claude Code session metadata.", "client session metadata is missing or invalid"
+		}
+		return newClaudeOAuthSafeguardErrorWithReason(
+			message,
+			reason,
+		)
 	}
 	for name, want := range s.profile.Headers {
-		if name == "Anthropic-Beta" {
+		if name == "Anthropic-Beta" || name == "User-Agent" ||
+			name == "X-Stainless-Package-Version" || name == "X-Stainless-Runtime-Version" ||
+			name == "X-Stainless-OS" || name == "X-Stainless-Arch" {
 			continue
 		}
 		if headers.Get(name) != want {
-			return newClaudeOAuthSafeguardError("Claude OAuth safeguard rejected client header " + name)
+			return newClaudeOAuthSafeguardErrorWithReason(
+				"Claude OAuth safeguard rejected client header "+name,
+				"client header does not match captured reference: "+name,
+			)
 		}
 	}
 	return nil

@@ -225,16 +225,10 @@ func normalizedClaudeBetaHeader(headers http.Header) string {
 
 // measuredClaudeCodeHelperHeadersMatch validates the helper transport envelope.
 //
-// Platform and software-version headers are deliberately NOT compared for
-// equality. The device-profile pipeline this detector feeds already pins OS/Arch
-// to the configured baseline and replaces a non-baseline software tuple instead
-// of rejecting it, so demanding equality here would classify a genuine Claude
-// Code helper from Windows/Linux, or from a different Node or SDK build, as a
-// foreign client and cloak it. Values that carry real discriminating power - the
-// exact beta allowlist, the body shape, the billing CCH and the session binding -
-// stay strict.
+// Platform headers are not compared for equality. With the OAuth safeguard on,
+// software versions need valid shapes but may differ from configured defaults.
+// The exact beta allowlist, body shape, billing CCH, and session binding remain strict.
 func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Config, shape claudeCodeHelperShape) bool {
-	profile := defaultClaudeDeviceProfile(cfg)
 	expected := map[string]string{
 		"Accept":                  "application/json",
 		"Content-Type":            "application/json",
@@ -261,17 +255,23 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 			return false
 		}
 	}
-	candidate := ClaudeDeviceProfile{
-		UserAgent:      headerValue(headers, "User-Agent"),
-		PackageVersion: headerValue(headers, "X-Stainless-Package-Version"),
-		RuntimeVersion: headerValue(headers, "X-Stainless-Runtime-Version"),
-	}
-	if version, ok := parseClaudeCLIVersion(candidate.UserAgent); ok {
-		candidate.version = version
-		candidate.hasVersion = true
-	}
-	if !meetsClaudeDeviceProfileBaseline(candidate, profile) {
+	userAgent := headerValue(headers, "User-Agent")
+	packageVersion := headerValue(headers, "X-Stainless-Package-Version")
+	runtimeVersion := headerValue(headers, "X-Stainless-Runtime-Version")
+	if !plausibleClaudeCodeUserAgent(userAgent, cfg) {
 		return false
+	}
+	if cfg != nil && cfg.ClaudeHeaderDefaults.OAuthSafeguard {
+		if !claudePackageVersionPattern.MatchString(packageVersion) || !claudeRuntimeVersionPattern.MatchString(runtimeVersion) {
+			return false
+		}
+	} else {
+		baseline := defaultClaudeDeviceProfile(cfg)
+		candidate := ClaudeDeviceProfile{UserAgent: userAgent, PackageVersion: packageVersion, RuntimeVersion: runtimeVersion}
+		candidate.version, candidate.hasVersion = parseClaudeCLIVersion(userAgent)
+		if !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
+			return false
+		}
 	}
 	// Claude Code 2.1.258 (@anthropic-ai/sdk 0.112.1), measured 2026-09-02 on the
 	// quota probe and the session-title helper: X-Stainless-Async is never sent
@@ -469,6 +469,9 @@ func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
 	userAgent = strings.TrimSpace(userAgent)
 	if !claudeCodeUserAgentPattern.MatchString(userAgent) || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
 		return false
+	}
+	if cfg != nil && cfg.ClaudeHeaderDefaults.OAuthSafeguard {
+		return true
 	}
 	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
 	baseline, okBaseline := parseClaudeCLIVersion(defaultClaudeDeviceProfile(cfg).UserAgent)
