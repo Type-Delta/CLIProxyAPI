@@ -34,8 +34,15 @@ go run ./cmd/server # Run dev server
 go test ./... # Run all tests
 go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && unlink test-output # Verify compile (REQUIRED after changes)
+./scripts/build-management-center.sh # Build CPAMC and refresh the bundled HTML and manifest
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
+
+After committing changes inside `web/management-center`, run
+`./scripts/build-management-center.sh` from the CPA repository root before committing the matching
+CPA update. Commit the CPAMC gitlink, `internal/managementasset/bundled/management.html`, and
+`internal/managementasset/bundled/management-artifact.json` together. The script requires Docker
+and a clean CPAMC worktree; do not copy `dist/index.html` by hand.
 
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
