@@ -125,6 +125,10 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	safeguardCfg, safeguard, errSafeguard := e.loadClaudeOAuthSafeguard(baseURL, apiKey)
+	if errSafeguard != nil {
+		return cliproxyexecutor.Response{}, errSafeguard
+	}
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	fp := resolveClaudeFingerprintPolicy(e.cfg, auth, apiKey)
 
@@ -135,7 +139,17 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalPayload = opts.OriginalRequest
 	}
-	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true, e.cfg)
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true, safeguardCfg)
+	if errGuard := safeguard.checkIncoming(opts.SourceFormat, incomingHeaders, claudeCodeDetection); errGuard != nil {
+		return cliproxyexecutor.Response{}, errGuard
+	}
+	if safeguard != nil {
+		var errPrepare error
+		auth, errPrepare = e.prepareValidatedClaudeOAuthAuth(ctx, auth)
+		if errPrepare != nil {
+			return cliproxyexecutor.Response{}, errPrepare
+		}
+	}
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
 	if fp.ProfileClaudeCodeCLI {
@@ -221,8 +235,11 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, body, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
+	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, body, safeguardCfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return cliproxyexecutor.Response{}, errHeaders
+	}
+	if errGuard := safeguard.checkOutbound(httpReq, body, true, claudeCodeDetection.HelperProfile); errGuard != nil {
+		return cliproxyexecutor.Response{}, errGuard
 	}
 	var authID, authLabel, authType, authValue string
 	if auth != nil {

@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `068724f69e4a1cb45acdedf9f0bb667c25769cc1`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, and the CPAUK-fidelity usage and management views.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `171913d387c5236030d07f20722e6dee9a32d1e2`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -91,8 +91,11 @@ replace the standalone comparison section. The user's existing spacing changes a
 
 Additional browser verification covered 1024-pixel layouts, dynamic and touch tooltips, equal card
 heights, all added cost sorts, and empty-to-populated latency animation. The CPA compile check passes.
+For the current pin, `bun run verify` passes 757 tests and the production build;
+isolated Chrome CDP confirms the Claude OAuth toggle, accessible description,
+keyboard focus, review dialog, config save, and desktop/mobile layout.
 
-**Last updated:** 2026-09-08
+**Last updated:** 2026-09-23
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
@@ -836,6 +839,43 @@ names, plaintext child task delivery, unrelated same-named tools, and
 preservation of existing encrypted-function metadata.
 
 **Last updated:** 2026-09-21
+
+### DL025 - Captured Claude Code OAuth request safeguard
+
+`claude-header-defaults.oauth-safeguard` is an opt-in guard for direct
+`api.anthropic.com` requests made with Claude OAuth credentials. Run
+`cli-proxy-api --claude-capture` as the CPA service user after Claude Code has
+a first-party OAuth login. CPA runs a small Claude Code request through a local
+HTTPS interception proxy, relays it to Anthropic, and saves only the installed
+CLI version, static software headers, and observed request field names in a
+private profile. Credentials and prompt values are not stored in that profile.
+`--claude-capture-update` privately installs and captures the latest official
+Claude Code npm release as a candidate; it does not replace the active system
+CLI or its capture.
+
+When enabled, CPA requires a current capture for the installed Claude Code
+version. It checks the native Claude Messages client format and captured static
+headers before preparing the OAuth credential, then checks the final Anthropic
+destination, bearer authentication, OAuth beta, request shape, and session
+identity before any inference request reaches upstream. CPA also uses the
+captured user agent, package version, runtime version, OS, and architecture for
+the outgoing request. Optional fields and beta values vary across legitimate
+Claude Code requests, so one capture does not define an exhaustive request
+shape. This guard compares observable request properties; a client that copies
+them can impersonate Claude Code. TLS fingerprints are outside its scope.
+
+**Implementation evidence:** `internal/claudecapture/`,
+`internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,
+`cmd/server/main.go`, config, and the CPAMC toggle.
+
+**Recorded validation:** focused capture/config/executor tests, `go test ./...`,
+and the disposable server build pass. A real installed Claude Code OAuth client
+completed a Messages request through an isolated CPA server; a real Codex
+Responses client received 403 from the guard before upstream. The unrelated
+`TestSyncUsageProbeCooldown` fixture now uses a future timestamp so the full
+suite remains valid after its former fixed date passes.
+
+**Last updated:** 2026-09-23
 
 ## Merge History
 

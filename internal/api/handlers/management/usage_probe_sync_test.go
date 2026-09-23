@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 )
 
 func TestSyncUsageProbeCooldown(t *testing.T) {
+	futureReset := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	tests := []struct {
 		name          string
 		probe         string
@@ -28,9 +30,9 @@ func TestSyncUsageProbeCooldown(t *testing.T) {
 		{
 			name:          "exhausted response overwrites stale cooldown",
 			probe:         "opencode-go",
-			body:          `{"usage":{"weekly":{"percent":100,"remaining":0,"resetsAt":"2026-09-21T00:00:00Z"}}}`,
+			body:          fmt.Sprintf(`{"usage":{"weekly":{"percent":100,"remaining":0,"resetsAt":%q}}}`, futureReset.Format(time.RFC3339)),
 			staleReset:    time.Now().Add(2 * time.Hour),
-			fetchedReset:  time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+			fetchedReset:  futureReset,
 			wantExhausted: true,
 		},
 	}

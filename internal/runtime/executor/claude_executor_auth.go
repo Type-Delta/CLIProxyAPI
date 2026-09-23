@@ -20,8 +20,23 @@ const (
 type claudeOAuthProfileFetcher func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthProfile, error)
 
 func (e *ClaudeExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	apiKey, _ := claudeCreds(auth)
+	apiKey, baseURL := claudeCreds(auth)
 	if !isClaudeOAuthToken(apiKey) || auth == nil {
+		return false
+	}
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com"
+	}
+	// Request auth preparation may fetch the Anthropic OAuth profile before
+	// Execute sees the caller. Strict mode must validate the caller first.
+	if e.cfg != nil && e.cfg.ClaudeHeaderDefaults.OAuthSafeguard && isAnthropicUpstreamBase(baseURL) {
+		return false
+	}
+	return claudeOAuthAuthNeedsPreparation(auth)
+}
+
+func claudeOAuthAuthNeedsPreparation(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
 		return false
 	}
 	if !claudeauth.HasCanonicalDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata)) {
@@ -76,6 +91,20 @@ func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxya
 	if auth == nil || !e.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
 	}
+	return e.prepareClaudeOAuthAuth(ctx, auth)
+}
+
+// prepareValidatedClaudeOAuthAuth runs the usual identity preparation only after
+// the strict incoming-client check has passed. Clone the selected credential so
+// concurrent requests cannot mutate its shared metadata while fetching a profile.
+func (e *ClaudeExecutor) prepareValidatedClaudeOAuthAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if !claudeOAuthAuthNeedsPreparation(auth) {
+		return auth, nil
+	}
+	return e.prepareClaudeOAuthAuth(ctx, auth.Clone())
+}
+
+func (e *ClaudeExecutor) prepareClaudeOAuthAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	apiKey, _ := claudeCreds(auth)
 	claudeauth.EnsureMetadataMap(&auth.Metadata)
 	if _, errDeviceIDs := helps.EnsureClaudeCredentialDevicePoolRequired(ctx, auth); errDeviceIDs != nil {

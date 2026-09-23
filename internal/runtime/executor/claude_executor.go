@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/claudecapture"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
@@ -25,6 +26,7 @@ type ClaudeExecutor struct {
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string
 	oauthProfileFetcher     claudeOAuthProfileFetcher
+	oauthSafeguardLoader    func() (*claudecapture.Profile, error)
 }
 
 type claudeOAuthCancellationError struct {
@@ -239,10 +241,21 @@ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 	if req == nil {
 		return nil, fmt.Errorf("claude executor: request is nil")
 	}
+	if req.URL == nil {
+		return nil, fmt.Errorf("claude executor: request URL is nil")
+	}
 	if ctx == nil {
 		ctx = req.Context()
 	}
 	httpReq := req.WithContext(ctx)
+	apiKey, _ := claudeCreds(auth)
+	_, safeguard, errSafeguard := e.loadClaudeOAuthSafeguard(httpReq.URL.Scheme+"://"+httpReq.URL.Host, apiKey)
+	if errSafeguard != nil {
+		return nil, errSafeguard
+	}
+	if safeguard != nil {
+		return nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard requires the native Claude Messages request path")
+	}
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}

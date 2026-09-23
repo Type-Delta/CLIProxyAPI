@@ -113,6 +113,7 @@ func defaultPluginInstanceConfigNode() *yaml.Node {
 // versions use the configured values. Timeout remains a fallback. Stabilized profiles
 // also pin OS and Arch and never learn newer software versions automatically.
 type ClaudeHeaderDefaults struct {
+	OAuthSafeguard         bool   `yaml:"oauth-safeguard" json:"oauth-safeguard"`
 	UserAgent              string `yaml:"user-agent" json:"user-agent"`
 	PackageVersion         string `yaml:"package-version" json:"package-version"`
 	RuntimeVersion         string `yaml:"runtime-version" json:"runtime-version"`

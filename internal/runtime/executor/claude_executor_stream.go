@@ -30,6 +30,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	safeguardCfg, safeguard, errSafeguard := e.loadClaudeOAuthSafeguard(baseURL, apiKey)
+	if errSafeguard != nil {
+		return nil, errSafeguard
+	}
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	fp := resolveClaudeFingerprintPolicy(e.cfg, auth, apiKey)
 	defer func() {
@@ -60,7 +64,17 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, e.cfg)
+	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, false, safeguardCfg)
+	if errGuard := safeguard.checkIncoming(opts.SourceFormat, incomingHeaders, claudeCodeDetection); errGuard != nil {
+		return nil, errGuard
+	}
+	if safeguard != nil {
+		var errPrepare error
+		auth, errPrepare = e.prepareValidatedClaudeOAuthAuth(ctx, auth)
+		if errPrepare != nil {
+			return nil, errPrepare
+		}
+	}
 	confirmedClaudeCode := claudeCodeDetection.Confirmed
 	claudeSessionID := ""
 	if fp.ProfileClaudeCodeCLI {
@@ -300,13 +314,16 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		true,
 		extraBetas,
 		bodyForUpstream,
-		e.cfg,
+		safeguardCfg,
 		incomingHeaders,
 		confirmedClaudeCode && !cloaked,
 		claudeCodeDetection.HelperProfile,
 		claudeSessionID,
 	); errHeaders != nil {
 		return nil, errHeaders
+	}
+	if errGuard := safeguard.checkOutbound(httpReq, bodyForUpstream, false, claudeCodeDetection.HelperProfile); errGuard != nil {
+		return nil, errGuard
 	}
 	fastRequest := isAnthropicUpstreamBase(baseURL) && claudeRequestIsFast(httpReq, bodyForUpstream)
 	authID, authLabel, authType, authValue := claudeAuthLogIdentity(auth)

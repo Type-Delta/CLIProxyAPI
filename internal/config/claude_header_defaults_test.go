@@ -11,6 +11,7 @@ func TestLoadConfigOptional_ClaudeHeaderDefaults(t *testing.T) {
 	configPath := filepath.Join(dir, "config.yaml")
 	configYAML := []byte(`
 claude-header-defaults:
+  oauth-safeguard: true
   user-agent: "  claude-cli/2.1.70 (external, cli)  "
   package-version: "  0.80.0  "
   runtime-version: "  v24.5.0  "
@@ -31,6 +32,9 @@ claude-header-defaults:
 
 	if got := cfg.ClaudeHeaderDefaults.UserAgent; got != "claude-cli/2.1.70 (external, cli)" {
 		t.Fatalf("UserAgent = %q, want %q", got, "claude-cli/2.1.70 (external, cli)")
+	}
+	if !cfg.ClaudeHeaderDefaults.OAuthSafeguard {
+		t.Fatal("OAuthSafeguard = false, want true")
 	}
 	if got := cfg.ClaudeHeaderDefaults.PackageVersion; got != "0.80.0" {
 		t.Fatalf("PackageVersion = %q, want %q", got, "0.80.0")
