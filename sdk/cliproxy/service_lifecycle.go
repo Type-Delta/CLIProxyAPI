@@ -199,6 +199,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
+	s.startClaudeReferenceUpdater(ctx)
 
 	select {
 	case <-ctx.Done():

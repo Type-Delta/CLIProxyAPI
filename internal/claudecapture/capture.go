@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -20,32 +22,61 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
-// Capture runs the installed Claude Code with a fixed harmless prompt through a
-// loopback HTTPS proxy, relays its request to Anthropic, and writes a sanitized
-// reference. A genuine OAuth login must already exist in Claude Code.
-func Capture(ctx context.Context, cli, outputPath string) error {
-	if cli == "" {
-		cli = "claude"
+type CaptureOptions struct {
+	Executable string
+	OAuthToken string
+	OutputPath string
+	StateDir   string
+}
+
+// CapturePrivate probes a CPA-private Claude executable using an OAuth token
+// supplied on an inherited pipe. All CLI state stays under StateDir.
+func CapturePrivate(ctx context.Context, options CaptureOptions) error {
+	if runtime.GOOS == "windows" {
+		return errors.New("private Claude OAuth descriptor capture is unavailable on Windows")
 	}
-	version, err := versionOf(cli)
+	if err := sandboxAvailable(); err != nil {
+		return err
+	}
+	if options.OAuthToken == "" || len(options.OAuthToken) > 8192 || strings.ContainsAny(options.OAuthToken, "\r\n") {
+		return errors.New("Claude OAuth token is missing or invalid")
+	}
+	root, err := filepath.Abs(options.StateDir)
+	if err != nil || options.StateDir == "" {
+		return errors.New("private Claude capture state directory is required")
+	}
+	for _, path := range []string{options.Executable, options.OutputPath} {
+		abs, err := filepath.Abs(path)
+		if err != nil || path == "" || !withinRoot(root, abs) {
+			return errors.New("Claude capture paths must stay under the private state directory")
+		}
+	}
+	if _, err := sandboxPath(root, filepath.Dir(options.OutputPath)); err != nil {
+		return fmt.Errorf("private capture output directory is invalid: %w", err)
+	}
+	version, err := versionOfPrivate(options.Executable, root)
 	if err != nil {
 		return err
 	}
-	if err := requireOAuthLogin(cli); err != nil {
-		return err
-	}
-	privateDir, err := os.MkdirTemp("", "cpa-claude-capture-")
+	privateDir, err := os.MkdirTemp(root, ".capture-")
 	if err != nil {
 		return fmt.Errorf("create private capture directory: %w", err)
 	}
 	defer os.RemoveAll(privateDir)
 	if err := os.Chmod(privateDir, 0700); err != nil {
+		return err
+	}
+	if err := preparePrivateHome(privateDir); err != nil {
 		return err
 	}
 	cert, caPEM, err := interceptionCertificate()
@@ -62,17 +93,27 @@ func Capture(ctx context.Context, cli, outputPath string) error {
 	}
 	defer listener.Close()
 	profiles := make(chan *Profile, 64)
-	server := &http.Server{Handler: &captureProxy{cert: cert, version: version, profiles: profiles}}
+	server := &http.Server{Handler: &captureProxy{cert: cert, version: version, token: options.OAuthToken, profiles: profiles}}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 
-	command := exec.CommandContext(ctx, cli, "--print", "Reply with OK.", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku", "--tools", "")
-	command.Dir = privateDir
-	command.Env = proxyEnvironment(os.Environ(), listener.Addr().String(), caPath)
+	insideHome, err := sandboxPath(root, privateDir)
+	if err != nil {
+		return err
+	}
+	insideCA, err := sandboxPath(root, caPath)
+	if err != nil {
+		return err
+	}
+	command, err := sandboxCommand(ctx, root, privateDir, options.Executable, []string{privateDir}, "--print", "Reply with OK.", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku", "--tools", "")
+	if err != nil {
+		return err
+	}
+	command.Env = privateCommandEnvironment(insideHome, listener.Addr().String(), insideCA)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("Claude Code probe failed; check OAuth login and local proxy trust: %w", err)
+	if err := runWithOAuthDescriptor(command, options.OAuthToken); err != nil {
+		return fmt.Errorf("private Claude Code OAuth probe failed: %w", err)
 	}
 	var merged *Profile
 	for {
@@ -88,7 +129,7 @@ func Capture(ctx context.Context, cli, outputPath string) error {
 				return errors.New("Claude Code completed without an intercepted OAuth Messages request")
 			}
 			merged.Variants = uniqueVariants(merged.Variants)
-			return writeProfile(outputPath, merged)
+			return writeProfile(options.OutputPath, merged)
 		}
 	}
 }
@@ -106,41 +147,12 @@ func uniqueVariants(input []Variant) []Variant {
 	return output
 }
 
-func requireOAuthLogin(cli string) error {
-	out, err := exec.Command(cli, "auth", "status").Output()
-	if err != nil {
-		return errors.New("Claude Code is not logged in; run claude auth login first")
-	}
-	var status struct {
-		LoggedIn   bool   `json:"loggedIn"`
-		AuthMethod string `json:"authMethod"`
-		Provider   string `json:"apiProvider"`
-	}
-	if err := json.Unmarshal(out, &status); err != nil {
-		return errors.New("cannot parse Claude Code auth status")
-	}
-	if !status.LoggedIn || (status.AuthMethod != "claude.ai" && status.AuthMethod != "oauth") || status.Provider != "firstParty" {
-		return errors.New("Claude Code must have a first-party claude.ai OAuth login")
-	}
-	return nil
-}
-
-func proxyEnvironment(base []string, address, caPath string) []string {
-	var env []string
-	for _, entry := range base {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok && (strings.EqualFold(key, "HTTPS_PROXY") || strings.EqualFold(key, "HTTP_PROXY") || strings.EqualFold(key, "ALL_PROXY") || strings.EqualFold(key, "NO_PROXY") || strings.EqualFold(key, "NODE_EXTRA_CA_CERTS") || strings.EqualFold(key, "ANTHROPIC_BASE_URL") || strings.EqualFold(key, "ANTHROPIC_API_KEY") || strings.EqualFold(key, "ANTHROPIC_AUTH_TOKEN")) {
-			continue
-		}
-		env = append(env, entry)
-	}
-	return append(env, "HTTPS_PROXY=http://"+address, "HTTP_PROXY=http://"+address, "ALL_PROXY=http://"+address, "NO_PROXY=", "NODE_EXTRA_CA_CERTS="+caPath, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "DISABLE_TELEMETRY=1")
-}
-
 type captureProxy struct {
-	cert     tls.Certificate
-	version  string
-	profiles chan<- *Profile
+	cert      tls.Certificate
+	version   string
+	token     string
+	profiles  chan<- *Profile
+	transport http.RoundTripper
 }
 
 func captureTrace(event string) {
@@ -198,13 +210,12 @@ func (p *captureProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if err != nil || len(body) > 32<<20 {
 			return
 		}
-		if profile := profileFromRequest(incoming, body, p.version); profile != nil {
-			captureTrace("captured OAuth Messages request")
-			select {
-			case p.profiles <- profile:
-			default:
-			}
+		if subtle.ConstantTimeCompare([]byte(incoming.Header.Get("Authorization")), []byte("Bearer "+p.token)) != 1 {
+			captureTrace("rejecting API request with unexpected credential")
+			_, _ = io.WriteString(tlsClient, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			return
 		}
+		profile := profileFromRequest(incoming, body, p.version)
 		outgoing, err := http.NewRequestWithContext(incoming.Context(), incoming.Method, "https://api.anthropic.com"+incoming.URL.RequestURI(), bytes.NewReader(body))
 		if err != nil {
 			return
@@ -212,14 +223,18 @@ func (p *captureProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		outgoing.Header = incoming.Header.Clone()
 		outgoing.Host = "api.anthropic.com"
 		outgoing.ContentLength = int64(len(body))
-		response, err := http.DefaultTransport.RoundTrip(outgoing)
+		transport := p.transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		response, err := transport.RoundTrip(outgoing)
 		if err != nil {
 			captureTrace("upstream relay failed")
 			_, _ = io.WriteString(tlsClient, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
 			return
 		}
 		captureTrace(fmt.Sprintf("upstream response %d", response.StatusCode))
-		if os.Getenv("CPA_CAPTURE_DEBUG") == "1" && incoming.URL.Path == "/v1/messages" {
+		if incoming.URL.Path == "/v1/messages" {
 			captureTrace(fmt.Sprintf("Messages response type=%s encoding=%s length=%d", response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"), response.ContentLength))
 			response.Body = &responseTracker{ReadCloser: response.Body}
 		}
@@ -234,7 +249,14 @@ func (p *captureProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		captureTrace("upstream response sent to Claude Code")
 		if tracked, ok := response.Body.(*responseTracker); ok {
-			captureTrace(fmt.Sprintf("Messages response bytes=%d stop-event=%t", tracked.count, tracked.hasStop(response.Header.Get("Content-Encoding"))))
+			completed := tracked.hasCompletedMessage(response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"))
+			captureTrace(fmt.Sprintf("Messages response bytes=%d completed=%t", tracked.count, completed))
+			if response.StatusCode == http.StatusOK && completed && profile != nil {
+				select {
+				case p.profiles <- profile:
+				default:
+				}
+			}
 		}
 		_ = response.Body.Close()
 		if incoming.Close || response.Close {
@@ -258,17 +280,52 @@ func (t *responseTracker) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (t *responseTracker) hasStop(encoding string) bool {
-	if encoding != "gzip" {
-		return bytes.Contains(t.content.Bytes(), []byte("event: message_stop"))
+func (t *responseTracker) hasCompletedMessage(contentType, encoding string) bool {
+	var reader io.Reader = bytes.NewReader(t.content.Bytes())
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+	case "gzip":
+		decoded, err := gzip.NewReader(reader)
+		if err != nil {
+			return false
+		}
+		defer decoded.Close()
+		reader = decoded
+	case "deflate":
+		decoded, err := zlib.NewReader(reader)
+		if err != nil {
+			return false
+		}
+		defer decoded.Close()
+		reader = decoded
+	case "br":
+		reader = brotli.NewReader(reader)
+	case "zstd":
+		decoded, err := zstd.NewReader(reader)
+		if err != nil {
+			return false
+		}
+		defer decoded.Close()
+		reader = decoded
+	default:
+		return false
 	}
-	reader, err := gzip.NewReader(bytes.NewReader(t.content.Bytes()))
+	decoded, err := io.ReadAll(io.LimitReader(reader, 1<<20))
 	if err != nil {
 		return false
 	}
-	defer reader.Close()
-	decoded, err := io.ReadAll(io.LimitReader(reader, 1<<20))
-	return err == nil && bytes.Contains(decoded, []byte("event: message_stop"))
+	switch {
+	case strings.HasPrefix(contentType, "text/event-stream"):
+		return bytes.Contains(decoded, []byte("event: message_stop"))
+	case strings.HasPrefix(contentType, "application/json"):
+		var message struct {
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}
+		return json.Unmarshal(decoded, &message) == nil && message.Type == "message" && message.Role == "assistant"
+	default:
+		return false
+	}
 }
 
 func (p *captureProxy) tunnel(client net.Conn, buffered *bufio.ReadWriter, target string) {

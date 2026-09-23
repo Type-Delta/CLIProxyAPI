@@ -115,19 +115,18 @@ func TestProfileFromRequestDoesNotPersistRequestValues(t *testing.T) {
 	}
 }
 
-func TestCaptureEnvironmentForcesOAuthProxy(t *testing.T) {
-	env := proxyEnvironment([]string{
-		"ANTHROPIC_API_KEY=old-key", "ANTHROPIC_AUTH_TOKEN=old-token",
-		"ANTHROPIC_BASE_URL=https://example.com", "HTTPS_PROXY=https://example.com",
-		"KEEP=value",
-	}, "127.0.0.1:1234", "/tmp/ca.pem")
+func TestCaptureEnvironmentForcesPrivateHomeAndProxy(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "old-key")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "old-token")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://example.com")
+	env := privateCommandEnvironment("/cpa/.capture-test", "127.0.0.1:1234", "/cpa/.capture-test/ca.pem")
 	joined := strings.Join(env, "\n")
 	for _, forbidden := range []string{"old-key", "old-token", "https://example.com"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("capture inherited an API override: %s", forbidden)
 		}
 	}
-	for _, required := range []string{"KEEP=value", "HTTPS_PROXY=http://127.0.0.1:1234", "NODE_EXTRA_CA_CERTS=/tmp/ca.pem"} {
+	for _, required := range []string{"HOME=/cpa/.capture-test", "CLAUDE_CONFIG_DIR=/cpa/.capture-test/claude", "HTTPS_PROXY=http://127.0.0.1:1234", "NODE_EXTRA_CA_CERTS=/cpa/.capture-test/ca.pem"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("capture environment lacks %q", required)
 		}

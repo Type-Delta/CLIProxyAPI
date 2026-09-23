@@ -662,8 +662,10 @@ nonstream-keepalive-interval: 0
 # verified native OS/arch values remain client-supplied. When stabilize-device-profile is
 # enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
 # the same exact software baseline rather than learning newer client versions.
+# The OAuth safeguard requires a CPA Claude OAuth credential and Linux bubblewrap for
+# private installation and capture; without a valid active capture it rejects guarded requests.
 # claude-header-defaults:
-#   oauth-safeguard: false  # require a current private Claude Code capture for direct Anthropic OAuth requests; reject unmatched clients before upstream
+#   oauth-safeguard: false  # privately install/capture Claude Code, check updates every 24h, and block unmatched direct Anthropic OAuth requests
 #   user-agent: "claude-cli/2.1.258 (external, cli)"
 #   package-version: "0.112.1"
 #   runtime-version: "v26.3.0"

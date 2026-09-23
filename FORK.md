@@ -843,17 +843,26 @@ preservation of existing encrypted-function metadata.
 ### DL025 - Captured Claude Code OAuth request safeguard
 
 `claude-header-defaults.oauth-safeguard` is an opt-in guard for direct
-`api.anthropic.com` requests made with Claude OAuth credentials. Run
-`cli-proxy-api --claude-capture` as the CPA service user after Claude Code has
-a first-party OAuth login. CPA runs a small Claude Code request through a local
-HTTPS interception proxy, relays it to Anthropic, and saves only the installed
-CLI version, static software headers, and observed request field names in a
-private profile. Credentials and prompt values are not stored in that profile.
-`--claude-capture-update` privately installs and captures the latest official
-Claude Code npm release as a candidate; it does not replace the active system
-CLI or its capture.
+`api.anthropic.com` requests made with Claude OAuth credentials. CPA uses a
+Claude OAuth credential from its own auth store to install the official Claude
+Code npm package in a private directory and run a small request through a local
+HTTPS interception proxy. The proxy relays the request to Anthropic. A successful
+response promotes the new executable and its captured profile together. The
+profile stores the CLI version, static software headers, and observed request
+field names, without credentials or prompt values. The updater checks npm when
+due at startup and every 24 hours afterward. A failed candidate leaves
+the last validated reference active; a missing or invalid active reference
+blocks guarded requests. Failed background captures retry after an hour. CPA
+retains the active version and one rollback version, then removes older private
+packages and the npm cache. `--claude-capture-update` forces an immediate check.
 
-When enabled, CPA requires a current capture for the installed Claude Code
+The reference CLI receives a private home and XDG directories. On Linux, CPA
+runs npm and Claude Code in a bubblewrap filesystem namespace with the host home
+absent and only task-specific private directories writable. Capture fails closed
+when that isolation is unavailable. CPA does not invoke the host's `claude`
+executable or read its login state.
+
+When enabled, CPA requires a current capture for its private Claude Code
 version. It checks the native Claude Messages client format and captured static
 headers before preparing the OAuth credential, then checks the final Anthropic
 destination, bearer authentication, OAuth beta, request shape, and session
@@ -869,11 +878,15 @@ them can impersonate Claude Code. TLS fingerprints are outside its scope.
 `cmd/server/main.go`, config, and the CPAMC toggle.
 
 **Recorded validation:** focused capture/config/executor tests, `go test ./...`,
-and the disposable server build pass. A real installed Claude Code OAuth client
-completed a Messages request through an isolated CPA server; a real Codex
-Responses client received 403 from the guard before upstream. The unrelated
-`TestSyncUsageProbeCooldown` fixture now uses a future timestamp so the full
-suite remains valid after its former fixed date passes.
+and the disposable server build pass. The private capture tests verify the
+24-hour check boundary, a read-only active reference, a hidden host home, OAuth
+delivery by file descriptor, rejection of a mismatched credential before relay,
+compressed and JSON Messages responses, and old-version pruning. A prior real
+installed Claude Code OAuth client completed a Messages request through an
+isolated CPA server; a real
+Codex Responses client received 403 from the guard before upstream. The
+unrelated `TestSyncUsageProbeCooldown` fixture now uses a future timestamp so
+the full suite remains valid after its former fixed date passes.
 
 **Last updated:** 2026-09-23
 

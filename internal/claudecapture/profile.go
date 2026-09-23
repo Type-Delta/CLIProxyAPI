@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -50,42 +49,53 @@ type Variant struct {
 }
 
 func DefaultPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	root, err := DefaultRoot()
 	if err != nil {
-		return "", fmt.Errorf("find user config directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(dir, "cli-proxy-api", "claude-code-oauth-profile.json"), nil
+	reference, err := activeReference(root)
+	if err != nil {
+		return "", err
+	}
+	return reference.ProfilePath, nil
 }
 
 func InstalledVersion() (string, error) {
-	return versionOf("claude")
-}
-
-func versionOf(cli string) (string, error) {
-	out, err := exec.Command(cli, "--version").Output()
+	root, err := DefaultRoot()
 	if err != nil {
-		return "", fmt.Errorf("run Claude Code version command: %w", err)
+		return "", err
 	}
-	version := versionPattern.FindString(string(out))
-	if version == "" {
-		return "", errors.New("Claude Code version command returned no version")
+	reference, err := activeReference(root)
+	if err != nil {
+		return "", err
 	}
-	return version, nil
+	return versionOfPrivate(reference.Executable, root)
 }
 
 func LoadCurrent() (*Profile, error) {
-	path, err := DefaultPath()
+	root, err := DefaultRoot()
 	if err != nil {
 		return nil, err
 	}
-	version, err := InstalledVersion()
+	reference, err := activeReference(root)
 	if err != nil {
 		return nil, err
 	}
-	return Load(path, version)
+	version, err := versionOfPrivate(reference.Executable, root)
+	if err != nil || version != reference.Version {
+		return nil, errors.New("private Claude Code executable does not match its active reference")
+	}
+	return Load(reference.ProfilePath, version)
 }
 
 func Load(path, cliVersion string) (*Profile, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect Claude Code OAuth reference: %w", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("Claude Code OAuth reference must be private to its owner")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read Claude Code OAuth reference: %w", err)
@@ -113,9 +123,13 @@ func (p *Profile) validate(cliVersion string) error {
 		}
 	}
 	seen := make(map[string]bool)
+	hasMessages := false
 	for _, variant := range p.Variants {
 		if variant.Endpoint != "messages" && variant.Endpoint != "count_tokens" {
 			return errors.New("Claude Code OAuth reference contains invalid endpoint")
+		}
+		if variant.Endpoint == "messages" {
+			hasMessages = true
 		}
 		if len(variant.BodyKeys) == 0 || len(variant.Beta) > 4096 || !hasBeta(variant.Beta, "oauth-2025-04-20") {
 			return errors.New("Claude Code OAuth reference contains invalid request variant")
@@ -130,6 +144,9 @@ func (p *Profile) validate(cliVersion string) error {
 			return errors.New("Claude Code OAuth reference contains duplicate variants")
 		}
 		seen[name] = true
+	}
+	if !hasMessages {
+		return errors.New("Claude Code OAuth reference lacks a completed Messages request")
 	}
 	return nil
 }

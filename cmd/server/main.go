@@ -21,7 +21,6 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/claudecapture"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -38,6 +37,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
@@ -99,8 +99,8 @@ func main() {
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
 	flag.BoolVar(&codexDeviceLogin, "codex-device-login", false, "Login to Codex using device code flow")
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
-	flag.BoolVar(&claudeCapture, "claude-capture", false, "Capture a Claude Code OAuth request reference")
-	flag.BoolVar(&claudeCaptureUpdate, "claude-capture-update", false, "Privately stage and capture the latest Claude Code release")
+	flag.BoolVar(&claudeCapture, "claude-capture", false, "Install and capture a private Claude Code OAuth reference")
+	flag.BoolVar(&claudeCaptureUpdate, "claude-capture-update", false, "Force a private Claude Code update check and capture")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
@@ -151,30 +151,6 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
-	if claudeCapture || claudeCaptureUpdate {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
-		if claudeCaptureUpdate {
-			candidate, errUpdate := claudecapture.StageLatest(ctx)
-			if errUpdate != nil {
-				fmt.Fprintln(os.Stderr, errUpdate)
-				os.Exit(1)
-			}
-			fmt.Println("Staged Claude Code reference", candidate.Version, "at", candidate.ProfilePath)
-			return
-		}
-		path, errPath := claudecapture.DefaultPath()
-		if errPath != nil {
-			fmt.Fprintln(os.Stderr, errPath)
-			os.Exit(1)
-		}
-		if errCapture := claudecapture.Capture(ctx, "claude", path); errCapture != nil {
-			fmt.Fprintln(os.Stderr, errCapture)
-			os.Exit(1)
-		}
-		fmt.Println("Claude Code OAuth reference captured at", path)
-		return
-	}
 
 	// Core application variables.
 	var err error
@@ -618,7 +594,7 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || claudeCapture || claudeCaptureUpdate || kimiLogin || xaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -688,6 +664,15 @@ func main() {
 	} else if claudeLogin {
 		// Handle Claude login
 		cmd.DoClaudeLogin(cfg, options)
+	} else if claudeCapture || claudeCaptureUpdate {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		profile, errCapture := cliproxy.RefreshClaudeReference(ctx, cfg, claudeCaptureUpdate)
+		if errCapture != nil {
+			fmt.Fprintln(os.Stderr, errCapture)
+			os.Exit(1)
+		}
+		fmt.Println("Private Claude Code OAuth reference ready for version", profile.ClaudeVersion)
 	} else if kimiLogin {
 		cmd.DoKimiLogin(cfg, options)
 	} else if xaiLogin {
