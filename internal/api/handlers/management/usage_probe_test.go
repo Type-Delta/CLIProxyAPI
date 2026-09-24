@@ -315,3 +315,14 @@ func TestBuildAuthFileEntryIncludesCredentialMetadata(t *testing.T) {
 		t.Fatal("display name is empty")
 	}
 }
+
+func TestCodexRateLimitFamilyRejectsNonFinitePercent(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			body := []byte(`{"allowed":true,"primary_window":{"used_percent":"` + value + `"}}`)
+			if codexRateLimitFamilyHealthy(body) {
+				t.Fatalf("used_percent %q must not clear a cooldown", value)
+			}
+		})
+	}
+}

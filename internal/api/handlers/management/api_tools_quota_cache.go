@@ -52,6 +52,7 @@ type quotaCallOutcome struct {
 	retryAfterProvided bool
 	uncacheable        bool
 	callerCanceled     bool
+	fromCache          bool
 }
 
 func (o quotaCallOutcome) clone() quotaCallOutcome {
@@ -278,6 +279,7 @@ func nonNegativeDuration(value time.Duration) time.Duration {
 }
 
 func (q *apiCallQuotaCache) replayOutcome(outcome quotaCallOutcome, expiresAt, now time.Time) quotaCallOutcome {
+	outcome.fromCache = true
 	// CPAMC derives provider clock offset from Date. Advance a cached Date by
 	// its residence time so refreshing cannot move quota countdowns backwards.
 	if outcome.hasResponse && !outcome.cachedAt.IsZero() && now.After(outcome.cachedAt) {
@@ -326,6 +328,23 @@ func (q *apiCallQuotaCache) invalidateAuth(authHash string) {
 			flight.invalidated = true
 			delete(q.flights, requestHash)
 		}
+	}
+}
+
+// invalidateRequest drops one cached response and prevents its in-flight
+// result from being admitted after an explicit management refresh. Provider
+// rate-limit backoff remains in force for the credential.
+func (q *apiCallQuotaCache) invalidateRequest(requestHash string) {
+	if q == nil || requestHash == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.ensureMapsLocked()
+	delete(q.entries, requestHash)
+	if flight, ok := q.flights[requestHash]; ok {
+		flight.invalidated = true
+		delete(q.flights, requestHash)
 	}
 }
 

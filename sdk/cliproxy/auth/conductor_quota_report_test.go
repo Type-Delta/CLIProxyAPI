@@ -108,6 +108,32 @@ func TestManager_ApplyProviderQuotaReport_HealthyClearsQuotaCooldown(t *testing.
 	}
 }
 
+func TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	reset := time.Now().Add(time.Hour)
+	auth := &Auth{
+		ID: "quota-report-targeted-credential", Provider: "codex", Status: StatusError,
+		Unavailable: true, NextRetryAfter: reset,
+		Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: reset},
+		ModelStates: map[string]*ModelState{
+			"gpt-5.5": {Status: StatusError, Unavailable: true, NextRetryAfter: reset, Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: reset}},
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	if _, errReport := manager.ApplyProviderQuotaReportForModels(context.Background(), auth.ID, false, time.Time{}, []string{"gpt-5.5"}); errReport != nil {
+		t.Fatalf("targeted quota report: %v", errReport)
+	}
+	updated, _ := manager.GetByID(auth.ID)
+	if updated == nil || !updated.Quota.Exceeded || updated.Quota.Reason != "credential_quota" {
+		t.Fatalf("credential quota after targeted report = %#v, want preserved", updated)
+	}
+	if state := updated.ModelStates["gpt-5.5"]; state == nil || state.Quota.Exceeded {
+		t.Fatalf("standard model quota after targeted report = %#v, want cleared", state)
+	}
+}
+
 func TestManager_ApplyProviderQuotaReport_IgnoresPastReset(t *testing.T) {
 	t.Parallel()
 

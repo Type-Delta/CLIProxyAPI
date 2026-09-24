@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `171913d387c5236030d07f20722e6dee9a32d1e2`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `d6b64f8c85b2a3c42d728dfc0a0f271234a27384`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, the Claude OAuth capture safeguard control, and fresh Codex usage reads on "Refresh all credentials".
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -91,11 +91,15 @@ replace the standalone comparison section. The user's existing spacing changes a
 
 Additional browser verification covered 1024-pixel layouts, dynamic and touch tooltips, equal card
 heights, all added cost sorts, and empty-to-populated latency animation. The CPA compile check passes.
-For the current pin, `bun run verify` passes 757 tests and the production build;
+For the preceding pin, `bun run verify` passed 757 tests and the production build;
 isolated Chrome CDP confirms the Claude OAuth toggle, accessible description,
 keyboard focus, review dialog, config save, and desktop/mobile layout.
 
-**Last updated:** 2026-09-23
+The current pin passes `bun run verify` with 759 tests. The canonical Docker
+build produces the single-file management artifact with SHA-256
+`ead8f787e9ed129ce4f075fe61db855e71b41782c202809b338d149c2471e895`.
+
+**Last updated:** 2026-09-24
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
@@ -368,6 +372,10 @@ The existing management response envelope is preserved. Generic API calls and
 quota-reset mutations are not cached. The known xAI paid-account health probe is
 covered, while ordinary chat completions are not. Successful Codex reset-credit
 consumption invalidates cached quota results without lifting provider backoff.
+An explicit `force_refresh` on a recognized quota read drops that request's
+cached result before fetching upstream, while keeping any active 429 backoff.
+CPAMC uses this for Codex usage when an administrator presses "Refresh all
+credentials" so a provider-side automatic reset can be observed immediately.
 State is held in memory per CPA management handler, shared by its clients, and
 resets when CPA restarts; separate CPA processes do not share it.
 
@@ -383,7 +391,11 @@ fallback, provider backoff, mutation isolation, interrupted responses, and
 preserved countdown clock offset. Bypassing the guard through a test-only Go
 overlay makes the one-minute expiry test fail on excess provider calls.
 
-**Last updated:** 2026-09-06
+The Codex refresh regression exercises `force_refresh` against a local provider
+response and confirms the cached one-minute result is bypassed without removing
+active 429 backoff.
+
+**Last updated:** 2026-09-24
 
 Local timing follow-up validation: the full Go suite and required server build pass, including
 real HTTP executor and reused-WebSocket regressions. Independent QA generated an OpenAI-compatible
@@ -763,6 +775,16 @@ rejoin rotation immediately. A report is ignored when an exhausted window lacks
 a future reset time, when the report cannot be parsed, or when cooling is
 disabled for the credential.
 
+Codex reset-credit consumption clears standard-model runtime and registry
+cooldowns immediately after a successful upstream response. A fresh Codex usage
+read clears stale cooldowns for models whose reported allowance has recovered;
+it preserves a separate exhausted Spark allowance and does not impose a
+credential-wide block from one exhausted model family. Cached healthy usage
+responses cannot clear a newer quota error, and incomplete reports leave
+routing state untouched. The manual reset and the Quota page's "Refresh all
+credentials" action make recovered models selectable without waiting for the
+old cooldown deadline.
+
 The behavior is centralized in the auth manager and runs after successful
 management quota API calls and analytics usage probes, so the existing
 "Refresh quota" flow needs no separate reset action.
@@ -772,11 +794,12 @@ management quota API calls and analytics usage probes, so the existing
 `internal/api/handlers/management/api_tools.go`.
 
 **Recorded validation:** focused auth-manager tests cover exhausted-overwrite,
-healthy-clear, and past-reset no-op behavior; management tests cover the
-Z.ai/OpenCode Go window decision and successful usage-response cooldown sync.
-`go test ./...` and the disposable `cmd/server` build check pass.
+healthy-clear, past-reset no-op, and credential-wide cooldown preservation;
+management tests cover the Z.ai/OpenCode Go window decision, Codex manual
+reset, mixed-family recovery, cached usage replay, and fresh upstream usage
+sync. `go test ./...` and the disposable `cmd/server` build check pass.
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-24
 
 ### DL023 - Retry rounds cover transport and status-less failures
 

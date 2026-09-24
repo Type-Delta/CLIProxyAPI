@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -46,6 +49,21 @@ type opencodeGoQuotaWindowResponse struct {
 	Limit     *int64   `json:"limit"`
 	Used      *int64   `json:"used"`
 	Remaining *int64   `json:"remaining"`
+}
+
+type codexRateLimitResponse struct {
+	Allowed              *bool           `json:"allowed"`
+	LimitReached         *bool           `json:"limit_reached"`
+	LimitReachedCamel    *bool           `json:"limitReached"`
+	PrimaryWindow        json.RawMessage `json:"primary_window"`
+	PrimaryWindowCamel   json.RawMessage `json:"primaryWindow"`
+	SecondaryWindow      json.RawMessage `json:"secondary_window"`
+	SecondaryWindowCamel json.RawMessage `json:"secondaryWindow"`
+}
+
+type codexUsageWindowResponse struct {
+	UsedPercent      json.RawMessage `json:"used_percent"`
+	UsedPercentCamel json.RawMessage `json:"usedPercent"`
 }
 
 func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error) {
@@ -238,6 +256,159 @@ func (h *Handler) syncUsageProbeCooldown(ctx context.Context, auth *coreauth.Aut
 		return
 	}
 	h.applyProviderQuotaCooldownDecision(ctx, auth, providerQuotaFromWindows(windows))
+}
+
+// syncCodexUsageCooldown only clears stale Codex cooldowns when the standard
+// request allowance reports healthy. Code-review and additional-model limits
+// are independent and must not block the whole credential.
+func (h *Handler) syncCodexUsageCooldown(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil ||
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") || !exactQuotaURL(parsedURL, codexUsageQuotaURL) {
+		return
+	}
+	if !codexStandardAllowanceHealthy(body) {
+		return
+	}
+	additional, ok := codexAdditionalModelIDs(body)
+	if !ok {
+		return
+	}
+	if _, errApply := h.authManager.ApplyProviderQuotaReportForModels(ctx, auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, additional)); errApply != nil {
+		log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to clear Codex cooldown from healthy usage report")
+	}
+}
+
+func codexStandardModelIDs(authID string, additional map[string]bool) []string {
+	models := registry.GetGlobalRegistry().GetModelsForClient(authID)
+	standard := make([]string, 0, len(models))
+	for _, model := range models {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(model.ID))
+		if key == "codex-auto-review" {
+			continue
+		}
+		if strings.HasSuffix(key, "-spark") {
+			healthy, reported := additional[key]
+			if !reported || !healthy {
+				continue
+			}
+		}
+		if healthy, reported := additional[key]; reported && !healthy {
+			continue
+		}
+		standard = append(standard, model.ID)
+	}
+	return standard
+}
+
+func codexAdditionalModelIDs(body []byte) (map[string]bool, bool) {
+	var usage map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
+		return nil, false
+	}
+	raw := usage["additional_rate_limits"]
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = usage["additionalRateLimits"]
+	}
+	additional := make(map[string]bool)
+	if len(raw) == 0 || string(raw) == "null" {
+		return additional, true
+	}
+	var limits []struct {
+		LimitName           string          `json:"limit_name"`
+		LimitNameCamel      string          `json:"limitName"`
+		MeteredFeature      string          `json:"metered_feature"`
+		MeteredFeatureCamel string          `json:"meteredFeature"`
+		RateLimit           json.RawMessage `json:"rate_limit"`
+		RateLimitCamel      json.RawMessage `json:"rateLimit"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &limits); errUnmarshal != nil {
+		return nil, false
+	}
+	for _, limit := range limits {
+		name := strings.TrimSpace(limit.LimitName)
+		if name == "" {
+			name = strings.TrimSpace(limit.LimitNameCamel)
+		}
+		if name == "" {
+			name = strings.TrimSpace(limit.MeteredFeature)
+		}
+		if name == "" {
+			name = strings.TrimSpace(limit.MeteredFeatureCamel)
+		}
+		if name == "" {
+			return nil, false
+		}
+		rateLimit := limit.RateLimit
+		if len(rateLimit) == 0 || string(rateLimit) == "null" {
+			rateLimit = limit.RateLimitCamel
+		}
+		additional[strings.ToLower(name)] = len(rateLimit) > 0 && string(rateLimit) != "null" && codexRateLimitFamilyHealthy(rateLimit)
+	}
+	return additional, true
+}
+
+func codexStandardAllowanceHealthy(body []byte) bool {
+	var usage map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
+		return false
+	}
+	standard := usage["rate_limit"]
+	if len(standard) == 0 || string(standard) == "null" {
+		standard = usage["rateLimit"]
+	}
+	return len(standard) > 0 && string(standard) != "null" && codexRateLimitFamilyHealthy(standard)
+}
+
+func codexRateLimitFamilyHealthy(raw json.RawMessage) bool {
+	var rateLimit codexRateLimitResponse
+	if errUnmarshal := json.Unmarshal(raw, &rateLimit); errUnmarshal != nil {
+		return false
+	}
+	limitReached := rateLimit.LimitReached
+	if limitReached == nil {
+		limitReached = rateLimit.LimitReachedCamel
+	}
+	if rateLimit.Allowed != nil && !*rateLimit.Allowed || limitReached != nil && *limitReached {
+		return false
+	}
+	windows := []json.RawMessage{rateLimit.PrimaryWindow, rateLimit.PrimaryWindowCamel, rateLimit.SecondaryWindow, rateLimit.SecondaryWindowCamel}
+	observed := false
+	for _, rawWindow := range windows {
+		if len(rawWindow) == 0 || string(rawWindow) == "null" {
+			continue
+		}
+		var window codexUsageWindowResponse
+		if errUnmarshal := json.Unmarshal(rawWindow, &window); errUnmarshal != nil {
+			return false
+		}
+		usedPercentRaw := window.UsedPercent
+		if len(usedPercentRaw) == 0 || string(usedPercentRaw) == "null" {
+			usedPercentRaw = window.UsedPercentCamel
+		}
+		if len(usedPercentRaw) == 0 || string(usedPercentRaw) == "null" {
+			return false
+		}
+		var usedPercent float64
+		if errUnmarshal := json.Unmarshal(usedPercentRaw, &usedPercent); errUnmarshal != nil {
+			var value string
+			if errUnmarshal = json.Unmarshal(usedPercentRaw, &value); errUnmarshal != nil {
+				return false
+			}
+			parsed, errParse := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if errParse != nil {
+				return false
+			}
+			usedPercent = parsed
+		}
+		if math.IsNaN(usedPercent) || math.IsInf(usedPercent, 0) || usedPercent < 0 || usedPercent >= 100 {
+			return false
+		}
+		observed = true
+	}
+	return observed
 }
 
 func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) (*model.ProviderQuota, error) {

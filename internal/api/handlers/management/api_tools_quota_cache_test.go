@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -224,6 +225,156 @@ func TestAPICallCodexConsumeInvalidatesCredentialQuotaCache(t *testing.T) {
 	quotaCall(t, h, proxy, "credential-a-codex", http.MethodGet, usageURL, "same", "")
 	if got := proxy.count.Load(); got != 3 {
 		t.Fatalf("provider call count = %d, want initial usage, consume, and fresh post-consume usage", got)
+	}
+}
+
+func TestAPICallCodexConsumeClearsCredentialCooldown(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	auth := &coreauth.Auth{
+		ID: "credential-a-codex", Index: "credential-a-codex", Provider: "codex",
+		Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next,
+		Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5-codex-reset":   {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+			"gpt-5.3-codex-spark": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+		},
+	}
+	model := "gpt-5-codex-reset"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}, {ID: "gpt-5.3-codex-spark"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().SetModelQuotaExceeded(auth.ID, model)
+	registry.GetGlobalRegistry().SetModelQuotaExceeded(auth.ID, "gpt-5.3-codex-spark")
+	if got := registry.GetGlobalRegistry().GetModelCount(model); got != 0 {
+		t.Fatalf("registry model count before successful consume = %d, want 0", got)
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}}, authManager: manager, quotaCache: newAPICallQuotaCache(time.Now)}
+	consumeURL := "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	quotaCall(t, h, proxy, auth.Index, http.MethodPost, consumeURL, "same", `{"model":"gpt-5"}`)
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("auth missing after Codex reset-credit consume")
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.Quota.Exceeded || updated.Status != coreauth.StatusError {
+		t.Fatalf("auth availability after successful consume = unavailable %v retry %v quota %+v status %q", updated.Unavailable, updated.NextRetryAfter, updated.Quota, updated.Status)
+	}
+	if updated.ModelStates[model].Quota.Exceeded || !updated.ModelStates["gpt-5.3-codex-spark"].Quota.Exceeded {
+		t.Fatalf("model quota after consume = standard %+v Spark %+v", updated.ModelStates[model].Quota, updated.ModelStates["gpt-5.3-codex-spark"].Quota)
+	}
+	if got := registry.GetGlobalRegistry().GetModelCount(model); got != 1 {
+		t.Fatalf("registry model count after successful consume = %d, want 1", got)
+	}
+	if got := registry.GetGlobalRegistry().GetModelCount("gpt-5.3-codex-spark"); got != 0 {
+		t.Fatalf("Spark registry model count after consume = %d, want 0", got)
+	}
+}
+
+func TestAPICallCodexUsageForceRefreshClearsCooldownOnlyFromHealthyStandardAllowance(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	auth := &coreauth.Auth{
+		ID: "credential-a-codex", Index: "credential-a-codex", Provider: "codex",
+		Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next,
+		Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5.5":             {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+			"gpt-5.3-codex-spark": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+		},
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}, {ID: "gpt-5.3-codex-spark"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	registry.GetGlobalRegistry().SetModelQuotaExceeded(auth.ID, "gpt-5.5")
+	registry.GetGlobalRegistry().SetModelQuotaExceeded(auth.ID, "gpt-5.3-codex-spark")
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}}, authManager: manager, quotaCache: newAPICallQuotaCache(time.Now)}
+	usageURL := "https://chatgpt.com/backend-api/wham/usage"
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":false,"primary_window":{"used_percent":100}}}`)
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	forceRefresh := func() {
+		t.Helper()
+		index := auth.Index
+		call := apiCallRequest{
+			AuthIndexSnake: &index, Method: http.MethodGet, URL: usageURL,
+			Header: map[string]string{"X-Test-Parameter": "same"}, ForceRefresh: true,
+		}
+		raw, errMarshal := json.Marshal(call)
+		if errMarshal != nil {
+			t.Fatalf("marshal force refresh request: %v", errMarshal)
+		}
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(raw))
+		h.APICall(ctx)
+	}
+
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":true,"primary_window":{"used_percent":20}},"additional_rate_limits":[{"limit_name":"gpt-5.3-codex-spark","rate_limit":{"allowed":false,"primary_window":{"used_percent":100}}}]}`)
+	forceRefresh()
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil || updated.Unavailable || !updated.Quota.Exceeded {
+		t.Fatalf("Codex cooldown after mixed family report = %#v, want retained", updated)
+	}
+	if state := updated.ModelStates["gpt-5.3-codex-spark"]; state == nil || !state.Quota.Exceeded {
+		t.Fatalf("Spark cooldown after mixed family report = %#v, want retained", state)
+	}
+	if state := updated.ModelStates["gpt-5.5"]; state == nil || state.Quota.Exceeded {
+		t.Fatalf("standard cooldown after mixed family report = %#v, want cleared", state)
+	}
+	if got := registry.GetGlobalRegistry().GetModelCount("gpt-5.5"); got != 1 {
+		t.Fatalf("standard registry model count = %d, want 1", got)
+	}
+	if got := registry.GetGlobalRegistry().GetModelCount("gpt-5.3-codex-spark"); got != 0 {
+		t.Fatalf("Spark registry model count = %d, want 0", got)
+	}
+
+	// A later healthy Spark allowance clears Spark independently.
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":true,"primary_window":{"used_percent":20},"secondary_window":{"used_percent":40}},"code_review_rate_limit":{"allowed":true,"primary_window":{"used_percent":10}},"additional_rate_limits":[{"limit_name":"gpt-5.3-codex-spark","rate_limit":{"allowed":true,"primary_window":{"used_percent":5}}}]}`)
+	forceRefresh()
+
+	updated, ok = manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("auth missing after forced usage refresh")
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.Quota.Exceeded || updated.Status != coreauth.StatusActive {
+		t.Fatalf("auth availability after healthy forced refresh = unavailable %v retry %v quota %+v status %q", updated.Unavailable, updated.NextRetryAfter, updated.Quota, updated.Status)
+	}
+	if state := updated.ModelStates["gpt-5.3-codex-spark"]; state == nil || state.Quota.Exceeded {
+		t.Fatalf("Spark cooldown after healthy Spark report = %#v, want cleared", state)
+	}
+	if got := proxy.count.Load(); got != 3 {
+		t.Fatalf("provider call count = %d, want initial request and two forced refreshes", got)
+	}
+}
+
+func TestAPICallCodexCachedUsageDoesNotClearNewCooldown(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{ID: "codex-cached-usage", Index: "codex-cached-usage", Provider: "codex", Status: coreauth.StatusActive}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}}, authManager: manager, quotaCache: newAPICallQuotaCache(time.Now)}
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":true,"primary_window":{"used_percent":20}}}`)
+	usageURL := "https://chatgpt.com/backend-api/wham/usage"
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	if _, errReport := manager.ApplyProviderQuotaReport(context.Background(), auth.ID, true, time.Now().Add(time.Hour)); errReport != nil {
+		t.Fatalf("mark quota exhausted: %v", errReport)
+	}
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	updated, _ := manager.GetByID(auth.ID)
+	if updated == nil || !updated.Quota.Exceeded {
+		t.Fatalf("quota after cached healthy replay = %#v, want exhausted", updated)
+	}
+	if got := proxy.count.Load(); got != 1 {
+		t.Fatalf("provider call count = %d, want cached replay", got)
 	}
 }
 

@@ -557,6 +557,14 @@ func modelsForRegisteredAuth(authID string) []string {
 // freshly fetched provider usage report. A healthy report clears quota
 // cooldowns so a manually reset credential can rejoin routing immediately.
 func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, exhausted bool, resetAt time.Time) (bool, error) {
+	return m.ApplyProviderQuotaReportForModels(ctx, authID, exhausted, resetAt, nil)
+}
+
+// ApplyProviderQuotaReportForModels applies a provider quota report to the
+// selected model states. A nil model list keeps the historical credential-wide
+// behavior; a non-nil list lets providers with independent model allowances
+// recover one family without clearing another family's cooldown.
+func (m *Manager) ApplyProviderQuotaReportForModels(ctx context.Context, authID string, exhausted bool, resetAt time.Time, modelIDs []string) (bool, error) {
 	if m == nil {
 		return false, nil
 	}
@@ -592,9 +600,21 @@ func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, e
 		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 	}
 
+	selectedModels := make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if modelKey := canonicalModelKey(modelID); modelKey != "" {
+			selectedModels[modelKey] = struct{}{}
+		}
+	}
+	selectAllModels := modelIDs == nil
 	changed := false
 	if exhausted {
-		for _, state := range auth.ModelStates {
+		for modelID, state := range auth.ModelStates {
+			if !selectAllModels {
+				if _, selected := selectedModels[canonicalModelKey(modelID)]; !selected {
+					continue
+				}
+			}
 			if state == nil || state.Status == StatusDisabled {
 				continue
 			}
@@ -632,7 +652,12 @@ func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, e
 			auth.StatusMessage = "quota exhausted"
 		}
 	} else {
-		for _, state := range auth.ModelStates {
+		for modelID, state := range auth.ModelStates {
+			if !selectAllModels {
+				if _, selected := selectedModels[canonicalModelKey(modelID)]; !selected {
+					continue
+				}
+			}
 			if state == nil || state.Status == StatusDisabled {
 				continue
 			}
@@ -642,7 +667,8 @@ func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, e
 			resetModelState(state, now)
 			changed = true
 		}
-		if auth.Quota.Exceeded || auth.Quota.Reason != "" || !auth.Quota.NextRecoverAt.IsZero() {
+		if (selectAllModels || auth.Quota.Reason != "credential_quota") &&
+			(auth.Quota.Exceeded || auth.Quota.Reason != "" || !auth.Quota.NextRecoverAt.IsZero()) {
 			applyCooldownFields(&auth.Quota, QuotaState{})
 			auth.Unavailable = false
 			auth.NextRetryAfter = time.Time{}
@@ -651,7 +677,8 @@ func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, e
 		if len(auth.ModelStates) > 0 {
 			updateAggregatedAvailability(auth, now)
 		}
-		if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
+		if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) &&
+			!(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) {
 			auth.LastError = nil
 			auth.StatusMessage = ""
 			auth.Status = StatusActive
@@ -685,6 +712,11 @@ func (m *Manager) ApplyProviderQuotaReport(ctx context.Context, authID string, e
 	for _, sm := range supportedModels {
 		if sm == nil || strings.TrimSpace(sm.ID) == "" {
 			continue
+		}
+		if !selectAllModels {
+			if _, selected := selectedModels[canonicalModelKey(sm.ID)]; !selected {
+				continue
+			}
 		}
 		projections = append(projections, m.clientModelProjectionForAuth(snapshot, sm.ID, now))
 	}

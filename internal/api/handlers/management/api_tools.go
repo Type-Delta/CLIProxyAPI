@@ -35,6 +35,7 @@ type apiCallRequest struct {
 	ProxyURL        string            `json:"proxy_url"`
 	Header          map[string]string `json:"header"`
 	Data            string            `json:"data"`
+	ForceRefresh    bool              `json:"force_refresh"`
 }
 
 type apiCallResponse struct {
@@ -73,6 +74,8 @@ type apiCallResponse struct {
 //     Example: {"Authorization":"Bearer $TOKEN$"}.
 //     Note: if you need to override the HTTP Host header, set header["Host"].
 //   - data (optional): Raw request body as string (useful for POST/PUT/PATCH).
+//   - force_refresh (optional): For cacheable quota reads, bypass the cached
+//     response and fetch a fresh provider response.
 //
 // Proxy selection (highest priority first):
 //  1. Request proxy_url (when set, lower-priority proxy settings are ignored)
@@ -141,6 +144,9 @@ func (h *Handler) APICall(c *gin.Context) {
 	execute := func(ctx context.Context) quotaCallOutcome {
 		return h.executeAPICall(ctx, method, urlStr, auth, requestProxyURL, reqHeaders, body.Data)
 	}
+	if body.ForceRefresh && requestKind == quotaRequestCacheable {
+		h.getQuotaCache().invalidateRequest(cacheKey.requestHash)
+	}
 
 	var outcome quotaCallOutcome
 	switch requestKind {
@@ -150,12 +156,18 @@ func (h *Handler) APICall(c *gin.Context) {
 		outcome = execute(c.Request.Context())
 		if outcome.successfulResponse() {
 			h.getQuotaCache().invalidateAuth(cacheKey.authHash)
+			if auth != nil && h.authManager != nil {
+				if _, errReset := h.authManager.ApplyProviderQuotaReportForModels(context.WithoutCancel(c.Request.Context()), auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, nil)); errReset != nil {
+					log.WithError(errReset).WithField("auth_id", auth.ID).Debug("failed to clear Codex standard cooldown after reset-credit consume")
+				}
+			}
 		}
 	default:
 		outcome = execute(c.Request.Context())
 	}
-	if requestKind == quotaRequestCacheable && outcome.successfulResponse() && auth != nil {
+	if requestKind == quotaRequestCacheable && outcome.successfulResponse() && !outcome.fromCache && auth != nil {
 		h.syncUsageProbeCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
+		h.syncCodexUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
 	}
 
 	h.writeAPICallOutcome(c, outcome)
