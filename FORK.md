@@ -874,7 +874,8 @@ headers before preparing the OAuth credential, then checks the final Anthropic
 destination, bearer authentication, OAuth beta, request shape, and session
 identity before any inference request reaches upstream. The incoming User-Agent
 must use the `claude-cli/X.X.X` shape, but its version may differ from the
-captured release. Package, runtime, OS, and architecture headers are not
+captured release. Native entrypoints include `cli`, `sdk`, `sdk-cli`, and
+`claude-vscode`. Package, runtime, OS, and architecture headers are not
 compared to the capture. The captured profile does not replace configured `Claude Header Defaults`;
 configured package and runtime versions supply the outgoing values. Optional
 fields and beta values vary across legitimate Claude Code requests, so one
@@ -897,8 +898,11 @@ isolated CPA server; a real
 Codex Responses client received 403 from the guard before upstream. The
 unrelated `TestSyncUsageProbeCooldown` fixture now uses a future timestamp so
 the full suite remains valid after its former fixed date passes.
+An executor regression test confirms that `claude-cli/X.X.X (external, sdk)`
+reaches the upstream transport with its own User-Agent when the guard is enabled,
+while a matching SDK request without `X-App: cli` is rejected before transport.
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-09-24
 
 ## Merge History
 

@@ -37,6 +37,7 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 	"mcp":                       "claude-code-mcp",
 	"bench":                     "claude-code-bench",
 	"sdk-cli":                   "claude-code-cli-sdk",
+	"sdk":                       "claude-code-sdk",
 	"sdk-ts":                    "claude-code-sdk-ts",
 	"sdk-py":                    "claude-code-sdk-py",
 	"claude-vscode":             "claude-code-vscode",
@@ -66,6 +67,7 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 var nativeClaudeEntrypoints = map[string]bool{
 	"cli":           true,
 	"sdk-cli":       true,
+	"sdk":           true,
 	"claude-vscode": true,
 }
 
