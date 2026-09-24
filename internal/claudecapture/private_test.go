@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -11,34 +12,24 @@ import (
 	"time"
 )
 
-func TestPrivateSandboxHidesHomeAndPassesOAuthOnDescriptor(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bubblewrap isolation is Linux-only")
-	}
-	if err := sandboxAvailable(); err != nil {
-		t.Skip(err)
+func TestPrivateCommandUsesPrivateHomeAndPassesOAuthOnDescriptor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("OAuth descriptor capture is unavailable on Windows")
 	}
 	root := t.TempDir()
+	globalHome := t.TempDir()
+	t.Setenv("HOME", globalHome)
 	home := filepath.Join(root, "home")
 	if err := preparePrivateHome(home); err != nil {
 		t.Fatal(err)
 	}
 	probe := filepath.Join(root, "probe.sh")
-	if err := os.WriteFile(filepath.Join(root, "active.json"), []byte("unchanged"), 0600); err != nil {
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\n[ \"$HOME\" = \"$1\" ] || exit 24\n[ \"$HOME\" != \"$2\" ] || exit 25\n[ \"$XDG_CONFIG_HOME\" = \"$1/config\" ] || exit 26\n[ \"$CLAUDE_CONFIG_DIR\" = \"$1/claude\" ] || exit 27\necho writable > \"$HOME/sentinel\"\ncat /proc/self/fd/3\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(probe, []byte("#!/bin/sh\n[ ! -e \"$1\" ] || exit 23\n[ \"$HOME\" = /cpa/home ] || exit 24\nif echo modified > /cpa/active.json 2>/dev/null; then exit 25; fi\necho writable > /cpa/home/sentinel\ncat /proc/self/fd/3\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	realHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	command, err := sandboxCommand(context.Background(), root, home, probe, []string{home}, realHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	command.Env = privateCommandEnvironment("/cpa/home", "", "")
+	command := exec.CommandContext(context.Background(), probe, home, globalHome)
+	command.Dir = home
+	command.Env = privateCommandEnvironment(home, "", "")
 	var output bytes.Buffer
 	command.Stdout = &output
 	token := "fake-oauth-test-token"
@@ -48,15 +39,34 @@ func TestPrivateSandboxHidesHomeAndPassesOAuthOnDescriptor(t *testing.T) {
 	if output.String() != token+"\n" {
 		t.Fatal("private child did not receive the OAuth descriptor")
 	}
-	active, err := os.ReadFile(filepath.Join(root, "active.json"))
-	if err != nil || string(active) != "unchanged" {
-		t.Fatalf("private child changed active reference: %q, %v", active, err)
-	}
 	if _, err := os.Stat(filepath.Join(home, "sentinel")); err != nil {
 		t.Fatalf("private child could not write its own home: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(globalHome, "sentinel")); !os.IsNotExist(err) {
+		t.Fatalf("private child wrote to the global home: %v", err)
+	}
 	if strings.Contains(strings.Join(command.Args, " "), token) || strings.Contains(strings.Join(command.Env, " "), token) {
 		t.Fatal("OAuth token leaked into child arguments or environment")
+	}
+}
+
+func TestPrivateCommandFindsNodeOutsideSystemPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test executable is a shell script")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "node"), []byte("#!/bin/sh\necho private-node\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := preparePrivateHome(home); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("/usr/bin/env", "node")
+	command.Env = privateCommandEnvironment(home, "", "")
+	if out, err := command.Output(); err != nil || string(out) != "private-node\n" {
+		t.Fatalf("private child could not find Node: %q, %v", out, err)
 	}
 }
 
@@ -122,11 +132,8 @@ func TestPruneOldVersionsKeepsActiveAndOneRollback(t *testing.T) {
 }
 
 func TestLoadCurrentUsesPrivateActiveVersion(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bubblewrap isolation is Linux-only")
-	}
-	if err := sandboxAvailable(); err != nil {
-		t.Skip(err)
+	if runtime.GOOS == "windows" {
+		t.Skip("the test executable is a shell script")
 	}
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

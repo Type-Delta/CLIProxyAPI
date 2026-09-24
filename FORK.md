@@ -838,7 +838,7 @@ tests pass for custom client identities, GPT and DeepSeek-compatible parent mode
 names, plaintext child task delivery, unrelated same-named tools, and
 preservation of existing encrypted-function metadata.
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-24
 
 ### DL025 - Captured Claude Code OAuth request safeguard
 
@@ -856,11 +856,17 @@ blocks guarded requests. Failed background captures retry after an hour. CPA
 retains the active version and one rollback version, then removes older private
 packages and the npm cache. `--claude-capture-update` forces an immediate check.
 
-The reference CLI receives a private home and XDG directories. On Linux, CPA
-runs npm and Claude Code in a bubblewrap filesystem namespace with the host home
-absent and only task-specific private directories writable. Capture fails closed
-when that isolation is unavailable. CPA does not invoke the host's `claude`
-executable or read its login state.
+The reference CLI receives a clean environment with a private home and XDG
+directories, including `CLAUDE_CONFIG_DIR`. npm uses a private cache and ignores
+the user's npm configuration. CPA invokes the installed executable by its private
+absolute path, never the host's `claude` executable or login state. Environment
+redirection keeps Claude Code's normal config and data writes private; it does not
+prevent a future CLI release from deliberately opening an absolute host path.
+Docker deployments also separate the reference from host Claude paths because
+those paths are not mounted in the container.
+
+The runtime Docker image includes Node.js and npm. Docker Compose persists the
+private reference in a dedicated volume without extra container privileges.
 
 When enabled, CPA requires a current capture for its private Claude Code
 version. It checks the native Claude Messages client format and captured static

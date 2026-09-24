@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -45,9 +46,6 @@ func CapturePrivate(ctx context.Context, options CaptureOptions) error {
 	if runtime.GOOS == "windows" {
 		return errors.New("private Claude OAuth descriptor capture is unavailable on Windows")
 	}
-	if err := sandboxAvailable(); err != nil {
-		return err
-	}
 	if options.OAuthToken == "" || len(options.OAuthToken) > 8192 || strings.ContainsAny(options.OAuthToken, "\r\n") {
 		return errors.New("Claude OAuth token is missing or invalid")
 	}
@@ -61,7 +59,7 @@ func CapturePrivate(ctx context.Context, options CaptureOptions) error {
 			return errors.New("Claude capture paths must stay under the private state directory")
 		}
 	}
-	if _, err := sandboxPath(root, filepath.Dir(options.OutputPath)); err != nil {
+	if _, err := privatePath(root, filepath.Dir(options.OutputPath)); err != nil {
 		return fmt.Errorf("private capture output directory is invalid: %w", err)
 	}
 	version, err := versionOfPrivate(options.Executable, root)
@@ -97,19 +95,9 @@ func CapturePrivate(ctx context.Context, options CaptureOptions) error {
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 
-	insideHome, err := sandboxPath(root, privateDir)
-	if err != nil {
-		return err
-	}
-	insideCA, err := sandboxPath(root, caPath)
-	if err != nil {
-		return err
-	}
-	command, err := sandboxCommand(ctx, root, privateDir, options.Executable, []string{privateDir}, "--print", "Reply with OK.", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku", "--tools", "")
-	if err != nil {
-		return err
-	}
-	command.Env = privateCommandEnvironment(insideHome, listener.Addr().String(), insideCA)
+	command := exec.CommandContext(ctx, options.Executable, "--print", "Reply with OK.", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku", "--tools", "")
+	command.Dir = privateDir
+	command.Env = privateCommandEnvironment(privateDir, listener.Addr().String(), caPath)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := runWithOAuthDescriptor(command, options.OAuthToken); err != nil {

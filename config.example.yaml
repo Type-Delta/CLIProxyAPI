@@ -661,8 +661,9 @@ nonstream-keepalive-interval: 0
 # When stabilize-device-profile is
 # enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
 # the same configured software baseline rather than learning newer client versions.
-# The OAuth safeguard requires a CPA Claude OAuth credential and Linux bubblewrap for
-# private installation and capture; without a valid active capture it rejects guarded requests.
+# The OAuth safeguard requires a CPA Claude OAuth credential and local Node.js/npm
+# for private installation and capture; without a valid active capture it rejects guarded requests.
+# Docker Compose persists the private reference in a dedicated volume.
 # claude-header-defaults:
 #   oauth-safeguard: false  # privately install/capture Claude Code, check updates every 24h, and block unmatched direct Anthropic OAuth requests
 #   user-agent: "claude-cli/2.1.258 (external, cli)"  # OAuth safeguard accepts any claude-cli/X.X.X version

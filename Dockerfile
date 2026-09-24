@@ -22,7 +22,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 FROM debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates nodejs npm \
     && apt-get clean \
     && find /var/lib/apt/lists -mindepth 1 -delete
 

@@ -16,6 +16,26 @@ func withinRoot(root, path string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+func privatePath(root, path string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil || !withinRoot(root, path) {
+		return "", errors.New("path must stay under the CPA private reference root")
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil || !withinRoot(canonicalRoot, canonicalPath) {
+		return "", errors.New("path resolves outside the CPA private reference root")
+	}
+	return path, nil
+}
+
 func preparePrivateHome(dir string) error {
 	for _, name := range []string{"config", "data", "cache", "state", "claude", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
@@ -26,8 +46,12 @@ func preparePrivateHome(dir string) error {
 }
 
 func privateCommandEnvironment(dir, proxyAddress, caPath string) []string {
+	commandPath := "/usr/bin:/bin"
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		commandPath = filepath.Dir(nodePath) + string(os.PathListSeparator) + commandPath
+	}
 	env := []string{
-		"PATH=/usr/bin:/bin",
+		"PATH=" + commandPath,
 		"HOME=" + dir,
 		"XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
 		"XDG_DATA_HOME=" + filepath.Join(dir, "data"),
@@ -36,6 +60,7 @@ func privateCommandEnvironment(dir, proxyAddress, caPath string) []string {
 		"CLAUDE_CONFIG_DIR=" + filepath.Join(dir, "claude"),
 		"TMPDIR=" + filepath.Join(dir, "tmp"),
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"DISABLE_AUTOUPDATER=1",
 		"DISABLE_TELEMETRY=1",
 		"NO_PROXY=",
 	}
@@ -54,9 +79,6 @@ func privateCommandEnvironment(dir, proxyAddress, caPath string) []string {
 }
 
 func versionOfPrivate(cli, root string) (string, error) {
-	if err := sandboxAvailable(); err != nil {
-		return "", err
-	}
 	resolved, err := filepath.EvalSymlinks(cli)
 	if err != nil {
 		return "", fmt.Errorf("resolve private Claude executable: %w", err)
@@ -69,15 +91,9 @@ func versionOfPrivate(cli, root string) (string, error) {
 	if err := preparePrivateHome(home); err != nil {
 		return "", err
 	}
-	insideHome, err := sandboxPath(root, home)
-	if err != nil {
-		return "", err
-	}
-	command, err := sandboxCommand(context.Background(), root, home, cli, []string{home}, "--version")
-	if err != nil {
-		return "", err
-	}
-	command.Env = privateCommandEnvironment(insideHome, "", "")
+	command := exec.CommandContext(context.Background(), cli, "--version")
+	command.Dir = home
+	command.Env = privateCommandEnvironment(home, "", "")
 	out, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("run private Claude Code version command: %w", err)

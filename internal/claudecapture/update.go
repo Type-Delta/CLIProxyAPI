@@ -121,7 +121,7 @@ func activeReference(root string) (privateReference, error) {
 }
 
 func lookupLatest(ctx context.Context, root string) (string, error) {
-	command, err := privateNPMCommand(ctx, root, nil, "view", "@anthropic-ai/claude-code", "version", "--json")
+	command, err := privateNPMCommand(ctx, root, "view", "@anthropic-ai/claude-code", "version", "--json")
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +136,7 @@ func lookupLatest(ctx context.Context, root string) (string, error) {
 	return version, nil
 }
 
-func privateNPMCommand(ctx context.Context, root string, writable []string, args ...string) (*exec.Cmd, error) {
+func privateNPMCommand(ctx context.Context, root string, args ...string) (*exec.Cmd, error) {
 	home := filepath.Join(root, ".npm-home")
 	if err := preparePrivateHome(home); err != nil {
 		return nil, err
@@ -145,15 +145,13 @@ func privateNPMCommand(ctx context.Context, root string, writable []string, args
 	if err := os.MkdirAll(cache, 0700); err != nil {
 		return nil, err
 	}
-	insideHome, err := sandboxPath(root, home)
+	npmPath, err := exec.LookPath("npm")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find npm for private Claude Code installation: %w", err)
 	}
-	command, err := sandboxCommand(ctx, root, home, "/usr/bin/npm", append([]string{home, cache}, writable...), args...)
-	if err != nil {
-		return nil, err
-	}
-	command.Env = append(privateCommandEnvironment(insideHome, "", ""), "NPM_CONFIG_CACHE=/cpa/npm-cache", "NPM_CONFIG_USERCONFIG="+os.DevNull)
+	command := exec.CommandContext(ctx, npmPath, args...)
+	command.Dir = home
+	command.Env = append(privateCommandEnvironment(home, "", ""), "NPM_CONFIG_CACHE="+cache, "NPM_CONFIG_USERCONFIG="+os.DevNull)
 	command.Stderr = io.Discard
 	return command, nil
 }
@@ -171,11 +169,7 @@ func installCapturePromote(ctx context.Context, root, version, token string) (*P
 	if err := os.Chmod(stage, 0700); err != nil {
 		return nil, err
 	}
-	insideStage, err := sandboxPath(root, stage)
-	if err != nil {
-		return nil, err
-	}
-	command, err := privateNPMCommand(ctx, root, []string{stage}, "install", "--prefix", insideStage, "--no-audit", "--no-fund", "@anthropic-ai/claude-code@"+version)
+	command, err := privateNPMCommand(ctx, root, "install", "--prefix", stage, "--no-audit", "--no-fund", "@anthropic-ai/claude-code@"+version)
 	if err != nil {
 		return nil, err
 	}
