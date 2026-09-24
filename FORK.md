@@ -874,9 +874,10 @@ headers before preparing the OAuth credential, then checks the final Anthropic
 destination, bearer authentication, OAuth beta, request shape, and session
 identity before any inference request reaches upstream. The incoming User-Agent
 must use the `claude-cli/X.X.X` shape, but its version may differ from the
-captured release. Native entrypoints include `cli`, `sdk`, `sdk-cli`, and
-`claude-vscode`. Package, runtime, OS, and architecture headers are not
-compared to the capture. The captured profile does not replace configured `Claude Header Defaults`;
+captured release. Native entrypoints include `cli`, `sdk`, `sdk-cli`, `sdk-ts`,
+`sdk-py`, `claude-vscode`, and `claude-desktop`. Package, runtime, OS, and
+architecture headers are not compared to the capture. The captured profile
+does not replace configured `Claude Header Defaults`;
 configured package and runtime versions supply the outgoing values. Optional
 fields and beta values vary across legitimate Claude Code requests, so one
 capture does not define an exhaustive request shape. This guard compares
@@ -898,9 +899,18 @@ isolated CPA server; a real
 Codex Responses client received 403 from the guard before upstream. The
 unrelated `TestSyncUsageProbeCooldown` fixture now uses a future timestamp so
 the full suite remains valid after its former fixed date passes.
-An executor regression test confirms that `claude-cli/X.X.X (external, sdk)`
-reaches the upstream transport with its own User-Agent when the guard is enabled,
-while a matching SDK request without `X-App: cli` is rejected before transport.
+Executor regression tests confirm that `claude-cli/X.X.X (external, sdk)`,
+`sdk-ts`, `sdk-py`, and `claude-desktop` reach the upstream transport with their
+own User-Agent when the guard is enabled, while matching requests without
+`X-App: cli` are rejected before transport. A local fake-endpoint capture of
+T3 Code's installed Agent SDK observed `sdk-ts` with `X-App: cli`; a local
+Claude Code process with the Desktop entrypoint observed `claude-desktop` with
+the same `X-App` value. Neither capture sent credentials upstream. A separate
+loopback CPA instance with a private OAuth credential copy and a newly captured
+Claude Code 2.1.281 reference then completed live Anthropic Messages requests
+from the installed T3 Agent SDK and Claude Code launched with the Desktop
+entrypoint. Both returned `OK`; the temporary instance and credential copy were
+removed afterward.
 
 **Last updated:** 2026-09-24
 

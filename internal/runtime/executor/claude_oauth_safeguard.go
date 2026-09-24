@@ -94,7 +94,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 	}
 	if !detection.NativeClient {
 		return newClaudeOAuthSafeguardErrorWithReason(
-			"Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, or claude-vscode).",
+			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, or claude-desktop); received %q.", detection.Entrypoint),
 			"client entrypoint is not supported for native Claude Code requests",
 		)
 	}
@@ -102,7 +102,8 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 		message, reason := "Claude OAuth safeguard requires a matching Claude Code request profile.", "native Claude Code request signals were not confirmed"
 		switch {
 		case !detection.XAppCLI:
-			message, reason = "Claude OAuth safeguard expects X-App to be 'cli'.", "client X-App is not cli"
+			xApp := strings.TrimSpace(headers.Get("X-App"))
+			message, reason = fmt.Sprintf("Claude OAuth safeguard expects X-App to be 'cli'; received %q.", xApp), "client X-App is not cli"
 		case !detection.BetasPresent && !detection.HelperProfile:
 			message, reason = "Claude OAuth safeguard expects the Claude Code beta or a supported native helper request.", "client lacks Claude Code beta and supported helper profile"
 		case !detection.MetadataUserID:

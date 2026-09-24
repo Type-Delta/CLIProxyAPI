@@ -271,6 +271,16 @@ func TestClaudeOAuthSafeguardExplainsMissingNativeSignal(t *testing.T) {
 	}
 }
 
+func TestClaudeOAuthSafeguardReportsUnsupportedEntrypoint(t *testing.T) {
+	guard := &claudeOAuthSafeguard{profile: testClaudeOAuthSafeguardProfile()}
+	headers := make(http.Header)
+	headers.Set("User-Agent", "claude-cli/2.1.258 (external, claude-desktop-3p)")
+	err := guard.checkIncoming(sdktranslator.FormatClaude, headers, helps.ClaudeCodeRequestDetection{Entrypoint: "claude-desktop-3p"})
+	if err == nil || !strings.Contains(err.Error(), `received "claude-desktop-3p"`) {
+		t.Fatalf("checkIncoming() error = %v, want received entrypoint", err)
+	}
+}
+
 func TestClaudeOAuthSafeguardSkipsPreparatoryProfileLookup(t *testing.T) {
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-guard-test"}}
 	if !NewClaudeExecutor(&config.Config{}).ShouldPrepareRequestAuth(auth) {
@@ -412,35 +422,43 @@ func TestClaudeOAuthSafeguardAllowsMatchingNativeRequest(t *testing.T) {
 	}
 }
 
-func TestClaudeOAuthSafeguardAllowsSDKEntrypoint(t *testing.T) {
-	const sdkUserAgent = "claude-cli/9.8.7 (external, sdk)"
-	attempts := 0
-	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		attempts++
-		if got := req.Header.Get("User-Agent"); got != sdkUserAgent {
-			t.Errorf("outbound User-Agent = %q, want %q", got, sdkUserAgent)
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)), Request: req}, nil
-	})
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
-	executor := NewClaudeExecutor(&config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OAuthSafeguard: true}})
-	profile := testClaudeOAuthSafeguardMatchingProfile(t)
-	executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) { return profile, nil }
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-guard-test"}, Metadata: claudeOAuthTestMetadata()}
-	req, opts := testClaudeOAuthSafeguardRequest()
-	opts.Headers.Set("User-Agent", sdkUserAgent)
-	if _, err := executor.Execute(ctx, auth, req, opts); err != nil {
-		t.Fatalf("Execute SDK request: %v", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("upstream attempts = %d, want 1", attempts)
-	}
-	opts.Headers.Del("X-App")
-	if _, err := executor.Execute(ctx, auth, req, opts); err == nil || !strings.Contains(err.Error(), "X-App") {
-		t.Fatalf("Execute SDK request without X-App error = %v", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("upstream attempts after invalid SDK request = %d, want 1", attempts)
+func TestClaudeOAuthSafeguardAllowsNativeEntrypoints(t *testing.T) {
+	for _, userAgent := range []string{
+		"claude-cli/9.8.7 (external, sdk)",
+		"claude-cli/2.1.258 (external, sdk-ts, agent-sdk/0.3.170)",
+		"claude-cli/9.8.7 (external, sdk-py, agent-sdk/0.1.0)",
+		"claude-cli/2.1.258 (external, claude-desktop)",
+	} {
+		t.Run(userAgent, func(t *testing.T) {
+			attempts := 0
+			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				if got := req.Header.Get("User-Agent"); got != userAgent {
+					t.Errorf("outbound User-Agent = %q, want %q", got, userAgent)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","model":"claude-opus-4-6","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)), Request: req}, nil
+			})
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			executor := NewClaudeExecutor(&config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OAuthSafeguard: true}})
+			profile := testClaudeOAuthSafeguardMatchingProfile(t)
+			executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) { return profile, nil }
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-guard-test"}, Metadata: claudeOAuthTestMetadata()}
+			req, opts := testClaudeOAuthSafeguardRequest()
+			opts.Headers.Set("User-Agent", userAgent)
+			if _, err := executor.Execute(ctx, auth, req, opts); err != nil {
+				t.Fatalf("Execute native request: %v", err)
+			}
+			if attempts != 1 {
+				t.Fatalf("upstream attempts = %d, want 1", attempts)
+			}
+			opts.Headers.Del("X-App")
+			if _, err := executor.Execute(ctx, auth, req, opts); err == nil || !strings.Contains(err.Error(), "X-App") {
+				t.Fatalf("Execute native request without X-App error = %v", err)
+			}
+			if attempts != 1 {
+				t.Fatalf("upstream attempts after invalid request = %d, want 1", attempts)
+			}
+		})
 	}
 }
 

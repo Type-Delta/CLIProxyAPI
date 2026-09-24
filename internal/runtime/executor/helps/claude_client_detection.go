@@ -61,14 +61,16 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 	"claude-coworker-terminal":  "claude-coworker-terminal",
 }
 
-// Only product surfaces with verified 2.1.220 wire behavior are eligible for
-// pass-through. Other first-party-looking entrypoints are cloaked until their
-// CPA-reachable request shape has been captured and reviewed.
+// Only Claude Code entrypoints whose request shape CPA handles are eligible
+// for pass-through. Other first-party-looking entrypoints remain unconfirmed.
 var nativeClaudeEntrypoints = map[string]bool{
-	"cli":           true,
-	"sdk-cli":       true,
-	"sdk":           true,
-	"claude-vscode": true,
+	"cli":            true,
+	"sdk":            true,
+	"sdk-cli":        true,
+	"sdk-ts":         true,
+	"sdk-py":         true,
+	"claude-vscode":  true,
+	"claude-desktop": true,
 }
 
 type claudeCodeHelperShape uint8
@@ -125,8 +127,8 @@ type ClaudeCodeRequestDetection struct {
 // applies CPA's native-client policy. Standard Messages requests require all
 // four strong signals; count_tokens omits metadata.user_id. A separate narrow
 // profile recognizes measured native Haiku helper requests that intentionally
-// omit claude-code-20250219. Generic sdk-ts/sdk-py Agent SDK entrypoints remain
-// unconfirmed and receive CLI cloaking.
+// omit claude-code-20250219. Agent SDK and Desktop entrypoints still need the
+// standard strong signals to pass through.
 func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bool, configs ...*config.Config) ClaudeCodeRequestDetection {
 	var cfg *config.Config
 	if len(configs) > 0 {
