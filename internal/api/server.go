@@ -271,6 +271,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	if authManager != nil {
+		authManager.SetQuotaRecoveryRefresher(s.mgmt.RefreshQuotaForRouting)
+	}
 	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
 	s.mgmt.SetAnalyticsService(s.analytics)
 	viewerPath := filepath.Join(filepath.Dir(analyticsModuleConfig(cfg).Path), "viewers.json")

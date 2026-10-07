@@ -1004,6 +1004,32 @@ checked targeted tests, and the server build pass.
 
 **Last updated:** 2026-10-07
 
+### DL028 - Greedy soonest recovery credential routing
+
+Routing supports the `greedy-soonest-recovery` strategy (also accepted as `gsr`).
+It assigns exponentially larger shares to eligible credentials with earlier quota
+recovery timestamps, while normal priority and availability filtering still apply.
+The default 36-hour half-life keeps later windows in rotation. Session affinity
+wraps this selector like the other built-in strategies, preserving sticky sessions
+while applying recovery-aware selection for new and failed bindings.
+The recovery window is provider-specific: Claude Fable uses the Fable weekly
+window, other Claude models use the normal weekly window, Codex and GLM use the
+weekly window, and OpenCode Go uses the monthly window. A missing cached reset is
+refreshed synchronously through the shared management quota cache; failed refreshes
+exclude that credential, and an empty eligible set returns an explicit routing error.
+Management routing reads and writes normalize the aliases to the canonical strategy.
+
+**Implementation evidence:** `internal/config/config_types.go`,
+`sdk/cliproxy/service_config.go`, `sdk/cliproxy/auth/`, `sdk/cliproxy/auth/scheduler.go`,
+`internal/api/handlers/management/config_basic.go`,
+`internal/api/handlers/management/usage_probe.go`, `internal/api/server.go`, and
+`config.example.yaml`.
+
+**Recorded validation:** focused routing normalization and service selector tests pass,
+including the canonical name, aliases, and session-affinity wrapping.
+
+**Last updated:** 2026-10-07
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

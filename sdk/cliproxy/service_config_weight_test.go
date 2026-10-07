@@ -21,6 +21,29 @@ func TestWeightedRoundRobinRoutingSelector(t *testing.T) {
 	}
 }
 
+func TestGreedySoonestRecoveryRoutingSelector(t *testing.T) {
+	for _, strategy := range []string{"greedy-soonest-recovery", "greedysoonestrecovery", "gsr"} {
+		state := normalizedRoutingRuntimeState(&internalconfig.Config{
+			Routing: internalconfig.RoutingConfig{Strategy: strategy},
+		})
+		if state.strategy != internalconfig.RoutingStrategyGreedySoonestRecovery {
+			t.Fatalf("strategy %q normalized to %q, want %q", strategy, state.strategy, internalconfig.RoutingStrategyGreedySoonestRecovery)
+		}
+		if _, ok := newRoutingSelector(state).(*coreauth.GreedySoonestRecoverySelector); !ok {
+			t.Fatalf("selector type for %q = %T, want *auth.GreedySoonestRecoverySelector", strategy, newRoutingSelector(state))
+		}
+	}
+	affine := normalizedRoutingRuntimeState(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy:        internalconfig.RoutingStrategyGreedySoonestRecovery,
+			SessionAffinity: true,
+		},
+	})
+	if _, ok := newRoutingSelector(affine).(*coreauth.SessionAffinitySelector); !ok {
+		t.Fatalf("session affinity selector type = %T, want *auth.SessionAffinitySelector", newRoutingSelector(affine))
+	}
+}
+
 func TestServiceRejectsInvalidCredentialWeightConfigCommit(t *testing.T) {
 	originalCfg := &internalconfig.Config{}
 	service := &Service{cfg: originalCfg}

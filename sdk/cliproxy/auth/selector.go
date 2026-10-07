@@ -43,6 +43,28 @@ type WeightedRoundRobinSelector struct {
 	maxKeys int
 }
 
+// GreedySoonestRecoverySelector distributes requests according to the cached
+// recovery deadline of each eligible credential. Earlier recovery deadlines get
+// exponentially more share, while the regular availability and priority gates
+// still decide which credentials are eligible.
+//
+// HalfLife controls how quickly a later deadline loses share. A zero value uses
+// the 36-hour default. Credentials without a cached recovery deadline are
+// ignored; when no eligible credential has one, Pick returns an explicit error.
+type GreedySoonestRecoverySelector struct {
+	mu       sync.Mutex
+	states   map[string]*smoothWeightedState
+	maxKeys  int
+	HalfLife time.Duration
+}
+
+// GSRSelector is a short alias for GreedySoonestRecoverySelector.
+type GSRSelector = GreedySoonestRecoverySelector
+
+// RequiresQuotaRecoveryObservation marks GSR as a recovery-aware selector so
+// Manager can refresh missing provider quota observations before selection.
+func (*GreedySoonestRecoverySelector) RequiresQuotaRecoveryObservation() bool { return true }
+
 type smoothWeightedState struct {
 	current map[string]int64
 	weights map[string]int64
@@ -70,6 +92,13 @@ func weightedSelectorStateModel(ctx context.Context, availabilityModel string) s
 // This "burns" one account before moving to the next, which can help stagger
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
+
+const (
+	// A 36-hour half-life keeps multi-day windows meaningfully distinct while
+	// still allowing later-recovering credentials to receive some traffic.
+	defaultGreedySoonestRecoveryHalfLife = 36 * time.Hour
+	greedySoonestRecoveryWeightScale     = int64(1_000_000)
+)
 
 type blockReason int
 
@@ -706,6 +735,266 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	return picked, nil
 }
 
+// Pick selects an eligible auth using an exponential-decay share derived from
+// each auth's cached recovery deadline. The candidate list has already gone
+// through the normal availability and priority filtering before weights are
+// calculated.
+func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
+	now := time.Now()
+	available, errAvailable := getSelectorAvailableAuths(ctx, auths, provider, model, now)
+	if errAvailable != nil {
+		return nil, errAvailable
+	}
+	available = preferCodexWebsocketAuths(ctx, provider, available)
+
+	weighted, weights, errWeights := greedySoonestRecoveryWeights(available, provider, model, now, s.recoveryHalfLife())
+	if errWeights != nil {
+		return nil, errWeights
+	}
+	key := strings.ToLower(strings.TrimSpace(provider)) + ":" + canonicalModelKey(model)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.states == nil {
+		s.states = make(map[string]*smoothWeightedState)
+	}
+	limit := s.maxKeys
+	if limit <= 0 {
+		limit = 4096
+	}
+	if _, ok := s.states[key]; !ok && len(s.states) >= limit {
+		s.states = make(map[string]*smoothWeightedState)
+	}
+	state := s.states[key]
+	if state == nil {
+		state = &smoothWeightedState{}
+		s.states[key] = state
+	}
+	state.prepare(weights)
+	picked := pickSmoothWeightedAuthWithWeights(weighted, weights, state.current)
+	if picked == nil {
+		return nil, greedySoonestRecoveryTimestampError(provider, model)
+	}
+	return picked, nil
+}
+
+func (s *GreedySoonestRecoverySelector) recoveryHalfLife() time.Duration {
+	if s != nil && s.HalfLife > 0 {
+		return s.HalfLife
+	}
+	return defaultGreedySoonestRecoveryHalfLife
+}
+
+// AuthRecoveryTimestamp returns the best cached recovery deadline available
+// for auth. It is intended for routing integrations that need to inspect the
+// same timestamp used by GreedySoonestRecoverySelector.
+func AuthRecoveryTimestamp(auth *Auth, provider, model string) (time.Time, bool) {
+	return authRecoveryTimestampAt(auth, provider, model, time.Now())
+}
+
+func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) (time.Time, bool) {
+	if auth == nil {
+		return time.Time{}, false
+	}
+	var deadline time.Time
+	addEarliest := func(candidate time.Time) {
+		if candidate.After(now) && (deadline.IsZero() || candidate.Before(deadline)) {
+			deadline = candidate
+		}
+	}
+	addEarliest(auth.NextRetryAfter)
+	addEarliest(auth.Quota.NextRecoverAt)
+	if model != "" {
+		modelKey := canonicalModelKey(model)
+		for stateModel, state := range auth.ModelStates {
+			if state == nil || canonicalModelKey(stateModel) != modelKey {
+				continue
+			}
+			addEarliest(state.NextRetryAfter)
+			addEarliest(state.Quota.NextRecoverAt)
+		}
+	}
+	if reset := providerSignalRecoveryTimestamp(auth, provider, model, now); !reset.IsZero() {
+		addEarliest(reset)
+	}
+	return deadline, !deadline.IsZero()
+}
+
+func providerSignalRecoveryTimestamp(auth *Auth, provider, model string, now time.Time) time.Time {
+	if auth == nil || len(auth.Quota.Signals) == 0 {
+		return time.Time{}
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	observedAt := auth.Quota.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	for _, preferredName := range recoverySignalNames(strings.ToLower(strings.TrimSpace(provider)), strings.ToLower(canonicalModelKey(model))) {
+		for key, rawValue := range auth.Quota.Signals {
+			if !strings.EqualFold(strings.TrimSpace(key), preferredName) {
+				continue
+			}
+			kind, ok := classifyRecoverySignalKind(provider, key)
+			if !ok {
+				continue
+			}
+			candidate, ok := parseRecoverySignalTime(rawValue, kind, observedAt)
+			if ok && candidate.After(now) {
+				return candidate
+			}
+		}
+	}
+	return time.Time{}
+}
+
+type recoverySignalKind uint8
+
+const (
+	recoverySignalAbsolute recoverySignalKind = iota + 1
+	recoverySignalAfterSeconds
+)
+
+func classifyRecoverySignalKind(provider, key string) (recoverySignalKind, bool) {
+	lowerKey := strings.ToLower(strings.TrimSpace(key))
+	normalizedKey := strings.NewReplacer("-", "_", ".", "_").Replace(lowerKey)
+	absolute := strings.HasSuffix(lowerKey, "-reset-at") || strings.HasSuffix(lowerKey, "-reset") ||
+		strings.HasSuffix(normalizedKey, "_reset_at") || strings.HasSuffix(normalizedKey, "_reset")
+	afterSeconds := strings.HasSuffix(lowerKey, "-reset-after-seconds") || strings.HasSuffix(normalizedKey, "_reset_after_seconds") ||
+		lowerKey == "retry-after" || normalizedKey == "retry_after"
+	if !absolute && !afterSeconds {
+		return 0, false
+	}
+	switch provider {
+	case "codex":
+		if !strings.HasPrefix(lowerKey, "x-codex-") && lowerKey != "retry-after" {
+			return 0, false
+		}
+	case "claude":
+		if !strings.HasPrefix(lowerKey, "anthropic-ratelimit-unified-") && lowerKey != "retry-after" {
+			return 0, false
+		}
+	case "devin":
+		if !strings.HasSuffix(normalizedKey, "_reset_at") && !strings.HasSuffix(normalizedKey, "_reset") {
+			return 0, false
+		}
+	default:
+		// Unknown providers may still expose a conventional reset field. Keep
+		// the match narrow so unrelated quota signals are not treated as dates.
+		if !strings.Contains(lowerKey, "reset") && lowerKey != "retry-after" {
+			return 0, false
+		}
+	}
+	if afterSeconds {
+		return recoverySignalAfterSeconds, true
+	}
+	return recoverySignalAbsolute, true
+}
+
+func parseRecoverySignalTime(rawValue string, kind recoverySignalKind, observedAt time.Time) (time.Time, bool) {
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue == "" {
+		return time.Time{}, false
+	}
+	if kind == recoverySignalAfterSeconds {
+		seconds, errParse := strconv.ParseFloat(rawValue, 64)
+		if errParse != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
+			if parsedHTTP, errHTTP := http.ParseTime(rawValue); errHTTP == nil {
+				return parsedHTTP, true
+			}
+			return time.Time{}, false
+		}
+		return observedAt.Add(time.Duration(seconds * float64(time.Second))), true
+	}
+	if unixSeconds, errParse := strconv.ParseInt(rawValue, 10, 64); errParse == nil {
+		if unixSeconds > 1_000_000_000_000 {
+			return time.UnixMilli(unixSeconds), true
+		}
+		return time.Unix(unixSeconds, 0), true
+	}
+	if parsedRFC3339, errRFC3339 := time.Parse(time.RFC3339, rawValue); errRFC3339 == nil {
+		return parsedRFC3339, true
+	}
+	if parsedHTTP, errHTTP := http.ParseTime(rawValue); errHTTP == nil {
+		return parsedHTTP, true
+	}
+	return time.Time{}, false
+}
+
+func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now time.Time, halfLife time.Duration) ([]*Auth, map[string]int64, error) {
+	if len(auths) == 0 {
+		return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
+	}
+	deadlines := make(map[string]time.Time, len(auths))
+	weighted := make([]*Auth, 0, len(auths))
+	var earliest time.Time
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		deadline, ok := authRecoveryTimestampAt(auth, provider, model, now)
+		if !ok {
+			continue
+		}
+		deadlines[auth.ID] = deadline
+		weighted = append(weighted, auth)
+		if earliest.IsZero() || deadline.Before(earliest) {
+			earliest = deadline
+		}
+	}
+	if len(weighted) == 0 || earliest.IsZero() {
+		return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
+	}
+	if halfLife <= 0 {
+		halfLife = defaultGreedySoonestRecoveryHalfLife
+	}
+	weights := make(map[string]int64, len(weighted))
+	for _, auth := range weighted {
+		if auth == nil {
+			continue
+		}
+		weights[auth.ID] = greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
+	}
+	return weighted, weights, nil
+}
+
+func greedySoonestRecoveryWeight(delay time.Duration, halfLife time.Duration) int64 {
+	if delay < 0 {
+		delay = 0
+	}
+	if halfLife <= 0 {
+		halfLife = defaultGreedySoonestRecoveryHalfLife
+	}
+	decay := math.Exp(-float64(delay) / float64(halfLife))
+	if decay <= 0 || math.IsNaN(decay) {
+		return 1
+	}
+	weight := decay * float64(greedySoonestRecoveryWeightScale)
+	if weight < 1 {
+		return 1
+	}
+	if weight >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(weight)
+}
+
+func greedySoonestRecoveryTimestampError(provider, model string) error {
+	message := "greedy-soonest-recovery requires cached provider recovery timestamps for eligible auths"
+	if strings.TrimSpace(provider) != "" {
+		message += " via " + strings.TrimSpace(provider)
+	}
+	if strings.TrimSpace(model) != "" {
+		message += " for model " + strings.TrimSpace(model)
+	}
+	return &Error{
+		Code:       "gsr_recovery_timestamp_missing",
+		Message:    message,
+		Retryable:  false,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
+}
+
 // maxSmoothWeightedStateEntries bounds a single accumulator map so credentials that are
 // removed permanently cannot leak entries. Real pools stay far below this bound, so the
 // transient subsets produced by retry exclusions and cooldowns are never pruned.
@@ -776,12 +1065,20 @@ func authWeightVector(auths []*Auth) map[string]int64 {
 }
 
 func pickSmoothWeightedAuth(auths []*Auth, current map[string]int64) *Auth {
+	weights := authWeightVector(auths)
+	return pickSmoothWeightedAuthWithWeights(auths, weights, current)
+}
+
+func pickSmoothWeightedAuthWithWeights(auths []*Auth, weights, current map[string]int64) *Auth {
 	var picked *Auth
 	var pickedCurrent int64
 	var totalWeight int64
 	for _, auth := range auths {
-		weight := authWeight(auth)
-		if auth == nil || weight <= 0 {
+		if auth == nil {
+			continue
+		}
+		weight := weights[auth.ID]
+		if weight <= 0 {
 			continue
 		}
 		current[auth.ID] = saturatingAddInt64(current[auth.ID], weight)

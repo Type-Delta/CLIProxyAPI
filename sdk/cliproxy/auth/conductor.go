@@ -89,6 +89,11 @@ type PluginScheduler interface {
 	PickAuth(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
 }
 
+// QuotaRecoveryRefresher refreshes one credential's provider quota before
+// recovery-aware selection. Implementations should use the same provider fetch
+// and cache used by management clients, then persist the observed recovery data.
+type QuotaRecoveryRefresher func(context.Context, *Auth, string) error
+
 // PluginSchedulerAcrossPriorities is an optional interface implemented by schedulers
 // that opt into receiving candidates across all priority tiers.
 type PluginSchedulerAcrossPriorities interface {
@@ -168,6 +173,10 @@ type Manager struct {
 	scheduler                 *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
+	// quotaRecoveryRefresher synchronously refreshes provider quota before
+	// recovery-aware (GSR) selection. It must report the observation through
+	// the manager so CPAMC and routing share the same cached state.
+	quotaRecoveryRefresher QuotaRecoveryRefresher
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
 	homeRuntimeAuths map[string]map[string]*Auth
 	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.

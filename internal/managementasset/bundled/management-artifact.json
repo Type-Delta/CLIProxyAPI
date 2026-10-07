@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "cpamc_commit": "7d701fd8760454b9614198a9b06e6c0311c729d0",
+  "cpamc_commit": "e4e054aeb89e098b46872fa762f6260d86b49f55",
   "management_api": {
     "min": 1,
     "max": 1
   },
-  "built_at": "2026-10-07T15:02:50+07:00",
-  "sha256": "f4c7e772eee4b9402a826e157ce07289017c481d52a33bff16d2512ea0517e53"
+  "built_at": "2026-10-07T17:59:13+07:00",
+  "sha256": "a81a825e6f646050c3ca11cf22f8838fd1bc4f28f24e09c3a8869a9d68cbe470"
 }

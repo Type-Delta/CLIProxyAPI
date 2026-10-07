@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -23,6 +25,18 @@ func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
 	}
 	m.mu.Lock()
 	m.pluginScheduler = scheduler
+	m.mu.Unlock()
+}
+
+// SetQuotaRecoveryRefresher configures the synchronous quota observation used
+// by recovery-aware selection. A nil refresher disables active refresh and
+// leaves selection to already-cached observations.
+func (m *Manager) SetQuotaRecoveryRefresher(refresher QuotaRecoveryRefresher) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.quotaRecoveryRefresher = refresher
 	m.mu.Unlock()
 }
 
@@ -70,6 +84,212 @@ func isBuiltInSelector(selector Selector) bool {
 	default:
 		return false
 	}
+}
+
+// quotaRecoverySelector is implemented by selectors that require a fresh
+// recovery observation before choosing a credential. The reflective fallback
+// keeps this boundary compatible with selectors supplied by older embedders.
+type quotaRecoverySelector interface {
+	RequiresQuotaRecoveryObservation() bool
+}
+
+func isQuotaRecoverySelector(selector Selector) bool {
+	if selector == nil {
+		return false
+	}
+	if marker, ok := selector.(quotaRecoverySelector); ok {
+		return marker.RequiresQuotaRecoveryObservation()
+	}
+	if session, ok := selector.(*SessionAffinitySelector); ok {
+		return isQuotaRecoverySelector(session.fallback)
+	}
+	name := reflect.TypeOf(selector)
+	if name.Kind() == reflect.Pointer {
+		name = name.Elem()
+	}
+	return name.Name() == "GreedySoonestRecoverySelector"
+}
+
+// RecoveryTimestampForAuth returns the provider window reset used by
+// recovery-aware selection. Signal headers are preferred because they carry
+// the provider's current window; the persisted cooldown is a fallback for
+// usage probes and reports that do not expose headers.
+func RecoveryTimestampForAuth(auth *Auth, model string) time.Time {
+	if auth == nil {
+		return time.Time{}
+	}
+	reset, _ := AuthRecoveryTimestamp(auth, auth.Provider, model)
+	if !reset.After(time.Now()) {
+		return time.Time{}
+	}
+	return reset
+}
+
+func modelStateForRecovery(auth *Auth, model string) *ModelState {
+	if auth == nil || len(auth.ModelStates) == 0 || model == "" {
+		return nil
+	}
+	if state := auth.ModelStates[model]; state != nil {
+		return state
+	}
+	for key, state := range auth.ModelStates {
+		if canonicalModelKey(key) == canonicalModelKey(model) {
+			return state
+		}
+	}
+	return nil
+}
+
+func recoverySignalNames(provider, model string) []string {
+	isFable := strings.Contains(model, "fable")
+	switch {
+	case provider == "claude":
+		if isFable {
+			return []string{
+				"Anthropic-Ratelimit-Unified-7d_oi-Reset",
+				"Anthropic-Ratelimit-Unified-7d-Reset",
+				"Anthropic-Ratelimit-Unified-Reset",
+			}
+		}
+		return []string{
+			"Anthropic-Ratelimit-Unified-7d-Reset",
+			"Anthropic-Ratelimit-Unified-7d_oi-Reset",
+			"Anthropic-Ratelimit-Unified-Reset",
+		}
+	case provider == "codex":
+		return []string{
+			"X-Codex-Secondary-Reset-At",
+			"X-Codex-Secondary-Reset-After-Seconds",
+			"X-Codex-Primary-Reset-At",
+			"X-Codex-Primary-Reset-After-Seconds",
+		}
+	case provider == "zai" || strings.Contains(model, "glm"):
+		return []string{
+			"weekly_reset_at",
+			"weekly_reset",
+		}
+	case provider == "opencode-go" || (strings.Contains(provider, "opencode") && strings.Contains(provider, "go")):
+		return []string{"monthly_reset_at", "monthly_reset"}
+	default:
+		return []string{"weekly_reset_at", "weekly_reset", "monthly_reset_at", "monthly_reset"}
+	}
+}
+
+func recoveryTimestampFromSignals(quota QuotaState, preferred []string) time.Time {
+	if len(quota.Signals) == 0 {
+		return time.Time{}
+	}
+	for _, preferredName := range preferred {
+		for name, value := range quota.Signals {
+			if !strings.EqualFold(strings.TrimSpace(name), preferredName) {
+				continue
+			}
+			if reset := parseRecoveryTimestamp(name, value, quota.ObservedAt); reset.After(time.Now()) {
+				return reset
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func parseRecoveryTimestamp(name, raw string, observedAt time.Time) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed
+	}
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil || seconds <= 0 {
+		return time.Time{}
+	}
+	// Codex reset-after-seconds is relative to the observation, unlike reset-at.
+	if strings.Contains(strings.ToLower(name), "after") {
+		if observedAt.IsZero() {
+			observedAt = time.Now()
+		}
+		return observedAt.Add(time.Duration(seconds * float64(time.Second)))
+	}
+	whole := int64(seconds)
+	return time.Unix(whole, int64((seconds-float64(whole))*float64(time.Second))).UTC()
+}
+
+func (m *Manager) quotaRecoveryRefresherSnapshot() QuotaRecoveryRefresher {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.quotaRecoveryRefresher
+}
+
+func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates []*Auth, model string) ([]*Auth, error) {
+	if !isQuotaRecoverySelector(m.Selector()) || len(candidates) == 0 {
+		return candidates, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	refresher := m.quotaRecoveryRefresherSnapshot()
+	type preparedCandidate struct {
+		index int
+		auth  *Auth
+	}
+	results := make(chan preparedCandidate, len(candidates))
+	semaphore := make(chan struct{}, 4)
+	var waitGroup sync.WaitGroup
+	for index, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		working := candidate.Clone()
+		if RecoveryTimestampForAuth(working, model).IsZero() && refresher != nil {
+			waitGroup.Add(1)
+			go func(index int, working *Auth) {
+				defer waitGroup.Done()
+				select {
+				case semaphore <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				defer func() { <-semaphore }()
+				if errRefresh := refresher(ctx, working, model); errRefresh != nil {
+					return
+				}
+				if latest, ok := m.GetByID(working.ID); ok {
+					working = latest
+				}
+				if RecoveryTimestampForAuth(working, model).IsZero() {
+					return
+				}
+				results <- preparedCandidate{index: index, auth: working}
+			}(index, working)
+			continue
+		}
+		if RecoveryTimestampForAuth(working, model).IsZero() {
+			continue
+		}
+		results <- preparedCandidate{index: index, auth: working}
+	}
+	waitGroup.Wait()
+	close(results)
+	preparedByIndex := make(map[int]*Auth, len(candidates))
+	for result := range results {
+		if result.auth != nil {
+			preparedByIndex[result.index] = result.auth
+		}
+	}
+	prepared := make([]*Auth, 0, len(preparedByIndex))
+	for index := range candidates {
+		if auth := preparedByIndex[index]; auth != nil {
+			prepared = append(prepared, auth)
+		}
+	}
+	if len(prepared) == 0 {
+		return nil, &Error{Code: "gsr_recovery_timestamp_missing", Message: "greedy-soonest-recovery requires a usable quota recovery timestamp", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	return prepared, nil
 }
 
 type requiredAuthKindContextKey struct{}
@@ -1776,6 +1996,17 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	if isQuotaRecoverySelector(selector) {
+		candidates = cloneAuthSlice(candidates)
+		m.mu.RUnlock()
+		preparedCandidates, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, candidates, model)
+		if errRecovery != nil {
+			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errRecovery)
+			return nil, nil, errRecovery
+		}
+		candidates = preparedCandidates
+		m.mu.RLock()
+	}
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
@@ -1986,6 +2217,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
+	if isQuotaRecoverySelector(m.Selector()) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
@@ -2110,6 +2344,17 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	if isQuotaRecoverySelector(selector) {
+		candidates = cloneAuthSlice(candidates)
+		m.mu.RUnlock()
+		preparedCandidates, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, candidates, model)
+		if errRecovery != nil {
+			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errRecovery)
+			return nil, nil, "", errRecovery
+		}
+		candidates = preparedCandidates
+		m.mu.RLock()
+	}
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
@@ -2158,6 +2403,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
+	}
+	if isQuotaRecoverySelector(m.Selector()) {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model

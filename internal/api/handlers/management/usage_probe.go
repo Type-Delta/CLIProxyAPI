@@ -64,6 +64,12 @@ type codexRateLimitResponse struct {
 type codexUsageWindowResponse struct {
 	UsedPercent      json.RawMessage `json:"used_percent"`
 	UsedPercentCamel json.RawMessage `json:"usedPercent"`
+	WindowMinutes    json.RawMessage `json:"window_minutes"`
+	WindowMinutesCam json.RawMessage `json:"windowMinutes"`
+	ResetAt          json.RawMessage `json:"reset_at"`
+	ResetAtCamel     json.RawMessage `json:"resetAt"`
+	ResetAfter       json.RawMessage `json:"reset_after_seconds"`
+	ResetAfterCamel  json.RawMessage `json:"resetAfterSeconds"`
 }
 
 type claudeUsageWindowResponse struct {
@@ -558,6 +564,14 @@ func codexRateLimitFamilyHealthy(raw json.RawMessage) bool {
 }
 
 func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) (*model.ProviderQuota, error) {
+	windows, errProbe := runUsageProbeWindows(ctx, h, auth, name, targetURL, parse)
+	if errProbe != nil {
+		return nil, errProbe
+	}
+	return providerQuotaFromWindows(windows), nil
+}
+
+func runUsageProbeWindows(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) ([]model.ProviderQuotaWindow, error) {
 	parsedURL, errParseURL := url.Parse(targetURL)
 	if errParseURL != nil {
 		return nil, fmt.Errorf("parse %s quota URL: %w", name, errParseURL)
@@ -580,7 +594,196 @@ func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, t
 	if errParseQuota != nil {
 		return nil, errParseQuota
 	}
-	return providerQuotaFromWindows(windows), nil
+	return windows, nil
+}
+
+func parseClaudeGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
+	var usage claudeUsageResponse
+	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode Claude usage response: %w", errUnmarshal)
+	}
+	windows := make([]model.ProviderQuotaWindow, 0, 2)
+	if usage.SevenDay != nil {
+		if reset, errParse := time.Parse(time.RFC3339, strings.TrimSpace(usage.SevenDay.ResetsAt)); errParse == nil && !reset.IsZero() {
+			windows = append(windows, model.ProviderQuotaWindow{Label: "weekly", ResetsAt: &reset})
+		}
+	}
+	var fableReset string
+	for _, limit := range usage.Limits {
+		if strings.EqualFold(strings.TrimSpace(limit.Kind), "weekly_scoped") && strings.EqualFold(strings.TrimSpace(limit.Scope.Model.DisplayName), "fable") && strings.TrimSpace(limit.ResetsAt) != "" {
+			if limit.IsActive || fableReset == "" {
+				fableReset = strings.TrimSpace(limit.ResetsAt)
+			}
+		}
+	}
+	if fableReset == "" && usage.IguanaNecktie != nil {
+		fableReset = strings.TrimSpace(usage.IguanaNecktie.ResetsAt)
+	}
+	if reset, errParse := time.Parse(time.RFC3339, fableReset); errParse == nil && !reset.IsZero() {
+		windows = append(windows, model.ProviderQuotaWindow{Label: "weekly_fable", ResetsAt: &reset})
+	}
+	return windows, nil
+}
+
+func parseCodexGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
+	var usage map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode Codex usage response: %w", errUnmarshal)
+	}
+	raw := usage["rate_limit"]
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = usage["rateLimit"]
+	}
+	var rateLimit codexRateLimitResponse
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &rateLimit) != nil {
+		return nil, fmt.Errorf("Codex usage response has no rate limit windows")
+	}
+	var bestReset time.Time
+	var bestMinutes float64
+	var bestRank = 99
+	for rank, item := range []struct {
+		label string
+		raw   json.RawMessage
+	}{
+		{label: "weekly", raw: rateLimit.PrimaryWindow},
+		{label: "weekly", raw: rateLimit.PrimaryWindowCamel},
+		{label: "weekly", raw: rateLimit.SecondaryWindow},
+		{label: "weekly", raw: rateLimit.SecondaryWindowCamel},
+	} {
+		if len(item.raw) == 0 || string(item.raw) == "null" {
+			continue
+		}
+		var window codexUsageWindowResponse
+		if json.Unmarshal(item.raw, &window) != nil {
+			continue
+		}
+		reset := parseCodexUsageWindowReset(window)
+		if reset.IsZero() || !reset.After(time.Now()) {
+			continue
+		}
+		minutes := rawFloat(window.WindowMinutes)
+		if minutes == 0 {
+			minutes = rawFloat(window.WindowMinutesCam)
+		}
+		if bestReset.IsZero() || minutes > bestMinutes || (minutes == bestMinutes && rank < bestRank) {
+			bestReset = reset
+			bestMinutes = minutes
+			bestRank = rank
+		}
+	}
+	if bestReset.IsZero() {
+		return nil, fmt.Errorf("Codex usage response has no usable weekly reset")
+	}
+	return []model.ProviderQuotaWindow{{Label: "weekly", ResetsAt: &bestReset}}, nil
+}
+
+func rawFloat(raw json.RawMessage) float64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var value float64
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	var textValue string
+	if json.Unmarshal(raw, &textValue) == nil {
+		value, _ = strconv.ParseFloat(strings.TrimSpace(textValue), 64)
+	}
+	return value
+}
+
+func parseCodexUsageWindowReset(window codexUsageWindowResponse) time.Time {
+	for _, raw := range []json.RawMessage{window.ResetAt, window.ResetAtCamel} {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		if value := rawFloat(raw); value > 0 {
+			return time.Unix(int64(value), 0).UTC()
+		}
+		var textValue string
+		if json.Unmarshal(raw, &textValue) == nil {
+			if parsed, errParse := time.Parse(time.RFC3339, strings.TrimSpace(textValue)); errParse == nil {
+				return parsed.UTC()
+			}
+		}
+	}
+	for _, raw := range []json.RawMessage{window.ResetAfter, window.ResetAfterCamel} {
+		if len(raw) > 0 && string(raw) != "null" {
+			if value := rawFloat(raw); value >= 0 {
+				return time.Now().UTC().Add(time.Duration(value * float64(time.Second)))
+			}
+		}
+	}
+	return time.Time{}
+}
+
+// RefreshQuotaForRouting synchronously refreshes and persists the provider
+// window used by greedy-soonest-recovery. It shares the management quota cache
+// with CPAMC requests, so a recent management read avoids another provider call.
+func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Auth, modelName string) error {
+	if h == nil || h.authManager == nil || auth == nil {
+		return fmt.Errorf("quota routing refresh is unavailable")
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	var (
+		windows []model.ProviderQuotaWindow
+		err     error
+	)
+	switch {
+	case provider == "claude":
+		windows, err = runUsageProbeWindows(ctx, h, auth, "Claude", claudeUsageQuotaURL, parseClaudeGSRQuota)
+	case provider == "codex":
+		windows, err = runUsageProbeWindows(ctx, h, auth, "Codex", codexUsageQuotaURL, parseCodexGSRQuota)
+	case strings.Contains(provider, "opencode") && strings.Contains(provider, "go"):
+		windows, err = runUsageProbeWindows(ctx, h, auth, "OpenCode Go", opencodeGoUsageQuotaURL, parseOpenCodeGoQuota)
+	case provider == "zai" || strings.Contains(provider, "zai"):
+		windows, err = runUsageProbeWindows(ctx, h, auth, "Z.ai", zaiUsageQuotaURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
+			return parseZaiQuota(body, time.Now().UTC())
+		})
+	default:
+		return fmt.Errorf("provider %q has no quota recovery probe", provider)
+	}
+	if err != nil {
+		return err
+	}
+	modelKey := strings.ToLower(strings.TrimSpace(modelName))
+	preferredLabels := []string{"weekly", "monthly"}
+	signalName := "weekly_reset_at"
+	switch {
+	case provider == "claude" && strings.Contains(modelKey, "fable"):
+		preferredLabels = []string{"weekly_fable", "weekly"}
+		signalName = "Anthropic-Ratelimit-Unified-7d_oi-Reset"
+	case provider == "claude":
+		signalName = "Anthropic-Ratelimit-Unified-7d-Reset"
+	case provider == "codex":
+		signalName = "X-Codex-Primary-Reset-At"
+	case strings.Contains(provider, "opencode"):
+		preferredLabels = []string{"monthly"}
+		signalName = "monthly_reset_at"
+	}
+	var resetAt time.Time
+	for _, label := range preferredLabels {
+		for _, window := range windows {
+			if strings.EqualFold(window.Label, label) && window.ResetsAt != nil && window.ResetsAt.After(time.Now()) {
+				resetAt = *window.ResetsAt
+				break
+			}
+		}
+		if !resetAt.IsZero() {
+			break
+		}
+	}
+	if resetAt.IsZero() {
+		return fmt.Errorf("provider %q returned no usable recovery timestamp", provider)
+	}
+	quota := auth.Quota.Clone()
+	if quota.Signals == nil {
+		quota.Signals = make(map[string]string)
+	}
+	quota.Signals[signalName] = resetAt.UTC().Format(time.RFC3339)
+	quota.ObservedAt = time.Now().UTC()
+	_, errUpdate := h.authManager.UpdateQuotaObservation(ctx, auth.ID, quota)
+	return errUpdate
 }
 
 func probeZaiUsage(ctx context.Context, h *Handler, auth *coreauth.Auth) (*model.ProviderQuota, error) {

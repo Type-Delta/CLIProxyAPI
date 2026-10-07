@@ -166,6 +166,7 @@ const (
 	updateModeReplace updateAuthMode = iota
 	updateModeRefresh
 	updateModePrepare
+	updateModeQuotaObservation
 )
 
 // UpdatePreparedAuth atomically merges request preparation results into the latest runtime auth
@@ -183,6 +184,16 @@ func (m *Manager) UpdateRefreshedAuth(ctx context.Context, base, updated *Auth) 
 // Update replaces an existing auth entry and notifies hooks.
 func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	return m.updateInternal(ctx, nil, auth, updateModeReplace)
+}
+
+// UpdateQuotaObservation atomically replaces only the cached quota observation
+// for one credential, preserving concurrent credential and cooldown changes.
+func (m *Manager) UpdateQuotaObservation(ctx context.Context, authID string, quota QuotaState) (*Auth, error) {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return nil, nil
+	}
+	return m.updateInternal(ctx, nil, &Auth{ID: authID, Quota: quota.Clone()}, updateModeQuotaObservation)
 }
 
 func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode updateAuthMode) (*Auth, error) {
@@ -232,6 +243,11 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 			auth = merged
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
+	} else if mode == updateModeQuotaObservation {
+		updatedQuota := auth.Quota.Clone()
+		auth = existing.Clone()
+		auth.Quota.Signals = updatedQuota.Signals
+		auth.Quota.ObservedAt = updatedQuota.ObservedAt
 	}
 	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < m.authEpochs[auth.ID] {
 		m.mu.Unlock()
@@ -288,7 +304,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(time.Now()) {
 			auth.Unavailable = existing.Unavailable
 			auth.NextRetryAfter = existing.NextRetryAfter
-			auth.Quota = existing.Quota
+			applyCooldownFields(&auth.Quota, existing.Quota)
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status
 			}

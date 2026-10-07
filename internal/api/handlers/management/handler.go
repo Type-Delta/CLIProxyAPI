@@ -184,6 +184,9 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	h.authManager = manager
 	h.mu.Unlock()
+	if manager != nil {
+		manager.SetQuotaRecoveryRefresher(h.RefreshQuotaForRouting)
+	}
 }
 
 // SetPluginHost updates the plugin host used by plugin-backed management endpoints.

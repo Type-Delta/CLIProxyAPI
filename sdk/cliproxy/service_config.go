@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -34,7 +35,7 @@ type routingRuntimeState struct {
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	state := routingRuntimeState{
-		strategy:                 "round-robin",
+		strategy:                 internalconfig.RoutingStrategyRoundRobin,
 		sessionAffinityTTL:       time.Hour,
 		sessionAffinitySubagents: true,
 	}
@@ -42,11 +43,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 		return state
 	}
 
-	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
-	case "weighted-round-robin", "weightedroundrobin", "wrr":
-		state.strategy = "weighted-round-robin"
-	case "fill-first", "fillfirst", "ff":
-		state.strategy = "fill-first"
+	if strategy, ok := internalconfig.NormalizeRoutingStrategy(cfg.Routing.Strategy); ok {
+		state.strategy = strategy
 	}
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
@@ -66,10 +64,12 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	var selector coreauth.Selector
 	switch state.strategy {
-	case "weighted-round-robin":
+	case internalconfig.RoutingStrategyWeightedRoundRobin:
 		selector = &coreauth.WeightedRoundRobinSelector{}
-	case "fill-first":
+	case internalconfig.RoutingStrategyFillFirst:
 		selector = &coreauth.FillFirstSelector{}
+	case internalconfig.RoutingStrategyGreedySoonestRecovery:
+		selector = &coreauth.GreedySoonestRecoverySelector{}
 	default:
 		selector = &coreauth.RoundRobinSelector{}
 	}

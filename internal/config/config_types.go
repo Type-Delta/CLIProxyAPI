@@ -349,10 +349,39 @@ type QuotaExceeded struct {
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
+const (
+	// RoutingStrategyRoundRobin selects credentials in round-robin order.
+	RoutingStrategyRoundRobin = "round-robin"
+	// RoutingStrategyWeightedRoundRobin selects credentials using configured weights.
+	RoutingStrategyWeightedRoundRobin = "weighted-round-robin"
+	// RoutingStrategyFillFirst selects the first available credential.
+	RoutingStrategyFillFirst = "fill-first"
+	// RoutingStrategyGreedySoonestRecovery prefers the credential with the soonest recovery.
+	RoutingStrategyGreedySoonestRecovery = "greedy-soonest-recovery"
+)
+
+// NormalizeRoutingStrategy maps a configured routing strategy and its aliases to
+// the canonical name used by the runtime.
+func NormalizeRoutingStrategy(strategy string) (string, bool) {
+	switch normalized := strings.ToLower(strings.TrimSpace(strategy)); normalized {
+	case "", RoutingStrategyRoundRobin, "roundrobin", "rr":
+		return RoutingStrategyRoundRobin, true
+	case RoutingStrategyWeightedRoundRobin, "weightedroundrobin", "wrr":
+		return RoutingStrategyWeightedRoundRobin, true
+	case RoutingStrategyFillFirst, "fillfirst", "ff":
+		return RoutingStrategyFillFirst, true
+	case RoutingStrategyGreedySoonestRecovery, "greedysoonestrecovery", "gsr":
+		return RoutingStrategyGreedySoonestRecovery, true
+	default:
+		return "", false
+	}
+}
+
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first".
+	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first",
+	// and "greedy-soonest-recovery" (alias: "gsr").
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
