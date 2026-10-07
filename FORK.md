@@ -1030,6 +1030,24 @@ including the canonical name, aliases, and session-affinity wrapping.
 
 **Last updated:** 2026-10-07
 
+### DL029 - CPAMC quota summary redesign
+
+The bundled CPAMC quota page adds provider summaries while preserving the existing header,
+refresh controls, provider tabs, search, sorting, and credential list. Summary percentages use the
+largest available tier, Claude summaries prioritize the lower-remaining weekly pool (Fable wins
+ties), and OpenCode Go uses its monthly recovery window. Summary and detailed quota rows expose
+credential, remaining percentage, reset timing, and plan details through the shared tooltip path.
+Unavailable allowance fills retain the existing candy-wrap treatment.
+
+**Implementation evidence:** the CPAMC gitlink and
+`internal/managementasset/bundled/management.html`.
+
+**Recorded validation:** focused quota tests, TypeScript, lint, production build, canonical Docker
+management bundle build, and the required server build pass. The full CPAMC suite has one
+pre-existing legacy-backend probe failure on the local base.
+
+**Last updated:** 2026-10-07
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
