@@ -713,7 +713,7 @@ func (m *Manager) ApplyProviderQuotaReportForModels(ctx context.Context, authID 
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 	}
-	errPersist := m.persist(ctx, auth)
+	errPersist := m.persistLocked(ctx, auth)
 	m.mu.Unlock()
 
 	defer func() {

@@ -134,6 +134,38 @@ func TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota(t *t
 	}
 }
 
+func TestManager_ApplyProviderQuotaReportForModels_PersistsWithoutManagerLockDeadlock(t *testing.T) {
+	store := &countingStore{}
+	manager := NewManager(store, nil, nil)
+	auth := &Auth{
+		ID:       "quota-report-persist",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*ModelState{
+			"gpt-5.5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: time.Now().Add(time.Hour),
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: time.Now().Add(time.Hour)},
+			},
+		},
+	}
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	changed, errReport := manager.ApplyProviderQuotaReportForModels(context.Background(), auth.ID, false, time.Time{}, []string{"gpt-5.5"})
+	if errReport != nil {
+		t.Fatalf("targeted quota report: %v", errReport)
+	}
+	if !changed {
+		t.Fatal("targeted quota report changed = false, want true")
+	}
+	if got := store.saveCount.Load(); got != 1 {
+		t.Fatalf("store Save calls = %d, want 1", got)
+	}
+}
+
 func TestManager_ApplyProviderQuotaReport_IgnoresPastReset(t *testing.T) {
 	t.Parallel()
 

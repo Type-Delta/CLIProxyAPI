@@ -4,7 +4,7 @@ This fork keeps per-API-key request and token usage limits, failure-isolated CPA
 
 ## Divergence Log
 
-This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `57bde35179ecbdca176ca8923d39cc18805774f2`. The 2026-10-07 integration merged upstream's changes after `7fac6b15` without rewriting the published fork history. The prior integration had merged upstream through `7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974` without rewriting the earlier fork commits. The current merge is intentionally left in progress until the repository owner creates the merge commit.
+This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `57bde35179ecbdca176ca8923d39cc18805774f2`. The 2026-10-07 integration merged upstream's changes after `7fac6b15` without rewriting the published fork history. The prior integration had merged upstream through `7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974` without rewriting the earlier fork commits. The current merge is recorded in the two-parent merge commit on `main`.
 
 Gate 0 ended at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`, where the fork was 10 commits ahead and zero behind the recorded upstream base. The implementation commits after that baseline add the CPAUK package, control plane, CPAMC analytics workspace, runtime fixes, and reproducible release packaging described below. Release validation must confirm zero missing upstream commits, an exact `HEAD`/`origin/main` match, and a CPAMC gitlink that resolves from its pushed `origin/main`.
 
@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `d6b64f8c85b2a3c42d728dfc0a0f271234a27384`, which merges official CPAMC through `e0ee7123dfb5aa89a14ff73ac5a5c3bf4db658e0` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, the Claude OAuth capture safeguard control, and fresh Codex usage reads on "Refresh all credentials".
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `e795e5554e6559c7501733b1c06b02f979c8f53f`, which merges official CPAMC through `6abace9ffb83a9ac349464ded04bb4e7f7cb309e` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, the Claude OAuth capture safeguard control, and fresh Codex usage reads on "Refresh all credentials".
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -975,6 +975,22 @@ cpauk/SQLite, pricing-discovery, media-relay, and one flaky antigravity
 transport test that fails identically without this change).
 
 **Last updated:** 2026-09-30
+
+### DL027 - Quota report persistence releases the manager lock during store I/O
+
+Targeted provider quota reports now use the manager's lock-safe persistence helper. The helper
+persists an auth snapshot after releasing `m.mu`, then reacquires the lock and merges store-owned
+changes, avoiding a self-deadlock when the report updates a model state while the manager write
+lock is held.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go` and
+`sdk/cliproxy/auth/conductor_persistence.go`.
+
+**Recorded validation:** the targeted quota-report regression reproduces the former `RLock`
+deadlock before the fix and passes afterward; the full `sdk/cliproxy/auth` package, its race
+checked targeted tests, and the server build pass.
+
+**Last updated:** 2026-10-07
 
 ## Merge History
 
