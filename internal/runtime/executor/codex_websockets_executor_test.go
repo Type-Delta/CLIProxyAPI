@@ -187,7 +187,7 @@ func TestClearCodexReasoningReplayOnWebsocketInvalidSignature(t *testing.T) {
 	}
 }
 
-func TestCodexWebsocketsExecuteResponsesLiteDoesNotInjectImageGenerationTool(t *testing.T) {
+func TestCodexWebsocketsExecuteResponsesLiteInjectsImageGenerationTool(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +231,8 @@ func TestCodexWebsocketsExecuteResponsesLiteDoesNotInjectImageGenerationTool(t *
 
 	select {
 	case payload := <-capturedPayload:
-		if tools := gjson.GetBytes(payload, "tools"); tools.Exists() {
-			t.Fatalf("unexpected tools in responses-lite upstream payload: %s", tools.Raw)
+		if got := gjson.GetBytes(payload, "tools.0.type").String(); got != "image_generation" {
+			t.Fatalf("tools.0.type = %q, want image_generation; payload=%s", got, payload)
 		}
 		if got := gjson.GetBytes(payload, "input.0.type").String(); got != "additional_tools" {
 			t.Fatalf("input.0.type = %q, want additional_tools; payload=%s", got, payload)

@@ -937,6 +937,45 @@ removed afterward.
 
 **Last updated:** 2026-09-24
 
+### DL026 - Image generation tool injection covers responses-lite requests
+
+The Codex executor injects the built-in `image_generation` tool into every
+eligible Codex upstream request, including requests that carry the responses-lite
+websocket marker (`X-OpenAI-Internal-Codex-Responses-Lite` header or the mirrored
+`client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`
+field). The previous exclusion assumed Codex Desktop clients always bring their
+own image tool; third-party agents that connect over the websocket transport
+without declaring one received no image capability even with
+`disable-image-generation: false`, because the executor skipped injection for
+every responses-lite request. A live probe against the ChatGPT Codex websocket
+endpoint with CPA's exact handshake and `response.create` frame confirmed the
+lite protocol accepts the built-in tool and returns `image_generation_call`
+output, so the exclusion is removed.
+
+Clients that declare their own `image_gen` namespace tool are still detected and
+skip injection, `spark` models and free-plan credentials still skip injection,
+and `/responses/compact` requests remain tool-free.
+
+**Implementation evidence:** `internal/runtime/executor/codex_executor_request.go`,
+`internal/runtime/executor/codex_executor_execute.go`,
+`internal/runtime/executor/codex_executor_stream.go`,
+`internal/runtime/executor/codex_websockets_execute.go`,
+`internal/runtime/executor/codex_websockets_stream.go`,
+`internal/runtime/executor/codex_executor_imagegen_test.go`, and
+`internal/runtime/executor/codex_websockets_executor_test.go`.
+
+**Recorded validation:** focused executor tests pass for responses-lite header
+and metadata injection, existing-tool detection, free-plan and spark skips,
+compact requests without the tool, and responses-lite
+`parallel_tool_calls` normalization. `go build ./cmd/server` and
+`go vet ./internal/runtime/executor` pass. The full `go test ./...` failure set
+is unchanged from the pre-change baseline (96 baseline failures versus 95 with
+this change; no new failures, and the surviving failures are environment-bound
+cpauk/SQLite, pricing-discovery, media-relay, and one flaky antigravity
+transport test that fails identically without this change).
+
+**Last updated:** 2026-09-30
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
