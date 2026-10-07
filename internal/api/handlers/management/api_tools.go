@@ -171,6 +171,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	if requestKind == quotaRequestCacheable && outcome.successfulResponse() && !outcome.fromCache && auth != nil {
 		h.syncUsageProbeCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
 		h.syncCodexUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
+		h.syncClaudeUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
 	}
 
 	h.writeAPICallOutcome(c, outcome)

@@ -56,7 +56,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `e795e5554e6559c7501733b1c06b02f979c8f53f`, which merges official CPAMC through `6abace9ffb83a9ac349464ded04bb4e7f7cb309e` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, the Claude OAuth capture safeguard control, and fresh Codex usage reads on "Refresh all credentials".
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `7d701fd8760454b9614198a9b06e6c0311c729d0`, which merges official CPAMC through `6abace9ffb83a9ac349464ded04bb4e7f7cb309e` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -775,6 +775,15 @@ rejoin rotation immediately. A report is ignored when an exhausted window lacks
 a future reset time, when the report cannot be parsed, or when cooling is
 disabled for the credential.
 
+Claude usage refreshes now use the same provider-aware report path. Shared
+five-hour and seven-day windows clear or set credential-wide cooldowns, while
+the Fable weekly allowance updates only Fable models; Opus and Sonnet fields
+remain display data because they draw from the shared weekly pool. An exhausted
+Fable allowance therefore does not hide otherwise healthy models.
+Claude, Z.ai, and OpenCode Go quota responses use the same cache-aware
+reconciliation path as Codex. A successful fresh provider response updates
+routing cooldowns; cached replay leaves the previous routing state unchanged.
+
 Codex reset-credit consumption clears standard-model runtime and registry
 cooldowns immediately after a successful upstream response. A fresh Codex usage
 read clears stale cooldowns for models whose reported allowance has recovered;
@@ -790,14 +799,17 @@ management quota API calls and analytics usage probes, so the existing
 "Refresh quota" flow needs no separate reset action.
 
 **Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go`,
-`internal/api/handlers/management/usage_probe.go`, and
-`internal/api/handlers/management/api_tools.go`.
+`internal/api/handlers/management/usage_probe.go`,
+`internal/api/handlers/management/api_tools.go`, and the CPAMC quota adapters
+under `web/management-center/src/features/quota/providers/`.
 
 **Recorded validation:** focused auth-manager tests cover exhausted-overwrite,
 healthy-clear, past-reset no-op, and credential-wide cooldown preservation;
-management tests cover the Z.ai/OpenCode Go window decision, Codex manual
-reset, mixed-family recovery, cached usage replay, and fresh upstream usage
-sync. `go test ./...` and the disposable `cmd/server` build check pass.
+management tests cover the Z.ai/OpenCode Go window decision, Claude scoped
+Fable recovery, Codex manual reset, mixed-family recovery, cached usage replay,
+cache-expiry recovery, and upstream usage sync. CPAMC quota tests cover normal
+cache-path refresh wiring. The focused Go tests, CPAMC type-check, lint, and
+production build pass.
 
 **Last updated:** 2026-09-24
 

@@ -66,6 +66,30 @@ type codexUsageWindowResponse struct {
 	UsedPercentCamel json.RawMessage `json:"usedPercent"`
 }
 
+type claudeUsageWindowResponse struct {
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    string   `json:"resets_at"`
+}
+
+type claudeUsageLimitResponse struct {
+	Kind     string   `json:"kind"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt string   `json:"resets_at"`
+	IsActive bool     `json:"is_active"`
+	Scope    struct {
+		Model struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
+type claudeUsageResponse struct {
+	FiveHour      *claudeUsageWindowResponse `json:"five_hour"`
+	SevenDay      *claudeUsageWindowResponse `json:"seven_day"`
+	IguanaNecktie *claudeUsageWindowResponse `json:"iguana_necktie"`
+	Limits        []claudeUsageLimitResponse `json:"limits"`
+}
+
 func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error) {
 	var response zaiQuotaResponse
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -276,6 +300,128 @@ func (h *Handler) syncCodexUsageCooldown(ctx context.Context, auth *coreauth.Aut
 	if _, errApply := h.authManager.ApplyProviderQuotaReportForModels(ctx, auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, additional)); errApply != nil {
 		log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to clear Codex cooldown from healthy usage report")
 	}
+}
+
+func (h *Handler) syncClaudeUsageCooldown(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil ||
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !exactQuotaURL(parsedURL, claudeUsageQuotaURL) {
+		return
+	}
+	var usage claudeUsageResponse
+	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
+		return
+	}
+
+	baseExhausted, baseReset, baseActionable := claudeUsageBaseDecision(usage.FiveHour, usage.SevenDay, time.Now())
+	if baseActionable {
+		if _, errApply := h.authManager.ApplyProviderQuotaReport(ctx, auth.ID, baseExhausted, baseReset); errApply != nil {
+			log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to sync Claude base quota cooldown")
+		}
+	}
+
+	fable, fableFound := claudeFableUsageDecision(&usage)
+	if !fableFound || !fable.actionable {
+		return
+	}
+	fableModels := claudeUsageModelIDs(auth.ID, "fable")
+	if len(fableModels) == 0 {
+		return
+	}
+	if _, errApply := h.authManager.ApplyProviderQuotaReportForModels(ctx, auth.ID, fable.exhausted, fable.resetAt, fableModels); errApply != nil {
+		log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to sync Claude Fable quota cooldown")
+	}
+}
+
+type claudeUsageDecision struct {
+	exhausted  bool
+	resetAt    time.Time
+	actionable bool
+}
+
+func claudeUsageBaseDecision(fiveHour, sevenDay *claudeUsageWindowResponse, now time.Time) (bool, time.Time, bool) {
+	windows := []*claudeUsageWindowResponse{fiveHour, sevenDay}
+	if fiveHour == nil && sevenDay == nil {
+		return false, time.Time{}, false
+	}
+	resetAt := time.Time{}
+	for _, window := range windows {
+		if window == nil || window.Utilization == nil || *window.Utilization < 100 {
+			continue
+		}
+		reset, errParse := time.Parse(time.RFC3339, strings.TrimSpace(window.ResetsAt))
+		if errParse != nil || !reset.After(now) {
+			return false, time.Time{}, false
+		}
+		if resetAt.IsZero() || reset.Before(resetAt) {
+			resetAt = reset
+		}
+	}
+	if !resetAt.IsZero() {
+		return true, resetAt, true
+	}
+	return false, time.Time{}, true
+}
+
+func claudeFableUsageDecision(usage *claudeUsageResponse) (claudeUsageDecision, bool) {
+	if usage == nil {
+		return claudeUsageDecision{}, false
+	}
+	var modern *claudeUsageLimitResponse
+	for _, limit := range usage.Limits {
+		if !strings.EqualFold(strings.TrimSpace(limit.Kind), "weekly_scoped") ||
+			!strings.EqualFold(strings.TrimSpace(limit.Scope.Model.DisplayName), "fable") || limit.Percent == nil {
+			continue
+		}
+		if limit.IsActive {
+			copyLimit := limit
+			modern = &copyLimit
+			break
+		}
+		if modern == nil {
+			copyLimit := limit
+			modern = &copyLimit
+		}
+	}
+	if modern != nil {
+		window := &claudeUsageWindowResponse{Utilization: modern.Percent, ResetsAt: modern.ResetsAt}
+		return claudeUsageWindowDecision(window, time.Now()), true
+	} else if usage.IguanaNecktie != nil {
+		return claudeUsageWindowDecision(usage.IguanaNecktie, time.Now()), true
+	}
+	return claudeUsageDecision{}, false
+}
+
+func claudeUsageWindowDecision(window *claudeUsageWindowResponse, now time.Time) claudeUsageDecision {
+	if window == nil {
+		return claudeUsageDecision{}
+	}
+	if window.Utilization == nil {
+		return claudeUsageDecision{}
+	}
+	if *window.Utilization < 100 {
+		return claudeUsageDecision{actionable: true}
+	}
+	reset, errParse := time.Parse(time.RFC3339, strings.TrimSpace(window.ResetsAt))
+	if errParse != nil || !reset.After(now) {
+		return claudeUsageDecision{}
+	}
+	return claudeUsageDecision{exhausted: true, resetAt: reset, actionable: true}
+}
+
+func claudeUsageModelIDs(authID, family string) []string {
+	family = strings.ToLower(strings.TrimSpace(family))
+	if family == "" {
+		return nil
+	}
+	models := registry.GetGlobalRegistry().GetModelsForClient(authID)
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		if model == nil || !strings.Contains(strings.ToLower(model.ID), family) {
+			continue
+		}
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 func codexStandardModelIDs(authID string, additional map[string]bool) []string {

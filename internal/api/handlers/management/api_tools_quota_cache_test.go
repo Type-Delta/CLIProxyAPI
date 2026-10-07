@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -375,6 +376,101 @@ func TestAPICallCodexCachedUsageDoesNotClearNewCooldown(t *testing.T) {
 	}
 	if got := proxy.count.Load(); got != 1 {
 		t.Fatalf("provider call count = %d, want cached replay", got)
+	}
+}
+
+func TestAPICallCodexUsageCacheExpiryReconcilesCooldown(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{ID: "codex-cache-expiry", Index: "codex-cache-expiry", Provider: "codex", Status: coreauth.StatusActive}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	now := time.Now()
+	h := &Handler{
+		cfg:         &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}},
+		authManager: manager,
+		quotaCache:  newAPICallQuotaCache(func() time.Time { return now }),
+	}
+	usageURL := "https://chatgpt.com/backend-api/wham/usage"
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":false,"primary_window":{"used_percent":100}}}`)
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	if _, errReport := manager.ApplyProviderQuotaReport(context.Background(), auth.ID, true, now.Add(time.Hour)); errReport != nil {
+		t.Fatalf("mark quota exhausted: %v", errReport)
+	}
+
+	// The cached response is still the old exhausted observation. It must not
+	// clear the cooldown before CPA contacts the provider again.
+	proxy.setResponse(http.StatusOK, nil, `{"rate_limit":{"allowed":true,"primary_window":{"used_percent":20}}}`)
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	updated, _ := manager.GetByID(auth.ID)
+	if updated == nil || !updated.Quota.Exceeded {
+		t.Fatalf("quota after cached replay = %#v, want exhausted", updated)
+	}
+	if got := proxy.count.Load(); got != 1 {
+		t.Fatalf("provider call count before cache expiry = %d, want 1", got)
+	}
+
+	now = now.Add(quotaResultCacheTTL + time.Second)
+	quotaCall(t, h, proxy, auth.Index, http.MethodGet, usageURL, "same", "")
+	updated, _ = manager.GetByID(auth.ID)
+	if updated == nil || updated.Quota.Exceeded || updated.Unavailable || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("quota after fresh healthy response = %#v, want cleared", updated)
+	}
+	if got := proxy.count.Load(); got != 2 {
+		t.Fatalf("provider call count after cache expiry = %d, want 2", got)
+	}
+}
+
+func TestAPICallClaudeUsageForceRefreshScopesFableCooldown(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	auth := &coreauth.Auth{
+		ID: "claude-usage-refresh", Index: "claude-usage-refresh", Provider: "claude",
+		Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next,
+		Quota: coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: next},
+		ModelStates: map[string]*coreauth.ModelState{
+			"claude-fable-5-1":  {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+			"claude-sonnet-4-5": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+		},
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "claude-fable-5-1"}, {ID: "claude-sonnet-4-5"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}}, authManager: manager, quotaCache: newAPICallQuotaCache(time.Now)}
+	usageURL := "https://api.anthropic.com/api/oauth/usage"
+	index := auth.Index
+	forceRefresh := func() {
+		t.Helper()
+		call := apiCallRequest{AuthIndexSnake: &index, Method: http.MethodGet, URL: usageURL, ForceRefresh: true}
+		raw, errMarshal := json.Marshal(call)
+		if errMarshal != nil {
+			t.Fatalf("marshal force refresh request: %v", errMarshal)
+		}
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(raw))
+		h.APICall(ctx)
+	}
+
+	proxy.setResponse(http.StatusOK, nil, fmt.Sprintf(`{"five_hour":{"utilization":25,"resets_at":%q},"seven_day":{"utilization":35,"resets_at":%q},"limits":[{"kind":"weekly_scoped","percent":100,"resets_at":%q,"is_active":true,"scope":{"model":{"display_name":"Fable"}}}]}`, next.Format(time.RFC3339), next.Format(time.RFC3339), next.Format(time.RFC3339)))
+	forceRefresh()
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("auth missing after Claude usage refresh")
+	}
+	if updated.Quota.Reason == "credential_quota" || updated.Unavailable || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("credential cooldown after Claude usage refresh = quota %+v unavailable %v retry %v", updated.Quota, updated.Unavailable, updated.NextRetryAfter)
+	}
+	if state := updated.ModelStates["claude-fable-5-1"]; state == nil || !state.Quota.Exceeded {
+		t.Fatalf("Fable cooldown after Claude usage refresh = %#v, want retained", state)
+	}
+	if state := updated.ModelStates["claude-sonnet-4-5"]; state == nil || state.Quota.Exceeded || state.Unavailable {
+		t.Fatalf("Sonnet cooldown after Claude usage refresh = %#v, want cleared", state)
 	}
 }
 
