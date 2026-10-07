@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/aggregate"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/maintenance"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/maintenance"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func (h *Handler) GetAnalyticsSummary(c *gin.Context) {

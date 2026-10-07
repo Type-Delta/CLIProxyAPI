@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 type modelsDevTransport func(*http.Request) (*http.Response, error)

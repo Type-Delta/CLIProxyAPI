@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 // RequestIDQuality identifies how a proxy request ID was assigned.
@@ -89,6 +92,28 @@ func EnsureProxyRequestID(ctx context.Context) (context.Context, string) {
 	}
 	requestID := NewProxyRequestID()
 	return WithProxyRequestID(ctx, requestID), requestID
+}
+
+// normalizeExecutionIDs fills the per-attempt execution ID and the inbound
+// trace ID used by upstream usage plugins.
+func normalizeExecutionIDs(ctx context.Context, record Record) Record {
+	record.RequestID = strings.TrimSpace(record.RequestID)
+	if record.RequestID == "" {
+		if requestID := ExecutionRequestIDFromContext(ctx); requestID != "" {
+			record.RequestID = requestID
+		} else {
+			record.RequestID = uuid.NewString()
+		}
+	}
+	record.TraceID = strings.TrimSpace(record.TraceID)
+	if record.TraceID == "" {
+		if traceID := TraceIDFromContext(ctx); traceID != "" {
+			record.TraceID = traceID
+		} else if traceID = internallogging.GetRequestID(ctx); traceID != "" {
+			record.TraceID = traceID
+		}
+	}
+	return record
 }
 
 func normalizeRecordRequestID(ctx context.Context, record Record) Record {

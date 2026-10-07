@@ -1,6 +1,6 @@
 package cpauk
 
-import "github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 
 type State = model.AnalyticsState
 

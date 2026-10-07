@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 // PricingRule prices an exact provider/model or alias. Manual rules take

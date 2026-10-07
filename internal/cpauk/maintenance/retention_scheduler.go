@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 const DefaultHourlyRetentionDays = 400

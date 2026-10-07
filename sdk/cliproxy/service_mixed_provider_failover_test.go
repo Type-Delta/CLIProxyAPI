@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 type serviceMixedProviderExecutor struct {
@@ -108,14 +108,14 @@ func TestServiceMixedProvidersKeepModelAndFailOver(t *testing.T) {
 			"provider_key":                "z.ai",
 		},
 	}
-	service.registerModelsForAuth(context.Background(), codexAuth)
-	service.registerModelsForAuth(context.Background(), zaiAuth)
 	if _, errRegister := manager.Register(context.Background(), codexAuth); errRegister != nil {
 		t.Fatalf("register codex auth: %v", errRegister)
 	}
 	if _, errRegister := manager.Register(context.Background(), zaiAuth); errRegister != nil {
 		t.Fatalf("register z.ai auth: %v", errRegister)
 	}
+	service.registerModelsForAuth(context.Background(), codexAuth)
+	service.registerModelsForAuth(context.Background(), zaiAuth)
 
 	providers := util.GetProviderName(model)
 	if len(providers) != 2 {
@@ -146,8 +146,8 @@ func TestServiceMixedProvidersKeepModelAndFailOver(t *testing.T) {
 	if len(registeredProviders) != 2 {
 		t.Fatalf("registered providers after exhaustion = %v, want both providers retained", registeredProviders)
 	}
-	if count := reg.GetModelCount(model); count != 0 {
-		t.Fatalf("model count after exhaustion = %d, want 0 (cooling credential stays out of the available count)", count)
+	if count := reg.GetModelCount(model); count != 1 {
+		t.Fatalf("model count after exhaustion = %d, want 1 (the healthy Codex credential remains available)", count)
 	}
 
 	var attempts []string

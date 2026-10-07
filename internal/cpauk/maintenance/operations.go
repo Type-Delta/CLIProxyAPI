@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/importer"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/importer"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 var ErrBackupInvalid = errors.New("analytics backup is invalid")

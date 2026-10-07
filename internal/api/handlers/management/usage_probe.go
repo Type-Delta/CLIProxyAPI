@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -422,7 +422,7 @@ func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, t
 	}
 	key := buildQuotaCacheKey(h, auth, http.MethodGet, parsedURL, "", headers, "")
 	outcome := h.getQuotaCache().do(ctx, key, func(requestContext context.Context) quotaCallOutcome {
-		return h.executeAPICall(requestContext, http.MethodGet, targetURL, auth, "", headers, "")
+		return h.executeAPICall(requestContext, http.MethodGet, targetURL, "", auth, "", headers, "")
 	})
 	if outcome.outerError != "" {
 		return nil, fmt.Errorf("%s usage request failed: %s", name, outcome.outerError)

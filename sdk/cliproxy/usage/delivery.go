@@ -573,6 +573,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		ctx = context.Background()
 	}
 	record = normalizeRecordRequestID(ctx, record)
+	record = normalizeExecutionIDs(ctx, record)
 	record.EndpointClass = strings.TrimSpace(record.EndpointClass)
 	if record.EndpointClass == "" {
 		record.EndpointClass = EndpointClassFromContext(ctx)

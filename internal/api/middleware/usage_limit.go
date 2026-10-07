@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/usagelimit"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagelimit"
 )
 
 // Protocol selects the error body shape for rejections.
@@ -57,6 +57,7 @@ func usageLimitRouteIsSkipped(c *gin.Context) bool {
 
 	switch c.Request.Method + " " + c.FullPath() {
 	case "GET /v1/models",
+		"GET /v1/models/*model",
 		"GET /v1beta/models",
 		"POST /v1/messages/count_tokens",
 		"GET /v1/videos/:request_id",

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 type catalogProvidersHandlerService struct {

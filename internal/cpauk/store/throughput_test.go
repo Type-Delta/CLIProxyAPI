@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 func throughputStoreEvent(digit, credential string, requestedAt time.Time, ackMS, firstTokenMS, generationMS, output int64) model.Event {

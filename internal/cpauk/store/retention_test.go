@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 func TestHourlyAndDailyRetentionPreserveQueryParity(t *testing.T) {

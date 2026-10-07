@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cpauk/store"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 const performanceAPIKey = "cpa_perf_93fb8daf0bc34a26acafaa4ff36c96bd94d58e29994f4a55b78fd889f4747440"

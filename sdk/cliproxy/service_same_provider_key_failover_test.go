@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // opencodeGoLimitError mirrors the upstream 429 body CPA receives from OpenCode
@@ -82,10 +82,10 @@ func TestServiceSameProviderKeysFailOver(t *testing.T) {
 		reg.UnregisterClient(keyBID)
 	})
 	for _, auth := range []*coreauth.Auth{makeKeyAuth(keyAID, "go-key-a"), makeKeyAuth(keyBID, "go-key-b")} {
-		service.registerModelsForAuth(context.Background(), auth)
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 			t.Fatalf("register %s: %v", auth.ID, errRegister)
 		}
+		service.registerModelsForAuth(context.Background(), auth)
 	}
 
 	providers := util.GetProviderName(model)
