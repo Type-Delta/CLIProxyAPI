@@ -96,6 +96,16 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 			return 0, fmt.Errorf("count inserted analytics event %d: %w", index, err)
 		}
 		inserted += count
+		if count == 1 {
+			var aggregateCost int64
+			if price.KnownCost != nil {
+				aggregateCost = int64(*price.KnownCost)
+			}
+			if err := s.upsertMaterialized15mTx(ctx, tx, events[index], aggregateCost, price.UnpricedTokens, batchID); err != nil {
+				_ = tx.Rollback()
+				return 0, fmt.Errorf("update 15-minute aggregate for analytics event %d: %w", index, err)
+			}
+		}
 	}
 	if err := s.checkQuota(estimatedBytes); err != nil {
 		_ = tx.Rollback()

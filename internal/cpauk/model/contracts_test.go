@@ -165,6 +165,20 @@ func TestQueryRejectsExcessiveRangeAndBuckets(t *testing.T) {
 	}
 }
 
+func TestQueryAcceptsThirtyMinuteTimeseriesBuckets(t *testing.T) {
+	query := Query{
+		SchemaVersion: QuerySchemaVersion,
+		Operation:     OperationTimeseries,
+		Start:         time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		End:           time.Date(2026, 8, 1, 6, 0, 0, 0, time.UTC),
+		TimeZone:      "UTC",
+		BucketWidth:   "30m",
+	}
+	if err := query.Validate(); err != nil {
+		t.Fatalf("30-minute timeseries query rejected: %v", err)
+	}
+}
+
 func TestCursorRoundTripAndBinding(t *testing.T) {
 	codec := testCursorCodec(t)
 	cursorValue := Cursor{Version: 1, Operation: OperationLeaderboard, SortBy: LeaderboardSortCost, Selection: keyIDB, Metric: "10.035", KeyID: keyIDA, Rank: 2}

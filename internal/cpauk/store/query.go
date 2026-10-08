@@ -40,17 +40,15 @@ type totals struct {
 }
 
 type pointState struct {
-	point    model.TimeseriesPoint
-	requests map[string]struct{}
-	quality  model.TokenQuality
+	point     model.TimeseriesPoint
+	requests  map[string]struct{}
+	quality   model.TokenQuality
+	succeeded int64
+	failed    int64
 }
 
 func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Summary, error) {
 	if err := s.validateQuery(&query, model.OperationSummary); err != nil {
-		return model.Summary{}, err
-	}
-	where, arguments, err := buildWhere(query)
-	if err != nil {
 		return model.Summary{}, err
 	}
 	s.mu.RLock()
@@ -61,23 +59,12 @@ func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Sum
 	if err := s.validateRetainedRange(ctx, query); err != nil {
 		return model.Summary{}, err
 	}
-	result, err := scanTotals(s.db.QueryRowContext(ctx, "SELECT "+totalsSelect+" FROM events "+where, arguments...))
-	if err != nil {
-		return model.Summary{}, fmt.Errorf("query analytics summary: %w", err)
-	}
-	rollup, err := s.rollupTotals(ctx, query)
+	result, rollup, proxyRequests, timings, err := s.summaryData(ctx, query)
 	if err != nil {
 		return model.Summary{}, err
 	}
 	addTotals(&result, rollup)
-	result.proxyRequests, err = s.combinedProxyRequests(ctx, query)
-	if err != nil {
-		return model.Summary{}, err
-	}
-	timings, err := s.timingMetrics(ctx, query, false)
-	if err != nil {
-		return model.Summary{}, err
-	}
+	result.proxyRequests = proxyRequests
 	return model.Summary{
 		ProcessingTime: processingTime(timings, result.attempts), Meta: responseMeta(query),
 		ProxyRequests:    result.proxyRequests,
@@ -103,6 +90,86 @@ func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Sum
 		KnownCost:             result.knownCost,
 		UnpricedTokens:        result.unpriced,
 	}, nil
+}
+
+type summaryTimingAggregate struct {
+	count int64
+	total sql.NullInt64
+	max   sql.NullInt64
+}
+
+// summaryData materializes the selected raw and retained rows once each. The
+// summary, timing coverage, and distinct request count then share those CTEs,
+// avoiding repeated scans of events for a single summary response.
+func (s *SQLiteStore) summaryData(ctx context.Context, query model.Query) (totals, totals, int64, map[string]model.TimingMetric, error) {
+	rawWhere, rawArguments, err := buildWhere(query)
+	if err != nil {
+		return totals{}, totals{}, 0, nil, err
+	}
+	rollupWhere, rollupArguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
+	if err != nil {
+		return totals{}, totals{}, 0, nil, err
+	}
+	statement := `WITH raw AS MATERIALIZED (
+SELECT requested_at_ns,proxy_request_id,succeeded,input_tokens,output_tokens,reasoning_tokens,
+cached_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,token_quality,known_cost_nano,
+unpriced_tokens,latency_ms,time_to_first_token_ms,generation_time_ms,first_token_latency_ms,provider_latency_ms
+FROM events ` + rawWhere + `
+), retained AS MATERIALIZED (
+SELECT succeeded,upstream_attempts,input_tokens,output_tokens,reasoning_tokens,
+cached_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,token_quality,known_cost_nano,unpriced_tokens
+FROM rollups ` + rollupWhere + `
+), raw_totals AS (SELECT ` + totalsSelect + ` FROM raw),
+retained_totals AS (SELECT ` + rollupTotalsSelect + ` FROM retained),
+timing AS (SELECT COUNT(latency_ms),SUM(latency_ms),MAX(latency_ms),
+COUNT(first_token_latency_ms),SUM(first_token_latency_ms),MAX(first_token_latency_ms),
+COUNT(provider_latency_ms),SUM(provider_latency_ms),MAX(provider_latency_ms),
+COUNT(time_to_first_token_ms),SUM(time_to_first_token_ms),MAX(time_to_first_token_ms),
+COUNT(generation_time_ms),SUM(generation_time_ms),MAX(generation_time_ms) FROM raw),
+request_count AS (SELECT COUNT(DISTINCT proxy_request_id) FROM (
+SELECT proxy_request_id FROM raw
+UNION ALL SELECT proxy_request_id FROM request_rollups ` + rollupWhere + `))
+SELECT raw_totals.*,retained_totals.*,request_count.*,timing.*
+FROM raw_totals CROSS JOIN retained_totals CROSS JOIN request_count CROSS JOIN timing`
+	arguments := append(append([]any{}, rawArguments...), rollupArguments...)
+	arguments = append(arguments, rollupArguments...)
+	var raw, retained totals
+	var rawQuality, retainedQuality string
+	var proxyRequests int64
+	var timingValues [5]summaryTimingAggregate
+	scanArguments := totalsScanArguments(&raw, &rawQuality)
+	scanArguments = append(scanArguments, totalsScanArguments(&retained, &retainedQuality)...)
+	scanArguments = append(scanArguments, &proxyRequests)
+	for index := range timingValues {
+		scanArguments = append(scanArguments, &timingValues[index].count, &timingValues[index].total, &timingValues[index].max)
+	}
+	if err := s.db.QueryRowContext(ctx, statement, arguments...).Scan(scanArguments...); err != nil {
+		return totals{}, totals{}, 0, nil, fmt.Errorf("query analytics summary: %w", err)
+	}
+	raw.tokens.Schema, raw.tokens.Quality = "normalized-v1", model.TokenQuality(rawQuality)
+	retained.tokens.Schema, retained.tokens.Quality = "normalized-v1", model.TokenQuality(retainedQuality)
+	items := []struct{ name, source string }{
+		{"e2e", "observed"}, {"latency", "observed_dispatch_to_first_token"},
+		{"provider_latency", "observed_dispatch_to_response"}, {"ttft", "observed"},
+		{"generation", "observed_first_to_last_token"},
+	}
+	timings := make(map[string]model.TimingMetric, len(items))
+	for index, item := range items {
+		metric := model.TimingMetric{Source: item.source, SampleCount: timingValues[index].count}
+		if timingValues[index].total.Valid {
+			metric.TotalMS = &timingValues[index].total.Int64
+			metric.MaxMS = &timingValues[index].max.Int64
+		}
+		timings[item.name] = metric
+	}
+	return raw, retained, proxyRequests, timings, nil
+}
+
+func totalsScanArguments(result *totals, quality *string) []any {
+	return []any{&result.proxyRequests, &result.attempts, &result.succeeded, &result.failed,
+		&result.tokens.Input, &result.tokens.Output, &result.tokens.Reasoning,
+		&result.tokens.Cached, &result.tokens.CacheRead, &result.tokens.CacheCreation,
+		&result.tokens.Total, &result.knownCost, &result.unpriced, quality}
 }
 
 func (s *SQLiteStore) rollupTotals(ctx context.Context, query model.Query) (totals, error) {
@@ -177,28 +244,49 @@ func scanTotals(row *sql.Row) (totals, error) {
 }
 
 func (s *SQLiteStore) Timeseries(ctx context.Context, query model.Query) (model.Timeseries, error) {
+	result, _, err := s.timeseriesWithOutcomes(ctx, query)
+	return result, err
+}
+
+// timeseriesWithOutcomes shares the bucket scan with activity queries. The
+// outcome counters stay internal because the public timeseries contract only
+// exposes attempt and token totals.
+func (s *SQLiteStore) timeseriesWithOutcomes(ctx context.Context, query model.Query) (model.Timeseries, map[int64][2]int64, error) {
 	if err := s.validateQuery(&query, model.OperationTimeseries); err != nil {
-		return model.Timeseries{}, err
+		return model.Timeseries{}, nil, err
 	}
 	where, arguments, err := buildWhere(query)
 	if err != nil {
-		return model.Timeseries{}, err
+		return model.Timeseries{}, nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.db == nil {
-		return model.Timeseries{}, ErrClosed
+		return model.Timeseries{}, nil, ErrClosed
 	}
 	if err := s.validateRetainedRange(ctx, query); err != nil {
-		return model.Timeseries{}, err
+		return model.Timeseries{}, nil, err
+	}
+	bucketer, err := aggregate.NewBucketer(query.TimeZone, query.BucketWidth)
+	if err != nil {
+		return model.Timeseries{}, nil, err
+	}
+	if s.materialized15mEligible(query) {
+		read, err := s.readMaterialized15m(ctx, query)
+		if err != nil {
+			return model.Timeseries{}, nil, err
+		}
+		if read.Eligible {
+			return materializedTimeseries(query, bucketer, read)
+		}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns, proxy_request_id,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, token_quality, known_cost_nano, unpriced_tokens,
-generation_time_ms
-FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
+generation_time_ms, succeeded
+FROM events `+where, arguments...)
 	if err != nil {
-		return model.Timeseries{}, fmt.Errorf("query analytics timeseries: %w", err)
+		return model.Timeseries{}, nil, fmt.Errorf("query analytics timeseries: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	points := map[int64]*pointState{}
@@ -207,12 +295,13 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 		var requestID, quality string
 		var input, output, reasoning, cached, cacheRead, cacheCreation, totalTokens, unpriced int64
 		var cost, generation sql.NullInt64
-		if err := rows.Scan(&requestedNS, &requestID, &input, &output, &reasoning, &cached, &cacheRead, &cacheCreation, &totalTokens, &quality, &cost, &unpriced, &generation); err != nil {
-			return model.Timeseries{}, fmt.Errorf("scan analytics timeseries row: %w", err)
+		var succeeded bool
+		if err := rows.Scan(&requestedNS, &requestID, &input, &output, &reasoning, &cached, &cacheRead, &cacheCreation, &totalTokens, &quality, &cost, &unpriced, &generation, &succeeded); err != nil {
+			return model.Timeseries{}, nil, fmt.Errorf("scan analytics timeseries row: %w", err)
 		}
-		start, end, err := aggregate.BucketBounds(time.Unix(0, requestedNS).UTC(), query.TimeZone, query.BucketWidth)
+		start, end, err := bucketer.Bounds(time.Unix(0, requestedNS).UTC())
 		if err != nil {
-			return model.Timeseries{}, err
+			return model.Timeseries{}, nil, err
 		}
 		state := points[start.UnixNano()]
 		if state == nil {
@@ -221,6 +310,11 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 		}
 		state.requests[requestID] = struct{}{}
 		state.point.UpstreamAttempts++
+		if succeeded {
+			state.succeeded++
+		} else {
+			state.failed++
+		}
 		state.point.Tokens.Input += input
 		state.point.Tokens.Output += output
 		state.point.Tokens.Reasoning += reasoning
@@ -243,25 +337,93 @@ FROM events `+where+` ORDER BY requested_at_ns`, arguments...)
 		state.quality = combineQuality(state.quality, model.TokenQuality(quality))
 	}
 	if err := rows.Err(); err != nil {
-		return model.Timeseries{}, fmt.Errorf("read analytics timeseries rows: %w", err)
+		return model.Timeseries{}, nil, fmt.Errorf("read analytics timeseries rows: %w", err)
 	}
-	if err := s.addRetainedTimeseries(ctx, query, points); err != nil {
-		return model.Timeseries{}, err
+	if err := s.addRetainedTimeseries(ctx, query, bucketer, points); err != nil {
+		return model.Timeseries{}, nil, err
 	}
+	return finalizeTimeseries(query, points)
+}
+
+func (s *SQLiteStore) materialized15mEligible(query model.Query) bool {
+	if query.TimeZone != "UTC" || (!s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff)) {
+		return false
+	}
+	if query.Start.UnixNano()%materialized15mDurationNS != 0 || query.End.UnixNano()%materialized15mDurationNS != 0 {
+		return false
+	}
+	switch query.BucketWidth {
+	case "15m", "1h", "1d", "1w":
+		return true
+	default:
+		duration, err := time.ParseDuration(query.BucketWidth)
+		return err == nil && duration >= materialized15mDuration && duration%materialized15mDuration == 0
+	}
+}
+
+func materializedTimeseries(query model.Query, bucketer aggregate.Bucketer, read materialized15mRead) (model.Timeseries, map[int64][2]int64, error) {
+	points := make(map[int64]*pointState)
+	for _, aggregateRow := range read.Aggregates {
+		start, end, err := bucketer.Bounds(time.Unix(0, aggregateRow.BucketStart).UTC())
+		if err != nil {
+			return model.Timeseries{}, nil, err
+		}
+		state := ensurePoint(points, start, end)
+		state.point.UpstreamAttempts += aggregateRow.UpstreamAttempts
+		if aggregateRow.Succeeded {
+			state.succeeded += aggregateRow.UpstreamAttempts
+		} else {
+			state.failed += aggregateRow.UpstreamAttempts
+		}
+		state.point.Tokens.Input += aggregateRow.InputTokens
+		state.point.Tokens.Output += aggregateRow.OutputTokens
+		state.point.Tokens.Reasoning += aggregateRow.ReasoningTokens
+		state.point.Tokens.Cached += aggregateRow.CachedTokens
+		state.point.Tokens.CacheRead += aggregateRow.CacheReadTokens
+		state.point.Tokens.CacheCreation += aggregateRow.CacheCreate
+		state.point.Tokens.Total += aggregateRow.TotalTokens
+		state.point.KnownCost += aggregateRow.KnownCost
+		state.point.UnpricedTokens += aggregateRow.UnpricedTokens
+		if aggregateRow.GenerationSample > 0 {
+			generation := aggregateRow.GenerationTime
+			if state.point.GenerationTimeMS != nil {
+				generation += *state.point.GenerationTimeMS
+			}
+			state.point.GenerationTimeMS = &generation
+			state.point.GenerationSampleCount += aggregateRow.GenerationSample
+		}
+		state.quality = combineQuality(state.quality, aggregateRow.TokenQuality)
+	}
+	for bucketStart, requestIDs := range read.Requests {
+		start, end, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
+		if err != nil {
+			return model.Timeseries{}, nil, err
+		}
+		state := ensurePoint(points, start, end)
+		for requestID := range requestIDs {
+			state.requests[requestID] = struct{}{}
+		}
+	}
+	return finalizeTimeseries(query, points)
+}
+
+func finalizeTimeseries(query model.Query, points map[int64]*pointState) (model.Timeseries, map[int64][2]int64, error) {
 	keys := make([]int64, 0, len(points))
 	for key := range points {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 	result := model.Timeseries{Meta: responseMeta(query), Points: make([]model.TimeseriesPoint, 0, len(keys))}
+	outcomes := make(map[int64][2]int64, len(points))
 	for _, key := range keys {
 		state := points[key]
 		state.point.ProxyRequests = int64(len(state.requests))
 		state.point.Tokens.Schema = "normalized-v1"
 		state.point.Tokens.Quality = state.quality
 		result.Points = append(result.Points, state.point)
+		outcomes[key] = [2]int64{state.succeeded, state.failed}
 	}
-	return result, nil
+	return result, outcomes, nil
 }
 func (s *SQLiteStore) Dimensions(ctx context.Context, query model.Query) (model.DimensionPage, error) {
 	if err := s.validateQuery(&query, model.OperationDimensions); err != nil {
@@ -289,18 +451,14 @@ func (s *SQLiteStore) Dimensions(ctx context.Context, query model.Query) (model.
 	if err := s.validateRetainedRange(ctx, query); err != nil {
 		return model.DimensionPage{}, err
 	}
-	grouped, err := s.dimensionTotals(ctx, query)
+	data, err := s.dimensionDataFor(ctx, query, query.Dimension)
 	if err != nil {
 		return model.DimensionPage{}, err
 	}
-	requestCounts, err := s.dimensionRequestCounts(ctx, query)
-	if err != nil {
-		return model.DimensionPage{}, err
-	}
-	allRows := make([]model.DimensionRow, 0, len(grouped))
-	for value, data := range grouped {
-		allRows = append(allRows, model.DimensionRow{Value: value, ProxyRequests: requestCounts[value],
-			UpstreamAttempts: data.attempts, Tokens: data.tokens, KnownCost: data.knownCost, UnpricedTokens: data.unpriced})
+	allRows := make([]model.DimensionRow, 0, len(data.totals))
+	for value, totals := range data.totals {
+		allRows = append(allRows, model.DimensionRow{Value: value, ProxyRequests: data.requestCounts[value],
+			UpstreamAttempts: totals.attempts, Tokens: totals.tokens, KnownCost: totals.knownCost, UnpricedTokens: totals.unpriced})
 	}
 	slices.SortFunc(allRows, func(left, right model.DimensionRow) int {
 		if metric := cmp.Compare(right.Tokens.Total, left.Tokens.Total); metric != 0 {
@@ -474,18 +632,14 @@ func (s *SQLiteStore) Leaderboard(ctx context.Context, query model.Query) (model
 	if err := s.validateRetainedRange(ctx, query); err != nil {
 		return model.LeaderboardPage{}, err
 	}
-	grouped, err := s.dimensionTotalsFor(ctx, query, "key")
+	data, err := s.dimensionDataFor(ctx, query, "key")
 	if err != nil {
 		return model.LeaderboardPage{}, err
 	}
-	requestCounts, err := s.dimensionRequestCountsFor(ctx, query, "key")
-	if err != nil {
-		return model.LeaderboardPage{}, err
-	}
-	allRows := make([]model.LeaderboardRow, 0, len(grouped))
-	for keyID, data := range grouped {
-		allRows = append(allRows, model.LeaderboardRow{KeyID: keyID, ProxyRequests: requestCounts[keyID],
-			UpstreamAttempts: data.attempts, Tokens: data.tokens, KnownCost: data.knownCost, UnpricedTokens: data.unpriced})
+	allRows := make([]model.LeaderboardRow, 0, len(data.totals))
+	for keyID, totals := range data.totals {
+		allRows = append(allRows, model.LeaderboardRow{KeyID: keyID, ProxyRequests: data.requestCounts[keyID],
+			UpstreamAttempts: totals.attempts, Tokens: totals.tokens, KnownCost: totals.knownCost, UnpricedTokens: totals.unpriced})
 	}
 	model.SortLeaderboard(allRows, query.SortBy)
 	fullIDs := make([]string, len(allRows))
@@ -674,7 +828,8 @@ func buildWhere(query model.Query) (string, []any, error) {
 		"error_class":  "error_class", "status_code": "upstream_status_code",
 		"token_quality": "token_quality",
 	}
-	for name, raw := range query.Filters {
+	for _, name := range sortedFilterNames(query.Filters) {
+		raw := query.Filters[name]
 		if name == "success" || name == "generated" {
 			var value bool
 			if err := json.Unmarshal(raw, &value); err != nil {
@@ -756,7 +911,9 @@ func buildWhere(query model.Query) (string, []any, error) {
 }
 
 func buildRollupWhere(query model.Query, startColumn, endColumn string) (string, []any, error) {
-	clauses := []string{startColumn + " >= ?", endColumn + " <= ?"}
+	// Keep the grain predicate explicit so SQLite can use the composite
+	// (grain,bucket_start_ns) range index instead of scanning both prefixes.
+	clauses := []string{startColumn + " >= ?", endColumn + " <= ?", "grain IN ('hourly','daily')"}
 	arguments := []any{query.Start.UnixNano(), query.End.UnixNano()}
 	if len(query.KeyIDs) != 0 {
 		clauses = append(clauses, inClause("key_id", len(query.KeyIDs)))
@@ -769,7 +926,8 @@ func buildRollupWhere(query model.Query, startColumn, endColumn string) (string,
 		"endpoint_class": "endpoint_class", "auth_type": "auth_type", "service_tier": "service_tier",
 		"error_class": "error_class", "status_code": "status_code", "token_quality": "token_quality",
 	}
-	for name, raw := range query.Filters {
+	for _, name := range sortedFilterNames(query.Filters) {
+		raw := query.Filters[name]
 		if name == "generated" {
 			return "", nil, fmt.Errorf("generated filtering is unavailable after raw-event retention")
 		}
@@ -808,6 +966,15 @@ func buildRollupWhere(query model.Query, startColumn, endColumn string) (string,
 		arguments = append(arguments, values...)
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), arguments, nil
+}
+
+func sortedFilterNames(filters map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(filters))
+	for name := range filters {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func inClause(column string, count int) string {

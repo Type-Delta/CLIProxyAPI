@@ -364,6 +364,8 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE key_id = ?",
+		"DELETE FROM analytics_15m_requests WHERE key_id = ?",
+		"DELETE FROM analytics_15m WHERE key_id = ?",
 		"DELETE FROM rollups WHERE key_id = ?",
 		"DELETE FROM request_rollups WHERE key_id = ?",
 		"DELETE FROM daily_stats WHERE key_id = ?",
@@ -395,6 +397,8 @@ func (s *SQLiteStore) PreviewPurgeByKeyID(ctx context.Context, keyID string) (in
 	var rows int64
 	for _, statement := range []string{
 		"SELECT COUNT(*) FROM events WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m_requests WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m WHERE key_id = ?",
 		"SELECT COUNT(*) FROM rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM request_rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM daily_stats WHERE key_id = ?",
@@ -421,6 +425,8 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE import_batch_id = ?",
+		"DELETE FROM analytics_15m_requests WHERE import_batch_id = ?",
+		"DELETE FROM analytics_15m WHERE import_batch_id = ?",
 		"DELETE FROM rollups WHERE import_batch_id = ?",
 		"DELETE FROM request_rollups WHERE import_batch_id = ?",
 	} {
@@ -621,6 +627,31 @@ ORDER BY requested_at_ns, attempt_id LIMIT ?`
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("read raw retention checkpoint: %w", err)
 	}
+	bucketRows, err := tx.QueryContext(ctx, `SELECT DISTINCT requested_at_ns - ((requested_at_ns % ? + ?) % ?)
+FROM events WHERE attempt_id IN (`+selector+`)`, append([]any{materialized15mDurationNS, materialized15mDurationNS, materialized15mDurationNS}, selectorArgs...)...)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("read raw retention aggregate buckets: %w", err)
+	}
+	bucketStarts := make([]int64, 0)
+	for bucketRows.Next() {
+		var bucketStart int64
+		if err := bucketRows.Scan(&bucketStart); err != nil {
+			_ = bucketRows.Close()
+			_ = tx.Rollback()
+			return 0, 0, nil, fmt.Errorf("scan raw retention aggregate bucket: %w", err)
+		}
+		bucketStarts = append(bucketStarts, bucketStart)
+	}
+	if err := bucketRows.Err(); err != nil {
+		_ = bucketRows.Close()
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("read raw retention aggregate buckets: %w", err)
+	}
+	if err := bucketRows.Close(); err != nil {
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("close raw retention aggregate buckets: %w", err)
+	}
 	rollupArgs := append([]any{bucketStart.UnixNano(), bucketEnd.UnixNano()}, selectorArgs...)
 	rollupResult, err := tx.ExecContext(ctx, `INSERT INTO rollups (`+rollupColumns+`)
 SELECT 'hourly', ?, ?,
@@ -673,6 +704,12 @@ FROM events WHERE attempt_id IN (
 	if err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("delete retained analytics events: %w", err)
+	}
+	if len(bucketStarts) != 0 {
+		if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, nil, err
+		}
 	}
 	rolled, _ := rollupResult.RowsAffected()
 	deleted, _ := deleteResult.RowsAffected()

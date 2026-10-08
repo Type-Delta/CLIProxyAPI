@@ -157,6 +157,10 @@ WHERE attempt_id=?`, knownCost, priced.UnpricedTokens, nullString(priced.RuleID)
 			progress(min(99, int(result.Updated*100/int64(len(events)))), result.Checkpoint)
 		}
 	}
+	if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return RepriceResult{}, fmt.Errorf("rebuild 15-minute aggregates after reprice: %w", err)
+	}
 	if result.Completed {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_metadata WHERE key=?", checkpointKey); err != nil {
 			_ = tx.Rollback()

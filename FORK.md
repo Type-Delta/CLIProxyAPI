@@ -992,6 +992,16 @@ checked targeted tests, and the server build pass.
 
 **Last updated:** 2026-10-07
 
+### DL028 - Single-pass CPAUK model timeseries aggregation
+
+CPAUK analytics now maintain exact 15-minute materialized aggregates and request identities during ingestion, with rebuild hooks for retention and repricing. UTC ranges aligned to 15-minute boundaries and wider bucket widths read those aggregates; other time zones and partial boundaries retain the raw/rollup path for calendar correctness. Analysis model-by-time queries use one raw-event scan to populate all model buckets, and timing, summary, activity, and dimension queries avoid several duplicate scans. The previous model implementation reran a complete timeseries query for each of the ten displayed models, multiplying long-range work by model count. The retained-history path remains rollup-aware and keeps the existing hourly/daily correctness rules.
+
+**Implementation evidence:** `internal/cpauk/store/{analysis.go,activity.go,query.go,retained_query.go,timing.go,write.go,materialized_15m.go,materialized_read.go,migrations/010_materialized_15m.sql}`, and `internal/cpauk/aggregate/range.go`.
+
+**Recorded validation:** `go test ./internal/cpauk/store` passes, including the v2 analytics query and retained-data correctness suites.
+
+**Last updated:** 2026-10-07
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

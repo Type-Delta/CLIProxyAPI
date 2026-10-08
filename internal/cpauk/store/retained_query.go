@@ -23,6 +23,77 @@ CASE WHEN SUM(CASE WHEN token_quality='missing' THEN upstream_attempts ELSE 0 EN
 WHEN SUM(CASE WHEN token_quality='estimated' THEN upstream_attempts ELSE 0 END)>0 THEN 'estimated'
 ELSE 'exact' END`
 
+type dimensionData struct {
+	totals        map[string]totals
+	requestCounts map[string]int64
+}
+
+// dimensionDataFor combines the raw totals and raw request-identity scans.
+// Grouping raw events by dimension and proxy request preserves exact distinct
+// request counts while letting one indexed pass feed both result fields.
+func (s *SQLiteStore) dimensionDataFor(ctx context.Context, query model.Query, dimension string) (dimensionData, error) {
+	rawExpression, ok := dimensionExpression(dimension)
+	if !ok {
+		return dimensionData{}, fmt.Errorf("unsupported dimension %q", dimension)
+	}
+	rollupExpression, ok := rollupDimensionExpression(dimension)
+	if !ok {
+		return dimensionData{}, fmt.Errorf("unsupported retained dimension %q", dimension)
+	}
+	result := dimensionData{totals: map[string]totals{}, requestCounts: map[string]int64{}}
+	requests := map[string]map[string]struct{}{}
+	rawWhere, rawArguments, err := buildWhere(query)
+	if err != nil {
+		return dimensionData{}, err
+	}
+	if err := scanGroupedTotalsByRequest(ctx, s.db, `SELECT `+rawExpression+`,proxy_request_id,`+totalsSelect+`
+FROM events `+rawWhere+` GROUP BY `+rawExpression+`,proxy_request_id`, rawArguments, result.totals, requests); err != nil {
+		return dimensionData{}, fmt.Errorf("query analytics dimension totals: %w", err)
+	}
+	rollupWhere, rollupArguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
+	if err != nil {
+		return dimensionData{}, err
+	}
+	if err := scanGroupedTotals(ctx, s.db, `SELECT `+rollupExpression+`, `+rollupTotalsSelect+` FROM rollups `+rollupWhere+` GROUP BY `+rollupExpression, rollupArguments, result.totals); err != nil {
+		return dimensionData{}, fmt.Errorf("query retained analytics dimension totals: %w", err)
+	}
+	if err := scanDimensionRequests(ctx, s.db, `SELECT `+rollupExpression+`, proxy_request_id FROM request_rollups `+rollupWhere+` GROUP BY `+rollupExpression+`, proxy_request_id`, rollupArguments, requests); err != nil {
+		return dimensionData{}, fmt.Errorf("query retained analytics dimension requests: %w", err)
+	}
+	for value, requestIDs := range requests {
+		result.requestCounts[value] = int64(len(requestIDs))
+	}
+	return result, nil
+}
+
+func scanGroupedTotalsByRequest(ctx context.Context, database *sql.DB, statement string, arguments []any, result map[string]totals, requests map[string]map[string]struct{}) error {
+	rows, err := database.QueryContext(ctx, statement, arguments...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var value, requestID, quality string
+		var data totals
+		if err := rows.Scan(&value, &requestID, &data.proxyRequests, &data.attempts, &data.succeeded, &data.failed,
+			&data.tokens.Input, &data.tokens.Output, &data.tokens.Reasoning, &data.tokens.Cached,
+			&data.tokens.CacheRead, &data.tokens.CacheCreation, &data.tokens.Total,
+			&data.knownCost, &data.unpriced, &quality); err != nil {
+			return err
+		}
+		data.tokens.Schema, data.tokens.Quality = "normalized-v1", model.TokenQuality(quality)
+		current := result[value]
+		addTotals(&current, data)
+		current.tokens.Schema = "normalized-v1"
+		result[value] = current
+		if requests[value] == nil {
+			requests[value] = map[string]struct{}{}
+		}
+		requests[value][requestID] = struct{}{}
+	}
+	return rows.Err()
+}
+
 func (s *SQLiteStore) dimensionTotals(ctx context.Context, query model.Query) (map[string]totals, error) {
 	return s.dimensionTotalsFor(ctx, query, query.Dimension)
 }
@@ -144,12 +215,12 @@ func rollupDimensionExpression(dimension string) (string, bool) {
 	return expression, ok
 }
 
-func (s *SQLiteStore) addRetainedTimeseries(ctx context.Context, query model.Query, points map[int64]*pointState) error {
+func (s *SQLiteStore) addRetainedTimeseries(ctx context.Context, query model.Query, bucketer aggregate.Bucketer, points map[int64]*pointState) error {
 	where, arguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT grain,bucket_start_ns,upstream_attempts,
+	rows, err := s.db.QueryContext(ctx, `SELECT grain,bucket_start_ns,succeeded,upstream_attempts,
 input_tokens,output_tokens,reasoning_tokens,cached_tokens,cache_read_tokens,
 cache_creation_tokens,total_tokens,token_quality,known_cost_nano,unpriced_tokens
 FROM rollups `+where, arguments...)
@@ -159,7 +230,8 @@ FROM rollups `+where, arguments...)
 	for rows.Next() {
 		var grain, quality string
 		var bucketStart, attempts, input, output, reasoning, cached, cacheRead, cacheCreation, totalTokens, knownCost, unpriced int64
-		if err := rows.Scan(&grain, &bucketStart, &attempts, &input, &output, &reasoning, &cached,
+		var succeeded bool
+		if err := rows.Scan(&grain, &bucketStart, &succeeded, &attempts, &input, &output, &reasoning, &cached,
 			&cacheRead, &cacheCreation, &totalTokens, &quality, &knownCost, &unpriced); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan retained analytics timeseries: %w", err)
@@ -168,13 +240,18 @@ FROM rollups `+where, arguments...)
 			_ = rows.Close()
 			return err
 		}
-		start, end, err := aggregate.BucketBounds(time.Unix(0, bucketStart).UTC(), query.TimeZone, query.BucketWidth)
+		start, end, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
 		if err != nil {
 			_ = rows.Close()
 			return err
 		}
 		state := ensurePoint(points, start, end)
 		state.point.UpstreamAttempts += attempts
+		if succeeded {
+			state.succeeded += attempts
+		} else {
+			state.failed += attempts
+		}
 		state.point.Tokens.Input += input
 		state.point.Tokens.Output += output
 		state.point.Tokens.Reasoning += reasoning
@@ -189,7 +266,7 @@ FROM rollups `+where, arguments...)
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	requestRows, err := s.db.QueryContext(ctx, `SELECT grain,bucket_start_ns,proxy_request_id FROM request_rollups `+where, arguments...)
+	requestRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT grain,bucket_start_ns,proxy_request_id FROM request_rollups `+where, arguments...)
 	if err != nil {
 		return fmt.Errorf("query retained analytics timeseries requests: %w", err)
 	}
@@ -203,7 +280,7 @@ FROM rollups `+where, arguments...)
 		if err := validateRollupWidth(grain, query.BucketWidth); err != nil {
 			return err
 		}
-		start, end, err := aggregate.BucketBounds(time.Unix(0, bucketStart).UTC(), query.TimeZone, query.BucketWidth)
+		start, end, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
 		if err != nil {
 			return err
 		}
@@ -245,23 +322,18 @@ func (s *SQLiteStore) validateRetainedRange(ctx context.Context, query model.Que
 	if err != nil {
 		return err
 	}
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollups
-WHERE bucket_start_ns < ? AND bucket_end_ns > ?
-AND NOT (bucket_start_ns >= ? AND bucket_end_ns <= ?)`+predicate, append([]any{query.End.UnixNano(), query.Start.UnixNano(),
-		query.Start.UnixNano(), query.End.UnixNano()}, predicateArguments...)...).Scan(&count); err != nil {
+	var overlapping, partial int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
+COALESCE(SUM(CASE WHEN NOT (bucket_start_ns >= ? AND bucket_end_ns <= ?) THEN 1 ELSE 0 END),0)
+FROM rollups WHERE bucket_start_ns < ? AND bucket_end_ns > ?`+predicate,
+		append([]any{query.Start.UnixNano(), query.End.UnixNano(), query.End.UnixNano(), query.Start.UnixNano()}, predicateArguments...)...).Scan(&overlapping, &partial); err != nil {
 		return fmt.Errorf("validate retained analytics range: %w", err)
 	}
-	if count != 0 {
+	if partial != 0 {
 		return ErrRetainedRangePartial
 	}
 	if location.String() != query.TimeZone {
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollups
-WHERE bucket_start_ns < ? AND bucket_end_ns > ?`+predicate,
-			append([]any{query.End.UnixNano(), query.Start.UnixNano()}, predicateArguments...)...).Scan(&count); err != nil {
-			return fmt.Errorf("validate retained analytics time zone: %w", err)
-		}
-		if count != 0 {
+		if overlapping != 0 {
 			return RetainedTimeZoneError{StorageTimeZone: location.String(), QueryTimeZone: query.TimeZone, BucketWidth: query.BucketWidth}
 		}
 	}
