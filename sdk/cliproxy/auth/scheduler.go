@@ -1877,7 +1877,8 @@ func greedySoonestRecoveryScheduledWeights(entries []*scheduledAuth, predicate f
 	}
 	weights := make(map[string]int64, len(weighted))
 	for _, entry := range weighted {
-		weights[entry.auth.ID] = greedySoonestRecoveryWeight(deadlines[entry.auth.ID].Sub(earliest), defaultGreedySoonestRecoveryHalfLife)
+		baseWeight := greedySoonestRecoveryWeight(deadlines[entry.auth.ID].Sub(earliest), defaultGreedySoonestRecoveryHalfLife)
+		weights[entry.auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(entry.auth, entry.meta.providerKey)))
 	}
 	return weighted, weights, nil
 }

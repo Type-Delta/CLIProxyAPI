@@ -1012,6 +1012,9 @@ recovery timestamps, while normal priority and availability filtering still appl
 The default 36-hour half-life keeps later windows in rotation. Session affinity
 wraps this selector like the other built-in strategies, preserving sticky sessions
 while applying recovery-aware selection for new and failed bindings.
+GSR also applies a provider-neutral allowance tier multiplier. Codex plan metadata
+and explicit `gsr_tier` overrides are supported; unknown tiers remain neutral and
+raw quota totals are never compared across providers.
 The recovery window is provider-specific: Claude Fable uses the Fable weekly
 window, other Claude models use the normal weekly window, Codex and GLM use the
 weekly window, and OpenCode Go uses the monthly window. A missing cached reset is

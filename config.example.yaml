@@ -183,6 +183,8 @@ routing:
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # greedy-soonest-recovery gives exponentially larger shares to credentials whose
   # provider quota recovery is sooner; the default decay half-life is 36 hours.
+  # An explicit gsr_tier credential attribute can override the allowance class
+  # (standard, pro, premium, max, or elite); unknown tiers remain neutral.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
   # followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,

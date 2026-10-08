@@ -42,6 +42,26 @@ func TestGreedySoonestRecoverySelectorRejectsMissingRecoveryTimestamp(t *testing
 	}
 }
 
+func TestGreedySoonestRecoverySelectorPrefersAllowanceTier(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
+	auths := []*Auth{
+		{ID: "plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}, Quota: QuotaState{Signals: map[string]string{"X-Codex-Primary-Reset-At": now.Format(time.RFC3339)}}},
+		{ID: "pro", Provider: "codex", Attributes: map[string]string{"plan_type": "pro"}, Quota: QuotaState{Signals: map[string]string{"X-Codex-Primary-Reset-At": now.Format(time.RFC3339)}}},
+	}
+	selector := &GreedySoonestRecoverySelector{}
+	counts := map[string]int{}
+	for i := 0; i < 10000; i++ {
+		picked, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, auths)
+		if errPick != nil {
+			t.Fatal(errPick)
+		}
+		counts[picked.ID]++
+	}
+	if counts["pro"] <= counts["plus"] {
+		t.Fatalf("tier-aware counts = %#v, want pro > plus", counts)
+	}
+}
+
 func TestAuthRecoveryTimestampUsesProviderWindowPreference(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	fable := &Auth{ID: "fable", Provider: "claude", Quota: QuotaState{Signals: map[string]string{

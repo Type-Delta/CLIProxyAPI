@@ -953,7 +953,12 @@ func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now tim
 		if auth == nil {
 			continue
 		}
-		weights[auth.ID] = greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
+		baseWeight := greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
+		tierProvider := provider
+		if strings.EqualFold(strings.TrimSpace(provider), "mixed") {
+			tierProvider = auth.Provider
+		}
+		weights[auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(auth, tierProvider)))
 	}
 	return weighted, weights, nil
 }
