@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -60,6 +61,11 @@ func (s *SQLiteStore) readMaterialized15m(ctx context.Context, query model.Query
 		return result, nil
 	}
 	result.Eligible = true
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return materialized15mRead{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	clauses := []string{"bucket_start_ns >= ?", "bucket_end_ns <= ?", "dimension_kind = ?"}
 	arguments := []any{query.Start.UnixNano(), query.End.UnixNano(), kind}
 	if kind == "overall" {
@@ -70,7 +76,7 @@ func (s *SQLiteStore) readMaterialized15m(ctx context.Context, query model.Query
 			arguments = append(arguments, value)
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT bucket_start_ns,MAX(bucket_end_ns),MIN(first_activity_ns),MAX(last_activity_ns),
+	rows, err := tx.QueryContext(ctx, `SELECT bucket_start_ns,MAX(bucket_end_ns),MIN(first_activity_ns),MAX(last_activity_ns),
 SUM(proxy_requests),SUM(upstream_attempts),SUM(succeeded_attempts),SUM(failed_attempts),
 SUM(input_tokens),SUM(output_tokens),SUM(reasoning_tokens),SUM(cached_tokens),SUM(cache_read_tokens),
 SUM(cache_creation_tokens),SUM(total_tokens),SUM(generation_time_ms),SUM(generation_sample_count),
@@ -119,7 +125,7 @@ GROUP BY bucket_start_ns ORDER BY bucket_start_ns`, arguments...)
 		return materialized15mRead{}, err
 	}
 	requestArguments = append(requestBucketArguments, requestArguments...)
-	requestRows, err := s.db.QueryContext(ctx, `SELECT compact_bucket,COUNT(DISTINCT proxy_request_id)
+	requestRows, err := tx.QueryContext(ctx, `SELECT compact_bucket,COUNT(DISTINCT proxy_request_id)
 FROM (SELECT `+requestExpression+` AS compact_bucket,proxy_request_id
 FROM analytics_15m_request_ids WHERE `+strings.Join(requestClauses, " AND ")+`)
 GROUP BY compact_bucket ORDER BY compact_bucket`, requestArguments...)

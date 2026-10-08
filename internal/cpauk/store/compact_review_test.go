@@ -2,12 +2,15 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
@@ -27,6 +30,170 @@ func reviewEvent(t *testing.T, base model.Event, index int, at time.Time, key, b
 		event.ImportBatchID = batch
 	}
 	return event
+}
+
+func TestCompactReviewMigrationFromSchemaTenPreservesExactRead(t *testing.T) {
+	ctx := context.Background()
+	config := Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20, PriceBook: fixturePriceBook()}
+	database, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	base := loadFixtureEvents(t)[0]
+	events := []model.Event{reviewEvent(t, base, 200, start.Add(time.Minute), fmt.Sprintf("%064x", 201), ""), reviewEvent(t, base, 201, start.Add(16*time.Minute), fmt.Sprintf("%064x", 202), "")}
+	events[1].ProxyRequestID = events[0].ProxyRequestID
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationTimeseries, Start: start, End: start.Add(24 * time.Hour), TimeZone: "Etc/UTC", BucketWidth: "1d"}
+	want, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	direct, err := sql.Open("sqlite", config.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := direct.ExecContext(ctx, `DROP TABLE analytics_15m_compact; DROP TABLE analytics_15m_request_ids; DELETE FROM schema_migrations WHERE version=11`); err != nil {
+		t.Fatal(err)
+	}
+	legacySQL, err := migrationFiles.ReadFile("migrations/010_materialized_15m.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := direct.ExecContext(ctx, string(legacySQL)); err != nil {
+		t.Fatal(err)
+	}
+	if err := direct.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close(ctx) })
+	query.TimeZone = "UTC"
+	got, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Points, want.Points) {
+		t.Fatalf("schema10 migration differs\ngot=%+v\nwant=%+v", got.Points, want.Points)
+	}
+	var legacyTables int
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name IN ('analytics_15m','analytics_15m_requests')`).Scan(&legacyTables); err != nil || legacyTables != 0 {
+		t.Fatalf("legacy tables=%d err=%v", legacyTables, err)
+	}
+}
+
+func TestCompactReviewDimensionsLongRangeAndWeekMatchRaw(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	base := loadFixtureEvents(t)[0]
+	start := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	keyA, keyB := fmt.Sprintf("%064x", 301), fmt.Sprintf("%064x", 302)
+	events := []model.Event{reviewEvent(t, base, 300, start.Add(time.Minute), keyA, ""), reviewEvent(t, base, 301, start.Add(25*time.Hour), keyB, "")}
+	events[1].ProxyRequestID = events[0].ProxyRequestID
+	events[1].Model = "review-model-other"
+	events[1].Provider = "review-provider-other"
+	events[1].Tokens.Quality = model.TokenQualityEstimated
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	for _, keys := range [][]string{nil, {keyA}, {keyA, keyB}} {
+		for _, dimension := range []string{"key", "model", "provider"} {
+			query := model.Query{SchemaVersion: 2, Operation: model.OperationDimensions, Start: start, End: start.Add(7 * 24 * time.Hour), TimeZone: "UTC", Dimension: dimension, KeyIDs: keys, PageSize: 20}
+			got, err := database.Dimensions(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query.TimeZone = "Etc/UTC"
+			want, err := database.Dimensions(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Rows, want.Rows) {
+				t.Fatalf("%s keys=%v mismatch\ngot=%+v\nwant=%+v", dimension, keys, got.Rows, want.Rows)
+			}
+		}
+		query := model.Query{SchemaVersion: 2, Operation: model.OperationTimeseries, Start: start, End: start.Add(7 * 24 * time.Hour), TimeZone: "UTC", BucketWidth: "1w", KeyIDs: keys}
+		got, err := database.Timeseries(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query.TimeZone = "Etc/UTC"
+		want, err := database.Timeseries(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Points, want.Points) {
+			t.Fatalf("weekly keys=%v mismatch\ngot=%+v\nwant=%+v", keys, got.Points, want.Points)
+		}
+	}
+}
+
+func TestCompactReviewRepriceChunkAndRetentionPreserveCache(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	base := loadFixtureEvents(t)[0]
+	start := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	key := fmt.Sprintf("%064x", 401)
+	events := []model.Event{reviewEvent(t, base, 400, start.Add(time.Minute), key, ""), reviewEvent(t, base, 401, start.Add(2*time.Minute), key, ""), reviewEvent(t, base, 402, start.Add(25*time.Hour), key, "")}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	rate := model.NanoUSD(1_000_000_000)
+	if _, err := database.UpdatePriceBook(ctx, aggregate.PriceBook{Rules: []aggregate.PricingRule{{ID: "review-price", Model: "review-model", InputPerMillion: &rate, OutputPerMillion: &rate, CacheReadMultiplier: "1", CacheCreationMultiplier: "1", Source: "test"}}}); err != nil {
+		t.Fatal(err)
+	}
+	options := RepriceOptions{Range: model.Range{Start: start, End: start.Add(48 * time.Hour), TimeZone: "UTC"}, ChunkSize: 1}
+	for {
+		result, err := database.Reprice(ctx, options, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var compactCost, rawCost int64
+		if err := database.db.QueryRowContext(ctx, `SELECT SUM(known_cost_nano) FROM analytics_15m_compact WHERE dimension_kind='overall'`).Scan(&compactCost); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(known_cost_nano),0) FROM events`).Scan(&rawCost); err != nil || rawCost != compactCost {
+			t.Fatalf("reprice chunk compact cost=%d raw cost=%d err=%v", compactCost, rawCost, err)
+		}
+		if result.Completed {
+			break
+		}
+		options.ResumeCheckpoint = result.Checkpoint
+	}
+	if _, err := database.ApplyRetention(ctx, start.Add(24*time.Hour), 1); err != nil {
+		t.Fatal(err)
+	}
+	var retainedCompact, retainedIDs int64
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM analytics_15m_compact WHERE bucket_start_ns<?`, start.Add(24*time.Hour).UnixNano()).Scan(&retainedCompact); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM analytics_15m_request_ids WHERE bucket_start_ns<?`, start.Add(24*time.Hour).UnixNano()).Scan(&retainedIDs); err != nil {
+		t.Fatal(err)
+	}
+	if retainedCompact != 0 || retainedIDs != 0 {
+		t.Fatalf("retention left compact=%d identities=%d", retainedCompact, retainedIDs)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationTimeseries, Start: start.Add(24 * time.Hour), End: start.Add(48 * time.Hour), TimeZone: "UTC", BucketWidth: "1h"}
+	got, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query.TimeZone = "Etc/UTC"
+	want, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Points, want.Points) {
+		t.Fatalf("raw suffix after retention differs\ngot=%+v\nwant=%+v", got.Points, want.Points)
+	}
 }
 
 func TestCompactReviewRollbackImportRebuildsSharedRows(t *testing.T) {
@@ -146,9 +313,16 @@ func TestCompactReviewConcurrentReadersAndWriters(t *testing.T) {
 		go func() {
 			defer group.Done()
 			for index := 0; index < 10; index++ {
-				if _, err := database.Timeseries(ctx, queries); err != nil {
+				result, err := database.Timeseries(ctx, queries)
+				if err != nil {
 					errCh <- err
 					return
+				}
+				for _, point := range result.Points {
+					if point.UpstreamAttempts != point.ProxyRequests {
+						errCh <- fmt.Errorf("mixed compact snapshot: attempts=%d requests=%d", point.UpstreamAttempts, point.ProxyRequests)
+						return
+					}
 				}
 			}
 		}()

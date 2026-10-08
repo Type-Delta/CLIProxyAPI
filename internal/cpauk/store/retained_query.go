@@ -81,6 +81,11 @@ func compactDimensionEligible(s *SQLiteStore, query model.Query, dimension strin
 }
 
 func (s *SQLiteStore) compactDimensionDataFor(ctx context.Context, query model.Query, dimension string) (dimensionData, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return dimensionData{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	kind, _ := compactDimensionKind(dimension)
 	clauses := []string{"bucket_start_ns >= ?", "bucket_end_ns <= ?", "dimension_kind = ?"}
 	arguments := []any{query.Start.UnixNano(), query.End.UnixNano(), kind}
@@ -91,7 +96,7 @@ func (s *SQLiteStore) compactDimensionDataFor(ctx context.Context, query model.Q
 		}
 	}
 	result := dimensionData{totals: map[string]totals{}, requestCounts: map[string]int64{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT dimension_value,SUM(upstream_attempts),
+	rows, err := tx.QueryContext(ctx, `SELECT dimension_value,SUM(upstream_attempts),
 SUM(input_tokens),SUM(output_tokens),SUM(reasoning_tokens),SUM(cached_tokens),SUM(cache_read_tokens),
 SUM(cache_creation_tokens),SUM(total_tokens),SUM(known_cost_nano),SUM(unpriced_tokens),
 CASE WHEN SUM(CASE WHEN token_quality='missing' THEN 1 ELSE 0 END)>0 THEN 'missing'
@@ -129,7 +134,7 @@ GROUP BY dimension_value`, arguments...)
 			requestArguments = append(requestArguments, keyID)
 		}
 	}
-	requestRows, err := s.db.QueryContext(ctx, `SELECT `+requestColumn+`,COUNT(DISTINCT proxy_request_id)
+	requestRows, err := tx.QueryContext(ctx, `SELECT `+requestColumn+`,COUNT(DISTINCT proxy_request_id)
 FROM analytics_15m_request_ids WHERE `+strings.Join(requestClauses, " AND ")+`
 GROUP BY `+requestColumn, requestArguments...)
 	if err != nil {
