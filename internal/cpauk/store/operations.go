@@ -361,11 +361,14 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("begin analytics key purge: %w", err)
 	}
+	bucketStarts, err := bucketStartsForEvents(ctx, tx, "key_id = ?", keyID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find key purge aggregate buckets: %w", err)
+	}
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE key_id = ?",
-		"DELETE FROM analytics_15m_requests WHERE key_id = ?",
-		"DELETE FROM analytics_15m WHERE key_id = ?",
 		"DELETE FROM rollups WHERE key_id = ?",
 		"DELETE FROM request_rollups WHERE key_id = ?",
 		"DELETE FROM daily_stats WHERE key_id = ?",
@@ -382,6 +385,10 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 		}
 		removed += count
 	}
+	if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("rebuild key purge aggregates: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit analytics key purge: %w", err)
 	}
@@ -397,8 +404,8 @@ func (s *SQLiteStore) PreviewPurgeByKeyID(ctx context.Context, keyID string) (in
 	var rows int64
 	for _, statement := range []string{
 		"SELECT COUNT(*) FROM events WHERE key_id = ?",
-		"SELECT COUNT(*) FROM analytics_15m_requests WHERE key_id = ?",
-		"SELECT COUNT(*) FROM analytics_15m WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m_request_ids WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m_compact WHERE dimension_kind = 'key' AND dimension_value = ?",
 		"SELECT COUNT(*) FROM rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM request_rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM daily_stats WHERE key_id = ?",
@@ -422,11 +429,14 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 	if err != nil {
 		return 0, fmt.Errorf("begin import rollback: %w", err)
 	}
+	bucketStarts, err := bucketStartsForEvents(ctx, tx, "import_batch_id = ?", batchID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find import rollback aggregate buckets: %w", err)
+	}
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE import_batch_id = ?",
-		"DELETE FROM analytics_15m_requests WHERE import_batch_id = ?",
-		"DELETE FROM analytics_15m WHERE import_batch_id = ?",
 		"DELETE FROM rollups WHERE import_batch_id = ?",
 		"DELETE FROM request_rollups WHERE import_batch_id = ?",
 	} {
@@ -441,6 +451,10 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 			return 0, err
 		}
 		removed += count
+	}
+	if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("rebuild import rollback aggregates: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM import_checkpoints WHERE batch_id = ?", batchID); err != nil {
 		_ = tx.Rollback()

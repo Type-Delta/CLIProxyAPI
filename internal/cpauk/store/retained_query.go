@@ -32,6 +32,9 @@ type dimensionData struct {
 // Grouping raw events by dimension and proxy request preserves exact distinct
 // request counts while letting one indexed pass feed both result fields.
 func (s *SQLiteStore) dimensionDataFor(ctx context.Context, query model.Query, dimension string) (dimensionData, error) {
+	if compactDimensionEligible(s, query, dimension) {
+		return s.compactDimensionDataFor(ctx, query, dimension)
+	}
 	rawExpression, ok := dimensionExpression(dimension)
 	if !ok {
 		return dimensionData{}, fmt.Errorf("unsupported dimension %q", dimension)
@@ -62,6 +65,91 @@ FROM events `+rawWhere+` GROUP BY `+rawExpression+`,proxy_request_id`, rawArgume
 	}
 	for value, requestIDs := range requests {
 		result.requestCounts[value] = int64(len(requestIDs))
+	}
+	return result, nil
+}
+
+func compactDimensionEligible(s *SQLiteStore, query model.Query, dimension string) bool {
+	if _, ok := compactDimensionKind(dimension); !ok || query.TimeZone != "UTC" ||
+		query.End.Sub(query.Start) <= 24*time.Hour ||
+		(!s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff)) ||
+		query.Start.UnixNano()%materialized15mDurationNS != 0 || query.End.UnixNano()%materialized15mDurationNS != 0 ||
+		len(query.Filters) != 0 {
+		return false
+	}
+	return dimension == "key" || len(query.KeyIDs) == 0
+}
+
+func (s *SQLiteStore) compactDimensionDataFor(ctx context.Context, query model.Query, dimension string) (dimensionData, error) {
+	kind, _ := compactDimensionKind(dimension)
+	clauses := []string{"bucket_start_ns >= ?", "bucket_end_ns <= ?", "dimension_kind = ?"}
+	arguments := []any{query.Start.UnixNano(), query.End.UnixNano(), kind}
+	if dimension == "key" && len(query.KeyIDs) != 0 {
+		clauses = append(clauses, inClause("dimension_value", len(query.KeyIDs)))
+		for _, keyID := range query.KeyIDs {
+			arguments = append(arguments, keyID)
+		}
+	}
+	result := dimensionData{totals: map[string]totals{}, requestCounts: map[string]int64{}}
+	rows, err := s.db.QueryContext(ctx, `SELECT dimension_value,SUM(upstream_attempts),
+SUM(input_tokens),SUM(output_tokens),SUM(reasoning_tokens),SUM(cached_tokens),SUM(cache_read_tokens),
+SUM(cache_creation_tokens),SUM(total_tokens),SUM(known_cost_nano),SUM(unpriced_tokens),
+CASE WHEN SUM(CASE WHEN token_quality='missing' THEN 1 ELSE 0 END)>0 THEN 'missing'
+WHEN SUM(CASE WHEN token_quality='estimated' THEN 1 ELSE 0 END)>0 THEN 'estimated' ELSE 'exact' END
+FROM analytics_15m_compact WHERE `+strings.Join(clauses, " AND ")+`
+GROUP BY dimension_value`, arguments...)
+	if err != nil {
+		return dimensionData{}, fmt.Errorf("query compact analytics dimensions: %w", err)
+	}
+	for rows.Next() {
+		var value, quality string
+		var data totals
+		if err := rows.Scan(&value, &data.attempts, &data.tokens.Input, &data.tokens.Output,
+			&data.tokens.Reasoning, &data.tokens.Cached, &data.tokens.CacheRead,
+			&data.tokens.CacheCreation, &data.tokens.Total, &data.knownCost, &data.unpriced, &quality); err != nil {
+			_ = rows.Close()
+			return dimensionData{}, fmt.Errorf("scan compact analytics dimension: %w", err)
+		}
+		data.tokens.Schema, data.tokens.Quality = "normalized-v1", model.TokenQuality(quality)
+		result.totals[value] = data
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return dimensionData{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return dimensionData{}, err
+	}
+	requestColumn := map[string]string{"model": "model", "provider": "provider", "key": "key_id"}[kind]
+	requestClauses := []string{"bucket_start_ns >= ?", "bucket_start_ns + ? <= ?"}
+	requestArguments := []any{query.Start.UnixNano(), materialized15mDurationNS, query.End.UnixNano()}
+	if dimension == "key" && len(query.KeyIDs) != 0 {
+		requestClauses = append(requestClauses, inClause(requestColumn, len(query.KeyIDs)))
+		for _, keyID := range query.KeyIDs {
+			requestArguments = append(requestArguments, keyID)
+		}
+	}
+	requestRows, err := s.db.QueryContext(ctx, `SELECT `+requestColumn+`,COUNT(DISTINCT proxy_request_id)
+FROM analytics_15m_request_ids WHERE `+strings.Join(requestClauses, " AND ")+`
+GROUP BY `+requestColumn, requestArguments...)
+	if err != nil {
+		return dimensionData{}, fmt.Errorf("query compact analytics dimension requests: %w", err)
+	}
+	for requestRows.Next() {
+		var value string
+		var count int64
+		if err := requestRows.Scan(&value, &count); err != nil {
+			_ = requestRows.Close()
+			return dimensionData{}, err
+		}
+		result.requestCounts[value] = count
+	}
+	if err := requestRows.Err(); err != nil {
+		_ = requestRows.Close()
+		return dimensionData{}, err
+	}
+	if err := requestRows.Close(); err != nil {
+		return dimensionData{}, err
 	}
 	return result, nil
 }

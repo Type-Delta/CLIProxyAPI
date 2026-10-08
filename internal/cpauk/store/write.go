@@ -75,6 +75,7 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 	}
 	defer func() { _ = statement.Close() }()
 	var inserted int64
+	bucketStarts := make(map[int64]struct{}, len(events))
 	for index := range events {
 		price, err := s.price(events[index])
 		if err != nil {
@@ -97,14 +98,17 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 		}
 		inserted += count
 		if count == 1 {
-			var aggregateCost int64
-			if price.KnownCost != nil {
-				aggregateCost = int64(*price.KnownCost)
-			}
-			if err := s.upsertMaterialized15mTx(ctx, tx, events[index], aggregateCost, price.UnpricedTokens, batchID); err != nil {
-				_ = tx.Rollback()
-				return 0, fmt.Errorf("update 15-minute aggregate for analytics event %d: %w", index, err)
-			}
+			bucketStarts[materialized15mBucketStart(events[index].RequestedAt.UnixNano())] = struct{}{}
+		}
+	}
+	if len(bucketStarts) != 0 {
+		buckets := make([]int64, 0, len(bucketStarts))
+		for bucket := range bucketStarts {
+			buckets = append(buckets, bucket)
+		}
+		if err := rebuildMaterialized15mBucketsTx(ctx, tx, buckets); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("update compact 15-minute aggregates: %w", err)
 		}
 	}
 	if err := s.checkQuota(estimatedBytes); err != nil {

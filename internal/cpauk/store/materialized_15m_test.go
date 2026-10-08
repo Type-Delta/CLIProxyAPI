@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestMaterialized15MinuteIncrementalUpsertIsDuplicateSafe(t *testing.T) {
 	start := base.RequestedAt.Truncate(materialized15mDuration).UnixNano()
 	var rows, requests, attempts, input, total int64
 	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*), proxy_requests, upstream_attempts,
-input_tokens, total_tokens FROM analytics_15m WHERE bucket_start_ns=?`, start).Scan(
+input_tokens, total_tokens FROM analytics_15m_compact WHERE bucket_start_ns=? AND dimension_kind='overall'`, start).Scan(
 		&rows, &requests, &attempts, &input, &total); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ input_tokens, total_tokens FROM analytics_15m WHERE bucket_start_ns=?`, start).S
 		t.Fatalf("aggregate rows=%d requests=%d attempts=%d input=%d total=%d", rows, requests, attempts, input, total)
 	}
 	var identityRows int64
-	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM analytics_15m_requests
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM analytics_15m_request_ids
 WHERE bucket_start_ns=?`, start).Scan(&identityRows); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +54,7 @@ WHERE bucket_start_ns=?`, start).Scan(&identityRows); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.db.QueryRowContext(ctx, `SELECT upstream_attempts, input_tokens
-FROM analytics_15m WHERE bucket_start_ns=?`, start).Scan(&attempts, &input); err != nil {
+FROM analytics_15m_compact WHERE bucket_start_ns=? AND dimension_kind='overall'`, start).Scan(&attempts, &input); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 2 || input != 40 {
@@ -67,7 +69,7 @@ FROM analytics_15m WHERE bucket_start_ns=?`, start).Scan(&attempts, &input); err
 		t.Fatal(err)
 	}
 	var bucketRows int64
-	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m").Scan(&bucketRows); err != nil {
+	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_compact WHERE dimension_kind='overall'").Scan(&bucketRows); err != nil {
 		t.Fatal(err)
 	}
 	if bucketRows != 2 {
@@ -88,20 +90,20 @@ func TestRebuild15MinuteAggregatesBackfillsEvents(t *testing.T) {
 	if err := database.WriteBatch(ctx, events); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.db.ExecContext(ctx, "DELETE FROM analytics_15m; DELETE FROM analytics_15m_requests"); err != nil {
+	if _, err := database.db.ExecContext(ctx, "DELETE FROM analytics_15m_compact; DELETE FROM analytics_15m_request_ids"); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Rebuild15MinuteAggregates(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var aggregateRows, requestRows, attempts int64
-	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(upstream_attempts),0) FROM analytics_15m").Scan(&aggregateRows, &attempts); err != nil {
+	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(upstream_attempts),0) FROM analytics_15m_compact WHERE dimension_kind='overall'").Scan(&aggregateRows, &attempts); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_requests").Scan(&requestRows); err != nil {
+	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_request_ids").Scan(&requestRows); err != nil {
 		t.Fatal(err)
 	}
-	if aggregateRows != 2 || requestRows != 2 || attempts != 2 {
+	if aggregateRows != 1 || requestRows != 2 || attempts != 2 {
 		t.Fatalf("rebuilt aggregates=%d requests=%d attempts=%d", aggregateRows, requestRows, attempts)
 	}
 }
@@ -129,7 +131,7 @@ func TestMigrationBackfillsMaterialized15MinuteAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, "DROP TABLE analytics_15m_requests; DROP TABLE analytics_15m; DELETE FROM schema_migrations WHERE version >= 10"); err != nil {
+	if _, err := direct.ExecContext(ctx, "DROP TABLE IF EXISTS analytics_15m_request_ids; DROP TABLE IF EXISTS analytics_15m_compact; DROP TABLE IF EXISTS analytics_15m_requests; DROP TABLE IF EXISTS analytics_15m; DELETE FROM schema_migrations WHERE version >= 10"); err != nil {
 		_ = direct.Close()
 		t.Fatal(err)
 	}
@@ -142,14 +144,98 @@ func TestMigrationBackfillsMaterialized15MinuteAggregates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = database.Close(context.Background()) })
 	var aggregateRows, requestRows int64
-	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m").Scan(&aggregateRows); err != nil {
+	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_compact WHERE dimension_kind='overall'").Scan(&aggregateRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_requests").Scan(&requestRows); err != nil {
+	if err := database.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM analytics_15m_request_ids").Scan(&requestRows); err != nil {
 		t.Fatal(err)
 	}
 	if aggregateRows != 1 || requestRows != 1 {
 		t.Fatalf("migration backfill aggregates=%d requests=%d", aggregateRows, requestRows)
+	}
+}
+
+func TestCompactTimeseriesAndDimensionsMatchRawAcrossWidthsAndFilters(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	fixture := loadFixtureEvents(t)[0]
+	start := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	keyA := fmt.Sprintf("%064x", 71)
+	keyB := fmt.Sprintf("%064x", 72)
+	events := make([]model.Event, 0, 4)
+	for index, offset := range []time.Duration{time.Minute, 16 * time.Minute, 31 * time.Minute, 46 * time.Minute} {
+		event := fixture
+		event.AttemptID = fmt.Sprintf("%032x", 100+index)
+		event.ProxyRequestID = fmt.Sprintf("%032x", 200+index/2)
+		event.KeyID = keyA
+		event.Provider = "compact-provider"
+		event.Model = "compact-model-a"
+		event.RequestedAt = start.Add(offset)
+		event.Tokens.Input = int64(10 + index)
+		event.Tokens.Output = int64(20 + index)
+		event.Tokens.Total = event.Tokens.Input + event.Tokens.Output
+		if index == 3 {
+			event.KeyID = keyB
+			event.Model = "compact-model-b"
+			event.Provider = "compact-provider-b"
+		}
+		events = append(events, event)
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	for _, width := range []string{"15m", "30m", "1h"} {
+		for _, selectedKeys := range [][]string{nil, {keyA}} {
+			compactQuery := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationTimeseries,
+				Start: start, End: start.Add(time.Hour), TimeZone: "UTC", BucketWidth: width, KeyIDs: selectedKeys}
+			rawQuery := compactQuery
+			rawQuery.TimeZone = "Etc/UTC"
+			got, err := database.Timeseries(ctx, compactQuery)
+			if err != nil {
+				t.Fatalf("compact %s keys=%v: %v", width, selectedKeys != nil, err)
+			}
+			want, err := database.Timeseries(ctx, rawQuery)
+			if err != nil {
+				t.Fatalf("raw %s keys=%v: %v", width, selectedKeys != nil, err)
+			}
+			if !reflect.DeepEqual(got.Points, want.Points) {
+				t.Fatalf("timeseries %s keys=%v differs\ncompact=%+v\nraw=%+v", width, selectedKeys != nil, got.Points, want.Points)
+			}
+		}
+	}
+	providerFilter, _ := json.Marshal([]string{"compact-provider"})
+	compactProviderQuery := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationTimeseries,
+		Start: start, End: start.Add(time.Hour), TimeZone: "UTC", BucketWidth: "1h",
+		Filters: map[string]json.RawMessage{"provider": providerFilter}}
+	rawProviderQuery := compactProviderQuery
+	rawProviderQuery.TimeZone = "Etc/UTC"
+	compactProvider, err := database.Timeseries(ctx, compactProviderQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawProvider, err := database.Timeseries(ctx, rawProviderQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(compactProvider.Points, rawProvider.Points) {
+		t.Fatalf("provider filter differs\ncompact=%+v\nraw=%+v", compactProvider.Points, rawProvider.Points)
+	}
+	for _, dimension := range []string{"provider", "model", "key"} {
+		compactQuery := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationDimensions,
+			Start: start, End: start.Add(time.Hour), TimeZone: "UTC", Dimension: dimension, PageSize: 20}
+		rawQuery := compactQuery
+		rawQuery.TimeZone = "Etc/UTC"
+		got, err := database.Dimensions(ctx, compactQuery)
+		if err != nil {
+			t.Fatalf("compact dimensions %s: %v", dimension, err)
+		}
+		want, err := database.Dimensions(ctx, rawQuery)
+		if err != nil {
+			t.Fatalf("raw dimensions %s: %v", dimension, err)
+		}
+		if !reflect.DeepEqual(got.Rows, want.Rows) {
+			t.Fatalf("dimensions %s differs\ncompact=%+v\nraw=%+v", dimension, got.Rows, want.Rows)
+		}
 	}
 }
 

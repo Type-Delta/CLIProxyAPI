@@ -994,11 +994,11 @@ checked targeted tests, and the server build pass.
 
 ### DL028 - Single-pass CPAUK model timeseries aggregation
 
-CPAUK analytics now maintain exact 15-minute materialized aggregates and request identities during ingestion, with rebuild hooks for retention and repricing. UTC ranges aligned to 15-minute boundaries and wider bucket widths read those aggregates; other time zones and partial boundaries retain the raw/rollup path for calendar correctness. Analysis model-by-time queries use one raw-event scan to populate all model buckets, and timing, summary, activity, and dimension queries avoid several duplicate scans. The previous model implementation reran a complete timeseries query for each of the ten displayed models, multiplying long-range work by model count. The retained-history path remains rollup-aware and keeps the existing hourly/daily correctness rules.
+CPAUK analytics now maintain exact compact 15-minute materialized aggregates for overall, model, provider, and key common-query paths, plus lossless request identities for exact retry deduplication. Batch writes coalesce aggregate deltas, and retention, imports, repricing, and purge rebuild only affected buckets. UTC ranges aligned to 15-minute boundaries and wider bucket widths read compact aggregates; other time zones and partial boundaries retain raw/rollup processing for calendar correctness. Analysis model-by-time queries use one raw-event scan to populate all model buckets, and timing, summary, activity, and dimension queries avoid duplicate scans. The prior high-cardinality materialization was removed because it created nearly one aggregate row per event. The retained-history path remains rollup-aware and keeps the existing hourly/daily correctness rules.
 
 **Implementation evidence:** `internal/cpauk/store/{analysis.go,activity.go,query.go,retained_query.go,timing.go,write.go,materialized_15m.go,materialized_read.go,migrations/010_materialized_15m.sql}`, and `internal/cpauk/aggregate/range.go`.
 
-**Recorded validation:** `go test ./internal/cpauk/store` passes, including the v2 analytics query and retained-data correctness suites.
+**Recorded validation:** `go test ./internal/cpauk/...` and the required server build pass. On a deterministic 100,000-request, 90-day fixture, compact ingestion fell from 31.92s to 13.83s, database size from 444MB to 405MB, 30-day 15-minute timeseries from 183ms to 63ms, 30-day activity from 251ms to 55ms, and 90-day summary from 546ms to 550ms. Compact short-range dimension queries intentionally use the raw path because identity scans are slower than raw SQLite aggregation at that scale. Benchmark harness and comparison scripts live under `test/perf/`.
 
 **Last updated:** 2026-10-07
 

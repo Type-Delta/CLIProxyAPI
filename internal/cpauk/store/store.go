@@ -197,6 +197,20 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 				return fmt.Errorf("backfill daily stats: %w", errBackfill)
 			}
 		}
+		// Migration 11 replaces the dimension-heavy cache with compact rows.
+		// Rebuild and convert request IDs inside the same transaction before the
+		// legacy tables are dropped, so an interrupted migration leaves the old
+		// cache intact and retryable.
+		if item.version == 11 {
+			if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("backfill compact 15-minute cache: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS analytics_15m_requests; DROP TABLE IF EXISTS analytics_15m"); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("drop legacy 15-minute cache: %w", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, checksum, applied_at_ns) VALUES (?, ?, ?, ?)", item.version, item.name, item.checksum, time.Now().UTC().UnixNano()); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", item.version, err)

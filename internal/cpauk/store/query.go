@@ -40,11 +40,13 @@ type totals struct {
 }
 
 type pointState struct {
-	point     model.TimeseriesPoint
-	requests  map[string]struct{}
-	quality   model.TokenQuality
-	succeeded int64
-	failed    int64
+	point            model.TimeseriesPoint
+	requests         map[string]struct{}
+	proxyRequests    int64
+	proxyRequestsSet bool
+	quality          model.TokenQuality
+	succeeded        int64
+	failed           int64
 }
 
 func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Summary, error) {
@@ -349,14 +351,37 @@ func (s *SQLiteStore) materialized15mEligible(query model.Query) bool {
 	if query.TimeZone != "UTC" || (!s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff)) {
 		return false
 	}
+	if _, _, ok := compact15mSelection(query); !ok {
+		return false
+	}
 	if query.Start.UnixNano()%materialized15mDurationNS != 0 || query.End.UnixNano()%materialized15mDurationNS != 0 {
 		return false
 	}
-	switch query.BucketWidth {
+	if !compact15mWidthEligible(query.BucketWidth) {
+		return false
+	}
+	return compactQueryAligned(query.Start.UnixNano(), query.BucketWidth) && compactQueryAligned(query.End.UnixNano(), query.BucketWidth)
+}
+
+func compactQueryAligned(timestampNS int64, width string) bool {
+	if width == "1w" {
+		const weekNS = int64(7 * 24 * time.Hour)
+		anchor := time.Date(1970, time.January, 5, 0, 0, 0, 0, time.UTC).UnixNano()
+		return (timestampNS-anchor)%weekNS == 0
+	}
+	if width == "1d" {
+		return timestampNS%int64(24*time.Hour) == 0
+	}
+	duration, err := time.ParseDuration(width)
+	return err == nil && duration > 0 && timestampNS%int64(duration) == 0
+}
+
+func compact15mWidthEligible(width string) bool {
+	switch width {
 	case "15m", "1h", "1d", "1w":
 		return true
 	default:
-		duration, err := time.ParseDuration(query.BucketWidth)
+		duration, err := time.ParseDuration(width)
 		return err == nil && duration >= materialized15mDuration && duration%materialized15mDuration == 0
 	}
 }
@@ -370,11 +395,8 @@ func materializedTimeseries(query model.Query, bucketer aggregate.Bucketer, read
 		}
 		state := ensurePoint(points, start, end)
 		state.point.UpstreamAttempts += aggregateRow.UpstreamAttempts
-		if aggregateRow.Succeeded {
-			state.succeeded += aggregateRow.UpstreamAttempts
-		} else {
-			state.failed += aggregateRow.UpstreamAttempts
-		}
+		state.succeeded += aggregateRow.Succeeded
+		state.failed += aggregateRow.Failed
 		state.point.Tokens.Input += aggregateRow.InputTokens
 		state.point.Tokens.Output += aggregateRow.OutputTokens
 		state.point.Tokens.Reasoning += aggregateRow.ReasoningTokens
@@ -394,14 +416,20 @@ func materializedTimeseries(query model.Query, bucketer aggregate.Bucketer, read
 		}
 		state.quality = combineQuality(state.quality, aggregateRow.TokenQuality)
 	}
-	for bucketStart, requestIDs := range read.Requests {
+	for bucketStart, requestCount := range read.RequestCounts {
 		start, end, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
 		if err != nil {
 			return model.Timeseries{}, nil, err
 		}
 		state := ensurePoint(points, start, end)
-		for requestID := range requestIDs {
-			state.requests[requestID] = struct{}{}
+		state.proxyRequests = requestCount
+		state.proxyRequestsSet = true
+	}
+	for bucketStart := range points {
+		state := points[bucketStart]
+		if !state.proxyRequestsSet {
+			state.proxyRequestsSet = true
+			state.proxyRequests = read.RequestCounts[bucketStart]
 		}
 	}
 	return finalizeTimeseries(query, points)
@@ -417,7 +445,11 @@ func finalizeTimeseries(query model.Query, points map[int64]*pointState) (model.
 	outcomes := make(map[int64][2]int64, len(points))
 	for _, key := range keys {
 		state := points[key]
-		state.point.ProxyRequests = int64(len(state.requests))
+		if state.proxyRequestsSet {
+			state.point.ProxyRequests = state.proxyRequests
+		} else {
+			state.point.ProxyRequests = int64(len(state.requests))
+		}
 		state.point.Tokens.Schema = "normalized-v1"
 		state.point.Tokens.Quality = state.quality
 		result.Points = append(result.Points, state.point)
