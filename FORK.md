@@ -1002,6 +1002,16 @@ CPAUK analytics now maintain exact compact 15-minute materialized aggregates for
 
 **Last updated:** 2026-10-07
 
+### DL029 - Bounded historical analytics result cache
+
+CPAUK keeps a bounded process-local LRU cache for complete historical Summary, Timeseries, and Analysis results. Cache keys include the normalized query selection, identity epoch, durable 15-minute bucket generations, and pricing provenance for Analysis. Writes, imports, repricing, retention, purge, restore, and identity-epoch changes advance affected generations or clear the cache, so late historical changes cannot return stale results. Cache entries are defensively cloned and skipped for live ranges or partial Analysis responses.
+
+**Implementation evidence:** `internal/cpauk/store/history_cache.go`, `internal/cpauk/store/history_generation.go`, and the CPAUK query, write, retention, repricing, purge, restore, and epoch paths.
+
+**Recorded validation:** `go test ./internal/cpauk/...` and the required server build pass. On a 100,000-request fixture, a 90-day cached Summary fell from about 535ms cold to 5ms on a hit; an unrelated tail write kept the historical hit at about 5ms, while a late historical write forced a fresh read at about 563ms.
+
+**Last updated:** 2026-10-09
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
