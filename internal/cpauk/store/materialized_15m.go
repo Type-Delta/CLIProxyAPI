@@ -98,9 +98,18 @@ func (s *SQLiteStore) rebuild15mLocked(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("begin 15-minute aggregate rebuild: %w", err)
 	}
+	bucketStarts, err := bucketStartsForEvents(ctx, tx, "1=1")
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("find 15-minute aggregate rebuild buckets: %w", err)
+	}
 	if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
 		_ = tx.Rollback()
 		return err
+	}
+	if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("update history generations after aggregate rebuild: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit 15-minute aggregate rebuild: %w", err)

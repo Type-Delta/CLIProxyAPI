@@ -16,6 +16,10 @@ import (
 // cannot resurrect a cached result for an older version of the history.
 const historyGenerationBucketNS = materialized15mDurationNS
 
+// A wide maintenance operation may cover too many fine-grained buckets to
+// enumerate safely. Advancing this reserved row invalidates all cached ranges.
+const historyGenerationGlobalBucket int64 = -1 << 63
+
 const createHistoryGenerationsSQL = `CREATE TABLE IF NOT EXISTS history_generations (
     bucket_start_ns INTEGER PRIMARY KEY,
     generation INTEGER NOT NULL CHECK(generation > 0)
@@ -48,10 +52,10 @@ func historyGenerationBucketsForRange(startNS, endNS int64) []int64 {
 	if count <= 0 {
 		return nil
 	}
-	// Avoid an accidental unbounded allocation if a caller supplies a corrupt
-	// range. Normal analytics ranges are limited by the query contract.
+	// Avoid an accidental unbounded allocation for long-lived retained history.
+	// A global generation is conservative but cannot leave stale middle ranges.
 	if count > 1<<20 {
-		return []int64{first, last}
+		return []int64{historyGenerationGlobalBucket}
 	}
 	buckets := make([]int64, 0, count)
 	for bucket := first; bucket <= last; bucket += historyGenerationBucketNS {
@@ -136,9 +140,20 @@ func (s *SQLiteStore) historyGenerationLocked(ctx context.Context, startNS, endN
 	binary.BigEndian.PutUint64(encoded[:8], uint64(startNS))
 	binary.BigEndian.PutUint64(encoded[8:], uint64(endNS))
 	_, _ = hash.Write(encoded[:])
+	// Retention changes the valid query domain even when a retention pass has
+	// no rows left to delete. Bind the in-memory cutoff so a cached empty or
+	// historical result cannot bypass a newly established retained-range error.
+	cutoffNS := int64(0)
+	if !s.retentionCutoff.IsZero() {
+		cutoffNS = s.retentionCutoff.UnixNano()
+	}
+	binary.BigEndian.PutUint64(encoded[:8], uint64(cutoffNS))
+	binary.BigEndian.PutUint64(encoded[8:], 0)
+	_, _ = hash.Write(encoded[:])
 	rows, err := s.db.QueryContext(ctx, `SELECT bucket_start_ns,generation
-FROM history_generations WHERE bucket_start_ns < ? AND bucket_start_ns + ? > ?
- ORDER BY bucket_start_ns`, endNS, historyGenerationBucketNS, startNS)
+FROM history_generations WHERE bucket_start_ns = ? OR
+(bucket_start_ns < ? AND bucket_start_ns + ? > ?)
+	ORDER BY bucket_start_ns`, historyGenerationGlobalBucket, endNS, historyGenerationBucketNS, startNS)
 	if err != nil {
 		return "", fmt.Errorf("read history generations: %w", err)
 	}
