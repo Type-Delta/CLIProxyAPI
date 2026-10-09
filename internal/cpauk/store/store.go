@@ -416,6 +416,7 @@ func (s *SQLiteStore) Close(ctx context.Context) error {
 	done := make(chan error, 1)
 	db := s.db
 	s.db = nil
+	s.historyCache.clear()
 	go func() { done <- db.Close() }()
 	select {
 	case err := <-done:
