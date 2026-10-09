@@ -137,6 +137,10 @@ WHERE requested_at_ns >= ? AND requested_at_ns < ?`
 	if err != nil {
 		return RepriceResult{}, fmt.Errorf("begin reprice chunk: %w", err)
 	}
+	bucketSet := make(map[int64]struct{}, len(events))
+	for _, event := range events {
+		bucketSet[materialized15mBucketStart(event.RequestedAt.UnixNano())] = struct{}{}
+	}
 	for index, event := range events {
 		priced, errPrice := s.price(event)
 		if errPrice != nil {
@@ -156,6 +160,18 @@ WHERE attempt_id=?`, knownCost, priced.UnpricedTokens, nullString(priced.RuleID)
 		if progress != nil {
 			progress(min(99, int(result.Updated*100/int64(len(events)))), result.Checkpoint)
 		}
+	}
+	bucketStarts := make([]int64, 0, len(bucketSet))
+	for bucket := range bucketSet {
+		bucketStarts = append(bucketStarts, bucket)
+	}
+	if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return RepriceResult{}, fmt.Errorf("rebuild 15-minute aggregates after reprice: %w", err)
+	}
+	if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return RepriceResult{}, fmt.Errorf("update history generations after reprice: %w", err)
 	}
 	if result.Completed {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_metadata WHERE key=?", checkpointKey); err != nil {

@@ -348,6 +348,7 @@ func (s *SQLiteStore) Restore(ctx context.Context, databasePath, manifestPath st
 	s.identityEpoch = candidate.identityEpoch
 	s.currentSchema = candidate.currentSchema
 	s.retentionCutoff = candidate.retentionCutoff
+	s.historyCache.clear()
 	return nil
 }
 
@@ -361,6 +362,17 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("begin analytics key purge: %w", err)
 	}
+	bucketStarts, err := bucketStartsForEvents(ctx, tx, "key_id = ?", keyID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find key purge aggregate buckets: %w", err)
+	}
+	mutationBuckets, err := historyMutationBucketsTx(ctx, tx, "key_id", keyID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find key purge history generations: %w", err)
+	}
+	bucketStarts = append(bucketStarts, mutationBuckets...)
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE key_id = ?",
@@ -380,6 +392,14 @@ func (s *SQLiteStore) PurgeByKeyID(ctx context.Context, keyID string) (int64, er
 		}
 		removed += count
 	}
+	if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("rebuild key purge aggregates: %w", err)
+	}
+	if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("update history generations after key purge: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit analytics key purge: %w", err)
 	}
@@ -395,6 +415,8 @@ func (s *SQLiteStore) PreviewPurgeByKeyID(ctx context.Context, keyID string) (in
 	var rows int64
 	for _, statement := range []string{
 		"SELECT COUNT(*) FROM events WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m_request_ids WHERE key_id = ?",
+		"SELECT COUNT(*) FROM analytics_15m_compact WHERE dimension_kind = 'key' AND dimension_value = ?",
 		"SELECT COUNT(*) FROM rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM request_rollups WHERE key_id = ?",
 		"SELECT COUNT(*) FROM daily_stats WHERE key_id = ?",
@@ -418,6 +440,17 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 	if err != nil {
 		return 0, fmt.Errorf("begin import rollback: %w", err)
 	}
+	bucketStarts, err := bucketStartsForEvents(ctx, tx, "import_batch_id = ?", batchID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find import rollback aggregate buckets: %w", err)
+	}
+	mutationBuckets, err := historyMutationBucketsTx(ctx, tx, "import_batch_id", batchID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("find import rollback history generations: %w", err)
+	}
+	bucketStarts = append(bucketStarts, mutationBuckets...)
 	var removed int64
 	for _, statement := range []string{
 		"DELETE FROM events WHERE import_batch_id = ?",
@@ -435,6 +468,14 @@ func (s *SQLiteStore) RollbackImport(ctx context.Context, batchID string) (int64
 			return 0, err
 		}
 		removed += count
+	}
+	if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("rebuild import rollback aggregates: %w", err)
+	}
+	if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("update history generations after import rollback: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM import_checkpoints WHERE batch_id = ?", batchID); err != nil {
 		_ = tx.Rollback()
@@ -621,6 +662,31 @@ ORDER BY requested_at_ns, attempt_id LIMIT ?`
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("read raw retention checkpoint: %w", err)
 	}
+	bucketRows, err := tx.QueryContext(ctx, `SELECT DISTINCT requested_at_ns - ((requested_at_ns % ? + ?) % ?)
+FROM events WHERE attempt_id IN (`+selector+`)`, append([]any{materialized15mDurationNS, materialized15mDurationNS, materialized15mDurationNS}, selectorArgs...)...)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("read raw retention aggregate buckets: %w", err)
+	}
+	bucketStarts := make([]int64, 0)
+	for bucketRows.Next() {
+		var bucketStart int64
+		if err := bucketRows.Scan(&bucketStart); err != nil {
+			_ = bucketRows.Close()
+			_ = tx.Rollback()
+			return 0, 0, nil, fmt.Errorf("scan raw retention aggregate bucket: %w", err)
+		}
+		bucketStarts = append(bucketStarts, bucketStart)
+	}
+	if err := bucketRows.Err(); err != nil {
+		_ = bucketRows.Close()
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("read raw retention aggregate buckets: %w", err)
+	}
+	if err := bucketRows.Close(); err != nil {
+		_ = tx.Rollback()
+		return 0, 0, nil, fmt.Errorf("close raw retention aggregate buckets: %w", err)
+	}
 	rollupArgs := append([]any{bucketStart.UnixNano(), bucketEnd.UnixNano()}, selectorArgs...)
 	rollupResult, err := tx.ExecContext(ctx, `INSERT INTO rollups (`+rollupColumns+`)
 SELECT 'hourly', ?, ?,
@@ -673,6 +739,16 @@ FROM events WHERE attempt_id IN (
 	if err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("delete retained analytics events: %w", err)
+	}
+	if len(bucketStarts) != 0 {
+		if err := rebuildMaterialized15mBucketsTx(ctx, tx, bucketStarts); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, nil, err
+		}
+		if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, nil, fmt.Errorf("update history generations after raw retention: %w", err)
+		}
 	}
 	rolled, _ := rollupResult.RowsAffected()
 	deleted, _ := deleteResult.RowsAffected()
@@ -763,6 +839,12 @@ WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)`, append([]any{daySta
 	if _, err := tx.ExecContext(ctx, `DELETE FROM request_rollups WHERE grain='hourly' AND bucket_start_ns IN (`+selector+`)`, selectorArgs...); err != nil {
 		_ = tx.Rollback()
 		return 0, 0, nil, fmt.Errorf("delete hourly request rollups: %w", err)
+	}
+	if deleted, err := deleteResult.RowsAffected(); err == nil && deleted > 0 {
+		if err := touchHistoryGenerationRangeTx(ctx, tx, dayStart.UnixNano(), dayEnd.UnixNano()); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, nil, fmt.Errorf("update history generations after hourly retention: %w", err)
+		}
 	}
 	rolled, _ := rollupResult.RowsAffected()
 	deleted, _ := deleteResult.RowsAffected()

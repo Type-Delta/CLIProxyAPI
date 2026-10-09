@@ -19,6 +19,51 @@ const (
 	RangeRolling       RangeKind = "rolling"
 )
 
+// Bucketer resolves a query's time zone and fixed width once, then reuses the
+// parsed values for every event in that query. This keeps the hot aggregation
+// loop free of repeated time.LoadLocation and time.ParseDuration calls.
+type Bucketer struct {
+	location *time.Location
+	width    string
+	duration time.Duration
+}
+
+func NewBucketer(zoneName, width string) (Bucketer, error) {
+	location, err := time.LoadLocation(zoneName)
+	if err != nil {
+		return Bucketer{}, fmt.Errorf("load time zone %q: %w", zoneName, err)
+	}
+	bucketer := Bucketer{location: location, width: width}
+	if width != "1d" && width != "1w" {
+		duration, err := time.ParseDuration(width)
+		if err != nil || duration <= 0 {
+			return Bucketer{}, fmt.Errorf("invalid bucket width %q", width)
+		}
+		bucketer.duration = duration
+	}
+	return bucketer, nil
+}
+
+func (b Bucketer) Bounds(at time.Time) (time.Time, time.Time, error) {
+	local := at.In(b.location)
+	var start, end time.Time
+	switch b.width {
+	case "1d":
+		start = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, b.location)
+		end = start.AddDate(0, 0, 1)
+	case "1w":
+		daysSinceMonday := (int(local.Weekday()) + 6) % 7
+		start = time.Date(local.Year(), local.Month(), local.Day()-daysSinceMonday, 0, 0, 0, 0, b.location)
+		end = start.AddDate(0, 0, 7)
+	default:
+		_, offsetSeconds := local.Zone()
+		offset := time.Duration(offsetSeconds) * time.Second
+		start = at.UTC().Add(offset).Truncate(b.duration).Add(-offset)
+		end = start.Add(b.duration)
+	}
+	return start.UTC(), end.UTC(), nil
+}
+
 func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.Duration) (time.Time, time.Time, error) {
 	location, err := time.LoadLocation(zoneName)
 	if err != nil {
@@ -67,29 +112,9 @@ func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.D
 // BucketBounds uses calendar arithmetic for day and week widths. That keeps
 // bucket boundaries correct across daylight-saving changes.
 func BucketBounds(at time.Time, zoneName, width string) (time.Time, time.Time, error) {
-	location, err := time.LoadLocation(zoneName)
+	bucketer, err := NewBucketer(zoneName, width)
 	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("load time zone %q: %w", zoneName, err)
+		return time.Time{}, time.Time{}, err
 	}
-	local := at.In(location)
-	var start, end time.Time
-	switch width {
-	case "1d":
-		start = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
-		end = start.AddDate(0, 0, 1)
-	case "1w":
-		daysSinceMonday := (int(local.Weekday()) + 6) % 7
-		start = time.Date(local.Year(), local.Month(), local.Day()-daysSinceMonday, 0, 0, 0, 0, location)
-		end = start.AddDate(0, 0, 7)
-	default:
-		duration, err := time.ParseDuration(width)
-		if err != nil || duration <= 0 {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid bucket width %q", width)
-		}
-		_, offsetSeconds := local.Zone()
-		offset := time.Duration(offsetSeconds) * time.Second
-		start = at.UTC().Add(offset).Truncate(duration).Add(-offset)
-		end = start.Add(duration)
-	}
-	return start.UTC(), end.UTC(), nil
+	return bucketer.Bounds(at)
 }

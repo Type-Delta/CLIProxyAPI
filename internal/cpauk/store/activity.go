@@ -37,7 +37,7 @@ func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, wi
 	timeseriesQuery.Operation = model.OperationTimeseries
 	timeseriesQuery.Window = ""
 	timeseriesQuery.BucketWidth = width
-	timeseries, err := s.Timeseries(ctx, timeseriesQuery)
+	timeseries, outcomes, err := s.timeseriesWithOutcomes(ctx, timeseriesQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -58,14 +58,12 @@ func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, wi
 		}
 		*bucket = model.ActivityBucket{
 			Start: point.Start, End: point.End, Requests: point.ProxyRequests,
+			Succeeded: outcomes[point.Start.UnixNano()][0], Failed: outcomes[point.Start.UnixNano()][1],
 			InputTokens: point.Tokens.Input, OutputTokens: point.Tokens.Output,
 			CachedTokens: point.Tokens.Cached, CacheReadTokens: point.Tokens.CacheRead,
 			CacheCreationTokens: point.Tokens.CacheCreation, ReasoningTokens: point.Tokens.Reasoning,
 			TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost, UnpricedTokens: point.UnpricedTokens,
 		}
-	}
-	if err := s.addActivityOutcomes(ctx, query, width, byStart); err != nil {
-		return nil, err
 	}
 	return buckets, nil
 }
@@ -118,6 +116,10 @@ func (s *SQLiteStore) yearActivityBuckets(ctx context.Context, query model.Query
 	if err := s.validateDailyStatsRange(ctx, query); err != nil {
 		return nil, err
 	}
+	bucketer, err := aggregate.NewBucketer(query.TimeZone, "1d")
+	if err != nil {
+		return nil, err
+	}
 	rawRows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns,proxy_request_id,succeeded,
 input_tokens,output_tokens,reasoning_tokens,cached_tokens,cache_read_tokens,
 cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM events `+rawWhere, rawArguments...)
@@ -135,7 +137,7 @@ cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM events `
 			_ = rawRows.Close()
 			return nil, fmt.Errorf("scan year activity event: %w", err)
 		}
-		start, _, errBounds := aggregate.BucketBounds(time.Unix(0, requestedNS).UTC(), query.TimeZone, "1d")
+		start, _, errBounds := bucketer.Bounds(time.Unix(0, requestedNS).UTC())
 		if errBounds != nil {
 			_ = rawRows.Close()
 			return nil, errBounds
@@ -196,7 +198,7 @@ cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM daily_st
 	if err != nil {
 		return nil, err
 	}
-	requestRows, err := s.db.QueryContext(ctx, `SELECT bucket_start_ns,proxy_request_id FROM request_rollups `+retainedWhere, retainedArguments...)
+	requestRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT bucket_start_ns,proxy_request_id FROM request_rollups `+retainedWhere, retainedArguments...)
 	if err != nil {
 		return nil, fmt.Errorf("query retained year activity requests: %w", err)
 	}
@@ -207,7 +209,7 @@ cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM daily_st
 			_ = requestRows.Close()
 			return nil, fmt.Errorf("scan retained year activity request: %w", err)
 		}
-		start, _, errBounds := aggregate.BucketBounds(time.Unix(0, bucketStart).UTC(), query.TimeZone, "1d")
+		start, _, errBounds := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
 		if errBounds != nil {
 			_ = requestRows.Close()
 			return nil, errBounds
@@ -305,7 +307,11 @@ type analyticsBucket struct {
 }
 
 func analyticsBucketSequence(query model.Query, width string) ([]analyticsBucket, error) {
-	start, end, err := aggregate.BucketBounds(query.Start, query.TimeZone, width)
+	bucketer, err := aggregate.NewBucketer(query.TimeZone, width)
+	if err != nil {
+		return nil, err
+	}
+	start, end, err := bucketer.Bounds(query.Start)
 	if err != nil {
 		return nil, err
 	}
@@ -316,75 +322,12 @@ func analyticsBucketSequence(query model.Query, width string) ([]analyticsBucket
 		}
 		sequence = append(sequence, analyticsBucket{start: start, end: end})
 		start = end
-		_, end, err = aggregate.BucketBounds(start, query.TimeZone, width)
+		_, end, err = bucketer.Bounds(start)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return sequence, nil
-}
-
-func (s *SQLiteStore) addActivityOutcomes(ctx context.Context, query model.Query, width string, buckets map[int64]*model.ActivityBucket) error {
-	rawWhere, rawArguments, err := buildWhere(query)
-	if err != nil {
-		return err
-	}
-	rollupWhere, rollupArguments, err := buildRollupWhere(query, "bucket_start_ns", "bucket_end_ns")
-	if err != nil {
-		return err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.db == nil {
-		return ErrClosed
-	}
-	rawRows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns,succeeded FROM events `+rawWhere, rawArguments...)
-	if err != nil {
-		return fmt.Errorf("query analytics activity outcomes: %w", err)
-	}
-	for rawRows.Next() {
-		var requestedNS int64
-		var succeeded bool
-		if err := rawRows.Scan(&requestedNS, &succeeded); err != nil {
-			_ = rawRows.Close()
-			return fmt.Errorf("scan analytics activity outcome: %w", err)
-		}
-		start, _, errBounds := aggregate.BucketBounds(time.Unix(0, requestedNS).UTC(), query.TimeZone, width)
-		if errBounds != nil {
-			_ = rawRows.Close()
-			return errBounds
-		}
-		addActivityOutcome(buckets[start.UnixNano()], succeeded, 1)
-	}
-	if err := rawRows.Err(); err != nil {
-		_ = rawRows.Close()
-		return fmt.Errorf("read analytics activity outcomes: %w", err)
-	}
-	if err := rawRows.Close(); err != nil {
-		return err
-	}
-	rollupRows, err := s.db.QueryContext(ctx, `SELECT grain,bucket_start_ns,succeeded,upstream_attempts FROM rollups `+rollupWhere, rollupArguments...)
-	if err != nil {
-		return fmt.Errorf("query retained analytics activity outcomes: %w", err)
-	}
-	defer func() { _ = rollupRows.Close() }()
-	for rollupRows.Next() {
-		var grain string
-		var bucketNS, attempts int64
-		var succeeded bool
-		if err := rollupRows.Scan(&grain, &bucketNS, &succeeded, &attempts); err != nil {
-			return fmt.Errorf("scan retained analytics activity outcome: %w", err)
-		}
-		if err := validateRollupWidth(grain, width); err != nil {
-			return err
-		}
-		start, _, errBounds := aggregate.BucketBounds(time.Unix(0, bucketNS).UTC(), query.TimeZone, width)
-		if errBounds != nil {
-			return errBounds
-		}
-		addActivityOutcome(buckets[start.UnixNano()], succeeded, attempts)
-	}
-	return rollupRows.Err()
 }
 
 func addActivityOutcome(bucket *model.ActivityBucket, succeeded bool, attempts int64) {

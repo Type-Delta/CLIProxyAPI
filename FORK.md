@@ -992,6 +992,26 @@ checked targeted tests, and the server build pass.
 
 **Last updated:** 2026-10-07
 
+### DL028 - Single-pass CPAUK model timeseries aggregation
+
+CPAUK analytics now maintain exact compact 15-minute materialized aggregates for overall, model, provider, and key common-query paths, plus lossless request identities for exact retry deduplication. Batch writes coalesce aggregate deltas, and retention, imports, repricing, and purge rebuild only affected buckets. UTC ranges aligned to 15-minute boundaries and wider bucket widths read compact aggregates; other time zones and partial boundaries retain raw/rollup processing for calendar correctness. Analysis model-by-time queries use one raw-event scan to populate all model buckets, and timing, summary, activity, and dimension queries avoid duplicate scans. The prior high-cardinality materialization was removed because it created nearly one aggregate row per event. The retained-history path remains rollup-aware and keeps the existing hourly/daily correctness rules.
+
+**Implementation evidence:** `internal/cpauk/store/{analysis.go,activity.go,query.go,retained_query.go,timing.go,write.go,materialized_15m.go,materialized_read.go,migrations/010_materialized_15m.sql}`, and `internal/cpauk/aggregate/range.go`.
+
+**Recorded validation:** `go test ./internal/cpauk/...` and the required server build pass. On a deterministic 100,000-request, 90-day fixture, compact ingestion fell from 31.92s to 13.83s, database size from 444MB to 405MB, 30-day 15-minute timeseries from 183ms to 63ms, 30-day activity from 251ms to 55ms, and 90-day summary from 546ms to 550ms. Compact short-range dimension queries intentionally use the raw path because identity scans are slower than raw SQLite aggregation at that scale. Benchmark harness and comparison scripts live under `test/perf/`.
+
+**Last updated:** 2026-10-07
+
+### DL029 - Bounded historical analytics result cache
+
+CPAUK keeps a bounded process-local LRU cache for complete historical Summary, Timeseries, and Analysis results. Cache keys include the normalized query selection, identity epoch, durable 15-minute bucket generations, and pricing provenance for Analysis. Writes, imports, repricing, retention, purge, restore, and identity-epoch changes advance affected generations or clear the cache, so late historical changes cannot return stale results. Cache entries are defensively cloned and skipped for live ranges or partial Analysis responses.
+
+**Implementation evidence:** `internal/cpauk/store/history_cache.go`, `internal/cpauk/store/history_generation.go`, and the CPAUK query, write, retention, repricing, purge, restore, and epoch paths.
+
+**Recorded validation:** `go test ./internal/cpauk/...` and the required server build pass. On a 100,000-request fixture, a 90-day cached Summary fell from about 535ms cold to 5ms on a hit; an unrelated tail write kept the historical hit at about 5ms, while a late historical write forced a fresh read at about 563ms.
+
+**Last updated:** 2026-10-09
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
