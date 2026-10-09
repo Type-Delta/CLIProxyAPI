@@ -21,6 +21,13 @@ func (s *SQLiteStore) Analysis(ctx context.Context, query model.Query) (model.An
 	if err := s.validateQuery(&query, model.OperationAnalysis); err != nil {
 		return model.Analysis{}, err
 	}
+	return s.cachedAnalysis(ctx, query)
+}
+
+func (s *SQLiteStore) analysisUncached(ctx context.Context, query model.Query) (model.Analysis, error) {
+	if err := s.validateQuery(&query, model.OperationAnalysis); err != nil {
+		return model.Analysis{}, err
+	}
 	result := model.Analysis{Meta: responseMeta(query)}
 	sectionErrors := make([]error, 0, 5)
 	series, err := s.analysisSeries(ctx, query)

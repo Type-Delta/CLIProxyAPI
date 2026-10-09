@@ -169,6 +169,10 @@ WHERE attempt_id=?`, knownCost, priced.UnpricedTokens, nullString(priced.RuleID)
 		_ = tx.Rollback()
 		return RepriceResult{}, fmt.Errorf("rebuild 15-minute aggregates after reprice: %w", err)
 	}
+	if err := touchHistoryGenerationsTx(ctx, tx, bucketStarts); err != nil {
+		_ = tx.Rollback()
+		return RepriceResult{}, fmt.Errorf("update history generations after reprice: %w", err)
+	}
 	if result.Completed {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_metadata WHERE key=?", checkpointKey); err != nil {
 			_ = tx.Rollback()

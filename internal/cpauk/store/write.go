@@ -110,6 +110,10 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("update compact 15-minute aggregates: %w", err)
 		}
+		if err := touchHistoryGenerationsTx(ctx, tx, buckets); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("update history generations: %w", err)
+		}
 	}
 	if err := s.checkQuota(estimatedBytes); err != nil {
 		_ = tx.Rollback()

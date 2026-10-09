@@ -43,6 +43,7 @@ type SQLiteStore struct {
 	identityEpoch   string
 	currentSchema   int
 	retentionCutoff time.Time
+	historyCache    historyResultCache
 
 	pricingRefreshMu sync.Mutex
 	pricingFlight    *pricingRefreshFlight
@@ -219,6 +220,13 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 			return fmt.Errorf("commit migration %d: %w", item.version, err)
 		}
 		current = item.version
+	}
+	// Keep the existing schema version stable while upgrading databases created
+	// before the historical result cache. This idempotent DDL is safe for both
+	// fresh databases and existing v11 databases, and does not need a ledger
+	// entry because the table has no dependency on the rest of the schema.
+	if err := ensureHistoryGenerations(ctx, s.db); err != nil {
+		return err
 	}
 	s.currentSchema = current
 	fingerprint, err := model.IdentityKeyFingerprint(s.identityKey)

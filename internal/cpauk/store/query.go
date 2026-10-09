@@ -53,6 +53,13 @@ func (s *SQLiteStore) Summary(ctx context.Context, query model.Query) (model.Sum
 	if err := s.validateQuery(&query, model.OperationSummary); err != nil {
 		return model.Summary{}, err
 	}
+	return s.cachedSummary(ctx, query)
+}
+
+func (s *SQLiteStore) summaryUncached(ctx context.Context, query model.Query) (model.Summary, error) {
+	if err := s.validateQuery(&query, model.OperationSummary); err != nil {
+		return model.Summary{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.db == nil {
@@ -246,6 +253,13 @@ func scanTotals(row *sql.Row) (totals, error) {
 }
 
 func (s *SQLiteStore) Timeseries(ctx context.Context, query model.Query) (model.Timeseries, error) {
+	if err := s.validateQuery(&query, model.OperationTimeseries); err != nil {
+		return model.Timeseries{}, err
+	}
+	return s.cachedTimeseries(ctx, query)
+}
+
+func (s *SQLiteStore) timeseriesUncached(ctx context.Context, query model.Query) (model.Timeseries, error) {
 	result, _, err := s.timeseriesWithOutcomes(ctx, query)
 	return result, err
 }
