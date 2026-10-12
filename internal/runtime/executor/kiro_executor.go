@@ -16,8 +16,10 @@ import (
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -158,32 +160,39 @@ func (e *KiroExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyaut
 	return updated, nil
 }
 
-func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusNotImplemented, msg: "kiro executor: compact is not supported"}
+		return resp, statusErr{code: http.StatusNotImplemented, msg: "kiro executor: compact is not supported"}
+	}
+	targetModel := thinking.ParseSuffix(req.Model).ModelName
+	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+	if upstreamModel := NormalizeKiroModelID(targetModel); upstreamModel != "" && upstreamModel != targetModel {
+		reporter.SetUpstreamModel(upstreamModel)
 	}
 	conversationID := executionConversationID(opts, req)
 	profile := authValue(auth, "profile_arn", "")
 	requestPayload := kiroRequestPayload(req, opts)
 	body, err := buildKiroPayload(req.Model, requestPayload, profile, conversationID)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return resp, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(auth), bytes.NewReader(body))
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return resp, err
 	}
-	if err := e.PrepareRequest(request, auth); err != nil {
-		return cliproxyexecutor.Response{}, err
+	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
+		return resp, errPrepare
 	}
-	response, err := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(request)
+	httpClient := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
+	response, err := httpClient.Do(request)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return resp, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		return cliproxyexecutor.Response{}, statusErr{
+		return resp, statusErr{
 			code:       response.StatusCode,
 			msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
 			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
@@ -191,7 +200,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	result, err := collectKiroEvents(response.Body, req.Model, requestPayload)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return resp, err
 	}
 	claudePayload := result.claudeResponse(req.Model)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -200,10 +209,17 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if len(out) == 0 {
 		out = claudePayload
 	}
+	reporter.Publish(ctx, result.usageDetail())
 	return cliproxyexecutor.Response{Payload: out, Headers: response.Header.Clone()}, nil
 }
 
-func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	targetModel := thinking.ParseSuffix(req.Model).ModelName
+	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+	if upstreamModel := NormalizeKiroModelID(targetModel); upstreamModel != "" && upstreamModel != targetModel {
+		reporter.SetUpstreamModel(upstreamModel)
+	}
 	profile := authValue(auth, "profile_arn", "")
 	requestPayload := kiroRequestPayload(req, opts)
 	body, err := buildKiroPayload(req.Model, requestPayload, profile, executionConversationID(opts, req))
@@ -214,10 +230,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return nil, err
 	}
-	if err := e.PrepareRequest(request, auth); err != nil {
-		return nil, err
+	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
+		return nil, errPrepare
 	}
-	response, err := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(request)
+	httpClient := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +247,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
 		}
 	}
+	response.Body = reporter.TrackGenerationBody(ctx, response.Body, "claude")
 	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var translateParam any
@@ -237,6 +255,12 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		defer close(out)
 		defer response.Body.Close()
 		events := newKiroEventAccumulator(req.Model, requestPayload)
+		publishFailure := func(streamErr error) {
+			if streamErr == nil {
+				streamErr = context.Canceled
+			}
+			reporter.PublishFailureWithDetail(ctx, events.usageDetail(), streamErr)
+		}
 		emit := func(payload []byte) bool {
 			if len(payload) == 0 {
 				return true
@@ -259,20 +283,24 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			},
 		})
 		if !emit(startPayload) {
+			publishFailure(ctx.Err())
 			return
 		}
-		if err := parseKiroEventStream(response.Body, func(eventName string, data map[string]any) bool { return emit(events.consume(eventName, data)) }); err != nil {
+		if errParse := parseKiroEventStream(response.Body, func(eventName string, data map[string]any) bool { return emit(events.consume(eventName, data)) }); errParse != nil {
+			publishFailure(errParse)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: err}:
+			case out <- cliproxyexecutor.StreamChunk{Err: errParse}:
 			case <-ctx.Done():
 			}
 			return
 		}
 		for _, payload := range events.finishSSE(req.Model) {
 			if !emit(payload) {
+				publishFailure(ctx.Err())
 				return
 			}
 		}
+		reporter.Publish(ctx, events.usageDetail())
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: response.Header.Clone(), Chunks: out}, nil
 }
@@ -477,6 +505,20 @@ func (a *kiroEventAccumulator) ensureOutputTokens() {
 	// deliberately rough fallback, never a claim of provider-exact billing.
 	joined := strings.Join(parts, "\n")
 	a.outputTokens = (len([]rune(joined)) + 3) / 4
+}
+
+func (a *kiroEventAccumulator) usageDetail() usage.Detail {
+	a.ensureOutputTokens()
+	inputTokens := int64(a.inputTokens)
+	outputTokens := int64(a.outputTokens)
+	totalTokens := inputTokens + outputTokens
+	return usage.Detail{
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		TotalTokens:    totalTokens,
+		TokenBreakdown: usage.NewIndependentTokenBreakdown(inputTokens, 0, 0, outputTokens, 0, totalTokens),
+		TokenQuality:   usage.TokenQualityEstimated,
+	}
 }
 
 func kiroDelta(value string, previous *string) string {

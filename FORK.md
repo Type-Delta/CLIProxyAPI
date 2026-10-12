@@ -1099,6 +1099,18 @@ The CPAMC Kiro login card offers AWS Builder ID or IAM Identity Center. Identity
 
 **Last updated:** 2026-10-12
 
+### DL034 - Kiro executor usage reporting
+
+Kiro now uses the shared executor usage reporter for both non-streaming and streaming requests. The completed event accumulator supplies its estimated input and output token counts to the usage record, which feeds analytics and per-key limits. Non-2xx and transport failures are tracked as failures, while streaming publishes only after the terminal SSE chunks have been emitted. The reporter's one-shot publish guard makes the terminal success or failure outcome the only record for the attempt.
+
+**Implementation evidence:** `internal/runtime/executor/kiro_executor.go` and `internal/runtime/executor/kiro_executor_usage_test.go`.
+
+The bundled CPAMC labels credit-billed Kiro allowances as credits with fractional amounts, shows the row percentage unrounded with the same formatter as the quota summary and timeline, and gives the Kiro timeline lane its monthly period so the current window draws a bar.
+
+**Recorded validation:** Kiro usage tests cover non-streaming and streaming success, a single stream record, and 429 failures. Live requests through an Identity Center credential produced one analytics event each (Claude and OpenAI-format, streaming and non-streaming), and the quota page showed matching credit percentages in the summary, row, and monthly timeline bar.
+
+**Last updated:** 2026-10-12
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
