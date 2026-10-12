@@ -98,6 +98,36 @@ func TestRangeDSTAndMonday(t *testing.T) {
 	}
 }
 
+func TestBucketerMatchesBucketBoundsAcrossDST(t *testing.T) {
+	for _, testCase := range []struct {
+		zone  string
+		width string
+		at    time.Time
+	}{
+		{zone: "America/New_York", width: "1d", at: time.Date(2026, 3, 8, 16, 0, 0, 0, time.UTC)},
+		{zone: "America/St_Johns", width: "1w", at: time.Date(2026, 11, 4, 16, 0, 0, 0, time.UTC)},
+		{zone: "Asia/Kolkata", width: "5m", at: time.Date(2026, 8, 12, 4, 17, 0, 0, time.UTC)},
+	} {
+		t.Run(testCase.zone+"/"+testCase.width, func(t *testing.T) {
+			bucketer, err := NewBucketer(testCase.zone, testCase.width)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotStart, gotEnd, err := bucketer.Bounds(testCase.at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStart, wantEnd, err := BucketBounds(testCase.at, testCase.zone, testCase.width)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !gotStart.Equal(wantStart) || !gotEnd.Equal(wantEnd) {
+				t.Fatalf("bucketer=%s..%s, wrapper=%s..%s", gotStart, gotEnd, wantStart, wantEnd)
+			}
+		})
+	}
+}
+
 func TestAddedCalendarRangesAcrossZones(t *testing.T) {
 	now := time.Date(2026, 11, 4, 15, 0, 0, 0, time.UTC)
 	for _, zone := range []string{"America/St_Johns", "Asia/Kolkata"} {

@@ -43,6 +43,7 @@ type SQLiteStore struct {
 	identityEpoch   string
 	currentSchema   int
 	retentionCutoff time.Time
+	historyCache    historyResultCache
 
 	pricingRefreshMu sync.Mutex
 	pricingFlight    *pricingRefreshFlight
@@ -197,6 +198,20 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 				return fmt.Errorf("backfill daily stats: %w", errBackfill)
 			}
 		}
+		// Migration 11 replaces the dimension-heavy cache with compact rows.
+		// Rebuild and convert request IDs inside the same transaction before the
+		// legacy tables are dropped, so an interrupted migration leaves the old
+		// cache intact and retryable.
+		if item.version == 11 {
+			if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("backfill compact 15-minute cache: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS analytics_15m_requests; DROP TABLE IF EXISTS analytics_15m"); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("drop legacy 15-minute cache: %w", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, checksum, applied_at_ns) VALUES (?, ?, ?, ?)", item.version, item.name, item.checksum, time.Now().UTC().UnixNano()); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", item.version, err)
@@ -205,6 +220,13 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 			return fmt.Errorf("commit migration %d: %w", item.version, err)
 		}
 		current = item.version
+	}
+	// Keep the existing schema version stable while upgrading databases created
+	// before the historical result cache. This idempotent DDL is safe for both
+	// fresh databases and existing v11 databases, and does not need a ledger
+	// entry because the table has no dependency on the rest of the schema.
+	if err := ensureHistoryGenerations(ctx, s.db); err != nil {
+		return err
 	}
 	s.currentSchema = current
 	fingerprint, err := model.IdentityKeyFingerprint(s.identityKey)
@@ -394,6 +416,7 @@ func (s *SQLiteStore) Close(ctx context.Context) error {
 	done := make(chan error, 1)
 	db := s.db
 	s.db = nil
+	s.historyCache.clear()
 	go func() { done <- db.Close() }()
 	select {
 	case err := <-done:

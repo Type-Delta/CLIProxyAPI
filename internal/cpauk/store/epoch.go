@@ -53,6 +53,7 @@ func (s *SQLiteStore) adopt(candidate *SQLiteStore) {
 	s.identityEpoch = candidate.identityEpoch
 	s.currentSchema = candidate.currentSchema
 	s.retentionCutoff = candidate.retentionCutoff
+	s.historyCache.clear()
 	candidate.db = nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
@@ -93,14 +94,42 @@ func (s *SQLiteStore) timingMetrics(ctx context.Context, query model.Query, perc
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]model.TimingMetric{}
-	for _, item := range []struct{ name, column, source string }{
+	items := []struct{ name, column, source string }{
 		{"e2e", "latency_ms", "observed"},
 		{"latency", "first_token_latency_ms", "observed_dispatch_to_first_token"},
 		{"provider_latency", "provider_latency_ms", "observed_dispatch_to_response"},
 		{"ttft", "time_to_first_token_ms", "observed"},
 		{"generation", "generation_time_ms", "observed_first_to_last_token"},
-	} {
+	}
+	result := map[string]model.TimingMetric{}
+	if !percentiles {
+		selects := make([]string, 0, len(items)*3)
+		for _, item := range items {
+			selects = append(selects, "COUNT("+item.column+")", "SUM("+item.column+")", "MAX("+item.column+")")
+		}
+		var values [5]struct {
+			count int64
+			total sql.NullInt64
+			max   sql.NullInt64
+		}
+		scanArgs := make([]any, 0, len(values)*3)
+		for index := range values {
+			scanArgs = append(scanArgs, &values[index].count, &values[index].total, &values[index].max)
+		}
+		if err := s.db.QueryRowContext(ctx, "SELECT "+strings.Join(selects, ",")+" FROM events "+where, args...).Scan(scanArgs...); err != nil {
+			return nil, fmt.Errorf("query analytics timing metrics: %w", err)
+		}
+		for index, item := range items {
+			metric := model.TimingMetric{Source: item.source, SampleCount: values[index].count}
+			if values[index].total.Valid {
+				metric.TotalMS = &values[index].total.Int64
+				metric.MaxMS = &values[index].max.Int64
+			}
+			result[item.name] = metric
+		}
+		return result, nil
+	}
+	for _, item := range items {
 		metric := model.TimingMetric{Source: item.source}
 		var total, maximum sql.NullInt64
 		filter := where + " AND " + item.column + " IS NOT NULL"
