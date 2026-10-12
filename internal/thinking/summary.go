@@ -60,7 +60,7 @@ func ExtractSummaryConfig(body []byte, format string) SummaryConfig {
 		if config, ok := responsesSummaryConfig(body, "reasoning.generate_summary"); ok {
 			return config
 		}
-	case "claude":
+	case "claude", "kiro":
 		// Anthropic only accepts display alongside active adaptive/manual thinking.
 		if !claudeThinkingAcceptsDisplay(body) {
 			return SummaryConfig{}
@@ -183,7 +183,7 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 	switch normalized {
 	case "openai":
 		body = applyOpenAIChatSummaryConfig(body, provider, enabled)
-	case "claude":
+	case "claude", "kiro":
 		// Anthropic documents display as invalid with thinking.type=disabled and
 		// requires it alongside adaptive or enabled thinking. Model defaults differ:
 		// Opus 5 and Sonnet 5 default to adaptive thinking; Fable/Mythos 5 are always

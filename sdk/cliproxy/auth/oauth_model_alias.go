@@ -484,7 +484,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return ""
 	case "vertex":
 		return "vertex"
-	case "claude":
+	case "claude", "kiro":
 		return "claude"
 	case "codex":
 		return "codex"

@@ -1051,6 +1051,22 @@ pre-existing legacy-backend probe failure on the local base.
 
 **Last updated:** 2026-10-12
 
+### DL030 - Kiro OAuth, Claude-compatible routing, and quota support
+
+CPA now treats Kiro/Amazon Q as a built-in OAuth provider. The native CLI login follows Kiro's official `app.kiro.dev/signin` portal, accepts the `awsidc` callback, starts AWS OIDC device authorization for the selected organization, polls for tokens, and persists both native camelCase and CPA snake_case credential shapes. Desktop/social refresh and AWS OIDC refresh are supported, with rotated refresh tokens and profile ARNs retained. The CLI also exposes `--kiro-login`.
+
+Kiro credentials register a native executor that translates OpenAI Responses and Claude Messages requests into Kiro `conversationState` payloads, discovers missing Identity Center profile ARNs through `ListAvailableProfiles`, sanitizes Codex JSON schemas, and caps runtime tool specifications at Kiro's current 16-tool limit. It sends AWS event-stream requests to `runtime.<region>.kiro.dev` for profiled accounts and the legacy `q.<region>.amazonaws.com` endpoint for profile-less Identity Center/Builder credentials, restores Claude-compatible streaming and non-streaming responses, and normalizes Claude model aliases such as `claude-sonnet-4-5-20250929` to Kiro's dotted IDs. Kiro does not return ordinary input/output token counts, so CPA estimates input tokens from the translated Claude request and output tokens from generated text, reasoning, and tool data while retaining explicit Kiro counts when a runtime variant supplies them. The stream adapter emits each Kiro event's `data:` record through CPA's Claude-to-OpenAI translators, preserves translator state across a complete stream, and emits terminal Responses events with the final response ID and output. Kiro participates in Claude model aliasing, thinking normalization, routing, and load balancing.
+
+CPAMC adds Kiro to the OAuth page, provider branding, auth-file grouping, and quota views. The quota adapter reads Kiro `getUsageLimits` data through the management API and renders included and free-trial request windows, subscription details, overages, and reset times. Profile ARNs are exposed as sanitized metadata only; credential files are never downloaded into the browser. The bundled management artifact is regenerated from CPAMC commit `d9d5138257a164c62f2826a2842fdfd39dd29622`.
+
+The CPAMC Kiro quota body uses the redesigned quota row layout and contributes its plan and request windows to the quota summary strip. GSR has no Kiro recovery probe, so like other providers without one, Kiro credentials without a cached reset timestamp are excluded under `greedy-soonest-recovery`.
+
+**Implementation evidence:** `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `web/management-center/src/{pages/OAuthPage.tsx,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.
+
+**Recorded validation:** Kiro auth and translator tests, focused executor/auth/service tests, the usage-estimation regression test, and the required `go build -o test-output ./cmd/server` pass. CPAMC type-check, tests (apart from the pre-existing legacy-backend diagnostic), ESLint, Vite build, and Dockerized `scripts/build-management-center.sh` pass. The full Go suite reaches all packages; its only failure is the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` compatibility test.
+
+**Last updated:** 2026-10-12
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

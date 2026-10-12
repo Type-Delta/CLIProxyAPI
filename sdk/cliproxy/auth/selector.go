@@ -1540,7 +1540,7 @@ func canonicalLCPProvider(provider string) string {
 		return "google"
 	case "codex", "openai":
 		return "openai"
-	case "claude", "anthropic":
+	case "claude", "kiro", "anthropic":
 		return "claude"
 	case "devin":
 		return "devin"

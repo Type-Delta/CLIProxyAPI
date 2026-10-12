@@ -138,6 +138,12 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "kiro":
+		// Kiro exposes Claude-compatible model IDs through its runtime API.
+		// Keep the model type as Claude so both Messages and Chat translations
+		// use the native Claude-compatible request/response formats.
+		models = registry.GetClaudeModels()
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		if authKind == "apikey" {
 			if entry := s.resolveConfigCodexKey(a); entry != nil {

@@ -599,7 +599,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	}
 
 	switch provider {
-	case "claude":
+	case "claude", "kiro":
 		return extractClaudeConfig(body)
 	case "gemini", "antigravity":
 		return extractGeminiConfig(body, provider)

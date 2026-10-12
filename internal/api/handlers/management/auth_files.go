@@ -713,6 +713,19 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
 	}
+	// Kiro's usage endpoint accepts an optional profile ARN. It is safe to
+	// expose this identifier, while access and refresh tokens remain server-side.
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "kiro") {
+		profileARN := strings.TrimSpace(authAttribute(auth, "profile_arn"))
+		if profileARN == "" && auth.Metadata != nil {
+			if value, ok := auth.Metadata["profile_arn"].(string); ok {
+				profileARN = strings.TrimSpace(value)
+			}
+		}
+		if profileARN != "" {
+			entry["profile_arn"] = profileARN
+		}
+	}
 	if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
 		if accountType != "" {
 			entry["account_type"] = accountType
