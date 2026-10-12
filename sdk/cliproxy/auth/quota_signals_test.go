@@ -328,6 +328,26 @@ func TestObserveResponseHeadersKeepsSnapshotWhenResponseCarriesNoSignal(t *testi
 	}
 }
 
+func TestKiroProbeRecoverySignalSurvivesSignalFreeObservation(t *testing.T) {
+	reset := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	auth := &Auth{
+		Provider: "kiro",
+		Quota: QuotaState{
+			ObservedAt: time.Now(),
+			Signals: map[string]string{
+				"monthly_reset_at": reset.Format(time.RFC3339),
+				"kiro_plan_type":   "KIRO PRO",
+			},
+		},
+	}
+	if auth.Quota.ObserveResponseHeadersForProvider("kiro", http.Header{"Content-Type": []string{"application/json"}}, time.Now()) {
+		t.Fatal("signal-free Kiro observation reported a change")
+	}
+	if got := RecoveryTimestampForAuth(auth, "claude-sonnet-4-5"); !got.Equal(reset) {
+		t.Fatalf("RecoveryTimestampForAuth() = %v, want %v", got, reset)
+	}
+}
+
 // ObservedAt must advance even when the watermark values are unchanged,
 // otherwise consumers cannot tell a fresh reading from a stale one.
 func TestObserveResponseHeadersAdvancesObservedAtOnRepeatedValues(t *testing.T) {
@@ -384,7 +404,7 @@ func TestProviderSupportsQuotaObservation(t *testing.T) {
 			t.Fatalf("provider %q unexpectedly supports quota observation", provider)
 		}
 	}
-	for _, provider := range []string{"codex", "claude", "devin", "CODEX", " Claude ", " Devin "} {
+	for _, provider := range []string{"codex", "claude", "devin", "kiro", "CODEX", " Claude ", " Devin ", " KIRO "} {
 		if !ProviderSupportsQuotaObservation(provider) {
 			t.Fatalf("provider %q unexpectedly excluded from quota observation", provider)
 		}

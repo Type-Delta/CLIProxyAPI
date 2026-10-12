@@ -170,6 +170,8 @@ func recoverySignalNames(provider, model string) []string {
 		}
 	case provider == "opencode-go" || (strings.Contains(provider, "opencode") && strings.Contains(provider, "go")):
 		return []string{"monthly_reset_at", "monthly_reset"}
+	case provider == "kiro":
+		return []string{"monthly_reset_at", "monthly_reset"}
 	default:
 		return []string{"weekly_reset_at", "weekly_reset", "monthly_reset_at", "monthly_reset"}
 	}

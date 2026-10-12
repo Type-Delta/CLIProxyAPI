@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
@@ -182,7 +183,11 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		return cliproxyexecutor.Response{}, statusErr{code: response.StatusCode, msg: fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data)))}
+		return cliproxyexecutor.Response{}, statusErr{
+			code:       response.StatusCode,
+			msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
+			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
+		}
 	}
 	result, err := collectKiroEvents(response.Body, req.Model, requestPayload)
 	if err != nil {
@@ -219,7 +224,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		response.Body.Close()
-		return nil, statusErr{code: response.StatusCode, msg: fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data)))}
+		return nil, statusErr{
+			code:       response.StatusCode,
+			msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
+			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
+		}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)

@@ -91,6 +91,18 @@ func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {
 		case "max", "ultra":
 			return GSRAllowanceMax, true
 		}
+	case "kiro":
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "kiro"))
+		switch normalized {
+		case "free", "unknown":
+			return GSRAllowanceUnknown, true
+		case "pro":
+			return GSRAllowancePro, true
+		case "pro+", "pro plus", "proplus":
+			return GSRAllowancePremium, true
+		case "power":
+			return GSRAllowanceMax, true
+		}
 	default:
 		if strings.Contains(normalized, "max") {
 			return GSRAllowanceMax, true

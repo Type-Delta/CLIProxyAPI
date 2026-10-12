@@ -1059,7 +1059,7 @@ Kiro credentials register a native executor that translates OpenAI Responses and
 
 CPAMC adds Kiro to the OAuth page, provider branding, auth-file grouping, and quota views. The quota adapter reads Kiro `getUsageLimits` data through the management API and renders included and free-trial request windows, subscription details, overages, and reset times. Profile ARNs are exposed as sanitized metadata only; credential files are never downloaded into the browser. The bundled management artifact is regenerated from CPAMC commit `d9d5138257a164c62f2826a2842fdfd39dd29622`.
 
-The CPAMC Kiro quota body uses the redesigned quota row layout and contributes its plan and request windows to the quota summary strip. GSR has no Kiro recovery probe, so like other providers without one, Kiro credentials without a cached reset timestamp are excluded under `greedy-soonest-recovery`.
+The CPAMC Kiro quota body uses the redesigned quota row layout and contributes its plan and request windows to the quota summary strip. A later follow-up (DL033) adds the Kiro GSR recovery probe; Kiro credentials without an available monthly reset timestamp are still excluded under `greedy-soonest-recovery`.
 
 **Implementation evidence:** `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `web/management-center/src/{pages/OAuthPage.tsx,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.
 
@@ -1084,6 +1084,18 @@ CPAUK keeps a bounded process-local LRU cache for complete historical Summary, T
 **Implementation evidence:** `internal/cpauk/store/history_cache.go`, `internal/cpauk/store/history_generation.go`, and the CPAUK query, write, retention, repricing, purge, restore, and epoch paths.
 
 **Recorded validation:** `go test ./internal/cpauk/...` and the required server build pass. On a 100,000-request fixture, a 90-day cached Summary fell from about 535ms cold to 5ms on a hit; an unrelated tail write kept the historical hit at about 5ms, while a late historical write forced a fresh read at about 563ms.
+
+**Last updated:** 2026-10-12
+
+### DL033 - Kiro GSR recovery, plan tier, Retry-After, and Identity Center login
+
+Kiro participates in greedy-soonest-recovery. The routing refresh probes `codewhisperer.<region>.amazonaws.com/getUsageLimits` with the credential region and optional profile ARN through the shared management quota cache, then persists the included breakdown's monthly `nextDateReset` as `monthly_reset_at` and the `subscriptionTitle` as `kiro_plan_type`. Kiro stays in the passive quota-observation set, so these probe signals survive Kiro responses that carry no quota headers. The plan title maps to GSR allowance tiers (Free neutral, Pro, Pro+ Premium, Power Max), and Kiro upstream errors carry a standard `Retry-After` delay to the cooldown policy.
+
+The CPAMC Kiro login card offers AWS Builder ID or IAM Identity Center. Identity Center sends the organization start URL and region to the existing `start_url`/`region` backend parameters and remembers them in browser storage; the Kiro callback hint shows its real `http://127.0.0.1/oauth/callback` redirect.
+
+**Implementation evidence:** `internal/api/handlers/management/usage_probe.go`, `sdk/cliproxy/auth/{conductor_selection,gsr_tier}.go`, `internal/runtime/executor/kiro_executor.go`, the CPAMC gitlink, and the bundled management assets.
+
+**Recorded validation:** focused Go and CPAMC tests pass. A live Identity Center login through the CPAMC callback flow produced a working credential; under `greedy-soonest-recovery` a real Claude request routed through it, and the probe stored the account's `KIRO POWER` plan and monthly reset.
 
 **Last updated:** 2026-10-12
 

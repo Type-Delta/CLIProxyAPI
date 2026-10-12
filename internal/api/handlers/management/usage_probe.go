@@ -12,15 +12,21 @@ import (
 	"sync"
 	"time"
 
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 const zaiUsageQuotaURL = "https://api.z.ai/api/monitor/usage/quota/limit"
 
 const usageProbeMaxConcurrency = 8
+
+var kiroUsageLimitsEndpoint = func(region string) string {
+	return fmt.Sprintf("https://codewhisperer.%s.amazonaws.com", strings.TrimSpace(region))
+}
 
 type zaiQuotaResponse struct {
 	Code    int  `json:"code"`
@@ -717,6 +723,86 @@ func parseCodexUsageWindowReset(window codexUsageWindowResponse) time.Time {
 	return time.Time{}
 }
 
+func kiroAuthValue(auth *coreauth.Auth, keys ...string) string {
+	if auth == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
+			return value
+		}
+	}
+	for _, key := range keys {
+		if value, ok := auth.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func kiroUsageLimitsURL(auth *coreauth.Auth) string {
+	region := kiroAuthValue(auth, "region")
+	if region == "" {
+		region = kiroauth.DefaultRegion
+	}
+	endpoint := strings.TrimRight(kiroUsageLimitsEndpoint(region), "/") + "/getUsageLimits"
+	parsedURL, errParseURL := url.Parse(endpoint)
+	if errParseURL != nil {
+		return ""
+	}
+	query := parsedURL.Query()
+	query.Set("origin", "AI_EDITOR")
+	query.Set("resourceType", "AGENTIC_REQUEST")
+	query.Set("isEmailRequired", "true")
+	if profileARN := kiroAuthValue(auth, "profile_arn", "profileArn"); profileARN != "" {
+		query.Set("profileArn", profileARN)
+	}
+	parsedURL.RawQuery = query.Encode()
+	return parsedURL.String()
+}
+
+// firstGJSON returns the first present field, mirroring the CPAMC Kiro
+// adapter's camelCase/PascalCase and precision-field fallbacks.
+func firstGJSON(value gjson.Result, paths ...string) gjson.Result {
+	for _, path := range paths {
+		if field := value.Get(path); field.Exists() && field.Type != gjson.Null {
+			return field
+		}
+	}
+	return gjson.Result{}
+}
+
+// parseKiroGSRQuota returns the included monthly request window and the
+// subscription title used by the GSR routing probe. Free-trial windows do not
+// describe the recurring allowance, so only the breakdown reset is used.
+func parseKiroGSRQuota(body []byte) ([]model.ProviderQuotaWindow, string, error) {
+	if !gjson.ValidBytes(body) {
+		return nil, "", fmt.Errorf("decode Kiro usage response: invalid JSON")
+	}
+	root := gjson.ParseBytes(body)
+	plan := strings.TrimSpace(firstGJSON(firstGJSON(root, "subscriptionInfo", "SubscriptionInfo"), "subscriptionTitle", "subscription_title", "title").String())
+	for _, breakdown := range firstGJSON(root, "usageBreakdownList", "UsageBreakdownList").Array() {
+		resetSeconds := firstGJSON(breakdown, "nextDateReset", "nextDateResetUnix").Float()
+		if resetSeconds <= 0 {
+			continue
+		}
+		resetAt := time.Unix(0, int64(resetSeconds*float64(time.Second))).UTC()
+		window := model.ProviderQuotaWindow{Label: "monthly", ResetsAt: &resetAt}
+		if limitField := firstGJSON(breakdown, "usageLimitWithPrecision", "usageLimit"); limitField.Exists() {
+			limit := int64(math.Max(0, math.Round(limitField.Float())))
+			used := int64(math.Max(0, math.Round(firstGJSON(breakdown, "currentUsageWithPrecision", "currentUsage").Float())))
+			remaining := max(limit-used, 0)
+			percent := 0.0
+			if limit > 0 {
+				percent = math.Min(100, float64(used)/float64(limit)*100)
+			}
+			window.Limit, window.Used, window.Remaining, window.Percent = &limit, &used, &remaining, &percent
+		}
+		return []model.ProviderQuotaWindow{window}, plan, nil
+	}
+	return nil, plan, fmt.Errorf("Kiro usage response has no usable monthly reset")
+}
+
 // RefreshQuotaForRouting synchronously refreshes and persists the provider
 // window used by greedy-soonest-recovery. It shares the management quota cache
 // with CPAMC requests, so a recent management read avoids another provider call.
@@ -727,6 +813,7 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	var (
 		windows []model.ProviderQuotaWindow
+		plan    string
 		err     error
 	)
 	switch {
@@ -739,6 +826,12 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	case provider == "zai" || strings.Contains(provider, "zai"):
 		windows, err = runUsageProbeWindows(ctx, h, auth, "Z.ai", zaiUsageQuotaURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
 			return parseZaiQuota(body, time.Now().UTC())
+		})
+	case provider == "kiro":
+		windows, err = runUsageProbeWindows(ctx, h, auth, "Kiro", kiroUsageLimitsURL(auth), func(body []byte) ([]model.ProviderQuotaWindow, error) {
+			parsedWindows, parsedPlan, errParseQuota := parseKiroGSRQuota(body)
+			plan = parsedPlan
+			return parsedWindows, errParseQuota
 		})
 	default:
 		return fmt.Errorf("provider %q has no quota recovery probe", provider)
@@ -758,6 +851,9 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	case provider == "codex":
 		signalName = "X-Codex-Primary-Reset-At"
 	case strings.Contains(provider, "opencode"):
+		preferredLabels = []string{"monthly"}
+		signalName = "monthly_reset_at"
+	case provider == "kiro":
 		preferredLabels = []string{"monthly"}
 		signalName = "monthly_reset_at"
 	}
@@ -781,6 +877,9 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 		quota.Signals = make(map[string]string)
 	}
 	quota.Signals[signalName] = resetAt.UTC().Format(time.RFC3339)
+	if provider == "kiro" && plan != "" {
+		quota.Signals["kiro_plan_type"] = plan
+	}
 	quota.ObservedAt = time.Now().UTC()
 	_, errUpdate := h.authManager.UpdateQuotaObservation(ctx, auth.ID, quota)
 	return errUpdate
