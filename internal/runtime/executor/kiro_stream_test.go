@@ -33,6 +33,70 @@ func TestKiroEventAccumulatorEstimatesUsageWhenKiroOmitsTokenCounts(t *testing.T
 	}
 }
 
+func TestKiroEventAccumulatorAccumulatesToolInputFragments(t *testing.T) {
+	accumulator := newKiroEventAccumulator("claude-sonnet-4-6", nil)
+	accumulator.consume("toolUseEvent", map[string]any{
+		"name":      "exec_command",
+		"toolUseId": "toolu_1",
+	})
+	accumulator.consume("toolUseEvent", map[string]any{
+		"name":      "exec_command",
+		"toolUseId": "toolu_1",
+		"input":     `{"command":"ec`,
+	})
+	accumulator.consume("toolUseEvent", map[string]any{
+		"name":      "exec_command",
+		"toolUseId": "toolu_1",
+		"input":     `ho hi"}`,
+	})
+	accumulator.consume("toolUseEvent", map[string]any{
+		"name":      "exec_command",
+		"toolUseId": "toolu_1",
+		"stop":      true,
+	})
+
+	var response struct {
+		Content []struct {
+			Type  string         `json:"type"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(accumulator.claudeResponse("claude-sonnet-4-6"), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use block", response.Content)
+	}
+	if got := response.Content[0].Input["command"]; got != "echo hi" {
+		t.Fatalf("tool input command = %#v, want %q", got, "echo hi")
+	}
+}
+
+func TestKiroEventAccumulatorDefaultsMissingToolInputToObject(t *testing.T) {
+	accumulator := newKiroEventAccumulator("claude-sonnet-4-6", nil)
+	accumulator.consume("toolUseEvent", map[string]any{
+		"name":      "list_files",
+		"toolUseId": "toolu_2",
+		"stop":      true,
+	})
+
+	var response struct {
+		Content []struct {
+			Type  string         `json:"type"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(accumulator.claudeResponse("claude-sonnet-4-6"), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v, want one tool_use block", response.Content)
+	}
+	if response.Content[0].Input == nil {
+		t.Fatal("missing tool input object")
+	}
+}
+
 func TestEmitTranslatedKiroSSEUsesDataLines(t *testing.T) {
 	out := make(chan cliproxyexecutor.StreamChunk, 2)
 	var param any

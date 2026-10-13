@@ -1115,6 +1115,16 @@ The bundled CPAMC labels credit-billed Kiro allowances as credits with fractiona
 
 **Last updated:** 2026-10-12
 
+### DL035 - Kiro streamed tool-input reconstruction
+
+Kiro `toolUseEvent` frames stream the tool input as JSON string fragments and terminate with a `stop` frame that may omit `input`. The executor now aggregates fragments by `toolUseId`, parses complete object inputs before emitting Claude `tool_use` blocks, and defaults an omitted input to an empty object. Malformed or non-object provider values are preserved as strings rather than emitting `null`, which keeps Claude Code's tool-input contract valid for both buffered and SSE responses.
+
+**Implementation evidence:** `internal/runtime/executor/kiro_executor.go` and `internal/runtime/executor/kiro_stream_test.go`.
+
+**Recorded validation:** the complete executor package tests and disposable server build pass. Regression tests cover fragmented JSON tool inputs and terminal tool events with no input.
+
+**Last updated:** 2026-10-13
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

@@ -373,10 +373,16 @@ func claudeSSE(event string, payload map[string]any) []byte {
 	return []byte("event: " + event + "\ndata: " + string(data) + "\n\n")
 }
 
+type kiroToolUse struct {
+	id, name  string
+	input     any
+	fragments strings.Builder
+}
+
 type kiroEventAccumulator struct {
 	model, text, thinking     string
 	inputTokens, outputTokens int
-	toolUses                  []map[string]any
+	toolUses                  []kiroToolUse
 	lastText                  string
 	lastThinking              string
 	textStarted               bool
@@ -414,16 +420,34 @@ func (a *kiroEventAccumulator) consume(eventName string, data map[string]any) []
 			return claudeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "thinking_delta", "thinking": delta}})
 		}
 	case "toolUseEvent":
-		if name, _ := data["name"].(string); name != "" {
-			input := data["input"]
-			id, _ := data["toolUseId"].(string)
-			for _, existing := range a.toolUses {
-				if existing["id"] == id && existing["name"] == name {
-					existing["input"] = input
-					return nil
-				}
+		name, _ := data["name"].(string)
+		id, _ := data["toolUseId"].(string)
+		if name == "" && id == "" {
+			return nil
+		}
+		index := -1
+		for candidate, existing := range a.toolUses {
+			if id != "" && existing.id == id {
+				index = candidate
+				break
 			}
-			a.toolUses = append(a.toolUses, map[string]any{"id": id, "name": name, "input": input})
+		}
+		if index < 0 {
+			a.toolUses = append(a.toolUses, kiroToolUse{id: id, name: name, input: map[string]any{}})
+			index = len(a.toolUses) - 1
+		} else if name != "" {
+			a.toolUses[index].name = name
+		}
+		if rawInput, ok := data["input"]; ok && rawInput != nil {
+			switch input := rawInput.(type) {
+			case string:
+				a.toolUses[index].fragments.WriteString(input)
+			default:
+				a.toolUses[index].input = input
+			}
+		}
+		if stop, _ := data["stop"].(bool); stop {
+			a.finalizeToolInput(index)
 		}
 	case "meteringEvent":
 		// Some Kiro variants expose token fields here. The standard runtime
@@ -439,7 +463,39 @@ func (a *kiroEventAccumulator) consume(eventName string, data map[string]any) []
 	}
 	return nil
 }
+func (a *kiroEventAccumulator) finalizeToolInput(index int) {
+	if index < 0 || index >= len(a.toolUses) {
+		return
+	}
+	tool := &a.toolUses[index]
+	fragment := strings.TrimSpace(tool.fragments.String())
+	if fragment == "" {
+		if tool.input == nil {
+			tool.input = map[string]any{}
+		}
+		return
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(fragment), &decoded); err == nil {
+		switch decoded.(type) {
+		case map[string]any, string:
+			tool.input = decoded
+			return
+		}
+	}
+	// Preserve malformed or non-object provider input as a string. Claude Code
+	// accepts string tool inputs, while null/array/number values are rejected.
+	tool.input = fragment
+}
+
+func (a *kiroEventAccumulator) finalizeToolInputs() {
+	for index := range a.toolUses {
+		a.finalizeToolInput(index)
+	}
+}
+
 func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
+	a.finalizeToolInputs()
 	a.ensureOutputTokens()
 	var out [][]byte
 	index := 0
@@ -447,8 +503,9 @@ func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 		out = append(out, claudeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}))
 		index++
 	}
-	for _, tool := range a.toolUses {
-		out = append(out, claudeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": tool["id"], "name": tool["name"], "input": tool["input"]}}))
+	for toolIndex := range a.toolUses {
+		tool := &a.toolUses[toolIndex]
+		out = append(out, claudeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": tool.id, "name": tool.name, "input": tool.input}}))
 		out = append(out, claudeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}))
 		index++
 	}
@@ -460,13 +517,15 @@ func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 	return out
 }
 func (a *kiroEventAccumulator) claudeResponse(model string) []byte {
+	a.finalizeToolInputs()
 	a.ensureOutputTokens()
 	content := []map[string]any{}
 	if a.text != "" {
 		content = append(content, map[string]any{"type": "text", "text": a.text})
 	}
-	for _, tool := range a.toolUses {
-		content = append(content, map[string]any{"type": "tool_use", "id": tool["id"], "name": tool["name"], "input": tool["input"]})
+	for toolIndex := range a.toolUses {
+		tool := &a.toolUses[toolIndex]
+		content = append(content, map[string]any{"type": "tool_use", "id": tool.id, "name": tool.name, "input": tool.input})
 	}
 	stop := "end_turn"
 	if len(a.toolUses) > 0 {
@@ -487,8 +546,9 @@ func (a *kiroEventAccumulator) ensureOutputTokens() {
 	if a.thinking != "" {
 		parts = append(parts, a.thinking)
 	}
-	for _, tool := range a.toolUses {
-		if encoded, err := json.Marshal(tool); err == nil {
+	for toolIndex := range a.toolUses {
+		tool := &a.toolUses[toolIndex]
+		if encoded, err := json.Marshal(map[string]any{"id": tool.id, "name": tool.name, "input": tool.input}); err == nil {
 			parts = append(parts, string(encoded))
 		}
 	}
