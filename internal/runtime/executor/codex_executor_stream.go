@@ -70,7 +70,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = normalizeCodexInstructions(body, preserveNativeOutput)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-		body = ensureImageGenerationTool(body, baseModel, auth)
+		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)

@@ -59,7 +59,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body = normalizeCodexInstructions(body, nativeRequest)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-		body = ensureImageGenerationTool(body, baseModel, auth)
+		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex websockets executor", body, isCompat)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)

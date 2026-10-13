@@ -14,7 +14,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestCodexExecutorExecuteResponsesLiteHeaderInjectsImageGenerationTool(t *testing.T) {
+func TestCodexExecutorExecuteResponsesLiteHeaderSkipsImageGenerationTool(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, errRead := io.ReadAll(r.Body)
@@ -49,8 +49,8 @@ func TestCodexExecutorExecuteResponsesLiteHeaderInjectsImageGenerationTool(t *te
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
-		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, gotBody)
+	if tools := gjson.GetBytes(gotBody, "tools"); tools.Exists() {
+		t.Fatalf("unexpected tools in responses-lite upstream payload: %s", tools.Raw)
 	}
 	parallelToolCalls := gjson.GetBytes(gotBody, "parallel_tool_calls")
 	if !parallelToolCalls.Exists() || parallelToolCalls.Bool() {
@@ -107,7 +107,7 @@ func TestCodexExecutorExecuteStreamResponsesLiteHeaderForcesParallelToolCallsFal
 
 func TestEnsureImageGenerationTool_ResponsesLiteMetadataInjectsTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"},"input":[{"role":"user","content":"hello"}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil, nil)
 
 	if got := gjson.GetBytes(result, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, result)
@@ -116,25 +116,27 @@ func TestEnsureImageGenerationTool_ResponsesLiteMetadataInjectsTool(t *testing.T
 
 func TestEnsureImageGenerationTool_ResponsesLiteBooleanMetadataInjectsTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":true},"input":"hello"}`)
-	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil, nil)
 
 	if got := gjson.GetBytes(result, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, result)
 	}
 }
 
-func TestEnsureImageGenerationTool_ResponsesLiteHeaderInjectsTool(t *testing.T) {
+func TestEnsureImageGenerationTool_ResponsesLiteHeaderSkipsTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","input":"hello"}`)
-	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil)
+	headers := make(http.Header)
+	headers.Set(codexResponsesLiteHeader, "true")
+	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil, headers)
 
-	if got := gjson.GetBytes(result, "tools.0.type").String(); got != "image_generation" {
-		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, result)
+	if tools := gjson.GetBytes(result, "tools"); tools.Exists() {
+		t.Fatalf("responses-lite request should not get tools: %s", result)
 	}
 }
 
 func TestEnsureImageGenerationTool_ResponsesLiteFalseMetadataStillInjectsTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"false"},"input":"hello"}`)
-	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.6-sol", nil, nil)
 
 	if got := gjson.GetBytes(result, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, result)
@@ -143,7 +145,7 @@ func TestEnsureImageGenerationTool_ResponsesLiteFalseMetadataStillInjectsTool(t 
 
 func TestEnsureImageGenerationTool_NoTools(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","input":"draw a cat"}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools")
 	if !tools.IsArray() {
@@ -163,7 +165,7 @@ func TestEnsureImageGenerationTool_NoTools(t *testing.T) {
 
 func TestEnsureImageGenerationTool_ExistingToolsWithoutImageGen(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"function","name":"get_weather","parameters":{}}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools")
 	arr := tools.Array()
@@ -180,7 +182,7 @@ func TestEnsureImageGenerationTool_ExistingToolsWithoutImageGen(t *testing.T) {
 
 func TestEnsureImageGenerationTool_AlreadyPresent(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","output_format":"webp"},{"type":"function","name":"f1"}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools")
 	arr := tools.Array()
@@ -194,7 +196,7 @@ func TestEnsureImageGenerationTool_AlreadyPresent(t *testing.T) {
 
 func TestEnsureImageGenerationTool_ImageGenNamespaceDoesNotInjectTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen","parameters":{}}]}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	if string(result) != string(body) {
 		t.Fatalf("expected body to be unchanged, got %s", string(result))
@@ -203,7 +205,7 @@ func TestEnsureImageGenerationTool_ImageGenNamespaceDoesNotInjectTool(t *testing
 
 func TestEnsureImageGenerationTool_FlattenedImageGenFunctionDoesNotInjectTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"function","name":"image_gen.imagegen","parameters":{}}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	if string(result) != string(body) {
 		t.Fatalf("expected body to be unchanged, got %s", string(result))
@@ -212,7 +214,7 @@ func TestEnsureImageGenerationTool_FlattenedImageGenFunctionDoesNotInjectTool(t 
 
 func TestEnsureImageGenerationTool_SimilarNamespaceStillInjectsTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"namespace","name":"image_tools","tools":[{"type":"function","name":"imagegen","parameters":{}}]}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools").Array()
 	if len(tools) != 2 {
@@ -225,7 +227,7 @@ func TestEnsureImageGenerationTool_SimilarNamespaceStillInjectsTool(t *testing.T
 
 func TestEnsureImageGenerationTool_EmptyToolsArray(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools")
 	arr := tools.Array()
@@ -239,7 +241,7 @@ func TestEnsureImageGenerationTool_EmptyToolsArray(t *testing.T) {
 
 func TestEnsureImageGenerationTool_WebSearchAndImageGen(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search"}]}`)
-	result := ensureImageGenerationTool(body, "gpt-5.4", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.4", nil, nil)
 
 	tools := gjson.GetBytes(result, "tools")
 	arr := tools.Array()
@@ -256,7 +258,7 @@ func TestEnsureImageGenerationTool_WebSearchAndImageGen(t *testing.T) {
 
 func TestEnsureImageGenerationTool_GPT53CodexSparkDoesNotInjectTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.3-codex-spark","input":"draw a cat"}`)
-	result := ensureImageGenerationTool(body, "gpt-5.3-codex-spark", nil)
+	result := ensureImageGenerationTool(body, "gpt-5.3-codex-spark", nil, nil)
 
 	if string(result) != string(body) {
 		t.Fatalf("expected body to be unchanged, got %s", string(result))
@@ -272,7 +274,7 @@ func TestEnsureImageGenerationTool_FreeCodexAuthDoesNotInjectTool(t *testing.T) 
 		Provider:   "codex",
 		Attributes: map[string]string{"plan_type": "free"},
 	}
-	result := ensureImageGenerationTool(body, "gpt-5.4", freeAuth)
+	result := ensureImageGenerationTool(body, "gpt-5.4", freeAuth, nil)
 
 	if string(result) != string(body) {
 		t.Fatalf("expected body to be unchanged, got %s", string(result))

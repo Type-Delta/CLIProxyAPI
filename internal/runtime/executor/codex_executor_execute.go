@@ -62,7 +62,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-		body = ensureImageGenerationTool(body, baseModel, auth)
+		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)

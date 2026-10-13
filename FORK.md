@@ -949,20 +949,23 @@ removed afterward.
 
 **Last updated:** 2026-09-24
 
-### DL026 - Image generation tool injection covers responses-lite requests
+### DL026 - Image generation tool injection covers metadata-only responses-lite requests
 
-The Codex executor injects the built-in `image_generation` tool into every
-eligible Codex upstream request, including requests that carry the responses-lite
-websocket marker (`X-OpenAI-Internal-Codex-Responses-Lite` header or the mirrored
-`client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`
-field). The previous exclusion assumed Codex Desktop clients always bring their
-own image tool; third-party agents that connect over the websocket transport
-without declaring one received no image capability even with
-`disable-image-generation: false`, because the executor skipped injection for
-every responses-lite request. A live probe against the ChatGPT Codex websocket
-endpoint with CPA's exact handshake and `response.create` frame confirmed the
-lite protocol accepts the built-in tool and returns `image_generation_call`
-output, so the exclusion is removed.
+The Codex executor injects the built-in `image_generation` tool into eligible
+Codex upstream requests that carry the responses-lite marker only in
+`client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`.
+Codex CLI uses that form over the websocket transport, and its handshake has no
+lite header. The previous exclusion skipped every responses-lite request, so
+websocket agents that did not declare their own image tool got no image
+capability, even with `disable-image-generation: false`.
+
+Requests that carry the `X-OpenAI-Internal-Codex-Responses-Lite: true` header
+still skip injection. CPA forwards that header upstream, and upstream then
+rejects any built-in tool with `400 unsupported_value` ("only supports function
+tools, custom tools, and client-executed tool search"). Codex CLI 0.162.1 sends
+the header on HTTP turns for models whose metadata has `use_responses_lite`
+(for example `gpt-6.1-sol`). An earlier version of this entry injected the tool
+for header requests too, and every HTTP turn from those clients failed.
 
 Clients that declare their own `image_gen` namespace tool are still detected and
 skip injection, `spark` models and free-plan credentials still skip injection,
@@ -976,17 +979,18 @@ and `/responses/compact` requests remain tool-free.
 `internal/runtime/executor/codex_executor_imagegen_test.go`, and
 `internal/runtime/executor/codex_websockets_executor_test.go`.
 
-**Recorded validation:** focused executor tests pass for responses-lite header
-and metadata injection, existing-tool detection, free-plan and spark skips,
-compact requests without the tool, and responses-lite
-`parallel_tool_calls` normalization. `go build ./cmd/server` and
-`go vet ./internal/runtime/executor` pass. The full `go test ./...` failure set
-is unchanged from the pre-change baseline (96 baseline failures versus 95 with
-this change; no new failures, and the surviving failures are environment-bound
-cpauk/SQLite, pricing-discovery, media-relay, and one flaky antigravity
-transport test that fails identically without this change).
+**Recorded validation:** focused executor tests cover header skip, metadata
+injection, existing-tool detection, free-plan and spark skips, compact requests
+without the tool, and responses-lite `parallel_tool_calls` normalization. The
+header-skip tests fail when the guard is removed. `go test ./internal/runtime/executor`
+and `go vet ./internal/runtime/executor` pass. Live runs on 2026-10-13 used Codex
+CLI 0.162.1 through a local CPA with a ChatGPT Pro Lite credential. Over HTTP,
+the request carried the lite header upstream with no injected tool, and it
+completed (the previous build returned the 400 above). Over websocket, the
+request carried metadata only with `image_generation` injected, and it also
+completed.
 
-**Last updated:** 2026-09-30
+**Last updated:** 2026-10-13
 
 ### DL027 - Quota report persistence releases the manager lock during store I/O
 

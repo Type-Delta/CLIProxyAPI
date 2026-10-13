@@ -363,9 +363,14 @@ func isImageGenerationFunctionTool(tool gjson.Result) bool {
 	return false
 }
 
-// ensureImageGenerationTool injects the built-in image tool, including for
-// responses-lite requests, unless the client already declares an image tool.
-func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth) []byte {
+// ensureImageGenerationTool injects the built-in image tool unless the client
+// already declares one. Requests carrying the responses-lite header are skipped
+// because upstream rejects built-in tools when that header is forwarded; the
+// client_metadata mirror alone does not trigger that check.
+func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header) []byte {
+	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
+		return body
+	}
 	if strings.HasSuffix(baseModel, "spark") {
 		return body
 	}
