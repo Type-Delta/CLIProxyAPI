@@ -9,11 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// Current Kiro runtime requests with more than 16 toolSpecification entries
-// fail with REQUEST_BODY_INVALID. Keep the first stable tools so Codex's core
-// command and interaction tools remain available.
-const maxKiroTools = 16
-
 var kiroModelVersion = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku)-\d+)[._-](\d+)(?:[-_].*)?$`)
 
 // NormalizeKiroModelID converts public Claude model aliases to the dotted IDs
@@ -255,11 +250,16 @@ func kiroContent(raw any) (string, []map[string]any, []map[string]any) {
 			}
 		case "tool_result":
 			id, _ := block["tool_use_id"].(string)
-			resultText, _, _ := kiroContent(block["content"])
+			resultText, resultImages, _ := kiroContent(block["content"])
+			images = append(images, resultImages...)
 			if resultText == "" {
 				resultText = "(empty result)"
 			}
-			results = append(results, map[string]any{"content": []map[string]string{{"text": resultText}}, "status": "success", "toolUseId": id})
+			status := "success"
+			if isError, _ := block["is_error"].(bool); isError {
+				status = "error"
+			}
+			results = append(results, map[string]any{"content": []map[string]string{{"text": resultText}}, "status": status, "toolUseId": id})
 		}
 	}
 	return text.String(), images, results
@@ -282,9 +282,6 @@ func kiroTools(raw any) []map[string]any {
 	items, _ := raw.([]any)
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		if len(out) >= maxKiroTools {
-			break
-		}
 		tool, ok := item.(map[string]any)
 		if !ok {
 			continue

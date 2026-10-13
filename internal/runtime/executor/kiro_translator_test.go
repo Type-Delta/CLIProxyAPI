@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -49,6 +51,68 @@ func TestBuildKiroPayloadConvertsClaudeMessages(t *testing.T) {
 	}
 	if _, ok := current["userInputMessageContext"]; !ok {
 		t.Fatal("current tool results missing")
+	}
+}
+
+func TestBuildKiroPayloadPreservesToolResultErrorsAndImages(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[
+		{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":[
+			{"type":"text","text":"command failed"},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}
+		]}
+	]}]}`)
+	payload, err := buildKiroPayload("claude-sonnet-4-6", body, "", "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := gjson.GetBytes(payload, "conversationState.currentMessage.userInputMessage")
+	if got := input.Get("userInputMessageContext.toolResults.0.status").String(); got != "error" {
+		t.Fatalf("tool result status = %q, want error: %s", got, payload)
+	}
+	if got := input.Get("userInputMessageContext.toolResults.0.content.0.text").String(); got != "command failed" {
+		t.Fatalf("tool result text = %q, want command failed: %s", got, payload)
+	}
+	if got := input.Get("images.0.format").String(); got != "png" {
+		t.Fatalf("tool result image format = %q, want png: %s", got, payload)
+	}
+	if got := input.Get("images.0.source.bytes").String(); got != "AA==" {
+		t.Fatalf("tool result image bytes = %q, want AA==: %s", got, payload)
+	}
+}
+
+func TestBuildKiroPayloadPreservesAllNamedTools(t *testing.T) {
+	for _, count := range []int{16, 17, 106} {
+		t.Run(fmt.Sprintf("%d_tools", count), func(t *testing.T) {
+			tools := make([]any, count)
+			for index := range tools {
+				tools[index] = map[string]any{
+					"name":         fmt.Sprintf("tool_%d", index),
+					"input_schema": map[string]any{"type": "object"},
+				}
+			}
+			body, errMarshal := json.Marshal(map[string]any{
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+				"tools":    tools,
+			})
+			if errMarshal != nil {
+				t.Fatal(errMarshal)
+			}
+			payload, errBuild := buildKiroPayload("claude-sonnet-4-6", body, "", "conversation")
+			if errBuild != nil {
+				t.Fatal(errBuild)
+			}
+			toolsPath := "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools"
+			if got := gjson.GetBytes(payload, toolsPath+".#").Int(); got != int64(count) {
+				t.Fatalf("tool count = %d, want %d: %s", got, count, payload)
+			}
+			if first := gjson.GetBytes(payload, toolsPath+".0.toolSpecification.name").String(); first != "tool_0" {
+				t.Fatalf("first tool = %q, want tool_0", first)
+			}
+			last := fmt.Sprintf("%s.%d.toolSpecification.name", toolsPath, count-1)
+			if got := gjson.GetBytes(payload, last).String(); got != fmt.Sprintf("tool_%d", count-1) {
+				t.Fatalf("last tool = %q, want tool_%d", got, count-1)
+			}
+		})
 	}
 }
 
@@ -122,16 +186,6 @@ func TestKiroToolsSanitizeCodexSchemas(t *testing.T) {
 	properties := schema["properties"].(map[string]any)
 	if _, ok := properties["cmd"].(map[string]any)["additionalProperties"]; ok {
 		t.Fatal("nested additionalProperties was not removed")
-	}
-}
-
-func TestKiroToolsCapsRuntimeToolLimit(t *testing.T) {
-	raw := make([]any, maxKiroTools+3)
-	for i := range raw {
-		raw[i] = map[string]any{"name": fmt.Sprintf("tool_%d", i), "description": "tool", "input_schema": map[string]any{"type": "object"}}
-	}
-	if got := len(kiroTools(raw)); got != maxKiroTools {
-		t.Fatalf("kiroTools() returned %d tools, want %d", got, maxKiroTools)
 	}
 }
 

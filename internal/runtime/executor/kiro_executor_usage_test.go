@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -174,9 +175,13 @@ func kiroTestEventFrame(t *testing.T, eventName string, payload map[string]any) 
 	frame := make([]byte, 12, totalLength)
 	binary.BigEndian.PutUint32(frame[0:4], uint32(totalLength))
 	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headers)))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
 	frame = append(frame, headers...)
 	frame = append(frame, data...)
-	frame = append(frame, 0, 0, 0, 0)
+	messageCRC := crc32.ChecksumIEEE(frame)
+	var crc [4]byte
+	binary.BigEndian.PutUint32(crc[:], messageCRC)
+	frame = append(frame, crc[:]...)
 	return frame
 }
 

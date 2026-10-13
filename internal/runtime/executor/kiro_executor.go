@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"strings"
@@ -24,8 +25,11 @@ import (
 )
 
 const (
-	kiroUserAgent     = "aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-cpa"
-	kiroUserAgentHint = "aws-sdk-js/1.0.27 KiroIDE-0.7.45-cpa"
+	kiroUserAgent       = "aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-cpa"
+	kiroUserAgentHint   = "aws-sdk-js/1.0.27 KiroIDE-0.7.45-cpa"
+	maxKiroFrameSize    = 16 << 20
+	maxKiroFrameHeaders = 128 << 10
+	maxKiroFramePayload = 16 << 20
 )
 
 // KiroExecutor sends Claude-compatible requests to the Kiro runtime endpoint.
@@ -177,6 +181,8 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
+	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), targetModel, "kiro", "", requestPayload, req, opts)
+	body = finalizePayload(body)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(auth), bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -226,6 +232,8 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return nil, err
 	}
+	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), targetModel, "kiro", "", requestPayload, req, opts)
+	body = finalizePayload(body)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(auth), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -385,7 +393,8 @@ type kiroEventAccumulator struct {
 	toolUses                  []kiroToolUse
 	lastText                  string
 	lastThinking              string
-	textStarted               bool
+	activeBlock               string
+	nextBlockIndex            int
 }
 
 func newKiroEventAccumulator(model string, requestPayload []byte) *kiroEventAccumulator {
@@ -404,21 +413,18 @@ func (a *kiroEventAccumulator) consume(eventName string, data map[string]any) []
 		delta := kiroDelta(value, &a.lastText)
 		a.text += delta
 		if delta != "" {
-			payload := claudeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": delta}})
-			if !a.textStarted {
-				a.textStarted = true
-				start := claudeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
-				return append(start, payload...)
-			}
-			return payload
+			payload := a.openStreamBlock("text")
+			return append(payload, claudeSSE("content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": a.textBlockIndex(), "delta": map[string]any{"type": "text_delta", "text": delta},
+			})...)
 		}
 	case "reasoningContentEvent":
 		value, _ := data["text"].(string)
 		delta := kiroDelta(value, &a.lastThinking)
 		a.thinking += delta
-		if delta != "" {
-			return claudeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "thinking_delta", "thinking": delta}})
-		}
+		// Kiro does not provide Anthropic-compatible thinking signatures. Keep
+		// reasoning for usage accounting, but do not emit unsigned thinking
+		// blocks that Claude Code will reject.
 	case "toolUseEvent":
 		name, _ := data["name"].(string)
 		id, _ := data["toolUseId"].(string)
@@ -498,14 +504,22 @@ func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 	a.finalizeToolInputs()
 	a.ensureOutputTokens()
 	var out [][]byte
-	index := 0
-	if a.textStarted {
-		out = append(out, claudeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}))
-		index++
+	index := a.nextBlockIndex
+	if a.activeBlock != "" {
+		out = append(out, a.closeActiveBlock())
+		index = a.nextBlockIndex
 	}
 	for toolIndex := range a.toolUses {
 		tool := &a.toolUses[toolIndex]
-		out = append(out, claudeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": tool.id, "name": tool.name, "input": tool.input}}))
+		// Claude Code does not preserve tool arguments placed directly in
+		// content_block_start. Emit an empty start block and replay the
+		// finalized arguments through the standard JSON delta event.
+		out = append(out, claudeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": tool.id, "name": tool.name, "input": map[string]any{}}}))
+		inputJSON, errMarshal := json.Marshal(tool.input)
+		if errMarshal != nil || len(inputJSON) == 0 || string(inputJSON) == "null" {
+			inputJSON = []byte(`{}`)
+		}
+		out = append(out, claudeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(inputJSON)}}))
 		out = append(out, claudeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}))
 		index++
 	}
@@ -515,6 +529,35 @@ func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 	}
 	out = append(out, claudeSSE("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": a.outputTokens}}), claudeSSE("message_stop", map[string]any{"type": "message_stop"}))
 	return out
+}
+
+func (a *kiroEventAccumulator) textBlockIndex() int { return a.nextBlockIndex - 1 }
+
+func (a *kiroEventAccumulator) openStreamBlock(kind string) []byte {
+	if a.activeBlock == kind {
+		return nil
+	}
+	var out []byte
+	if a.activeBlock != "" {
+		out = append(out, a.closeActiveBlock()...)
+	}
+	index := a.nextBlockIndex
+	a.nextBlockIndex++
+	content := map[string]any{"type": kind, "text": ""}
+	a.activeBlock = kind
+	out = append(out, claudeSSE("content_block_start", map[string]any{
+		"type": "content_block_start", "index": index, "content_block": content,
+	})...)
+	return out
+}
+
+func (a *kiroEventAccumulator) closeActiveBlock() []byte {
+	if a.activeBlock == "" {
+		return nil
+	}
+	index := a.nextBlockIndex - 1
+	a.activeBlock = ""
+	return claudeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
 }
 func (a *kiroEventAccumulator) claudeResponse(model string) []byte {
 	a.finalizeToolInputs()
@@ -625,40 +668,68 @@ func collectKiroEvents(body io.Reader, model string, requestPayload []byte) (*ki
 }
 
 func parseKiroEventStream(body io.Reader, callback func(string, map[string]any) bool) error {
+	sawEvent := false
 	for {
 		prelude := make([]byte, 12)
 		_, err := io.ReadFull(body, prelude)
 		if err == io.EOF {
+			if !sawEvent {
+				return fmt.Errorf("Kiro stream ended without events")
+			}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		totalLength := int(binary.BigEndian.Uint32(prelude[:4]))
-		headersLength := int(binary.BigEndian.Uint32(prelude[4:8]))
-		if totalLength < 16 || headersLength > totalLength-16 {
+		if crc32.ChecksumIEEE(prelude[:8]) != binary.BigEndian.Uint32(prelude[8:12]) {
+			return fmt.Errorf("invalid Kiro event prelude CRC")
+		}
+		totalLengthValue := binary.BigEndian.Uint32(prelude[:4])
+		headersLengthValue := binary.BigEndian.Uint32(prelude[4:8])
+		if totalLengthValue < 16 || totalLengthValue > maxKiroFrameSize || headersLengthValue > maxKiroFrameHeaders || headersLengthValue > totalLengthValue-16 || totalLengthValue-headersLengthValue-16 > maxKiroFramePayload {
 			return fmt.Errorf("invalid Kiro event frame lengths")
 		}
+		totalLength := int(totalLengthValue)
+		headersLength := int(headersLengthValue)
 		remaining := make([]byte, totalLength-12)
 		if _, err = io.ReadFull(body, remaining); err != nil {
 			return err
 		}
+		messageWithoutCRC := make([]byte, 0, len(prelude)+len(remaining)-4)
+		messageWithoutCRC = append(messageWithoutCRC, prelude...)
+		messageWithoutCRC = append(messageWithoutCRC, remaining[:len(remaining)-4]...)
+		if crc32.ChecksumIEEE(messageWithoutCRC) != binary.BigEndian.Uint32(remaining[len(remaining)-4:]) {
+			return fmt.Errorf("invalid Kiro event message CRC")
+		}
 		payload := remaining[headersLength : len(remaining)-4]
-		eventName := kiroEventName(remaining[:headersLength])
-		if len(payload) == 0 || eventName == "" {
-			continue
+		headers, errHeaders := kiroHeaders(remaining[:headersLength])
+		if errHeaders != nil {
+			return fmt.Errorf("invalid Kiro event headers: %w", errHeaders)
+		}
+		eventName := headers[":event-type"]
+		if eventName == "" {
+			eventName = headers["event-type"]
+		}
+		if eventName == "" {
+			eventName = headers[":exception-type"]
+		}
+		messageType := headers[":message-type"]
+		if messageType == "exception" || messageType == "error" || headers[":error-code"] != "" || headers[":error-message"] != "" || strings.Contains(eventName, "Exception") || strings.HasSuffix(eventName, "Error") {
+			return fmt.Errorf("Kiro stream exception %s: %s", eventName, strings.TrimSpace(string(payload)))
 		}
 		var data map[string]any
-		if json.Unmarshal(payload, &data) != nil {
-			continue
+		if len(payload) == 0 || eventName == "" || json.Unmarshal(payload, &data) != nil || data == nil {
+			return fmt.Errorf("invalid Kiro event frame %q", eventName)
 		}
+		sawEvent = true
 		if callback != nil && !callback(eventName, data) {
 			return nil
 		}
 	}
 }
 
-func kiroEventName(headers []byte) string {
+func kiroHeaders(headers []byte) (map[string]string, error) {
+	values := make(map[string]string)
 	for index := 0; index < len(headers); {
 		if index >= len(headers) {
 			break
@@ -666,46 +737,55 @@ func kiroEventName(headers []byte) string {
 		nameLen := int(headers[index])
 		index++
 		if index+nameLen > len(headers) {
-			break
+			return nil, fmt.Errorf("truncated header name")
 		}
 		name := string(headers[index : index+nameLen])
 		index += nameLen
 		if index >= len(headers) {
-			break
+			return nil, fmt.Errorf("truncated header type")
 		}
 		valueType := headers[index]
 		index++
 		switch valueType {
 		case 7:
 			if index+2 > len(headers) {
-				return ""
+				return nil, fmt.Errorf("truncated string header length")
 			}
 			length := int(binary.BigEndian.Uint16(headers[index : index+2]))
 			index += 2
 			if index+length > len(headers) {
-				return ""
+				return nil, fmt.Errorf("truncated string header value")
 			}
 			value := string(headers[index : index+length])
 			index += length
-			if name == ":event-type" || name == "event-type" {
-				return value
-			}
+			values[name] = value
 		default:
-			index = skipKiroHeaderValue(headers, index, valueType)
+			next, errSkip := skipKiroHeaderValue(headers, index, valueType)
+			if errSkip != nil {
+				return nil, errSkip
+			}
+			index = next
 		}
 	}
-	return ""
+	return values, nil
 }
-func skipKiroHeaderValue(headers []byte, index int, valueType byte) int {
-	sizes := map[byte]int{0: 0, 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 16}
+func skipKiroHeaderValue(headers []byte, index int, valueType byte) (int, error) {
+	sizes := map[byte]int{0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16}
 	if size, ok := sizes[valueType]; ok {
-		return index + size
-	}
-	if valueType == 8 || valueType == 9 {
-		if index+2 > len(headers) {
-			return len(headers)
+		if index+size > len(headers) {
+			return 0, fmt.Errorf("truncated typed header value")
 		}
-		return index + 2 + int(binary.BigEndian.Uint16(headers[index:index+2]))
+		return index + size, nil
 	}
-	return len(headers)
+	if valueType == 6 {
+		if index+2 > len(headers) {
+			return 0, fmt.Errorf("truncated byte header length")
+		}
+		length := int(binary.BigEndian.Uint16(headers[index : index+2]))
+		if index+2+length > len(headers) {
+			return 0, fmt.Errorf("truncated byte header value")
+		}
+		return index + 2 + length, nil
+	}
+	return 0, fmt.Errorf("unknown header value type %d", valueType)
 }
