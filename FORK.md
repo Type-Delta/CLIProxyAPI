@@ -1176,6 +1176,22 @@ Credentials that only carry a `usage-probe` (for example Z.AI or OpenCode Go und
 
 **Last updated:** 2026-10-14
 
+### DL038 - Per-credential usage caps
+
+A credential can keep a reserve on any usage bar. `usage_caps` (auth files) or `usage-caps` (provider API-key entries, on the provider object for `openai-compatibility`) maps a bar ID, the same ID CPAMC renders (for example `five-hour`, `weekly`, `seven-day-fable`, `zai-week-1`, `opencode-go-monthly`, `kiro-included-credit-0`), to the minimum remaining percent (0-99). Once CPA observes a capped bar at or below its cap, routing withholds that credential until the bar resets. Client keys listed by ID in `usage_cap_bypass_keys` / `usage-cap-bypass-keys` (SHA-256 key IDs from `GET /v8/management/api-keys` `key-identities`, never raw keys) still route to it.
+
+Checks are lazy: after a request result is recorded, a background check reads the credential's usage through the shared management quota cache, using the same URLs and headers as CPAMC's quota adapters, so a recent quota-page read costs no provider call. Each credential is checked at most once per five minutes, and concurrent or retried requests collapse into one in-flight check. Management quota reads also apply caps. Capped state is derived from the last observed bars against the current caps, so editing or removing a cap takes effect immediately. A bar whose reset passes stops counting; a capped bar with no known reset stays capped until a later check sees it above the cap. Supported providers are Claude, Codex, Z.ai, OpenCode Go, and Kiro.
+
+Requests carry the client key ID in execution metadata (`client_key_id`, config-key principals only). While any credential is capped, selection uses the legacy candidate loops instead of the scheduler fast path, because the scheduler index cannot apply per-request bypass. The credentials listing exposes `usage_caps`, `usage_cap_bypass_keys`, and the active `usage_cap_state`. Config validation and `PATCH /v8/management/credentials/fields` reject out-of-range caps and bypass entries that are not key IDs.
+
+The bundled panel (CPAMC `93d9cce`) adds the cap editor to the auth-file sheet and the Z.ai/OpenCode Go provider form, a draggable handle per bar, a searchable bypass-key picker, the reserved region drawn as candy stripes in the bar's own colour, cap details in row tooltips, and a Capped badge.
+
+**Implementation evidence:** `sdk/cliproxy/auth/usage_cap.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{usage_cap_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets.
+
+**Recorded validation:** usage-cap unit tests cover evaluation, reset expiry, throttling, cap edits against a stored observation, bar IDs for all five providers, and real selection with and without a bypass key. A local CPA with the owner's live Z.ai credential (weekly 19% remaining) and a stub fallback provider served the Z.ai credential at a 10% cap, switched to the fallback after the first request once the cap was raised to 30%, kept serving the bypass key from Z.ai, and returned to Z.ai as soon as the cap was lowered again through the v8 config API. Through CDP, that CPA serving the CPAMC build showed the striped capped bar, its tooltip, and the Capped badge; dragging the handle and saving the provider form persisted the new cap with the bypass key intact. The full repository suite passes except the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+
+**Last updated:** 2026-10-14
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

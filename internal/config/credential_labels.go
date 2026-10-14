@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -136,8 +137,64 @@ func (cfg *Config) ValidateProviderSelectorFields() error {
 		if err := validateUsageProbe("openai-compatibility", index, entry.UsageProbe); err != nil {
 			return err
 		}
+		if err := entry.UsageCapConfig.validate("openai-compatibility", index); err != nil {
+			return err
+		}
+	}
+	for section, entries := range map[string][]UsageCapConfig{
+		"claude-api-key":       usageCapsOf(cfg.ClaudeKey, func(k ClaudeKey) UsageCapConfig { return k.UsageCapConfig }),
+		"codex-api-key":        usageCapsOf(cfg.CodexKey, func(k CodexKey) UsageCapConfig { return k.UsageCapConfig }),
+		"xai-api-key":          usageCapsOf(cfg.XAIKey, func(k XAIKey) UsageCapConfig { return k.UsageCapConfig }),
+		"gemini-api-key":       usageCapsOf(cfg.GeminiKey, func(k GeminiKey) UsageCapConfig { return k.UsageCapConfig }),
+		"interactions-api-key": usageCapsOf(cfg.InteractionsKey, func(k GeminiKey) UsageCapConfig { return k.UsageCapConfig }),
+		"vertex-api-key":       usageCapsOf(cfg.VertexCompatAPIKey, func(k VertexCompatKey) UsageCapConfig { return k.UsageCapConfig }),
+	} {
+		for index, caps := range entries {
+			if err := caps.validate(section, index); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func usageCapsOf[T any](entries []T, get func(T) UsageCapConfig) []UsageCapConfig {
+	out := make([]UsageCapConfig, len(entries))
+	for index, entry := range entries {
+		out[index] = get(entry)
+	}
+	return out
+}
+
+// validate checks cap percents and bypass key IDs. It mirrors the auth
+// package's NormalizeUsageCaps rules without importing it.
+func (c UsageCapConfig) validate(section string, index int) error {
+	for barID, percent := range c.UsageCaps {
+		if strings.TrimSpace(barID) == "" {
+			return fmt.Errorf("%s[%d].usage-caps: bar id is required", section, index)
+		}
+		if math.IsNaN(percent) || percent < 0 || percent >= 100 {
+			return fmt.Errorf("%s[%d].usage-caps.%s: must be a number from 0 to 99", section, index, barID)
+		}
+	}
+	for _, keyID := range c.UsageCapBypassKeys {
+		if !isAPIKeyIDHex(strings.ToLower(strings.TrimSpace(keyID))) {
+			return fmt.Errorf("%s[%d].usage-cap-bypass-keys: entries must be API key ids", section, index)
+		}
+	}
+	return nil
+}
+
+func isAPIKeyIDHex(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeProviderSelectorFields(pricingCatalog, usageProbe *string) {

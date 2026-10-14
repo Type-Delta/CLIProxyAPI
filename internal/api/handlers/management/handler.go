@@ -186,6 +186,7 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Unlock()
 	if manager != nil {
 		manager.SetQuotaRecoveryRefresher(h.RefreshQuotaForRouting)
+		manager.SetUsageCapProber(h.UsageCapBars)
 	}
 }
 

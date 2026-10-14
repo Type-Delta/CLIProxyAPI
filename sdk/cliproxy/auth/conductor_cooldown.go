@@ -1257,6 +1257,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
+	if !result.SkipQuotaObservation {
+		m.scheduleUsageCapCheck(result.AuthID)
+	}
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {

@@ -173,6 +173,9 @@ func (h *Handler) APICall(c *gin.Context) {
 		h.syncCodexUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
 		h.syncClaudeUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
 	}
+	if outcome.successfulResponse() && auth != nil && strings.EqualFold(method, http.MethodGet) {
+		h.applyUsageCapsFromQuotaRead(auth, parsedURL, []byte(outcome.response.Body))
+	}
 
 	h.writeAPICallOutcome(c, outcome)
 }

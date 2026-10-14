@@ -16,10 +16,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
@@ -243,6 +245,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
 		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
 	}
+	if keyID := requestClientKeyID(ginCtx); keyID != "" {
+		meta[coreexecutor.ClientKeyIDMetadataKey] = keyID
+	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
@@ -305,6 +310,26 @@ func requestCallerScope(ginCtx *gin.Context) string {
 		return ""
 	}
 	return coresession.CallerScope(fmt.Sprint(value))
+}
+
+// requestClientKeyID returns the management-visible ID of the authenticated
+// client API key, matching config.APIKeyID. Only config-key principals have one.
+func requestClientKeyID(ginCtx *gin.Context) string {
+	if ginCtx == nil {
+		return ""
+	}
+	if provider, _ := ginCtx.Get("accessProvider"); fmt.Sprint(provider) != sdkaccess.DefaultAccessProviderName {
+		return ""
+	}
+	value, exists := ginCtx.Get("userApiKey")
+	if !exists || value == nil {
+		return ""
+	}
+	principal := strings.TrimSpace(fmt.Sprint(value))
+	if principal == "" {
+		return ""
+	}
+	return internalconfig.APIKeyID(principal)
 }
 
 func addAuthSelectionModelMetadata(meta map[string]any, model string) {
