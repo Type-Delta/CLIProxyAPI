@@ -844,7 +844,14 @@ caller cancellation exclusion, status-less cooldown waits bounded by
 `max-retry-interval`, and transport failures skipping credential cooldown.
 `go test ./...` and the disposable `cmd/server` build check pass.
 
-**Last updated:** 2026-09-18
+Follow-up (2026-10-14): an untyped `http2: response body closed` result still
+fell through to the generic failure branch and cooled the credential and model
+for the one-minute transient cooldown. That message is now classified as a
+connection-lifecycle failure, so it no longer cools the credential;
+`TestManager_MarkResult_PreHTTPTransportFailureDoesNotCooldown` covers the
+wrapped error and the bare message.
+
+**Last updated:** 2026-10-14
 
 ### DL024 - Plaintext collaboration metadata for optimized Codex calls
 

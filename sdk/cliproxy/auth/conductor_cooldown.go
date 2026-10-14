@@ -1826,7 +1826,9 @@ func isConnectionLifecycleMessage(message string) bool {
 		return true
 	}
 	// Wrapped transport EOF phrasing (e.g. "read tcp ...: unexpected EOF").
-	if strings.Contains(lower, "unexpected eof") {
+	// "http2: response body closed" means CPA closed the upstream body itself,
+	// usually after the downstream client went away.
+	if strings.Contains(lower, "unexpected eof") || strings.Contains(lower, "http2: response body closed") {
 		return true
 	}
 	return false

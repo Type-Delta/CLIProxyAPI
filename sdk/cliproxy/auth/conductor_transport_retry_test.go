@@ -99,6 +99,8 @@ func TestManager_MarkResult_PreHTTPTransportFailureDoesNotCooldown(t *testing.T)
 	}{
 		{name: "typed tls handshake", err: resultErrorFromError(windowsCodexTLSHandshakeError())},
 		{name: "connection reset message", err: &Error{Message: "connection reset"}},
+		{name: "http2 response body closed", err: resultErrorFromError(fmt.Errorf("read upstream: %w", errors.New("http2: response body closed")))},
+		{name: "http2 response body closed message", err: &Error{Message: "http2: response body closed"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
