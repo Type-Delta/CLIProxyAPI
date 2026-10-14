@@ -85,6 +85,19 @@ func TestGetStaticModelDefinitionsByChannelSupportsKimiAndKimiAI(t *testing.T) {
 	}
 }
 
+func TestGetStaticModelDefinitionsByChannelServesClaudeCatalogForKiro(t *testing.T) {
+	kiro := GetStaticModelDefinitionsByChannel("kiro")
+	claude := GetClaudeModels()
+	if len(kiro) == 0 || len(kiro) != len(claude) {
+		t.Fatalf("GetStaticModelDefinitionsByChannel(kiro) returned %d models, want the %d Claude models", len(kiro), len(claude))
+	}
+	for i := range kiro {
+		if kiro[i].ID != claude[i].ID {
+			t.Fatalf("kiro model %d = %q, want %q", i, kiro[i].ID, claude[i].ID)
+		}
+	}
+}
+
 func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	const wantUA = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
 	got := ModelOverrideHeaders("gpt-5.6-luna")

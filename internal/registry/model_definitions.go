@@ -470,6 +470,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //
 // Supported channels:
 //   - claude
+//   - kiro (serves the Claude catalog)
 //   - gemini
 //   - gemini-interactions
 //   - vertex
@@ -483,7 +484,8 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
-	case "claude":
+	case "claude", "kiro":
+		// Kiro registers the Claude catalog at runtime, so its exclusions pick from it.
 		return GetClaudeModels()
 	case "gemini":
 		return GetGeminiModels()

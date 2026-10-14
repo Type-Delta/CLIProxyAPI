@@ -1164,6 +1164,18 @@ the scheduler path and normal, streaming, and token-count selection.
 
 **Last updated:** 2026-10-14
 
+### DL037 - Kiro static model definitions for OAuth exclusions
+
+`GET /v8/management/routing/model-definitions/kiro` returned `400 unknown channel`, so the CPAMC OAuth excluded-models editor showed Kiro as unsupported even though `oauth-excluded-models.kiro` filters Kiro's runtime models. The static channel lookup now serves the Claude catalog for `kiro`, the same list Kiro credentials register at runtime.
+
+Credentials that only carry a `usage-probe` (for example Z.AI or OpenCode Go under `openai-compatibility`) remain unsupported there by design: they are API-key credentials, which `oauth-excluded-models` does not apply to. The bundled panel (CPAMC `5647a51`) therefore leaves them out of the OAuth excluded-models and model-alias pickers, and also carries the plan-weighted quota summary update.
+
+**Implementation evidence:** `internal/registry/model_definitions.go`, `internal/registry/model_definitions_test.go`, the CPAMC gitlink, and the bundled management assets.
+
+**Recorded validation:** a CPA built from this checkout returned the 18 Claude models for `kiro`, and still returned `400` for `openai-compatible-zai`; through CDP, both OAuth editors listed only OAuth providers and Kiro loaded the Claude catalog.
+
+**Last updated:** 2026-10-14
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
