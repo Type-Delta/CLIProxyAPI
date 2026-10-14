@@ -54,6 +54,7 @@ type WeightedRoundRobinSelector struct {
 type GreedySoonestRecoverySelector struct {
 	mu       sync.Mutex
 	states   map[string]*smoothWeightedState
+	fallback *RoundRobinSelector
 	maxKeys  int
 	HalfLife time.Duration
 }
@@ -741,6 +742,11 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 // calculated.
 func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now()
 	available, errAvailable := getSelectorAvailableAuths(ctx, auths, provider, model, now)
 	if errAvailable != nil {
@@ -750,7 +756,24 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 
 	weighted, weights, errWeights := greedySoonestRecoveryWeights(available, provider, model, now, s.recoveryHalfLife())
 	if errWeights != nil {
-		return nil, errWeights
+		info := quotaRecoveryFallbackInfoForAuths(available, provider, model)
+		if prepared, ok := quotaRecoveryFallbackInfoFromContext(ctx); ok {
+			info.refreshTried = prepared.refreshTried
+			info.refreshError = prepared.refreshError
+			if prepared.reason != "" {
+				info.reason = prepared.reason
+			}
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		logQuotaRecoveryFallback(ctx, info)
+		return s.fallbackRoundRobin().Pick(ctx, provider, model, opts, available)
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 	key := strings.ToLower(strings.TrimSpace(provider)) + ":" + canonicalModelKey(model)
 
@@ -779,11 +802,96 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 	return picked, nil
 }
 
+func (s *GreedySoonestRecoverySelector) fallbackRoundRobin() *RoundRobinSelector {
+	if s == nil {
+		return &RoundRobinSelector{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fallback == nil {
+		s.fallback = &RoundRobinSelector{}
+	}
+	return s.fallback
+}
+
 func (s *GreedySoonestRecoverySelector) recoveryHalfLife() time.Duration {
 	if s != nil && s.HalfLife > 0 {
 		return s.HalfLife
 	}
 	return defaultGreedySoonestRecoveryHalfLife
+}
+
+type quotaRecoveryFallbackContextKey struct{}
+
+type quotaRecoveryFallbackInfo struct {
+	provider     string
+	model        string
+	reason       string
+	eligible     int
+	usable       int
+	missing      int
+	refreshTried int
+	refreshError int
+}
+
+func withQuotaRecoveryFallbackInfo(ctx context.Context, info quotaRecoveryFallbackInfo) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, quotaRecoveryFallbackContextKey{}, info)
+}
+
+func quotaRecoveryFallbackInfoFromContext(ctx context.Context) (quotaRecoveryFallbackInfo, bool) {
+	if ctx == nil {
+		return quotaRecoveryFallbackInfo{}, false
+	}
+	info, ok := ctx.Value(quotaRecoveryFallbackContextKey{}).(quotaRecoveryFallbackInfo)
+	return info, ok
+}
+
+func quotaRecoveryFallbackInfoForAuths(auths []*Auth, provider, model string) quotaRecoveryFallbackInfo {
+	info := quotaRecoveryFallbackInfo{provider: strings.TrimSpace(provider), model: model, reason: "missing_or_unusable_recovery_data"}
+	providers := make(map[string]struct{})
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		info.eligible++
+		if !RecoveryTimestampForAuth(auth, model).IsZero() {
+			info.usable++
+		}
+		if authProvider := QuotaRecoveryProviderForAuth(auth); authProvider != "" {
+			providers[authProvider] = struct{}{}
+		}
+	}
+	info.missing = info.eligible - info.usable
+	if info.provider == "" || info.provider == "mixed" {
+		if len(providers) == 1 {
+			for authProvider := range providers {
+				info.provider = authProvider
+			}
+		} else if len(providers) > 1 {
+			info.provider = "mixed"
+		}
+	}
+	return info
+}
+
+func logQuotaRecoveryFallback(ctx context.Context, info quotaRecoveryFallbackInfo) {
+	if info.reason == "" {
+		info.reason = "missing_or_unusable_recovery_data"
+	}
+	selectorLogEntry(ctx).WithFields(log.Fields{
+		"provider":                info.provider,
+		"model":                   info.model,
+		"strategy":                "round-robin",
+		"reason":                  info.reason,
+		"eligible_count":          info.eligible,
+		"usable_count":            info.usable,
+		"missing_count":           info.missing,
+		"refresh_attempted_count": info.refreshTried,
+		"refresh_failed_count":    info.refreshError,
+	}).Warn("GSR recovery data incomplete; using round-robin fallback")
 }
 
 // AuthRecoveryTimestamp returns the best cached recovery deadline available
@@ -796,6 +904,13 @@ func AuthRecoveryTimestamp(auth *Auth, provider, model string) (time.Time, bool)
 func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) (time.Time, bool) {
 	if auth == nil {
 		return time.Time{}, false
+	}
+	providerIdentity := QuotaRecoveryProviderForAuth(auth)
+	providerSignalAllowed := providerIdentity != ""
+	if providerSignalAllowed {
+		provider = providerIdentity
+	} else if strings.TrimSpace(auth.Attributes["usage_probe"]) != "" || strings.EqualFold(strings.TrimSpace(provider), "mixed") {
+		provider = ""
 	}
 	var deadline time.Time
 	addEarliest := func(candidate time.Time) {
@@ -815,8 +930,10 @@ func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) 
 			addEarliest(state.Quota.NextRecoverAt)
 		}
 	}
-	if reset := providerSignalRecoveryTimestamp(auth, provider, model, now); !reset.IsZero() {
-		addEarliest(reset)
+	if providerSignalAllowed {
+		if reset := providerSignalRecoveryTimestamp(auth, provider, model, now); !reset.IsZero() {
+			addEarliest(reset)
+		}
 	}
 	return deadline, !deadline.IsZero()
 }
@@ -827,9 +944,6 @@ func providerSignalRecoveryTimestamp(auth *Auth, provider, model string, now tim
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	observedAt := auth.Quota.ObservedAt
-	if observedAt.IsZero() {
-		observedAt = now
-	}
 	for _, preferredName := range recoverySignalNames(strings.ToLower(strings.TrimSpace(provider)), strings.ToLower(canonicalModelKey(model))) {
 		for key, rawValue := range auth.Quota.Signals {
 			if !strings.EqualFold(strings.TrimSpace(key), preferredName) {
@@ -897,6 +1011,9 @@ func parseRecoverySignalTime(rawValue string, kind recoverySignalKind, observedA
 		return time.Time{}, false
 	}
 	if kind == recoverySignalAfterSeconds {
+		if observedAt.IsZero() {
+			return time.Time{}, false
+		}
 		seconds, errParse := strconv.ParseFloat(rawValue, 64)
 		if errParse != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
 			if parsedHTTP, errHTTP := http.ParseTime(rawValue); errHTTP == nil {
@@ -927,11 +1044,13 @@ func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now tim
 	}
 	deadlines := make(map[string]time.Time, len(auths))
 	weighted := make([]*Auth, 0, len(auths))
+	eligibleCount := 0
 	var earliest time.Time
 	for _, auth := range auths {
 		if auth == nil {
 			continue
 		}
+		eligibleCount++
 		deadline, ok := authRecoveryTimestampAt(auth, provider, model, now)
 		if !ok {
 			continue
@@ -942,7 +1061,7 @@ func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now tim
 			earliest = deadline
 		}
 	}
-	if len(weighted) == 0 || earliest.IsZero() {
+	if len(weighted) == 0 || len(weighted) != eligibleCount || earliest.IsZero() {
 		return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
 	}
 	if halfLife <= 0 {
@@ -954,10 +1073,7 @@ func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now tim
 			continue
 		}
 		baseWeight := greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
-		tierProvider := provider
-		if strings.EqualFold(strings.TrimSpace(provider), "mixed") {
-			tierProvider = auth.Provider
-		}
+		tierProvider := QuotaRecoveryProviderForAuth(auth)
 		weights[auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(auth, tierProvider)))
 	}
 	return weighted, weights, nil

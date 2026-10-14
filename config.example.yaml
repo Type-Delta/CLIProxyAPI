@@ -185,6 +185,10 @@ routing:
   # provider quota recovery is sooner; the default decay half-life is 36 hours.
   # An explicit gsr_tier credential attribute can override the allowance class
   # (standard, pro, premium, max, or elite); unknown tiers remain neutral.
+  # If a credential in the active eligible pool has no usable recovery timestamp,
+  # GSR falls back to round-robin for that request and logs a warning. The normal
+  # model, priority, cooldown, credential-policy, and session-affinity filters
+  # still apply; GSR resumes when the pool has complete recovery data.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
   # followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,

@@ -125,7 +125,7 @@ func TestPrepareQuotaRecoveryCandidatesRefreshesMissingAndReusesCache(t *testing
 		}
 		return nil
 	})
-	candidates, errPrepare := manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "gpt-5.5")
+	candidates, preparation, errPrepare := manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "gpt-5.5")
 	if errPrepare != nil {
 		t.Fatalf("prepare candidates: %v", errPrepare)
 	}
@@ -135,19 +135,28 @@ func TestPrepareQuotaRecoveryCandidatesRefreshesMissingAndReusesCache(t *testing
 	if len(refreshed) != 1 || refreshed[0] != "missing" {
 		t.Fatalf("refreshed IDs = %v, want [missing]", refreshed)
 	}
+	if preparation.refreshTried != 1 || preparation.refreshed != 1 || preparation.refreshError != 0 {
+		t.Fatalf("refresh preparation = %#v, want one successful refresh", preparation)
+	}
 }
 
-func TestPrepareQuotaRecoveryCandidatesExcludesFailedRefresh(t *testing.T) {
+func TestPrepareQuotaRecoveryCandidatesKeepsFailedRefreshForFallback(t *testing.T) {
 	manager := NewManager(nil, quotaRecoveryTestSelector{}, nil)
-	auth := &Auth{ID: "failed", Provider: "codex"}
-	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
-		t.Fatalf("Register: %v", errRegister)
+	for _, auth := range []*Auth{
+		{ID: "cached", Provider: "codex", Quota: QuotaState{NextRecoverAt: time.Now().Add(time.Hour)}},
+		{ID: "failed", Provider: "codex"},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register: %v", errRegister)
+		}
 	}
 	manager.SetQuotaRecoveryRefresher(func(context.Context, *Auth, string) error { return errors.New("provider unavailable") })
-	_, errPrepare := manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "gpt-5.5")
-	var routingErr *Error
-	if !errors.As(errPrepare, &routingErr) || routingErr.Code != "gsr_recovery_timestamp_missing" {
-		t.Fatalf("prepare error = %v, want gsr_recovery_timestamp_missing", errPrepare)
+	candidates, preparation, errPrepare := manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "gpt-5.5")
+	if errPrepare != nil {
+		t.Fatalf("prepare error = %v", errPrepare)
+	}
+	if len(candidates) != 2 || preparation.refreshTried != 1 || preparation.refreshError != 1 {
+		t.Fatalf("failed refresh preparation = candidates=%d preparation=%#v", len(candidates), preparation)
 	}
 }
 

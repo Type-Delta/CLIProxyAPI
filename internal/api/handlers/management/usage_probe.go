@@ -810,31 +810,37 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	if h == nil || h.authManager == nil || auth == nil {
 		return fmt.Errorf("quota routing refresh is unavailable")
 	}
-	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	// Resolve the credential's quota identity from its configured usage probe
+	// first: a credential served through a different adapter must still be
+	// probed at, and parsed by, the provider that owns its quota window.
+	provider := coreauth.QuotaRecoveryProviderForAuth(auth)
 	var (
 		windows []model.ProviderQuotaWindow
 		plan    string
 		err     error
 	)
-	switch {
-	case provider == "claude":
+	switch provider {
+	case "claude":
 		windows, err = runUsageProbeWindows(ctx, h, auth, "Claude", claudeUsageQuotaURL, parseClaudeGSRQuota)
-	case provider == "codex":
+	case "codex":
 		windows, err = runUsageProbeWindows(ctx, h, auth, "Codex", codexUsageQuotaURL, parseCodexGSRQuota)
-	case strings.Contains(provider, "opencode") && strings.Contains(provider, "go"):
+	case "opencode-go":
 		windows, err = runUsageProbeWindows(ctx, h, auth, "OpenCode Go", opencodeGoUsageQuotaURL, parseOpenCodeGoQuota)
-	case provider == "zai" || strings.Contains(provider, "zai"):
+	case "zai":
 		windows, err = runUsageProbeWindows(ctx, h, auth, "Z.ai", zaiUsageQuotaURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
 			return parseZaiQuota(body, time.Now().UTC())
 		})
-	case provider == "kiro":
+	case "kiro":
 		windows, err = runUsageProbeWindows(ctx, h, auth, "Kiro", kiroUsageLimitsURL(auth), func(body []byte) ([]model.ProviderQuotaWindow, error) {
 			parsedWindows, parsedPlan, errParseQuota := parseKiroGSRQuota(body)
 			plan = parsedPlan
 			return parsedWindows, errParseQuota
 		})
 	default:
-		return fmt.Errorf("provider %q has no quota recovery probe", provider)
+		if probe := strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe"))); probe != "" {
+			return fmt.Errorf("usage probe %q has no quota recovery probe", probe)
+		}
+		return fmt.Errorf("provider %q has no quota recovery probe", strings.ToLower(strings.TrimSpace(auth.Provider)))
 	}
 	if err != nil {
 		return err
@@ -850,7 +856,7 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 		signalName = "Anthropic-Ratelimit-Unified-7d-Reset"
 	case provider == "codex":
 		signalName = "X-Codex-Primary-Reset-At"
-	case strings.Contains(provider, "opencode"):
+	case provider == "opencode-go":
 		preferredLabels = []string{"monthly"}
 		signalName = "monthly_reset_at"
 	case provider == "kiro":

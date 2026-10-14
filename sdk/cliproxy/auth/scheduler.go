@@ -456,9 +456,12 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 	if strategy == schedulerStrategyGreedySoonestRecovery {
-		if picked, errPick := shard.pickGreedySoonestRecoveryLocked(preferWebsocket, predicate); errPick != nil {
+		if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(preferWebsocket, predicate); errPick != nil {
 			return nil, errPick
 		} else if picked != nil {
+			if usedFallback {
+				logQuotaRecoveryFallback(ctx, scheduledRecoveryFallbackInfo(shard, provider, model, preferWebsocket, predicate))
+			}
 			return picked, nil
 		}
 		return nil, shard.unavailableErrorLocked(provider, model, predicate)
@@ -525,9 +528,12 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		if strategy == schedulerStrategyGreedySoonestRecovery {
-			if picked, errPick := shard.pickGreedySoonestRecoveryLocked(false, predicate); errPick != nil {
+			if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(false, predicate); errPick != nil {
 				return nil, "", errPick
 			} else if picked != nil {
+				if usedFallback {
+					logQuotaRecoveryFallback(ctx, scheduledRecoveryFallbackInfo(shard, providerKey, model, false, predicate))
+				}
 				return picked, providerKey, nil
 			}
 			return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
@@ -646,6 +652,11 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(entries, predicate, modelKey, time.Now())
 		if errWeights != nil {
+			if picked := s.pickMixedGSRFallbackLocked(entries, cursorKey, predicate); picked != nil && picked.meta != nil {
+				info := quotaRecoveryFallbackInfoForAuths(scheduledRecoveryAuths(entries, predicate), "mixed", model)
+				logQuotaRecoveryFallback(ctx, info)
+				return picked.auth, picked.meta.providerKey, nil
+			}
 			return nil, "", errWeights
 		}
 		state.prepare(weights)
@@ -709,6 +720,44 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return picked, providerKey, nil
 	}
 	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+}
+
+func (s *authScheduler) pickMixedGSRFallbackLocked(entries []*scheduledAuth, cursorKey string, predicate func(*scheduledAuth) bool) *scheduledAuth {
+	if s == nil || len(entries) == 0 {
+		return nil
+	}
+	eligible := scheduledAuthList(entries, predicate)
+	if len(eligible) == 0 {
+		return nil
+	}
+	index := s.mixedCursors[cursorKey] % len(eligible)
+	s.mixedCursors[cursorKey] = (index + 1) % len(eligible)
+	picked := eligible[index]
+	if picked == nil || picked.auth == nil {
+		return nil
+	}
+	return picked
+}
+
+func scheduledAuthList(entries []*scheduledAuth, predicate func(*scheduledAuth) bool) []*scheduledAuth {
+	auths := make([]*scheduledAuth, 0, len(entries))
+	for _, entry := range entries {
+		if entry != nil && entry.auth != nil && (predicate == nil || predicate(entry)) {
+			auths = append(auths, entry)
+		}
+	}
+	return auths
+}
+
+func scheduledRecoveryAuths(entries []*scheduledAuth, predicate func(*scheduledAuth) bool) []*Auth {
+	selected := scheduledAuthList(entries, predicate)
+	auths := make([]*Auth, 0, len(selected))
+	for _, entry := range selected {
+		if entry != nil && entry.auth != nil {
+			auths = append(auths, entry.auth)
+		}
+	}
+	return auths
 }
 
 // mixedUnavailableErrorLocked synthesizes the mixed-provider cooldown or unavailable error.
@@ -1418,18 +1467,18 @@ func (m *modelScheduler) pickReadyLocked(preferWebsocket bool, strategy schedule
 // pickGreedySoonestRecoveryLocked selects from the highest ready priority using
 // provider recovery timestamps and exponential decay. The caller must hold the
 // scheduler lock.
-func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, predicate func(*scheduledAuth) bool) (*Auth, error) {
+func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, predicate func(*scheduledAuth) bool) (*Auth, bool, error) {
 	if m == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	m.promoteExpiredLocked(time.Now())
 	priorityReady, okPriority := m.highestReadyPriorityLocked(preferWebsocket, predicate)
 	if !okPriority {
-		return nil, nil
+		return nil, false, nil
 	}
 	bucket := m.readyByPriority[priorityReady]
 	if bucket == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	view := &bucket.all
 	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
@@ -1437,14 +1486,42 @@ func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, p
 	}
 	weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(view.flat, predicate, m.modelKey, time.Now())
 	if errWeights != nil {
-		return nil, errWeights
+		if fallback := view.pickRoundRobin(predicate); fallback != nil && fallback.auth != nil {
+			return fallback.auth, true, nil
+		}
+		return nil, false, errWeights
 	}
 	view.gsrState.prepare(weights)
 	picked := pickSmoothWeightedScheduledWithWeights(weighted, weights, view.gsrState.current, predicate)
 	if picked == nil || picked.auth == nil {
-		return nil, greedySoonestRecoveryTimestampError("", m.modelKey)
+		return nil, false, greedySoonestRecoveryTimestampError("", m.modelKey)
 	}
-	return picked.auth, nil
+	return picked.auth, false, nil
+}
+
+func scheduledRecoveryFallbackInfo(shard *modelScheduler, provider, model string, preferWebsocket bool, predicate func(*scheduledAuth) bool) quotaRecoveryFallbackInfo {
+	if shard == nil {
+		return quotaRecoveryFallbackInfoForAuths(nil, provider, model)
+	}
+	priority, ok := shard.highestReadyPriorityLocked(preferWebsocket, predicate)
+	if !ok {
+		return quotaRecoveryFallbackInfoForAuths(nil, provider, model)
+	}
+	bucket := shard.readyByPriority[priority]
+	if bucket == nil {
+		return quotaRecoveryFallbackInfoForAuths(nil, provider, model)
+	}
+	view := &bucket.all
+	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
+		view = &bucket.ws
+	}
+	auths := make([]*Auth, 0, len(view.flat))
+	for _, entry := range view.flat {
+		if entry != nil && entry.auth != nil && (predicate == nil || predicate(entry)) {
+			auths = append(auths, entry.auth)
+		}
+	}
+	return quotaRecoveryFallbackInfoForAuths(auths, provider, model)
 }
 
 // highestReadyPriorityLocked returns the highest priority bucket that still has a matching ready auth.
@@ -1857,11 +1934,13 @@ func greedySoonestRecoveryScheduledWeights(entries []*scheduledAuth, predicate f
 	}
 	deadlines := make(map[string]time.Time, len(entries))
 	weighted := make([]*scheduledAuth, 0, len(entries))
+	eligibleCount := 0
 	var earliest time.Time
 	for _, entry := range entries {
 		if entry == nil || entry.auth == nil || entry.meta == nil || (predicate != nil && !predicate(entry)) {
 			continue
 		}
+		eligibleCount++
 		deadline, ok := authRecoveryTimestampAt(entry.auth, entry.meta.providerKey, model, now)
 		if !ok {
 			continue
@@ -1872,13 +1951,14 @@ func greedySoonestRecoveryScheduledWeights(entries []*scheduledAuth, predicate f
 			earliest = deadline
 		}
 	}
-	if len(weighted) == 0 || earliest.IsZero() {
+	if len(weighted) == 0 || len(weighted) != eligibleCount || earliest.IsZero() {
 		return nil, nil, greedySoonestRecoveryTimestampError("", model)
 	}
 	weights := make(map[string]int64, len(weighted))
 	for _, entry := range weighted {
 		baseWeight := greedySoonestRecoveryWeight(deadlines[entry.auth.ID].Sub(earliest), defaultGreedySoonestRecoveryHalfLife)
-		weights[entry.auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(entry.auth, entry.meta.providerKey)))
+		tierProvider := QuotaRecoveryProviderForAuth(entry.auth)
+		weights[entry.auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(entry.auth, tierProvider)))
 	}
 	return weighted, weights, nil
 }

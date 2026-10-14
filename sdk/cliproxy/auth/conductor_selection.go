@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -163,58 +162,18 @@ func recoverySignalNames(provider, model string) []string {
 			"X-Codex-Primary-Reset-At",
 			"X-Codex-Primary-Reset-After-Seconds",
 		}
-	case provider == "zai" || strings.Contains(model, "glm"):
+	case provider == "opencode-go" || (strings.Contains(provider, "opencode") && strings.Contains(provider, "go")):
+		return []string{"monthly_reset_at", "monthly_reset"}
+	case provider == "zai":
 		return []string{
 			"weekly_reset_at",
 			"weekly_reset",
 		}
-	case provider == "opencode-go" || (strings.Contains(provider, "opencode") && strings.Contains(provider, "go")):
-		return []string{"monthly_reset_at", "monthly_reset"}
 	case provider == "kiro":
 		return []string{"monthly_reset_at", "monthly_reset"}
 	default:
 		return []string{"weekly_reset_at", "weekly_reset", "monthly_reset_at", "monthly_reset"}
 	}
-}
-
-func recoveryTimestampFromSignals(quota QuotaState, preferred []string) time.Time {
-	if len(quota.Signals) == 0 {
-		return time.Time{}
-	}
-	for _, preferredName := range preferred {
-		for name, value := range quota.Signals {
-			if !strings.EqualFold(strings.TrimSpace(name), preferredName) {
-				continue
-			}
-			if reset := parseRecoveryTimestamp(name, value, quota.ObservedAt); reset.After(time.Now()) {
-				return reset
-			}
-		}
-	}
-	return time.Time{}
-}
-
-func parseRecoveryTimestamp(name, raw string, observedAt time.Time) time.Time {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return time.Time{}
-	}
-	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-		return parsed
-	}
-	seconds, err := strconv.ParseFloat(raw, 64)
-	if err != nil || seconds <= 0 {
-		return time.Time{}
-	}
-	// Codex reset-after-seconds is relative to the observation, unlike reset-at.
-	if strings.Contains(strings.ToLower(name), "after") {
-		if observedAt.IsZero() {
-			observedAt = time.Now()
-		}
-		return observedAt.Add(time.Duration(seconds * float64(time.Second)))
-	}
-	whole := int64(seconds)
-	return time.Unix(whole, int64((seconds-float64(whole))*float64(time.Second))).UTC()
 }
 
 func (m *Manager) quotaRecoveryRefresherSnapshot() QuotaRecoveryRefresher {
@@ -226,72 +185,217 @@ func (m *Manager) quotaRecoveryRefresherSnapshot() QuotaRecoveryRefresher {
 	return m.quotaRecoveryRefresher
 }
 
-func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates []*Auth, model string) ([]*Auth, error) {
-	if !isQuotaRecoverySelector(m.Selector()) || len(candidates) == 0 {
-		return candidates, nil
+type quotaRecoveryPreparation struct {
+	refreshed    int
+	refreshTried int
+	refreshError int
+	contextError error
+}
+
+// prepareQuotaRecoveryCandidates refreshes missing observations but preserves the full
+// candidate pool. GSR may use its RR fallback when any choice-pool member remains unknown.
+func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates []*Auth, model string) ([]*Auth, quotaRecoveryPreparation, error) {
+	preparation := quotaRecoveryPreparation{}
+	if len(candidates) == 0 || m == nil || !isQuotaRecoverySelector(m.Selector()) {
+		return candidates, preparation, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	refresher := m.quotaRecoveryRefresherSnapshot()
-	type preparedCandidate struct {
-		index int
-		auth  *Auth
+	if err := ctx.Err(); err != nil {
+		return nil, preparation, err
 	}
-	results := make(chan preparedCandidate, len(candidates))
-	semaphore := make(chan struct{}, 4)
-	var waitGroup sync.WaitGroup
-	for index, candidate := range candidates {
+	liveCandidates := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
 		if candidate == nil {
 			continue
 		}
-		working := candidate.Clone()
-		if RecoveryTimestampForAuth(working, model).IsZero() && refresher != nil {
-			waitGroup.Add(1)
-			go func(index int, working *Auth) {
-				defer waitGroup.Done()
-				select {
-				case semaphore <- struct{}{}:
-				case <-ctx.Done():
-					return
-				}
-				defer func() { <-semaphore }()
-				if errRefresh := refresher(ctx, working, model); errRefresh != nil {
-					return
-				}
-				if latest, ok := m.GetByID(working.ID); ok {
-					working = latest
-				}
-				if RecoveryTimestampForAuth(working, model).IsZero() {
-					return
-				}
-				results <- preparedCandidate{index: index, auth: working}
-			}(index, working)
-			continue
+		if latest, ok := m.GetByID(candidate.ID); ok && latest != nil {
+			liveCandidates = append(liveCandidates, latest)
 		}
-		if RecoveryTimestampForAuth(working, model).IsZero() {
-			continue
+	}
+	candidates = liveCandidates
+	if len(candidates) == 0 {
+		return nil, preparation, nil
+	}
+	refresher := m.quotaRecoveryRefresherSnapshot()
+	if refresher == nil || len(candidates) == 1 {
+		return cloneAuthSlice(candidates), preparation, nil
+	}
+
+	missing := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate != nil && RecoveryTimestampForAuth(candidate, model).IsZero() {
+			missing = append(missing, candidate.Clone())
 		}
-		results <- preparedCandidate{index: index, auth: working}
+	}
+	if len(missing) == 0 {
+		return cloneAuthSlice(candidates), preparation, nil
+	}
+
+	preparation.refreshTried = len(missing)
+	var waitGroup sync.WaitGroup
+	var mu sync.Mutex
+	semaphore := make(chan struct{}, 4)
+	for _, candidate := range missing {
+		if err := ctx.Err(); err != nil {
+			return nil, preparation, err
+		}
+		waitGroup.Add(1)
+		go func(working *Auth) {
+			defer waitGroup.Done()
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-semaphore }()
+			errRefresh := refresher(ctx, working, model)
+			mu.Lock()
+			defer mu.Unlock()
+			if errors.Is(errRefresh, context.Canceled) || errors.Is(errRefresh, context.DeadlineExceeded) {
+				preparation.contextError = errRefresh
+				return
+			}
+			if errRefresh != nil {
+				preparation.refreshError++
+				return
+			}
+			preparation.refreshed++
+		}(candidate)
 	}
 	waitGroup.Wait()
-	close(results)
-	preparedByIndex := make(map[int]*Auth, len(candidates))
-	for result := range results {
-		if result.auth != nil {
-			preparedByIndex[result.index] = result.auth
+	if err := ctx.Err(); err != nil {
+		return nil, preparation, err
+	}
+	if preparation.contextError != nil {
+		return nil, preparation, preparation.contextError
+	}
+
+	// Return the latest live snapshots so refresh side effects such as cooldown
+	// changes are honored by the availability pass that follows.
+	prepared := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if latest, ok := m.GetByID(candidate.ID); ok {
+			prepared = append(prepared, latest)
 		}
 	}
-	prepared := make([]*Auth, 0, len(preparedByIndex))
-	for index := range candidates {
-		if auth := preparedByIndex[index]; auth != nil {
-			prepared = append(prepared, auth)
-		}
-	}
+	return prepared, preparation, nil
+}
+
+func mergePreparedQuotaRecoveryCandidates(base, prepared, refreshed []*Auth) []*Auth {
 	if len(prepared) == 0 {
-		return nil, &Error{Code: "gsr_recovery_timestamp_missing", Message: "greedy-soonest-recovery requires a usable quota recovery timestamp", HTTPStatus: http.StatusServiceUnavailable}
+		if len(refreshed) == 0 {
+			return base
+		}
 	}
-	return prepared, nil
+	byID := make(map[string]*Auth, len(prepared))
+	for _, auth := range prepared {
+		if auth != nil {
+			byID[auth.ID] = auth
+		}
+	}
+	refreshedIDs := make(map[string]struct{}, len(refreshed))
+	for _, auth := range refreshed {
+		if auth != nil {
+			refreshedIDs[auth.ID] = struct{}{}
+		}
+	}
+	merged := make([]*Auth, 0, len(base))
+	for _, auth := range base {
+		if auth == nil {
+			continue
+		}
+		if _, refreshed := refreshedIDs[auth.ID]; refreshed {
+			replacement, ok := byID[auth.ID]
+			if !ok {
+				continue
+			}
+			merged = append(merged, replacement)
+			delete(byID, auth.ID)
+			continue
+		}
+		if replacement := byID[auth.ID]; replacement != nil {
+			merged = append(merged, replacement)
+			delete(byID, auth.ID)
+		} else {
+			merged = append(merged, auth)
+		}
+	}
+	for _, auth := range prepared {
+		if auth != nil {
+			if _, exists := byID[auth.ID]; exists {
+				merged = append(merged, auth)
+				delete(byID, auth.ID)
+			}
+		}
+	}
+	return merged
+}
+
+func retainLiveQuotaRecoveryCandidates(m *Manager, candidates []*Auth) []*Auth {
+	if len(candidates) == 0 {
+		return nil
+	}
+	live := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if latest, ok := m.GetByID(candidate.ID); ok && latest != nil {
+			live = append(live, latest)
+		}
+	}
+	return live
+}
+
+func filterQuotaRecoveryCandidates(candidates []*Auth, allow func(*Auth) bool) []*Auth {
+	filtered := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate != nil && (allow == nil || allow(candidate)) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func quotaRecoveryRefreshCandidates(m *Manager, selector Selector, provider, model string, opts cliproxyexecutor.Options, candidates []*Auth) []*Auth {
+	if len(candidates) == 0 {
+		return nil
+	}
+	sessionSelector, ok := selector.(*SessionAffinitySelector)
+	if !ok || sessionSelector == nil {
+		return candidates
+	}
+	primaryID, fallbackID := extractExplicitSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if primaryID == "" {
+		primaryID, fallbackID = extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	}
+	if primaryID == "" {
+		return candidates
+	}
+	boundAuthID := ""
+	if auth, status := m.LookupSessionAffinity(provider, model, primaryID); status == "bound" && auth != nil {
+		boundAuthID = auth.ID
+	}
+	if boundAuthID == "" && fallbackID != "" {
+		if auth, status := m.LookupSessionAffinity(provider, model, fallbackID); status == "bound" && auth != nil {
+			boundAuthID = auth.ID
+		}
+	}
+	if boundAuthID == "" {
+		return candidates
+	}
+	refresh := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.ID != boundAuthID {
+			refresh = append(refresh, candidate)
+		}
+	}
+	return refresh
 }
 
 type requiredAuthKindContextKey struct{}
@@ -1998,24 +2102,58 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if isQuotaRecoverySelector(selector) {
+	isGSR := isQuotaRecoverySelector(selector)
+	var allAvailable []*Auth
+	if isGSR {
 		candidates = cloneAuthSlice(candidates)
-		m.mu.RUnlock()
-		preparedCandidates, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, candidates, model)
+	}
+	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
+	if isGSR {
+		var errAllAvailable error
+		allAvailable, errAllAvailable = m.availableAuthsForRouteModelAcrossPriorities(candidates, provider, model, time.Now())
+		if errAllAvailable != nil {
+			allAvailable = cloneAuthSlice(candidates)
+		}
+		allAvailable = cloneAuthSlice(allAvailable)
+	}
+	m.mu.RUnlock()
+	if errAvailable != nil {
+		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
+		return nil, nil, errAvailable
+	}
+	var gsrInfo quotaRecoveryFallbackInfo
+	if isGSR {
+		refreshCandidates := quotaRecoveryRefreshCandidates(m, selector, provider, model, opts, selectorAuths)
+		preparedCandidates, preparation, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, refreshCandidates, model)
 		if errRecovery != nil {
 			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errRecovery)
 			return nil, nil, errRecovery
 		}
-		candidates = preparedCandidates
+		allAvailable = retainLiveQuotaRecoveryCandidates(m, allAvailable)
 		m.mu.RLock()
-	}
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
-	if errAvailable != nil {
+		allAvailable = mergePreparedQuotaRecoveryCandidates(allAvailable, preparedCandidates, refreshCandidates)
+		allAvailable = filterQuotaRecoveryCandidates(allAvailable, func(candidate *Auth) bool {
+			if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
+				return false
+			}
+			if _, used := tried[candidate.ID]; used {
+				return false
+			}
+			if canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
+				return false
+			}
+			return modelKey == "" || m.authSupportsRouteModel(registryRef, candidate, model)
+		})
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, allAvailable, provider, model, time.Now())
 		m.mu.RUnlock()
-		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
-		return nil, nil, errAvailable
+		if errAvailable != nil {
+			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
+			return nil, nil, errAvailable
+		}
+		gsrInfo = quotaRecoveryFallbackInfoForAuths(selectorAuths, provider, model)
+		gsrInfo.refreshTried = preparation.refreshTried
+		gsrInfo.refreshError = preparation.refreshError
 	}
-	m.mu.RUnlock()
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
 	if errPick != nil {
@@ -2024,6 +2162,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if !handled {
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		if isGSR && gsrInfo.missing > 0 {
+			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
+		}
 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
@@ -2299,6 +2440,13 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if len(providerSet) == 0 {
 		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	selectionProvider := "mixed"
+	if len(providerSet) == 1 {
+		for providerKey := range providerSet {
+			selectionProvider = providerKey
+		}
+	}
+	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = selectionProvider
 
 	m.mu.RLock()
 	selector := m.selector
@@ -2346,33 +2494,77 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if isQuotaRecoverySelector(selector) {
+	isGSR := isQuotaRecoverySelector(selector)
+	var allAvailable []*Auth
+	if isGSR {
 		candidates = cloneAuthSlice(candidates)
-		m.mu.RUnlock()
-		preparedCandidates, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, candidates, model)
+	}
+	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, selectionProvider, model, time.Now())
+	if isGSR {
+		var errAllAvailable error
+		allAvailable, errAllAvailable = m.availableAuthsForRouteModelAcrossPriorities(candidates, selectionProvider, model, time.Now())
+		if errAllAvailable != nil {
+			allAvailable = cloneAuthSlice(candidates)
+		}
+		allAvailable = cloneAuthSlice(allAvailable)
+	}
+	m.mu.RUnlock()
+	if errAvailable != nil {
+		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
+		return nil, nil, "", errAvailable
+	}
+	var gsrInfo quotaRecoveryFallbackInfo
+	if isGSR {
+		refreshCandidates := quotaRecoveryRefreshCandidates(m, selector, selectionProvider, model, opts, selectorAuths)
+		preparedCandidates, preparation, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, refreshCandidates, model)
 		if errRecovery != nil {
 			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errRecovery)
 			return nil, nil, "", errRecovery
 		}
-		candidates = preparedCandidates
+		allAvailable = retainLiveQuotaRecoveryCandidates(m, allAvailable)
 		m.mu.RLock()
-	}
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
-	if errAvailable != nil {
+		allAvailable = mergePreparedQuotaRecoveryCandidates(allAvailable, preparedCandidates, refreshCandidates)
+		allAvailable = filterQuotaRecoveryCandidates(allAvailable, func(candidate *Auth) bool {
+			if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
+				return false
+			}
+			if _, used := tried[candidate.ID]; used {
+				return false
+			}
+			providerKey := executorKeyFromAuth(candidate)
+			if providerKey == "" {
+				return false
+			}
+			if _, ok := providerSet[providerKey]; !ok {
+				return false
+			}
+			if _, ok := m.executorLocked(providerKey); !ok {
+				return false
+			}
+			return modelKey == "" || m.authSupportsRouteModel(registryRef, candidate, model)
+		})
+		available, selectorAuths, errAvailable = m.availableAuthsForSelector(selector, allAvailable, selectionProvider, model, time.Now())
 		m.mu.RUnlock()
-		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
-		return nil, nil, "", errAvailable
+		if errAvailable != nil {
+			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
+			return nil, nil, "", errAvailable
+		}
+		gsrInfo = quotaRecoveryFallbackInfoForAuths(selectorAuths, selectionProvider, model)
+		gsrInfo.refreshTried = preparation.refreshTried
+		gsrInfo.refreshError = preparation.refreshError
 	}
-	m.mu.RUnlock()
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, selectionProvider, providers, model, opts, tried, available)
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 		return nil, nil, "", errPick
 	}
 	if !handled {
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
-		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+		if isGSR && gsrInfo.missing > 0 {
+			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
+		}
+		selected, errPick = selector.Pick(selectorCtx, selectionProvider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)

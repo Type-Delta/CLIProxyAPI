@@ -25,6 +25,9 @@ func GSRAllowanceTierForAuth(auth *Auth, provider string) GSRAllowanceTier {
 	if auth == nil {
 		return GSRAllowanceUnknown
 	}
+	if resolvedProvider := QuotaRecoveryProviderForAuth(auth); resolvedProvider != "" || strings.TrimSpace(auth.Attributes["usage_probe"]) != "" {
+		provider = resolvedProvider
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if strings.Contains(provider, "zai") {
 		provider = "zai"

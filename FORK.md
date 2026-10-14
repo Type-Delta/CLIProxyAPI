@@ -1127,6 +1127,34 @@ Kiro reasoning events do not carry Anthropic-compatible signatures, so CPA retai
 
 **Last updated:** 2026-10-14
 
+### DL036 - GSR request fallback and quota-provider identity
+
+Greedy-soonest-recovery now keeps the complete eligible credential pool when a
+quota refresh fails or a recovery timestamp is missing, expired, malformed, or
+not anchored to an observation time. That request falls back to the selector's
+persistent round-robin cursor and emits a warning with the request ID, model,
+provider, reason, and eligible, usable, missing, and refresh counts. Normal
+model support, disabled and cooldown state, priority, credential policy, auth
+kind, pins, retry exclusions, and session affinity still apply. An established
+session binding is not refreshed merely because its quota observation is absent;
+credentials removed while a refresh is in flight are not restored. The normal
+GSR weights resume as soon as every credential in the active choice pool has a
+usable recovery timestamp.
+
+Quota refresh now resolves the provider from the configured `usage_probe` and
+normalized credential aliases before selecting an endpoint, parser, or persisted
+signal. This keeps z.ai and OpenCode Go credentials on their own usage services,
+including OpenCode credentials served through the Codex adapter. Mixed-provider
+routing reads each credential's provider-specific recovery signal, and OpenCode
+Go uses its monthly window even for GLM model names. The same fallback applies to
+the scheduler path and normal, streaming, and token-count selection.
+
+**Implementation evidence:** `sdk/cliproxy/auth/{conductor_selection.go,selector.go,scheduler.go,gsr_tier.go,quota_recovery_provider.go}`, `internal/api/handlers/management/usage_probe.go`, and their routing and provider tests.
+
+**Recorded validation:** full `sdk/cliproxy/auth` tests and race tests pass; focused quota-provider and GSR management tests pass; the server builds; a local HTTP fixture served six non-streaming and six streaming requests with a 3:3 round-robin split and emitted fallback warnings, while session affinity stayed on one credential across both modes. The full repository suite passes except the unrelated pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+
+**Last updated:** 2026-10-14
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

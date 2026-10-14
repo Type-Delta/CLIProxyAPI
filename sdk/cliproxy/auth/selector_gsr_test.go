@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -33,12 +32,14 @@ func TestGreedySoonestRecoverySelectorUsesExponentialRecoveryShares(t *testing.T
 	}
 }
 
-func TestGreedySoonestRecoverySelectorRejectsMissingRecoveryTimestamp(t *testing.T) {
+func TestGreedySoonestRecoverySelectorFallsBackWhenRecoveryTimestampMissing(t *testing.T) {
 	selector := &GreedySoonestRecoverySelector{}
-	_, errPick := selector.Pick(context.Background(), "zai", "glm-5", cliproxyexecutor.Options{}, []*Auth{{ID: "missing", Provider: "zai"}})
-	var authErr *Error
-	if !errors.As(errPick, &authErr) || authErr.Code != "gsr_recovery_timestamp_missing" {
-		t.Fatalf("Pick() error = %v, want gsr_recovery_timestamp_missing", errPick)
+	picked, errPick := selector.Pick(context.Background(), "zai", "glm-5", cliproxyexecutor.Options{}, []*Auth{{ID: "missing", Provider: "zai"}})
+	if errPick != nil {
+		t.Fatalf("Pick() error = %v", errPick)
+	}
+	if picked == nil || picked.ID != "missing" {
+		t.Fatalf("Pick() = %#v, want missing auth", picked)
 	}
 }
 
