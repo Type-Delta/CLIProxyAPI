@@ -1118,6 +1118,8 @@ Kiro now uses the shared executor usage reporter for both non-streaming and stre
 
 The bundled CPAMC labels credit-billed Kiro allowances as credits with fractional amounts, shows the row percentage unrounded with the same formatter as the quota summary and timeline, and gives the Kiro timeline lane its monthly period so the current window draws a bar.
 
+Kiro usage is priced with Amazon Bedrock rates from the models.dev `amazon-bedrock` catalog when no other catalog rule covers the model. Anthropic Bedrock IDs map to CPA Claude IDs by dropping the `anthropic.` prefix and `-vN[:M]` suffix. The `global.` cross-region price wins over the bare regional ID, and regional prefixes such as `us.` or `eu.` are ignored. An explicit `kiro` catalog binding takes precedence. Existing events keep their stored cost until a reprice job runs (`internal/cpauk/store/pricing_discovery.go`, `TestModelsDevFeedPricesKiroWithBedrockFallback`).
+
 **Recorded validation:** Kiro usage tests cover non-streaming and streaming success, a single stream record, and 429 failures. Live requests through an Identity Center credential produced one analytics event each (Claude and OpenAI-format, streaming and non-streaming), and the quota page showed matching credit percentages in the summary, row, and monthly timeline bar.
 
 **Last updated:** 2026-10-12

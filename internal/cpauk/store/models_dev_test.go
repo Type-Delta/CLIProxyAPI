@@ -117,3 +117,44 @@ func TestPricingCatalogPersistsProviders(t *testing.T) {
 }
 
 func refTime(now time.Time) *time.Time { return &now }
+
+func TestModelsDevFeedPricesKiroWithBedrockFallback(t *testing.T) {
+	client := &http.Client{Transport: modelsDevTransport(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{
+			"amazon-bedrock":{"models":{
+				"anthropic.claude-sonnet-4-5-20250929-v1:0":{"id":"anthropic.claude-sonnet-4-5-20250929-v1:0","cost":{"input":3,"output":15,"cache_read":0.3}},
+				"anthropic.claude-opus-4-6-v1":{"id":"anthropic.claude-opus-4-6-v1","cost":{"input":5.5,"output":27.5}},
+				"global.anthropic.claude-opus-4-6-v1":{"id":"global.anthropic.claude-opus-4-6-v1","cost":{"input":5,"output":25}},
+				"us.anthropic.claude-sonnet-4-6":{"id":"us.anthropic.claude-sonnet-4-6","cost":{"input":3.3,"output":16.5}},
+				"amazon.nova-pro-v1:0":{"id":"amazon.nova-pro-v1:0","cost":{"input":0.8,"output":3.2}}
+			}},
+			"kiro-catalog":{"models":{"claude-opus-4-6":{"id":"claude-opus-4-6","cost":{"input":1,"output":2}}}}
+		}`))}, nil
+	})}
+	fetch := func(bindings []CatalogBinding) map[string]model.NanoUSD {
+		catalog, err := modelsDevFetcher{client: client, bindings: bindings}.Fetch(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateFetchedCatalog(catalog.Rules, catalog.Digest); err != nil {
+			t.Fatal(err)
+		}
+		prices := make(map[string]model.NanoUSD)
+		for _, rule := range catalog.Rules {
+			if rule.Provider == "kiro" {
+				prices[rule.Model] = *rule.InputPerMillion
+			}
+		}
+		return prices
+	}
+	prices := fetch(nil)
+	want := map[string]model.NanoUSD{"claude-sonnet-4-5-20250929": 3_000_000_000, "claude-opus-4-6": 5_000_000_000}
+	if len(prices) != len(want) || prices["claude-sonnet-4-5-20250929"] != want["claude-sonnet-4-5-20250929"] || prices["claude-opus-4-6"] != want["claude-opus-4-6"] {
+		t.Fatalf("kiro bedrock prices = %v, want %v", prices, want)
+	}
+	// An explicit Kiro catalog binding keeps precedence over the Bedrock fallback.
+	prices = fetch([]CatalogBinding{{Provider: "kiro", Catalog: "kiro-catalog"}})
+	if prices["claude-opus-4-6"] != 1_000_000_000 || prices["claude-sonnet-4-5-20250929"] != 3_000_000_000 {
+		t.Fatalf("kiro prices with binding = %v", prices)
+	}
+}

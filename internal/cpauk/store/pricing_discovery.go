@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -456,6 +457,11 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 			rules = append(rules, rule)
 		}
 	}
+	kiroRules, err := kiroBedrockFallbackRules(providers[bedrockModelsDevProvider], rules)
+	if err != nil {
+		return PricingCatalog{}, err
+	}
+	rules = append(rules, kiroRules...)
 	sort.Slice(rules, func(i, j int) bool {
 		if rules[i].Provider != rules[j].Provider {
 			return rules[i].Provider < rules[j].Provider
@@ -491,6 +497,60 @@ var modelsDevProviderMappings = []modelsDevProviderMapping{
 	{cpa: "aistudio", modelsDev: "google"},
 	{cpa: "vertex", modelsDev: "google-vertex"},
 	{cpa: "xai", modelsDev: "xai"},
+}
+
+const bedrockModelsDevProvider = "amazon-bedrock"
+
+var bedrockVersionSuffix = regexp.MustCompile(`-v\d+(?::\d+)?$`)
+
+// kiroBedrockFallbackRules prices Kiro's Claude models with Amazon Bedrock
+// rates when no other catalog rule covers the model. Bedrock IDs such as
+// "global.anthropic.claude-sonnet-4-5-20250929-v1:0" become the CPA model ID
+// "claude-sonnet-4-5-20250929"; global pricing wins over the bare regional ID.
+func kiroBedrockFallbackRules(bedrock modelsDevProvider, existing []aggregate.PricingRule) ([]aggregate.PricingRule, error) {
+	covered := make(map[string]struct{})
+	for _, rule := range existing {
+		if rule.Provider == "kiro" && rule.Model != "" {
+			covered[rule.Model] = struct{}{}
+		}
+	}
+	type candidate struct {
+		entry  modelsDevModel
+		global bool
+	}
+	candidates := make(map[string]candidate)
+	for modelID, entry := range bedrock.Models {
+		if entry.ID == "" {
+			entry.ID = modelID
+		}
+		bedrockID := entry.ID
+		global := strings.HasPrefix(bedrockID, "global.")
+		bedrockID = strings.TrimPrefix(bedrockID, "global.")
+		if !strings.HasPrefix(bedrockID, "anthropic.") {
+			continue
+		}
+		cpaModel := bedrockVersionSuffix.ReplaceAllString(strings.TrimPrefix(bedrockID, "anthropic."), "")
+		if _, ok := covered[cpaModel]; ok {
+			continue
+		}
+		if current, ok := candidates[cpaModel]; ok && (current.global || !global) {
+			continue
+		}
+		candidates[cpaModel] = candidate{entry: entry, global: global}
+	}
+	rules := make([]aggregate.PricingRule, 0, len(candidates))
+	for cpaModel, picked := range candidates {
+		entry := picked.entry
+		bedrockID := entry.ID
+		entry.ID = cpaModel
+		rule, err := modelsDevRule("kiro", entry)
+		if err != nil {
+			return nil, err
+		}
+		rule.ID = "models.dev:kiro:" + bedrockModelsDevProvider + ":" + bedrockID
+		rules = append(rules, rule)
+	}
+	return rules, nil
 }
 
 func modelsDevRule(provider string, entry modelsDevModel) (aggregate.PricingRule, error) {
