@@ -621,8 +621,13 @@ func (c *SDKConfig) ValidateAPIKeyLimits() error {
 	for _, indexes := range DuplicateAPIKeyIndexes(c.APIKeys) {
 		log.WithField("config_indexes", indexes).Warn("configured API key appears more than once; usage shares one identity")
 	}
-	if indexes := WeakAPIKeyIndexes(c.APIKeys); len(indexes) > 0 {
-		log.WithField("config_indexes", indexes).Warn("configured API keys are short or use a predictable pattern")
+	for _, index := range WeakAPIKeyIndexes(c.APIKeys) {
+		entry := c.APIKeys[index]
+		log.WithFields(log.Fields{
+			"config_index": index,
+			"label":        entry.Label,
+			"key_id":       APIKeyID(entry.Key)[:12],
+		}).Warn("configured API key is short or uses a predictable pattern")
 	}
 	return nil
 }
