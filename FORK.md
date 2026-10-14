@@ -353,8 +353,8 @@ and metadata preservation. The bundled panel was rebuilt from CPAMC commit
 
 CPA protects the known CPAMC quota and account-information requests forwarded
 through `POST /v0/management/api-call`. Concurrent identical requests for a
-credential share one upstream call, and completed results are reused for one
-minute across management clients. This protection runs before OAuth token
+credential share one upstream call, and completed results are reused for three
+minutes across management clients. This protection runs before OAuth token
 resolution so repeated refreshes also share credential acquisition work.
 
 An upstream HTTP 429 blocks further quota requests for the same credential and
@@ -363,7 +363,7 @@ supported; missing or invalid values use a three-minute backoff. The backoff
 covers sibling quota endpoints and provider fallback hosts, including 429s
 received during token refresh or before an interrupted response body. Other
 credentials remain independent. A 429 uses its retry deadline instead of the ordinary
-one-minute result lifetime.
+three-minute result lifetime.
 
 Cached provider Date headers advance by cache residence time so CPAMC retains
 the provider clock offset used by quota countdowns.

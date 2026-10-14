@@ -557,22 +557,22 @@ func TestAPICallQuotaRefresh401DoesNotCreateManagementBan(t *testing.T) {
 	}
 }
 
-func TestAPICallQuotaRefreshResponseCooldownIsOneMinute(t *testing.T) {
+func TestAPICallQuotaRefreshResponseCooldownIsThreeMinutes(t *testing.T) {
 	proxy := newQuotaProxy(t)
 	now := time.Unix(1000, 0)
 	h := quotaHandler(proxy)
 	h.quotaCache = newAPICallQuotaCache(func() time.Time { return now })
 	target := "https://api.anthropic.com/api/oauth/usage"
 	quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
-	now = now.Add(59 * time.Second)
+	now = now.Add(3*time.Minute - time.Second)
 	quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
 	if got := proxy.count.Load(); got != 1 {
-		t.Fatalf("provider call count at 59s = %d, want one cached result", got)
+		t.Fatalf("provider call count at 2m59s = %d, want one cached result", got)
 	}
 	now = now.Add(time.Second)
 	quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
 	if got := proxy.count.Load(); got != 2 {
-		t.Fatalf("provider call count at exactly one minute = %d, want two", got)
+		t.Fatalf("provider call count at exactly three minutes = %d, want two", got)
 	}
 }
 
@@ -619,7 +619,7 @@ func TestAPICallQuotaRefreshShortRetryAfterExpiresBeforeNormalResultCooldown(t *
 	now = now.Add(2 * time.Second)
 	quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
 	if got := proxy.count.Load(); got != 2 {
-		t.Fatalf("provider call count after short Retry-After = %d, want two; 429 must not extend to one-minute result TTL", got)
+		t.Fatalf("provider call count after short Retry-After = %d, want two; 429 must not extend to the result TTL", got)
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	quotaResultCacheTTL = time.Minute
+	quotaResultCacheTTL = 3 * time.Minute
 	quota429FallbackTTL = 3 * time.Minute
 )
 
