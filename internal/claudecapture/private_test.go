@@ -166,3 +166,69 @@ func TestLoadCurrentUsesPrivateActiveVersion(t *testing.T) {
 		t.Fatal("missing private active executable was accepted")
 	}
 }
+
+func TestLoadCurrentRecoversMissingActivePointer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test executable is a shell script")
+	}
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	root, err := DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := "2.1.269"
+	cli := filepath.Join(root, "versions", version, "node_modules", ".bin", "claude")
+	if err := os.MkdirAll(filepath.Dir(cli), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\necho '2.1.269 (Claude Code)'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profile := referenceFixture()
+	if err := writeProfile(filepath.Join(root, "versions", version, "oauth-profile.json"), profile); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadCurrent()
+	if err != nil || loaded.ClaudeVersion != version {
+		t.Fatalf("recovered private active profile = %v, %v", loaded, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "active.json")); err != nil {
+		t.Fatalf("active pointer was not repaired: %v", err)
+	}
+}
+
+func TestLoadCurrentMigratesLegacyVersionLayout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test executable is a shell script")
+	}
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	root, err := DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := "2.1.269"
+	base := filepath.Join(root, version)
+	cli := filepath.Join(base, "node_modules", ".bin", "claude")
+	if err := os.MkdirAll(filepath.Dir(cli), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\necho '2.1.269 (Claude Code)'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProfile(filepath.Join(base, "oauth-profile.json"), referenceFixture()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadCurrent(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "versions", version)); err != nil {
+		t.Fatalf("legacy version was not migrated: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "active.json")); err != nil {
+		t.Fatalf("active pointer was not created: %v", err)
+	}
+}

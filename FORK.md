@@ -1289,3 +1289,24 @@ Validation on 2026-10-07:
 - `go test ./sdk/api/handlers/openai` passed after the stale fixture correction.
 - `go build -o test-output ./cmd/server && unlink test-output` passed.
 - `go test ./...` was run to completion. It first reported the stale OpenAI fixture (corrected above) and then timed out in the pre-existing `sdk/cliproxy/auth` test `TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota`, blocked in `Manager.persist` on its read lock. A standalone `go test ./sdk/cliproxy/auth -run '^TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota$' -count=1 -timeout=45s` reproduces the timeout, so no unrelated auth implementation was changed.
+
+### 2026-10-15 - Claude reference pointer recovery
+
+The private Claude Code reference updater now repairs a missing `active.json`
+pointer from a complete installed version directory before attempting another
+network update. It also migrates the pre-`8619e12b` layout, where the version
+directory lived directly under `claude-reference`, into the current
+`versions/<version>` layout. This covers an interrupted promotion or a restart
+during the small window after publishing the version and before publishing the
+pointer, so requests do not remain blocked until the updater's retry interval.
+Reference update failures retry after five minutes instead of one hour.
+
+**Implementation evidence:** `internal/claudecapture/update.go`,
+`internal/claudecapture/private_test.go`, and
+`sdk/cliproxy/service_claude_reference.go`.
+
+**Recorded validation:** the regression test removes the activation pointer,
+loads the existing private executable and profile, and verifies that the
+pointer is recreated; the legacy-layout test verifies migration into
+`versions/<version>`. The existing active-version test and focused capture,
+executor, and service package suites also pass.

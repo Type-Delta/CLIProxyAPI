@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,7 @@ import (
 const updateInterval = 24 * time.Hour
 
 var updateMu sync.Mutex
+var activeRepairMu sync.Mutex
 
 type privateReference struct {
 	Version     string
@@ -108,16 +111,122 @@ func readCheckState(root string) checkState {
 }
 
 func activeReference(root string) (privateReference, error) {
-	data, err := os.ReadFile(filepath.Join(root, "active.json"))
+	activePath := filepath.Join(root, "active.json")
+	data, err := os.ReadFile(activePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if recovered, recoverErr := recoverActiveReference(root, activePath); recoverErr == nil {
+				return recovered, nil
+			} else if _, statErr := os.Stat(filepath.Join(root, "versions")); statErr == nil {
+				return privateReference{}, fmt.Errorf("private Claude Code reference is unavailable: %w (repair failed: %v)", err, recoverErr)
+			}
+		}
 		return privateReference{}, fmt.Errorf("private Claude Code reference is unavailable: %w", err)
 	}
-	var state activeState
-	if json.Unmarshal(data, &state) != nil || !exactVersionPattern.MatchString(state.Version) {
+	state, err := decodeActiveState(data)
+	if err != nil {
 		return privateReference{}, errors.New("private Claude Code active reference is invalid")
 	}
-	base := filepath.Join(root, "versions", state.Version)
-	return privateReference{Version: state.Version, Executable: filepath.Join(base, "node_modules", ".bin", "claude"), ProfilePath: filepath.Join(base, "oauth-profile.json")}, nil
+	return privateReferenceForVersion(root, state.Version), nil
+}
+
+func decodeActiveState(data []byte) (activeState, error) {
+	var state activeState
+	if err := json.Unmarshal(data, &state); err != nil || !exactVersionPattern.MatchString(state.Version) {
+		return activeState{}, errors.New("invalid active reference")
+	}
+	return state, nil
+}
+
+func privateReferenceForVersion(root, version string) privateReference {
+	base := filepath.Join(root, "versions", version)
+	return privateReference{Version: version, Executable: filepath.Join(base, "node_modules", ".bin", "claude"), ProfilePath: filepath.Join(base, "oauth-profile.json")}
+}
+
+func recoverActiveReference(root, activePath string) (privateReference, error) {
+	activeRepairMu.Lock()
+	defer activeRepairMu.Unlock()
+	if data, err := os.ReadFile(activePath); err == nil {
+		state, decodeErr := decodeActiveState(data)
+		if decodeErr == nil {
+			return privateReferenceForVersion(root, state.Version), nil
+		}
+	}
+	type candidate struct {
+		version string
+		base    string
+		legacy  bool
+	}
+	var candidates []candidate
+	for _, item := range []struct {
+		root   string
+		legacy bool
+	}{
+		{root: filepath.Join(root, "versions")},
+		{root: root, legacy: true},
+	} {
+		entries, readErr := os.ReadDir(item.root)
+		if readErr != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && exactVersionPattern.MatchString(entry.Name()) {
+				candidates = append(candidates, candidate{version: entry.Name(), base: filepath.Join(item.root, entry.Name()), legacy: item.legacy})
+			}
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].version == candidates[j].version {
+			return !candidates[i].legacy && candidates[j].legacy
+		}
+		return versionGreater(candidates[i].version, candidates[j].version)
+	})
+	for _, candidate := range candidates {
+		reference := privateReference{Version: candidate.version, Executable: filepath.Join(candidate.base, "node_modules", ".bin", "claude"), ProfilePath: filepath.Join(candidate.base, "oauth-profile.json")}
+		installedVersion, err := versionOfPrivate(reference.Executable, root)
+		if err != nil || installedVersion != candidate.version {
+			continue
+		}
+		if _, err := Load(reference.ProfilePath, candidate.version); err != nil {
+			continue
+		}
+		if candidate.legacy {
+			versionsRoot := filepath.Join(root, "versions")
+			if err := os.MkdirAll(versionsRoot, 0700); err != nil {
+				return privateReference{}, err
+			}
+			migrated := filepath.Join(versionsRoot, candidate.version)
+			if _, err := os.Stat(migrated); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return privateReference{}, err
+			}
+			if err := os.Rename(candidate.base, migrated); err != nil {
+				return privateReference{}, err
+			}
+			reference = privateReferenceForVersion(root, candidate.version)
+		}
+		if err := writePrivateJSON(activePath, activeState{Version: candidate.version}); err != nil {
+			return privateReference{}, err
+		}
+		log.WithField("version", candidate.version).Warn("repaired missing Claude Code active reference")
+		return reference, nil
+	}
+	return privateReference{}, errors.New("no complete private Claude Code version is available for recovery")
+}
+
+func versionGreater(left, right string) bool {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	for i := 0; i < len(leftParts) && i < len(rightParts); i++ {
+		leftNumber, leftErr := strconv.Atoi(leftParts[i])
+		rightNumber, rightErr := strconv.Atoi(rightParts[i])
+		if leftErr != nil || rightErr != nil || leftNumber == rightNumber {
+			continue
+		}
+		return leftNumber > rightNumber
+	}
+	return left > right
 }
 
 func lookupLatest(ctx context.Context, root string) (string, error) {

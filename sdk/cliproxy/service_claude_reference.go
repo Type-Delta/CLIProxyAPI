@@ -16,7 +16,7 @@ import (
 )
 
 const claudeReferencePollInterval = time.Minute
-const claudeReferenceFailureRetryInterval = time.Hour
+const claudeReferenceFailureRetryInterval = 5 * time.Minute
 
 // RefreshClaudeReference updates the private Claude Code reference using a CPA
 // OAuth credential. It never consults the user's Claude Code installation.
