@@ -239,12 +239,17 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 	// This allows proper cleanup and cancellation of ongoing requests
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
+	}
+	stream := h.ExecuteStreamWithFirstChunkKeepAlive(c, cliCtx, h.HandlerType(), modelName, rawJSON, "", setSSEHeaders)
+	dataChan, upstreamHeaders, errChan := stream.Data, stream.Headers, stream.Errors
+	if stream.Committed {
+		h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+		return
 	}
 
 	// Peek at the first chunk to determine success or failure before setting headers

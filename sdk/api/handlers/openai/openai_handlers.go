@@ -484,13 +484,17 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
+	}
+	stream := h.ExecuteStreamWithFirstChunkKeepAlive(c, cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c), setSSEHeaders)
+	dataChan, upstreamHeaders, errChan := stream.Data, stream.Headers, stream.Errors
+	if stream.Committed {
+		h.handleStreamResult(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, false)
+		return
 	}
 
 	// Peek at the first chunk to determine success or failure before setting headers
@@ -602,13 +606,17 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 
 	modelName := gjson.GetBytes(chatCompletionsJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "")
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
+	}
+	stream := h.ExecuteStreamWithFirstChunkKeepAlive(c, cliCtx, h.HandlerType(), modelName, chatCompletionsJSON, "", setSSEHeaders)
+	dataChan, upstreamHeaders, errChan := stream.Data, stream.Headers, stream.Errors
+	if stream.Committed {
+		h.forwardCompletionsStream(c, flusher, cliCancel, dataChan, errChan, false)
+		return
 	}
 
 	// Peek at the first chunk
@@ -662,42 +670,49 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 				flusher.Flush()
 			}
 
-			done := make(chan struct{})
-			var doneOnce sync.Once
-			stop := func() { doneOnce.Do(func() { close(done) }) }
-
-			convertedChan := make(chan []byte)
-			go func() {
-				defer close(convertedChan)
-				for {
-					select {
-					case <-done:
-						return
-					case chunk, ok := <-dataChan:
-						if !ok {
-							return
-						}
-						converted := convertChatCompletionsStreamChunkToCompletions(chunk)
-						if converted == nil {
-							continue
-						}
-						select {
-						case <-done:
-							return
-						case convertedChan <- converted:
-						}
-					}
-				}
-			}()
-
-			h.handleStreamResult(c, flusher, func(err error) {
-				stop()
-				cliCancel(err)
-			}, convertedChan, errChan, initialHasFinishReason)
+			h.forwardCompletionsStream(c, flusher, cliCancel, dataChan, errChan, initialHasFinishReason)
 			return
 		}
 	}
 }
+
+// forwardCompletionsStream converts chat-completion chunks to legacy completion chunks
+// while forwarding them.
+func (h *OpenAIAPIHandler) forwardCompletionsStream(c *gin.Context, flusher http.Flusher, cliCancel handlers.APIHandlerCancelFunc, dataChan <-chan []byte, errChan <-chan *interfaces.ErrorMessage, initialHasFinishReason bool) {
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	stop := func() { doneOnce.Do(func() { close(done) }) }
+
+	convertedChan := make(chan []byte)
+	go func() {
+		defer close(convertedChan)
+		for {
+			select {
+			case <-done:
+				return
+			case chunk, ok := <-dataChan:
+				if !ok {
+					return
+				}
+				converted := convertChatCompletionsStreamChunkToCompletions(chunk)
+				if converted == nil {
+					continue
+				}
+				select {
+				case <-done:
+					return
+				case convertedChan <- converted:
+				}
+			}
+		}
+	}()
+
+	h.handleStreamResult(c, flusher, func(err error) {
+		stop()
+		cliCancel(err)
+	}, convertedChan, errChan, initialHasFinishReason)
+}
+
 func chunkHasFinishReason(chunk []byte) bool {
 	chunk = bytes.TrimSpace(chunk)
 	if bytes.HasPrefix(chunk, []byte("data:")) {

@@ -188,13 +188,22 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 	}
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
+	}
+	// Pre-first-chunk keep-alives are SSE comments, so only plain SSE output gets them.
+	var keepAliveHeaders func()
+	if alt == "" {
+		keepAliveHeaders = setSSEHeaders
+	}
+	stream := h.ExecuteStreamWithFirstChunkKeepAlive(c, cliCtx, h.HandlerType(), modelName, rawJSON, alt, keepAliveHeaders)
+	dataChan, upstreamHeaders, errChan := stream.Data, stream.Headers, stream.Errors
+	if stream.Committed {
+		h.forwardGeminiStream(c, flusher, alt, func(err error) { cliCancel(err) }, dataChan, errChan)
+		return
 	}
 
 	// Peek at the first chunk

@@ -725,8 +725,6 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		finishDelivery(err)
 		cancelExecution(err)
 	}
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -740,6 +738,13 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	}
 	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient, canComplete: func() bool { return usage.StreamDeliverySupported(cliCtx) }}
 	var initialOutput bytes.Buffer
+
+	stream := h.ExecuteStreamWithFirstChunkKeepAlive(c, cliCtx, h.HandlerType(), modelName, rawJSON, "", setSSEHeaders)
+	dataChan, upstreamHeaders, errChan := stream.Data, stream.Headers, stream.Errors
+	if stream.Committed {
+		h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, framer)
+		return
+	}
 
 	// Peek at the first complete SSE data frame.
 	for {

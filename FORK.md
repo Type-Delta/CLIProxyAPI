@@ -1194,6 +1194,18 @@ The bundled panel (CPAMC `ea920e8`) adds the quota reserve editor to the auth-fi
 
 **Last updated:** 2026-10-15
 
+### DL039 - Streaming keep-alives before the first upstream chunk
+
+`streaming.keepalive-seconds` previously started only after the first upstream chunk, because the SSE handlers hold the response until then to return fast failures with their real status. While credential selection, cooldown waits, retries, or the upstream's time to first token were pending, the client received nothing, and proxies in front of CPA cut those requests: nginx's 60s `proxy_read_timeout` (504) and Cloudflare's 125s origin timeout (524). Cloudflare forwards `103 Early Hints` but does not reset its timer on it, so an interim status is not an alternative.
+
+The Claude Messages, OpenAI Chat Completions, legacy Completions, OpenAI Responses, and Gemini SSE stream handlers now run stream setup in the background through `ExecuteStreamWithFirstChunkKeepAlive`. Nothing is written until one keep-alive interval passes without a first chunk or error, so fast failures still return their JSON error and HTTP status. After that the handler commits HTTP 200 with SSE headers and writes `: keep-alive` every interval until the first outcome. Once committed, the first chunk and later chunks go through the handler's existing forwarder, and a late failure is delivered as that protocol's in-stream error event (`event: error` for Claude, a `response.failed` or `error` event for Responses). Upstream response headers cannot reach the client after an early commit. No new config is added; `keepalive-seconds: 0` keeps the previous behavior, and Gemini `alt` (non-SSE) output is unchanged.
+
+**Implementation evidence:** `sdk/api/handlers/stream_first_chunk.go`, `sdk/api/handlers/claude/code_handlers.go`, `sdk/api/handlers/openai/{openai_handlers.go,openai_responses_handlers.go}`, `sdk/api/handlers/gemini/gemini_handlers.go`, `sdk/api/handlers/stream_first_chunk_test.go`, and `sdk/api/handlers/claude/code_handlers_keepalive_test.go`.
+
+**Recorded validation:** race tests cover keep-alives while stream setup is pending and while the first chunk is pending, fast success and fast errors staying uncommitted with their status, a late error redelivered for in-stream reporting, the disabled interval, and client disconnect; the Claude handler tests check keep-alives before the payload, a late 503 as one in-stream `event: error`, and a fast 503 as JSON. Against a local upstream that stays silent for 30s, Claude Messages and Responses streams sent `: keep-alive` every 5s from 5s on, and Claude Code and Codex both completed. Through a Cloudflare-proxied test hostname with a 150s silent upstream and a 15s interval, Claude Messages and Responses streams, a non-streaming Messages request, and a real Claude Code run all completed at 150s, past the 125s origin timeout. The full repository suite passes except the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+
+**Last updated:** 2026-10-15
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
