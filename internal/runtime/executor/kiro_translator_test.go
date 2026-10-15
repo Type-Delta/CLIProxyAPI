@@ -25,6 +25,26 @@ func TestNormalizeKiroModelID(t *testing.T) {
 	}
 }
 
+// Tool-only assistant turns must reach Kiro with empty content: a filler string
+// there gets imitated by the model and echoed back as visible assistant text.
+func TestBuildKiroPayloadKeepsToolOnlyAssistantTurnEmpty(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"list files"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"bash","input":{"cmd":"ls"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"a.txt"}]}]}`)
+	payload, err := buildKiroPayload("claude-sonnet-4-6", body, "", "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant := gjson.GetBytes(payload, "conversationState.history.1.assistantResponseMessage")
+	if !assistant.Get("content").Exists() || assistant.Get("content").String() != "" {
+		t.Fatalf("assistant content = %s", assistant.Get("content").Raw)
+	}
+	if got := assistant.Get("toolUses.0.toolUseId").String(); got != "toolu_1" {
+		t.Fatalf("toolUseId = %q", got)
+	}
+	if got := gjson.GetBytes(payload, "conversationState.currentMessage.userInputMessage.content"); got.String() != "" {
+		t.Fatalf("current content = %s", got.Raw)
+	}
+}
+
 func TestBuildKiroPayloadConvertsClaudeMessages(t *testing.T) {
 	body := []byte(`{"system":"Follow the user","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"result"}]}],"tools":[{"name":"lookup","description":"Lookup","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]}`)
 	payload, err := buildKiroPayload("claude-sonnet-4-5-20250929", body, "arn:profile", "conversation-1")
@@ -42,7 +62,7 @@ func TestBuildKiroPayloadConvertsClaudeMessages(t *testing.T) {
 	if current["modelId"] != "claude-sonnet-4.5" {
 		t.Fatalf("modelId = %#v", current["modelId"])
 	}
-	if current["content"] != "(empty placeholder)" {
+	if current["content"] != "" {
 		t.Fatalf("current content = %#v", current["content"])
 	}
 	history := decoded["conversationState"].(map[string]any)["history"].([]any)
@@ -131,7 +151,7 @@ func TestBuildKiroPayloadNormalizesTurnsLikeGateway(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("history = %#v", history)
 	}
-	if got := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"]; got != "(empty placeholder)" {
+	if got := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"]; got != "" {
 		t.Fatalf("synthetic user = %#v", got)
 	}
 	if got := history[1].(map[string]any)["assistantResponseMessage"].(map[string]any)["content"]; got != "context" {
