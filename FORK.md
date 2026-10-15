@@ -1184,7 +1184,7 @@ Checks are lazy: after a request result is recorded, a background check reads th
 
 Requests carry the client key ID in execution metadata (`client_key_id`, config-key principals only). While any credential is capped, selection uses the legacy candidate loops instead of the scheduler fast path, because the scheduler index cannot apply per-request bypass. The credentials listing exposes `usage_caps`, `usage_cap_bypass_keys`, and the active `usage_cap_state`. Config validation and `PATCH /v8/management/credentials/fields` reject out-of-range caps and bypass entries that are not key IDs.
 
-The bundled panel (CPAMC `93d9cce`) adds the cap editor to the auth-file sheet and the Z.ai/OpenCode Go provider form, a draggable handle per bar, a searchable bypass-key picker, the reserved region drawn as candy stripes in the bar's own colour, cap details in row tooltips, and a Capped badge.
+The bundled panel (CPAMC `f2f7d99`) adds the cap editor to the auth-file sheet and the Z.ai/OpenCode Go provider form, a draggable handle per bar, a searchable bypass-key picker, candy stripes in the bar's own colour on the part of the fill inside the reserve, cap details in row tooltips, and a Capped badge.
 
 **Implementation evidence:** `sdk/cliproxy/auth/usage_cap.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{usage_cap_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets.
 
