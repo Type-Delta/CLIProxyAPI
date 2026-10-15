@@ -86,6 +86,18 @@ func TestCaptureProxyRejectsUnexpectedCredentialBeforeRelay(t *testing.T) {
 	}
 }
 
+func TestPrivateCaptureOutputIsBounded(t *testing.T) {
+	var output privateCaptureOutput
+	input := bytes.Repeat([]byte("x"), privateCaptureOutputLimit+1)
+	written, err := output.Write(input)
+	if err != nil || written != len(input) {
+		t.Fatalf("write = %d, %v; want %d, nil", written, err, len(input))
+	}
+	if output.Len() != privateCaptureOutputLimit || !strings.HasSuffix(output.String(), "[output truncated]") {
+		t.Fatalf("captured output length=%d truncated=%v", output.Len(), output.truncated)
+	}
+}
+
 func TestCaptureRecognizesCompletedCompressedMessages(t *testing.T) {
 	sse := []byte("event: message_start\ndata: {}\n\nevent: message_stop\ndata: {}\n\n")
 	encoders := map[string]func(*bytes.Buffer) io.WriteCloser{

@@ -1310,3 +1310,17 @@ loads the existing private executable and profile, and verifies that the
 pointer is recreated; the legacy-layout test verifies migration into
 `versions/<version>`. The existing active-version test and focused capture,
 executor, and service package suites also pass.
+
+### 2026-10-15 - Claude capture failure diagnostics
+
+Private Claude Code capture failures retain at most 16 KiB of the probe's
+stdout and stderr in the returned error, redact the OAuth token, and preserve
+bounded-memory behavior. This makes release or credential compatibility
+failures diagnosable from the updater log instead of reducing them to `exit
+status 1`.
+
+**Implementation evidence:** `internal/claudecapture/capture.go` and
+`internal/claudecapture/capture_test.go`.
+
+**Recorded validation:** the bounded-output regression and focused capture,
+executor, and service package suites pass; the disposable server build passes.

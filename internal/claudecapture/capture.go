@@ -40,6 +40,36 @@ type CaptureOptions struct {
 	StateDir   string
 }
 
+const privateCaptureOutputLimit = 16 << 10
+
+type privateCaptureOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *privateCaptureOutput) Write(p []byte) (int, error) {
+	if b.Len() < privateCaptureOutputLimit {
+		remaining := privateCaptureOutputLimit - b.Len()
+		if len(p) > remaining {
+			_, _ = b.Buffer.Write(p[:remaining])
+			b.truncated = true
+		} else {
+			_, _ = b.Buffer.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *privateCaptureOutput) String() string {
+	output := strings.TrimSpace(b.Buffer.String())
+	if b.truncated {
+		output += " [output truncated]"
+	}
+	return output
+}
+
 // CapturePrivate probes a CPA-private Claude executable using an OAuth token
 // supplied on an inherited pipe. All CLI state stays under StateDir.
 func CapturePrivate(ctx context.Context, options CaptureOptions) error {
@@ -98,9 +128,15 @@ func CapturePrivate(ctx context.Context, options CaptureOptions) error {
 	command := exec.CommandContext(ctx, options.Executable, "--print", "Reply with OK.", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku", "--tools", "")
 	command.Dir = privateDir
 	command.Env = privateCommandEnvironment(privateDir, listener.Addr().String(), caPath)
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	var stdout, stderr privateCaptureOutput
+	command.Stdout = &stdout
+	command.Stderr = &stderr
 	if err := runWithOAuthDescriptor(command, options.OAuthToken); err != nil {
+		detail := strings.TrimSpace(strings.TrimSpace(stdout.String() + "\n" + stderr.String()))
+		detail = strings.ReplaceAll(detail, options.OAuthToken, "<redacted>")
+		if detail != "" {
+			return fmt.Errorf("private Claude Code OAuth probe failed: %w: %s", err, detail)
+		}
 		return fmt.Errorf("private Claude Code OAuth probe failed: %w", err)
 	}
 	var merged *Profile
