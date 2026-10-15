@@ -1258,7 +1258,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
 	if !result.SkipQuotaObservation {
-		m.scheduleUsageCapCheck(result.AuthID)
+		m.scheduleQuotaReserveCheck(result.AuthID)
 	}
 }
 

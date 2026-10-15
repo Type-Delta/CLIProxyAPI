@@ -60,8 +60,8 @@ type VertexCompatKey struct {
 	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 
-	// UsageCapConfig keeps a reserve on this credential's usage bars.
-	UsageCapConfig `yaml:",inline"`
+	// QuotaReserveConfig keeps a reserve on this credential's usage bars.
+	QuotaReserveConfig `yaml:",inline"`
 
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`

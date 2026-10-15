@@ -177,9 +177,9 @@ type Manager struct {
 	// recovery-aware (GSR) selection. It must report the observation through
 	// the manager so CPAMC and routing share the same cached state.
 	quotaRecoveryRefresher QuotaRecoveryRefresher
-	// usageCapTracker holds usage-cap capped states and post-request check throttling.
-	usageCapOnce    sync.Once
-	usageCapTracker *usageCapTracker
+	// quotaReserveTracker holds quota-reserve held states and post-request check throttling.
+	quotaReserveOnce    sync.Once
+	quotaReserveTracker *quotaReserveTracker
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
 	homeRuntimeAuths map[string]map[string]*Auth
 	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.

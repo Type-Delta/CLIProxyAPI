@@ -15,77 +15,77 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Usage-cap probes read the same usage endpoints, with the same headers, as the
-// CPAMC quota adapters. Matching requests share one quota cache entry, so a cap
+// Quota-reserve probes read the same usage endpoints, with the same headers, as the
+// CPAMC quota adapters. Matching requests share one quota cache entry, so a reserve
 // check right after the quota page loaded costs no provider call. Bar IDs and
-// remaining-percent math mirror the adapters so a cap set on a rendered bar
+// remaining-percent math mirror the adapters so a reserve set on a rendered bar
 // matches the bar evaluated here.
 //
 // Keep these headers in sync with web/management-center/src/utils/quota/constants.ts
 // and the Z.ai / OpenCode Go / Kiro adapters.
 var (
-	usageCapClaudeHeaders = map[string]string{
+	quotaReserveClaudeHeaders = map[string]string{
 		"User-Agent":     "claude-cli/2.1.280 (external, cli)",
 		"Authorization":  "Bearer $TOKEN$",
 		"Content-Type":   "application/json",
 		"anthropic-beta": "oauth-2025-04-20",
 	}
-	usageCapCodexHeaders = map[string]string{
+	quotaReserveCodexHeaders = map[string]string{
 		"Authorization": "Bearer $TOKEN$",
 		"Content-Type":  "application/json",
 		"User-Agent":    "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)",
 	}
-	usageCapBearerJSONHeaders = map[string]string{
+	quotaReserveBearerJSONHeaders = map[string]string{
 		"Authorization": "Bearer $TOKEN$",
 		"Accept":        "application/json",
 	}
 )
 
-// UsageCapBars is the coreauth.UsageCapProber for supported providers.
-func (h *Handler) UsageCapBars(ctx context.Context, auth *coreauth.Auth) ([]coreauth.UsageCapBar, error) {
+// QuotaReserveBars is the coreauth.QuotaReserveProber for supported providers.
+func (h *Handler) QuotaReserveBars(ctx context.Context, auth *coreauth.Auth) ([]coreauth.QuotaReserveBar, error) {
 	if h == nil || auth == nil {
-		return nil, fmt.Errorf("usage cap probe unavailable")
+		return nil, fmt.Errorf("quota reserve probe unavailable")
 	}
 	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
 	case "claude":
-		body, err := h.usageCapFetch(ctx, auth, claudeUsageQuotaURL, usageCapClaudeHeaders)
+		body, err := h.quotaReserveFetch(ctx, auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders)
 		if err != nil {
 			return nil, err
 		}
-		return claudeUsageCapBars(body)
+		return claudeQuotaReserveBars(body)
 	case "codex":
-		headers := cloneStringMap(usageCapCodexHeaders)
-		if accountID := codexUsageCapAccountID(auth); accountID != "" {
+		headers := cloneStringMap(quotaReserveCodexHeaders)
+		if accountID := codexQuotaReserveAccountID(auth); accountID != "" {
 			headers["Chatgpt-Account-Id"] = accountID
 		}
-		body, err := h.usageCapFetch(ctx, auth, codexUsageQuotaURL, headers)
+		body, err := h.quotaReserveFetch(ctx, auth, codexUsageQuotaURL, headers)
 		if err != nil {
 			return nil, err
 		}
-		return codexUsageCapBars(body)
+		return codexQuotaReserveBars(body)
 	case "zai":
-		body, err := h.usageCapFetch(ctx, auth, zaiUsageQuotaURL, usageCapBearerJSONHeaders)
+		body, err := h.quotaReserveFetch(ctx, auth, zaiUsageQuotaURL, quotaReserveBearerJSONHeaders)
 		if err != nil {
 			return nil, err
 		}
-		return zaiUsageCapBars(body)
+		return zaiQuotaReserveBars(body)
 	case "opencode-go":
-		body, err := h.usageCapFetch(ctx, auth, opencodeGoUsageQuotaURL, usageCapBearerJSONHeaders)
+		body, err := h.quotaReserveFetch(ctx, auth, opencodeGoUsageQuotaURL, quotaReserveBearerJSONHeaders)
 		if err != nil {
 			return nil, err
 		}
-		return opencodeGoUsageCapBars(body)
+		return opencodeGoQuotaReserveBars(body)
 	case "kiro":
-		body, err := h.usageCapFetch(ctx, auth, kiroUsageCapURL(auth), usageCapBearerJSONHeaders)
+		body, err := h.quotaReserveFetch(ctx, auth, kiroQuotaReserveURL(auth), quotaReserveBearerJSONHeaders)
 		if err != nil {
 			return nil, err
 		}
-		return kiroUsageCapBars(body)
+		return kiroQuotaReserveBars(body)
 	}
-	return nil, fmt.Errorf("provider %q has no usage cap probe", auth.Provider)
+	return nil, fmt.Errorf("provider %q has no quota reserve probe", auth.Provider)
 }
 
-func (h *Handler) usageCapFetch(ctx context.Context, auth *coreauth.Auth, targetURL string, headers map[string]string) ([]byte, error) {
+func (h *Handler) quotaReserveFetch(ctx context.Context, auth *coreauth.Auth, targetURL string, headers map[string]string) ([]byte, error) {
 	parsedURL, errParse := url.Parse(targetURL)
 	if errParse != nil || parsedURL.Host == "" {
 		return nil, fmt.Errorf("invalid usage URL")
@@ -104,14 +104,14 @@ func (h *Handler) usageCapFetch(ctx context.Context, auth *coreauth.Auth, target
 	return []byte(outcome.response.Body), nil
 }
 
-// applyUsageCapsFromQuotaRead evaluates caps from a management quota read so a
+// applyQuotaReserveFromQuotaRead evaluates reserves from a management quota read so a
 // quota-page refresh updates routing without waiting for the next request.
-func (h *Handler) applyUsageCapsFromQuotaRead(auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
-	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil || len(coreauth.UsageCapsForAuth(auth)) == 0 {
+func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil || len(coreauth.QuotaReservesForAuth(auth)) == 0 {
 		return
 	}
 	var (
-		bars []coreauth.UsageCapBar
+		bars []coreauth.QuotaReserveBar
 		err  error
 	)
 	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
@@ -119,32 +119,32 @@ func (h *Handler) applyUsageCapsFromQuotaRead(auth *coreauth.Auth, parsedURL *ur
 		if !exactQuotaURL(parsedURL, claudeUsageQuotaURL) {
 			return
 		}
-		bars, err = claudeUsageCapBars(body)
+		bars, err = claudeQuotaReserveBars(body)
 	case "codex":
 		if !exactQuotaURL(parsedURL, codexUsageQuotaURL) {
 			return
 		}
-		bars, err = codexUsageCapBars(body)
+		bars, err = codexQuotaReserveBars(body)
 	case "zai":
 		if !exactQuotaURL(parsedURL, zaiUsageQuotaURL) {
 			return
 		}
-		bars, err = zaiUsageCapBars(body)
+		bars, err = zaiQuotaReserveBars(body)
 	case "opencode-go":
 		if !exactQuotaURL(parsedURL, opencodeGoUsageQuotaURL) {
 			return
 		}
-		bars, err = opencodeGoUsageCapBars(body)
+		bars, err = opencodeGoQuotaReserveBars(body)
 	case "kiro":
 		if parsedURL.Host == "" || !strings.HasSuffix(parsedURL.Path, "/getUsageLimits") {
 			return
 		}
-		bars, err = kiroUsageCapBars(body)
+		bars, err = kiroQuotaReserveBars(body)
 	default:
 		return
 	}
 	if err == nil {
-		h.authManager.ApplyUsageCapBars(auth, bars)
+		h.authManager.ApplyQuotaReserveBars(auth, bars)
 	}
 }
 
@@ -160,7 +160,7 @@ func clampRemaining(value float64) float64 {
 	return math.Max(0, math.Min(100, value))
 }
 
-func usageCapResetFromValue(value gjson.Result) time.Time {
+func quotaReserveResetFromValue(value gjson.Result) time.Time {
 	if !value.Exists() || value.Type == gjson.Null {
 		return time.Time{}
 	}
@@ -184,9 +184,9 @@ func usageCapResetFromValue(value gjson.Result) time.Time {
 	return time.Time{}
 }
 
-// claudeUsageCapBars mirrors buildClaudeQuotaWindows: one bar per named window
+// claudeQuotaReserveBars mirrors buildClaudeQuotaWindows: one bar per named window
 // plus the Fable weekly_scoped limit.
-func claudeUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
+func claudeQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode Claude usage response: invalid JSON")
 	}
@@ -215,7 +215,7 @@ func claudeUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 		{"seven_day_cowork", "seven-day-cowork"},
 		{"iguana_necktie", "seven-day-fable"},
 	}
-	bars := make([]coreauth.UsageCapBar, 0, len(windows))
+	bars := make([]coreauth.QuotaReserveBar, 0, len(windows))
 	for _, window := range windows {
 		if window.key == "iguana_necktie" && fable.Exists() {
 			continue
@@ -225,27 +225,27 @@ func claudeUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 		if !value.IsObject() || utilization.Type != gjson.Number {
 			continue
 		}
-		bars = append(bars, coreauth.UsageCapBar{
+		bars = append(bars, coreauth.QuotaReserveBar{
 			ID:               window.id,
 			RemainingPercent: clampRemaining(100 - utilization.Float()),
-			ResetAt:          usageCapResetFromValue(value.Get("resets_at")),
+			ResetAt:          quotaReserveResetFromValue(value.Get("resets_at")),
 		})
 	}
 	if fable.Exists() {
-		bars = append(bars, coreauth.UsageCapBar{
+		bars = append(bars, coreauth.QuotaReserveBar{
 			ID:               "seven-day-fable",
 			RemainingPercent: clampRemaining(100 - fable.Get("percent").Float()),
-			ResetAt:          usageCapResetFromValue(fable.Get("resets_at")),
+			ResetAt:          quotaReserveResetFromValue(fable.Get("resets_at")),
 		})
 	}
 	return bars, nil
 }
 
-var usageCapNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+var quotaReserveNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
-// codexUsageCapBars mirrors buildCodexQuotaWindows: five-hour and weekly or
+// codexQuotaReserveBars mirrors buildCodexQuotaWindows: five-hour and weekly or
 // monthly bars for the standard, code-review, and each additional allowance.
-func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
+func codexQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode Codex usage response: invalid JSON")
 	}
@@ -255,7 +255,7 @@ func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	const minMonthSeconds = 28 * 24 * 60 * 60
 	const maxMonthSeconds = 31 * 24 * 60 * 60
 	now := time.Now()
-	bars := make([]coreauth.UsageCapBar, 0, 6)
+	bars := make([]coreauth.QuotaReserveBar, 0, 6)
 
 	seconds := func(window gjson.Result) (float64, bool) {
 		value := firstGJSON(window, "limit_window_seconds", "limitWindowSeconds")
@@ -297,7 +297,7 @@ func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 			return
 		}
 		used := firstGJSON(window, "used_percent", "usedPercent")
-		reset := usageCapResetFromValue(firstGJSON(window, "reset_at", "resetAt"))
+		reset := quotaReserveResetFromValue(firstGJSON(window, "reset_at", "resetAt"))
 		if reset.IsZero() {
 			if after := firstGJSON(window, "reset_after_seconds", "resetAfterSeconds"); after.Type == gjson.Number && after.Float() >= 0 {
 				reset = now.Add(time.Duration(after.Float() * float64(time.Second))).UTC()
@@ -312,7 +312,7 @@ func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 				return
 			}
 		}
-		bars = append(bars, coreauth.UsageCapBar{ID: id, RemainingPercent: remaining, ResetAt: reset})
+		bars = append(bars, coreauth.QuotaReserveBar{ID: id, RemainingPercent: remaining, ResetAt: reset})
 	}
 	family := func(limit gjson.Result, fiveHourID, weeklyID, monthlyID string) {
 		if !limit.IsObject() {
@@ -341,7 +341,7 @@ func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 		if name == "" {
 			name = strings.TrimSpace(firstGJSON(item, "metered_feature", "meteredFeature").String())
 		}
-		prefix := strings.Trim(usageCapNonAlnum.ReplaceAllString(strings.ToLower(name), "-"), "-")
+		prefix := strings.Trim(quotaReserveNonAlnum.ReplaceAllString(strings.ToLower(name), "-"), "-")
 		if prefix == "" {
 			prefix = fmt.Sprintf("additional-%d", index+1)
 		}
@@ -353,8 +353,8 @@ func codexUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	return bars, nil
 }
 
-// zaiUsageCapBars mirrors buildZaiQuotaWindows.
-func zaiUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
+// zaiQuotaReserveBars mirrors buildZaiQuotaWindows.
+func zaiQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	var response zaiQuotaResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("decode Z.ai quota response: %w", err)
@@ -362,7 +362,7 @@ func zaiUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	if response.Code != http.StatusOK || !response.Success {
 		return nil, fmt.Errorf("Z.ai quota response was unsuccessful")
 	}
-	bars := make([]coreauth.UsageCapBar, 0, len(response.Data.Limits))
+	bars := make([]coreauth.QuotaReserveBar, 0, len(response.Data.Limits))
 	for index, limit := range response.Data.Limits {
 		id := fmt.Sprintf("zai-window-%d", index)
 		switch limit.Unit {
@@ -371,7 +371,7 @@ func zaiUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 		case 6:
 			id = fmt.Sprintf("zai-week-%d", limit.Number)
 		}
-		bar := coreauth.UsageCapBar{ID: id, RemainingPercent: clampRemaining(100 - limit.Percentage)}
+		bar := coreauth.QuotaReserveBar{ID: id, RemainingPercent: clampRemaining(100 - limit.Percentage)}
 		if limit.NextResetTime > 0 {
 			bar.ResetAt = time.UnixMilli(limit.NextResetTime).UTC()
 		}
@@ -380,14 +380,14 @@ func zaiUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	return bars, nil
 }
 
-// opencodeGoUsageCapBars mirrors buildOpenCodeGoQuotaWindows; a non-ok status
+// opencodeGoQuotaReserveBars mirrors buildOpenCodeGoQuotaWindows; a non-ok status
 // counts as exhausted.
-func opencodeGoUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
+func opencodeGoQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode OpenCode Go quota response: invalid JSON")
 	}
 	usage := gjson.GetBytes(body, "usage")
-	bars := make([]coreauth.UsageCapBar, 0, 3)
+	bars := make([]coreauth.QuotaReserveBar, 0, 3)
 	for _, key := range []string{"rolling", "weekly", "monthly"} {
 		window := usage.Get(key)
 		if !window.IsObject() {
@@ -403,18 +403,18 @@ func opencodeGoUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 		if exhausted {
 			remaining = 0
 		}
-		bars = append(bars, coreauth.UsageCapBar{
+		bars = append(bars, coreauth.QuotaReserveBar{
 			ID:               "opencode-go-" + key,
 			RemainingPercent: remaining,
-			ResetAt:          usageCapResetFromValue(window.Get("resetsAt")),
+			ResetAt:          quotaReserveResetFromValue(window.Get("resetsAt")),
 		})
 	}
 	return bars, nil
 }
 
-// kiroUsageCapURL matches CPAMC's buildKiroUsageUrl, which always targets
+// kiroQuotaReserveURL matches CPAMC's buildKiroUsageUrl, which always targets
 // us-east-1 and adds profileArn when the credential has one.
-func kiroUsageCapURL(auth *coreauth.Auth) string {
+func kiroQuotaReserveURL(auth *coreauth.Auth) string {
 	parsed, _ := url.Parse("https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true")
 	if profileARN := kiroAuthValue(auth, "profile_arn"); profileARN != "" {
 		query := parsed.Query()
@@ -424,8 +424,8 @@ func kiroUsageCapURL(auth *coreauth.Auth) string {
 	return parsed.String()
 }
 
-// kiroUsageCapBars mirrors parseKiroQuotaPayload and KiroQuotaBody's remaining percent.
-func kiroUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
+// kiroQuotaReserveBars mirrors parseKiroQuotaPayload and KiroQuotaBody's remaining percent.
+func kiroQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode Kiro usage response: invalid JSON")
 	}
@@ -434,7 +434,7 @@ func kiroUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	if !rows.IsArray() {
 		return nil, fmt.Errorf("Kiro usage response has no usage breakdown")
 	}
-	bars := make([]coreauth.UsageCapBar, 0)
+	bars := make([]coreauth.QuotaReserveBar, 0)
 	build := func(record gjson.Result, index int, trial bool) {
 		used := firstGJSON(record, "currentUsageWithPrecision", "currentUsage", "used")
 		limit := firstGJSON(record, "usageLimitWithPrecision", "usageLimit", "limit")
@@ -461,10 +461,10 @@ func kiroUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 			return
 		}
 		reset := firstGJSON(record, "nextDateReset", "nextDateResetUnix")
-		bars = append(bars, coreauth.UsageCapBar{
+		bars = append(bars, coreauth.QuotaReserveBar{
 			ID:               fmt.Sprintf("kiro-%s-%s-%d", kind, strings.ToLower(resourceType), index),
 			RemainingPercent: remaining,
-			ResetAt:          usageCapResetFromValue(reset),
+			ResetAt:          quotaReserveResetFromValue(reset),
 		})
 	}
 	for index, row := range rows.Array() {
@@ -474,9 +474,9 @@ func kiroUsageCapBars(body []byte) ([]coreauth.UsageCapBar, error) {
 	return bars, nil
 }
 
-// codexUsageCapAccountID matches CPAMC's resolveCodexChatgptAccountId for the
+// codexQuotaReserveAccountID matches CPAMC's resolveCodexChatgptAccountId for the
 // fields the auth-files listing exposes.
-func codexUsageCapAccountID(auth *coreauth.Auth) string {
+func codexQuotaReserveAccountID(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
 	}

@@ -680,15 +680,15 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 			entry[attribute] = value
 		}
 	}
-	if caps := coreauth.UsageCapsForAuth(auth); len(caps) > 0 {
-		entry["usage_caps"] = caps
+	if reserves := coreauth.QuotaReservesForAuth(auth); len(reserves) > 0 {
+		entry["quota_reserve"] = reserves
 	}
-	if keys := coreauth.UsageCapBypassKeysForAuth(auth); len(keys) > 0 {
-		entry["usage_cap_bypass_keys"] = keys
+	if keys := coreauth.QuotaReserveBypassKeysForAuth(auth); len(keys) > 0 {
+		entry["quota_reserve_bypass_keys"] = keys
 	}
 	if h.authManager != nil {
-		if state, capped := h.authManager.UsageCapState(auth.ID); capped {
-			entry["usage_cap_state"] = state
+		if state, held := h.authManager.QuotaReserveState(auth.ID); held {
+			entry["quota_reserve_state"] = state
 		}
 	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {

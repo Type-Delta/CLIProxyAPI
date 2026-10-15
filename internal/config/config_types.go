@@ -593,9 +593,9 @@ type ClaudeKey struct {
 	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 
-	// UsageCaps keeps a reserve on this credential's usage bars (bar ID -> minimum
+	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
-	UsageCapConfig `yaml:",inline"`
+	QuotaReserveConfig `yaml:",inline"`
 
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
@@ -727,9 +727,9 @@ type CodexKey struct {
 	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 
-	// UsageCaps keeps a reserve on this credential's usage bars (bar ID -> minimum
+	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
-	UsageCapConfig `yaml:",inline"`
+	QuotaReserveConfig `yaml:",inline"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -846,9 +846,9 @@ type GeminiKey struct {
 	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 
-	// UsageCaps keeps a reserve on this credential's usage bars (bar ID -> minimum
+	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
-	UsageCapConfig `yaml:",inline"`
+	QuotaReserveConfig `yaml:",inline"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -944,18 +944,18 @@ type OpenAICompatibility struct {
 	// UsageProbe optionally names a built-in usage probe for this provider.
 	UsageProbe string `yaml:"usage-probe,omitempty" json:"usage-probe,omitempty"`
 
-	// UsageCaps keeps a reserve on this credential's usage bars (bar ID -> minimum
+	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
-	UsageCapConfig `yaml:",inline"`
+	QuotaReserveConfig `yaml:",inline"`
 }
 
-// UsageCapConfig is shared by provider API-key entries. Caps map a usage bar ID
+// QuotaReserveConfig is shared by provider API-key entries. Reserves map a usage bar ID
 // (as shown in the management center) to the minimum remaining percent; once a
-// bar falls to its cap the credential is withheld until that bar resets, except
-// for requests from client keys listed by ID in UsageCapBypassKeys.
-type UsageCapConfig struct {
-	UsageCaps          map[string]float64 `yaml:"usage-caps,omitempty" json:"usage-caps,omitempty"`
-	UsageCapBypassKeys []string           `yaml:"usage-cap-bypass-keys,omitempty" json:"usage-cap-bypass-keys,omitempty"`
+// bar falls to its reserve the credential is withheld until that bar resets, except
+// for requests from client keys listed by ID in QuotaReserveBypassKeys.
+type QuotaReserveConfig struct {
+	QuotaReserve           map[string]float64 `yaml:"quota-reserve,omitempty" json:"quota-reserve,omitempty"`
+	QuotaReserveBypassKeys []string           `yaml:"quota-reserve-bypass-keys,omitempty" json:"quota-reserve-bypass-keys,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

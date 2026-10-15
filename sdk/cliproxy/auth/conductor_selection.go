@@ -405,9 +405,9 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
-	// usageCaps, when set, withholds credentials capped for clientKeyID.
-	usageCaps   *Manager
-	clientKeyID string
+	// quotaReserve, when set, withholds credentials held for clientKeyID.
+	quotaReserve *Manager
+	clientKeyID  string
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -429,7 +429,7 @@ func credentialPolicyFromContext(ctx context.Context) string {
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
 	eligibility := authSelectionEligibility{
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
-		clientKeyID:      usageCapKeyIDFromMetadata(opts.Metadata),
+		clientKeyID:      quotaReserveKeyIDFromMetadata(opts.Metadata),
 	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
@@ -439,10 +439,10 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 }
 
 // eligibilityForRequest is authSelectionEligibilityForRequest plus this
-// manager's usage-cap filter for the requesting client key.
+// manager's quota-reserve filter for the requesting client key.
 func (m *Manager) eligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	eligibility.usageCaps = m
+	eligibility.quotaReserve = m
 	return eligibility
 }
 
@@ -456,7 +456,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.credentialPolicy != "" && !credentialPolicyAllows(e.credentialPolicy, auth) {
 		return false
 	}
-	if e.usageCaps != nil && e.usageCaps.usageCappedFor(auth, e.clientKeyID) {
+	if e.quotaReserve != nil && e.quotaReserve.quotaReserveHolds(auth, e.clientKeyID) {
 		return false
 	}
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)
@@ -1984,9 +1984,9 @@ func (m *Manager) useSchedulerFastPath() bool {
 	if m == nil || m.scheduler == nil {
 		return false
 	}
-	// The scheduler index cannot apply per-request usage-cap bypass, so capped
+	// The scheduler index cannot apply per-request quota-reserve bypass, so held
 	// credentials route through the legacy candidate loops.
-	return isBuiltInSelector(m.Selector()) && !m.hasActiveUsageCaps()
+	return isBuiltInSelector(m.Selector()) && !m.hasHeldQuotaReserve()
 }
 
 func shouldRetrySchedulerPick(err error) bool {

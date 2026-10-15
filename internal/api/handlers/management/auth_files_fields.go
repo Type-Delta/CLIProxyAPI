@@ -363,12 +363,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		} else if rootAuthFileField(fieldPath) == coreauth.AttributeWeight {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "weight does not support nested fields"})
 			return
-		} else if fieldPath == coreauth.AttributeUsageCaps || fieldPath == coreauth.AttributeUsageCapBypassKeys {
-			if errCaps := setAuthFileUsageCapField(targetAuth.Metadata, fieldPath, value); errCaps != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": errCaps.Error()})
+		} else if fieldPath == coreauth.AttributeQuotaReserve || fieldPath == coreauth.AttributeQuotaReserveBypassKeys {
+			if errReserve := setAuthFileQuotaReserveField(targetAuth.Metadata, fieldPath, value); errReserve != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errReserve.Error()})
 				return
 			}
-		} else if root := rootAuthFileField(fieldPath); root == coreauth.AttributeUsageCaps || root == coreauth.AttributeUsageCapBypassKeys {
+		} else if root := rootAuthFileField(fieldPath); root == coreauth.AttributeQuotaReserve || root == coreauth.AttributeQuotaReserveBypassKeys {
 			c.JSON(http.StatusBadRequest, gin.H{"error": root + " does not support nested fields"})
 			return
 		} else if fieldPath == "headers" {
@@ -409,10 +409,10 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
-	_, capsTouched := touchedRoots[coreauth.AttributeUsageCaps]
-	_, bypassTouched := touchedRoots[coreauth.AttributeUsageCapBypassKeys]
+	_, capsTouched := touchedRoots[coreauth.AttributeQuotaReserve]
+	_, bypassTouched := touchedRoots[coreauth.AttributeQuotaReserveBypassKeys]
 	if capsTouched || bypassTouched {
-		h.authManager.RecheckUsageCaps(targetAuth.ID)
+		h.authManager.RecheckQuotaReserve(targetAuth.ID)
 	}
 	if h.postAuthPersistHook != nil {
 		hookAuth := updatedAuth
@@ -527,21 +527,21 @@ func rootAuthFileField(path string) string {
 	return path
 }
 
-// setAuthFileUsageCapField validates and stores usage caps or bypass key IDs;
+// setAuthFileQuotaReserveField validates and stores quota reserves or bypass key IDs;
 // null or an empty value removes the field.
-func setAuthFileUsageCapField(metadata map[string]any, field string, value any) error {
+func setAuthFileQuotaReserveField(metadata map[string]any, field string, value any) error {
 	value = jsonNumbersToFloat(value)
 	var normalized any
 	var err error
-	if field == coreauth.AttributeUsageCaps {
-		var caps map[string]float64
-		caps, err = coreauth.NormalizeUsageCaps(value)
-		if caps != nil {
-			normalized = caps
+	if field == coreauth.AttributeQuotaReserve {
+		var reserves map[string]float64
+		reserves, err = coreauth.NormalizeQuotaReserves(value)
+		if reserves != nil {
+			normalized = reserves
 		}
 	} else {
 		var keys []string
-		keys, err = coreauth.NormalizeUsageCapBypassKeys(value)
+		keys, err = coreauth.NormalizeQuotaReserveBypassKeys(value)
 		if keys != nil {
 			normalized = keys
 		}
@@ -685,10 +685,10 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["note"]; ok {
 		syncAuthFileNoteAttribute(auth)
 	}
-	_, capsTouched := touchedRoots[coreauth.AttributeUsageCaps]
-	_, bypassTouched := touchedRoots[coreauth.AttributeUsageCapBypassKeys]
+	_, capsTouched := touchedRoots[coreauth.AttributeQuotaReserve]
+	_, bypassTouched := touchedRoots[coreauth.AttributeQuotaReserveBypassKeys]
 	if capsTouched || bypassTouched {
-		coreauth.ApplyUsageCapMetadata(auth)
+		coreauth.ApplyQuotaReserveMetadata(auth)
 	}
 	if _, ok := touchedRoots["label"]; ok {
 		syncAuthFileLabelAttribute(auth)

@@ -16,7 +16,7 @@ const RequestedModelMetadataKey = "requested_model"
 const RequestPathMetadataKey = "request_path"
 
 // ClientKeyIDMetadataKey stores the SHA-256 ID of the requesting client API key
-// (never the raw key). Usage-cap bypass lists match against it.
+// (never the raw key). Quota-reserve bypass lists match against it.
 const ClientKeyIDMetadataKey = "client_key_id"
 
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.

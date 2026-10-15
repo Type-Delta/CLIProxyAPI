@@ -94,7 +94,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			"config_index": strconv.Itoa(i),
 		}
 		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
-		addUsageCapsToAttrs(entry.UsageCapConfig, attrs)
+		addQuotaReserveToAttrs(entry.QuotaReserveConfig, attrs)
 		authLabel := label
 		if entry.Label != "" {
 			authLabel = entry.Label
@@ -163,7 +163,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			"config_index": strconv.Itoa(i),
 		}
 		addCredentialSelectorsToAttrs(ck.PricingCatalog, ck.UsageProbe, attrs)
-		addUsageCapsToAttrs(ck.UsageCapConfig, attrs)
+		addQuotaReserveToAttrs(ck.QuotaReserveConfig, attrs)
 		authLabel := "claude-apikey"
 		if ck.Label != "" {
 			authLabel = ck.Label
@@ -252,7 +252,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			"config_index": strconv.Itoa(i),
 		}
 		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
-		addUsageCapsToAttrs(entry.UsageCapConfig, attrs)
+		addQuotaReserveToAttrs(entry.QuotaReserveConfig, attrs)
 		authLabel := provider + "-apikey"
 		if entry.Label != "" {
 			authLabel = entry.Label
@@ -350,7 +350,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["label"] = entry.Label
 			}
 			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
-			addUsageCapsToAttrs(compat.UsageCapConfig, attrs)
+			addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -398,7 +398,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"config_index": strconv.Itoa(i),
 			}
 			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
-			addUsageCapsToAttrs(compat.UsageCapConfig, attrs)
+			addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -456,7 +456,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"config_index": strconv.Itoa(i),
 		}
 		addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
-		addUsageCapsToAttrs(compat.UsageCapConfig, attrs)
+		addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)
 		authLabel := "vertex-apikey"
 		if compat.Label != "" {
 			authLabel = compat.Label
@@ -499,16 +499,16 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 	return out
 }
 
-// addUsageCapsToAttrs copies validated usage caps into the JSON attributes read by routing.
-func addUsageCapsToAttrs(caps config.UsageCapConfig, attrs map[string]string) {
-	if len(caps.UsageCaps) > 0 {
-		if raw, err := json.Marshal(caps.UsageCaps); err == nil {
-			attrs[coreauth.AttributeUsageCaps] = string(raw)
+// addQuotaReserveToAttrs copies validated quota reserves into the JSON attributes read by routing.
+func addQuotaReserveToAttrs(reserves config.QuotaReserveConfig, attrs map[string]string) {
+	if len(reserves.QuotaReserve) > 0 {
+		if raw, err := json.Marshal(reserves.QuotaReserve); err == nil {
+			attrs[coreauth.AttributeQuotaReserve] = string(raw)
 		}
 	}
-	if len(caps.UsageCapBypassKeys) > 0 {
-		if raw, err := json.Marshal(caps.UsageCapBypassKeys); err == nil {
-			attrs[coreauth.AttributeUsageCapBypassKeys] = string(raw)
+	if len(reserves.QuotaReserveBypassKeys) > 0 {
+		if raw, err := json.Marshal(reserves.QuotaReserveBypassKeys); err == nil {
+			attrs[coreauth.AttributeQuotaReserveBypassKeys] = string(raw)
 		}
 	}
 }

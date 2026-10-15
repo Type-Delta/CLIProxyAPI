@@ -273,7 +273,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	if authManager != nil {
 		authManager.SetQuotaRecoveryRefresher(s.mgmt.RefreshQuotaForRouting)
-		authManager.SetUsageCapProber(s.mgmt.UsageCapBars)
+		authManager.SetQuotaReserveProber(s.mgmt.QuotaReserveBars)
 	}
 	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
 	s.mgmt.SetAnalyticsService(s.analytics)

@@ -7,11 +7,11 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Bar IDs here must match the IDs CPAMC's quota adapters render, or a cap set
+// Bar IDs here must match the IDs CPAMC's quota adapters render, or a reserve set
 // in the UI would never match a bar evaluated by routing. Fixtures follow the
 // adapters' own tests under web/management-center/tests.
 
-func barSummary(bars []coreauth.UsageCapBar) map[string]float64 {
+func barSummary(bars []coreauth.QuotaReserveBar) map[string]float64 {
 	out := make(map[string]float64, len(bars))
 	for _, bar := range bars {
 		out[bar.ID] = bar.RemainingPercent
@@ -19,13 +19,13 @@ func barSummary(bars []coreauth.UsageCapBar) map[string]float64 {
 	return out
 }
 
-func TestCodexUsageCapBarsMatchCPAMCIDs(t *testing.T) {
+func TestCodexQuotaReserveBarsMatchCPAMCIDs(t *testing.T) {
 	body := []byte(`{
 		"rate_limit": {"allowed": true, "primary_window": {"used_percent": 1, "limit_window_seconds": 604800, "reset_at": 1785902974}, "secondary_window": null},
 		"code_review_rate_limit": null,
 		"additional_rate_limits": [{"limit_name": "GPT-5.3-Codex-Spark", "rate_limit": {"primary_window": {"used_percent": 0, "limit_window_seconds": 604800, "reset_at": 1785903197}}}]
 	}`)
-	bars, err := codexUsageCapBars(body)
+	bars, err := codexQuotaReserveBars(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestCodexUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 	twoWindows := []byte(`{"rate_limit": {
 		"primary_window": {"used_percent": 40, "limit_window_seconds": 18000, "reset_after_seconds": 60},
 		"secondary_window": {"used_percent": 75, "limit_window_seconds": 2592000, "reset_at": 1785902974}}}`)
-	bars, err = codexUsageCapBars(twoWindows)
+	bars, err = codexQuotaReserveBars(twoWindows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestCodexUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 	}
 }
 
-func TestClaudeUsageCapBarsMatchCPAMCIDs(t *testing.T) {
+func TestClaudeQuotaReserveBarsMatchCPAMCIDs(t *testing.T) {
 	body := []byte(`{
 		"five_hour": {"utilization": 12.5, "resets_at": "2026-10-14T12:00:00Z"},
 		"seven_day": {"utilization": 70, "resets_at": "2026-10-20T00:00:00Z"},
@@ -58,7 +58,7 @@ func TestClaudeUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 		"iguana_necktie": {"utilization": 99, "resets_at": "2026-10-20T00:00:00Z"},
 		"limits": [{"kind": "weekly_scoped", "percent": 40, "resets_at": "2026-10-21T00:00:00Z", "is_active": true, "scope": {"model": {"display_name": "Fable"}}}]
 	}`)
-	bars, err := claudeUsageCapBars(body)
+	bars, err := claudeQuotaReserveBars(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +68,11 @@ func TestClaudeUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 	}
 }
 
-func TestZaiAndOpenCodeGoUsageCapBarsMatchCPAMCIDs(t *testing.T) {
+func TestZaiAndOpenCodeGoQuotaReserveBarsMatchCPAMCIDs(t *testing.T) {
 	zai := []byte(`{"code": 200, "success": true, "data": {"limits": [
 		{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 25, "nextResetTime": 1785902974000},
 		{"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 80}]}}`)
-	bars, err := zaiUsageCapBars(zai)
+	bars, err := zaiQuotaReserveBars(zai)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestZaiAndOpenCodeGoUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 	}
 
 	opencode := []byte(`{"usage": {"rolling": {"percent": 10, "resetsAt": "2026-10-14T12:00:00Z"}, "weekly": {"percent": 5, "status": "rate_limited"}}}`)
-	bars, err = opencodeGoUsageCapBars(opencode)
+	bars, err = opencodeGoQuotaReserveBars(opencode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +90,11 @@ func TestZaiAndOpenCodeGoUsageCapBarsMatchCPAMCIDs(t *testing.T) {
 	}
 }
 
-func TestKiroUsageCapBarsMatchCPAMCIDs(t *testing.T) {
+func TestKiroQuotaReserveBarsMatchCPAMCIDs(t *testing.T) {
 	body := []byte(`{"usageBreakdownList": [{
 		"resourceType": "CREDIT", "currentUsageWithPrecision": 250, "usageLimitWithPrecision": 1000, "nextDateReset": 1785902974,
 		"freeTrialInfo": {"currentUsage": 50, "usageLimit": 50}}]}`)
-	bars, err := kiroUsageCapBars(body)
+	bars, err := kiroQuotaReserveBars(body)
 	if err != nil {
 		t.Fatal(err)
 	}
