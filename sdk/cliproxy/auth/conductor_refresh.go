@@ -38,6 +38,7 @@ const (
 	quotaBackoffMax           = 30 * time.Minute
 	minQuotaCooldownFloor     = 10 * time.Second
 	transientErrorCooldown    = time.Minute
+	codexOverloadCooldown     = 15 * time.Second
 )
 
 // StartAutoRefresh launches a background loop that evaluates auth freshness

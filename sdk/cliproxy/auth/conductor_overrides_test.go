@@ -1048,6 +1048,47 @@ func TestManager_MarkResult_TransientErrorCooldownDefault(t *testing.T) {
 	}
 }
 
+func TestManager_MarkResult_CodexOverloadCooldownDefault(t *testing.T) {
+	prevQuota := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	prevTransient := transientErrorCooldownSeconds.Load()
+	SetTransientErrorCooldownSeconds(0)
+	t.Cleanup(func() {
+		quotaCooldownDisabled.Store(prevQuota)
+		transientErrorCooldownSeconds.Store(prevTransient)
+	})
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-codex-overload-default", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-6.1-sol",
+		Success:  false,
+		Error: &Error{
+			HTTPStatus: http.StatusServiceUnavailable,
+			Message:    `{"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
+		},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	state := updated.ModelStates["gpt-6.1-sol"]
+	if state == nil {
+		t.Fatalf("expected model state to be present")
+	}
+	diff := time.Until(state.NextRetryAfter)
+	if diff < 10*time.Second || diff > 20*time.Second {
+		t.Fatalf("expected Codex overload cooldown to be ~15 seconds, got %v", diff)
+	}
+}
+
 func TestManager_MarkResult_TransientErrorCooldownDisabled(t *testing.T) {
 	prevQuota := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)

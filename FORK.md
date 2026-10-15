@@ -1228,6 +1228,24 @@ tests pass, and the complete `internal/runtime/executor` package test suite pass
 
 **Last updated:** 2026-10-15
 
+### DL041 - Short Codex overload cooldown
+
+Codex `server_is_overloaded` responses use a 15-second credential/model cooldown
+when no upstream retry hint is provided. Other transient upstream errors retain
+the existing configurable cooldown, and an explicit retry hint still takes
+precedence. This lets a credential re-enter rotation quickly during a temporary
+OpenAI capacity spike without changing the broader transient-error policy.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go` and
+`sdk/cliproxy/auth/conductor_overrides_test.go`.
+
+**Recorded validation:** focused transient and Codex overload cooldown tests pass;
+the overload regression observes a 10-20 second deadline around the 15-second
+default while the existing generic transient test continues to observe about 60
+seconds.
+
+**Last updated:** 2026-10-15
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

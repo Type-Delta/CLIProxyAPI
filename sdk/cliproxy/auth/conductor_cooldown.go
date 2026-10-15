@@ -103,10 +103,14 @@ func nextTransientErrorRetryAfter(now time.Time) time.Time {
 }
 
 func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time {
-	return recoverableFailureRetryAfterWithHint(now, nil, disableCooling)
+	return recoverableFailureRetryAfterWithResult(now, nil, disableCooling, nil)
 }
 
 func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+	return recoverableFailureRetryAfterWithResult(now, retryAfter, disableCooling, nil)
+}
+
+func recoverableFailureRetryAfterWithResult(now time.Time, retryAfter *time.Duration, disableCooling bool, resultErr *Error) time.Time {
 	if disableCooling {
 		return time.Time{}
 	}
@@ -118,9 +122,30 @@ func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Durati
 		return now.Add(*retryAfter)
 	}
 	if seconds == 0 {
+		if isServerOverloadedResultError(resultErr) {
+			return now.Add(codexOverloadCooldown)
+		}
 		return now.Add(transientErrorCooldown)
 	}
 	return now.Add(time.Duration(seconds) * time.Second)
+}
+
+func isServerOverloadedResultError(resultErr *Error) bool {
+	if resultErr == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(resultErr.Code), "server_is_overloaded") {
+		return true
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(resultErr.Message), &payload) != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(payload.Error.Code), "server_is_overloaded")
 }
 
 // SetConfig updates the runtime config snapshot used by request-time helpers.
@@ -1165,7 +1190,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								}
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
-							state.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, result.RetryAfter, disableCooling)
+							state.NextRetryAfter = recoverableFailureRetryAfterWithResult(now, result.RetryAfter, disableCooling, result.Error)
 							state.Unavailable = !state.NextRetryAfter.IsZero()
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
@@ -2550,7 +2575,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = next
 		case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
 			auth.StatusMessage = "transient upstream error"
-			auth.NextRetryAfter = recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+			auth.NextRetryAfter = recoverableFailureRetryAfterWithResult(now, retryAfter, disableCooling, resultErr)
 			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		default:
 			if auth.StatusMessage == "" {
