@@ -23,10 +23,19 @@ type claudeOAuthSafeguardError struct {
 func (claudeOAuthSafeguardError) IsRequestScoped() bool { return true }
 
 func newClaudeOAuthSafeguardError(message string) error {
-	return newClaudeOAuthSafeguardErrorWithReason(message, message)
+	return newClaudeOAuthSafeguardErrorWithReference(message, message, "")
 }
 
 func newClaudeOAuthSafeguardErrorWithReason(message, reason string) error {
+	return newClaudeOAuthSafeguardErrorWithReference(message, reason, "")
+}
+
+func newClaudeOAuthSafeguardErrorWithReference(message, reason, referenceVersion string) error {
+	if strings.TrimSpace(referenceVersion) == "" {
+		message += " (reference Claude Code version unavailable)"
+	} else {
+		message += fmt.Sprintf(" (reference Claude Code %s)", strings.TrimSpace(referenceVersion))
+	}
 	log.WithField("reason", reason).Warn("Claude OAuth safeguard rejected request")
 	return claudeOAuthSafeguardError{statusErr{code: http.StatusForbidden, msg: message}}
 }
@@ -35,11 +44,18 @@ type claudeOAuthSafeguard struct {
 	profile *claudecapture.Profile
 }
 
+func (s *claudeOAuthSafeguard) reject(message, reason string) error {
+	if s == nil || s.profile == nil {
+		return newClaudeOAuthSafeguardErrorWithReason(message, reason)
+	}
+	return newClaudeOAuthSafeguardErrorWithReference(message, reason, s.profile.ClaudeVersion)
+}
+
 // loadClaudeOAuthSafeguard runs only for direct Anthropic requests using real
 // Claude OAuth credentials. Captured headers validate the wire profile without
 // changing the configured Claude header defaults.
 func (e *ClaudeExecutor) loadClaudeOAuthSafeguard(baseURL, apiKey string) (*config.Config, *claudeOAuthSafeguard, error) {
-	if e.cfg == nil || !e.cfg.ClaudeHeaderDefaults.OAuthSafeguard ||
+	if e.cfg == nil || e.cfg.Home.Enabled || !e.cfg.ClaudeHeaderDefaults.OAuthSafeguard ||
 		!isClaudeOAuthToken(apiKey) || !isAnthropicUpstreamBase(baseURL) {
 		return claudeOAuthDetectionConfig(e.cfg), nil, nil
 	}
@@ -49,16 +65,17 @@ func (e *ClaudeExecutor) loadClaudeOAuthSafeguard(baseURL, apiKey string) (*conf
 	}
 	profile, errLoad := load()
 	if errLoad != nil {
-		return nil, nil, newClaudeOAuthSafeguardErrorWithReason(
+		return nil, nil, newClaudeOAuthSafeguardErrorWithReference(
 			"Claude OAuth safeguard requires a current Claude Code capture: "+errLoad.Error(),
 			"current Claude Code capture unavailable",
+			"",
 		)
 	}
 	if profile == nil {
-		return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard requires a current Claude Code capture")
+		return nil, nil, newClaudeOAuthSafeguardErrorWithReference("Claude OAuth safeguard requires a current Claude Code capture", "Claude OAuth safeguard requires a current Claude Code capture", "")
 	}
 	if profile.Headers["User-Agent"] == "" {
-		return nil, nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard capture lacks User-Agent")
+		return nil, nil, newClaudeOAuthSafeguardErrorWithReference("Claude OAuth safeguard capture lacks User-Agent", "Claude OAuth safeguard capture lacks User-Agent", profile.ClaudeVersion)
 	}
 	return e.cfg, &claudeOAuthSafeguard{profile: profile}, nil
 }
@@ -81,19 +98,19 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 	}
 	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
 	if !claudeOAuthSafeguardUserAgentPattern.MatchString(userAgent) {
-		return newClaudeOAuthSafeguardErrorWithReason(
+		return s.reject(
 			fmt.Sprintf("Claude OAuth safeguard flagged this request because Claude expects User-Agent to be 'claude-cli/X.X.X' but received '%s'.", userAgent),
 			"client User-Agent does not match claude-cli/X.X.X",
 		)
 	}
 	if source != sdktranslator.FormatClaude {
-		return newClaudeOAuthSafeguardErrorWithReason(
+		return s.reject(
 			fmt.Sprintf("Claude OAuth safeguard requires a native Claude Messages client; expected a claude-cli/X.X.X User-Agent, received %q", userAgent),
 			"request source is not Claude Messages",
 		)
 	}
 	if !detection.NativeClient {
-		return newClaudeOAuthSafeguardErrorWithReason(
+		return s.reject(
 			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, or claude-desktop); received %q.", detection.Entrypoint),
 			"client entrypoint is not supported for native Claude Code requests",
 		)
@@ -109,7 +126,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 		case !detection.MetadataUserID:
 			message, reason = "Claude OAuth safeguard expects valid Claude Code session metadata.", "client session metadata is missing or invalid"
 		}
-		return newClaudeOAuthSafeguardErrorWithReason(
+		return s.reject(
 			message,
 			reason,
 		)
@@ -121,7 +138,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 			continue
 		}
 		if headers.Get(name) != want {
-			return newClaudeOAuthSafeguardErrorWithReason(
+			return s.reject(
 				"Claude OAuth safeguard rejected client header "+name,
 				"client header does not match captured reference: "+name,
 			)
@@ -135,20 +152,20 @@ func (s *claudeOAuthSafeguard) checkOutbound(req *http.Request, body []byte, cou
 		return nil
 	}
 	if req == nil || req.URL == nil || !isAnthropicUpstreamURL(req.URL) {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard rejected the upstream destination")
+		return s.reject("Claude OAuth safeguard rejected the upstream destination", "Claude OAuth safeguard rejected the upstream destination")
 	}
 	if got := strings.TrimSpace(req.Header.Get("Authorization")); !strings.HasPrefix(got, "Bearer ") {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard requires OAuth bearer authentication")
+		return s.reject("Claude OAuth safeguard requires OAuth bearer authentication", "Claude OAuth safeguard requires OAuth bearer authentication")
 	}
 	if !helperProfile && !claudeRequestedBetas(req.Header.Get("Anthropic-Beta"), nil)[claudeCodeBeta] {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard requires the Claude Code beta")
+		return s.reject("Claude OAuth safeguard requires the Claude Code beta", "Claude OAuth safeguard requires the Claude Code beta")
 	}
 	endpoint := "messages"
 	if countTokens {
 		endpoint = "count_tokens"
 	}
 	if errMatch := s.profile.CheckRequest(req.Header, body, endpoint); errMatch != nil {
-		return newClaudeOAuthSafeguardError(fmt.Sprintf("Claude OAuth safeguard rejected outbound request: %v", errMatch))
+		return s.reject(fmt.Sprintf("Claude OAuth safeguard rejected outbound request: %v", errMatch), "Claude OAuth safeguard rejected outbound request")
 	}
 	if errShape := s.checkBodyShape(body, countTokens); errShape != nil {
 		return errShape
@@ -156,7 +173,7 @@ func (s *claudeOAuthSafeguard) checkOutbound(req *http.Request, body []byte, cou
 	if !countTokens {
 		userID := gjson.GetBytes(body, "metadata.user_id").String()
 		if !helps.IsValidUserID(userID) || req.Header.Get("X-Claude-Code-Session-Id") != gjson.Get(userID, "session_id").String() {
-			return newClaudeOAuthSafeguardError("Claude OAuth safeguard rejected outbound session identity")
+			return s.reject("Claude OAuth safeguard rejected outbound session identity", "Claude OAuth safeguard rejected outbound session identity")
 		}
 	}
 	return nil
@@ -165,10 +182,10 @@ func (s *claudeOAuthSafeguard) checkOutbound(req *http.Request, body []byte, cou
 func (s *claudeOAuthSafeguard) checkBodyShape(body []byte, countTokens bool) error {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() ||
 		gjson.GetBytes(body, "model").Type != gjson.String || !gjson.GetBytes(body, "messages").IsArray() {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard rejected outbound body shape")
+		return s.reject("Claude OAuth safeguard rejected outbound body shape", "Claude OAuth safeguard rejected outbound body shape")
 	}
 	if !countTokens && gjson.GetBytes(body, "metadata.user_id").Type != gjson.String {
-		return newClaudeOAuthSafeguardError("Claude OAuth safeguard requires native session metadata")
+		return s.reject("Claude OAuth safeguard requires native session metadata", "Claude OAuth safeguard requires native session metadata")
 	}
 	return nil
 }

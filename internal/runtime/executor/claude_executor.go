@@ -264,7 +264,10 @@ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, errSafeguard
 	}
 	if safeguard != nil {
-		return nil, newClaudeOAuthSafeguardError("Claude OAuth safeguard requires the native Claude Messages request path")
+		return nil, safeguard.reject(
+			"Claude OAuth safeguard requires the native Claude Messages request path",
+			"request did not use the native Claude Messages request path",
+		)
 	}
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err

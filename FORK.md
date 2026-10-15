@@ -1206,6 +1206,28 @@ The Claude Messages, OpenAI Chat Completions, legacy Completions, OpenAI Respons
 
 **Last updated:** 2026-10-15
 
+### DL040 - Home-mode Claude OAuth safeguard compatibility
+
+The local Claude Code OAuth capture safeguard is disabled for Home-mode executor
+requests. Home mode intentionally does not run the local reference updater or own
+the provider credential files, so enforcing a filesystem capture there could leave
+every direct Claude OAuth request rejected with `403` while the control plane is
+otherwise healthy. Standalone CPA instances retain the fail-closed safeguard and
+its background updater.
+
+Safeguard rejection messages now include the active reference Claude Code version,
+or explicitly say that the reference version is unavailable when rejection occurs
+before a profile can be loaded. This makes stale or missing-reference failures
+diagnosable without exposing credentials.
+
+**Implementation evidence:** `internal/runtime/executor/claude_oauth_safeguard.go`
+and `internal/runtime/executor/claude_oauth_safeguard_test.go`.
+
+**Recorded validation:** focused Home-mode bypass and reference-version rejection
+tests pass, and the complete `internal/runtime/executor` package test suite passes.
+
+**Last updated:** 2026-10-15
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

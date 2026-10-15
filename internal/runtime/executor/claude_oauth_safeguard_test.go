@@ -172,6 +172,42 @@ func TestClaudeOAuthSafeguardScopeAndCaptureFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeOAuthSafeguardSkipsLocalCaptureInHomeMode(t *testing.T) {
+	cfg := &config.Config{Home: config.HomeConfig{Enabled: true}, ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OAuthSafeguard: true}}
+	executor := NewClaudeExecutor(cfg)
+	loads := 0
+	executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) {
+		loads++
+		return nil, errors.New("reference must not load in Home mode")
+	}
+
+	effective, guard, err := executor.loadClaudeOAuthSafeguard("https://api.anthropic.com", "sk-ant-oat-home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guard != nil {
+		t.Fatal("Home mode loaded the local OAuth safeguard")
+	}
+	if effective == nil || effective.ClaudeHeaderDefaults.OAuthSafeguard {
+		t.Fatal("Home mode retained OAuth safeguard detection")
+	}
+	if loads != 0 {
+		t.Fatalf("capture loads = %d, want 0", loads)
+	}
+}
+
+func TestClaudeOAuthSafeguardRejectionIncludesReferenceVersion(t *testing.T) {
+	profile := testClaudeOAuthSafeguardProfile()
+	guard := &claudeOAuthSafeguard{profile: profile}
+
+	headers := make(http.Header)
+	headers.Set("User-Agent", "not-claude")
+	err := guard.checkIncoming(sdktranslator.FormatClaude, headers, helps.ClaudeCodeRequestDetection{})
+	if err == nil || !strings.Contains(err.Error(), "reference Claude Code 2.1.258") {
+		t.Fatalf("rejection = %v, want reference version", err)
+	}
+}
+
 func TestClaudeOAuthSafeguardPreservesConfiguredDefaults(t *testing.T) {
 	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
 		OAuthSafeguard: true,
