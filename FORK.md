@@ -1130,11 +1130,13 @@ Kiro `toolUseEvent` frames stream the tool input as JSON string fragments and te
 
 Kiro reasoning events do not carry Anthropic-compatible signatures, so CPA retains their text for usage estimation but suppresses unsigned Claude thinking blocks. Text and tool blocks have explicit start, delta, and stop lifecycles. The event-stream parser validates frame bounds, AWS prelude and message CRCs, rejects null or malformed event payloads, and propagates exception frames instead of treating them as successful completion. All named tools are preserved; the executor does not impose the earlier synthetic 16-tool cap.
 
+Text-less turns are sent to Kiro with empty `content` rather than an `(empty placeholder)` filler. Kiro accepts empty content for tool-use and tool-result turns, empty user turns, prefill, and synthetic leading or alternation turns. The filler was imitated by the model in agent loops, which echoed `(empty placeholder)` as visible assistant text before silent tool calls.
+
 **Implementation evidence:** `internal/runtime/executor/kiro_executor.go`, `internal/runtime/executor/kiro_translator.go`, `internal/runtime/executor/kiro_executor_usage_test.go`, `internal/runtime/executor/kiro_stream_test.go`, and `internal/runtime/executor/kiro_translator_test.go`.
 
-**Recorded validation:** the complete executor package tests and disposable server build pass. Regression tests cover fragmented JSON tool inputs, terminal tool events with no input, 16/17/106 tool inventories, final payload overrides and filters, unsigned reasoning suppression, block lifecycles, CRC and malformed-frame rejection, and exception/EOF handling. A live Kiro-backed Claude Code run through a CPA binary built from this worktree exercised `qa/2048.html` through Chrome CDP with no browser console or runtime errors.
+**Recorded validation:** the complete executor package tests and disposable server build pass. Regression tests cover fragmented JSON tool inputs, terminal tool events with no input, 16/17/106 tool inventories, final payload overrides and filters, unsigned reasoning suppression, block lifecycles, CRC and malformed-frame rejection, exception/EOF handling, and empty tool-only assistant turns. Live Kiro requests accepted every empty-turn shape, and a tool loop that previously echoed the filler in 4 of 6 runs produced no text in 12 streaming and non-streaming runs. A live Kiro-backed Claude Code run through a CPA binary built from this worktree exercised `qa/2048.html` through Chrome CDP with no browser console or runtime errors.
 
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-15
 
 ### DL036 - GSR request fallback and quota-provider identity
 

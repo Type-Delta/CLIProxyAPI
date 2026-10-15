@@ -78,10 +78,10 @@ func buildKiroPayload(model string, body []byte, profileARN string, conversation
 		if converted := kiroHistoryMessage(currentRaw, modelID); converted != nil {
 			history = append(history, converted...)
 		}
-		current = kiroCurrentMessage(map[string]any{"role": "user", "content": "(empty placeholder)"}, modelID, "", false)
+		current = kiroCurrentMessage(map[string]any{"role": "user"}, modelID, "", false)
 	}
 	if len(history) > 0 && !hasUserHistory(history) {
-		history = append([]map[string]any{kiroCurrentMessage(map[string]any{"role": "user", "content": "(empty placeholder)"}, modelID, "", false)}, history...)
+		history = append([]map[string]any{kiroCurrentMessage(map[string]any{"role": "user"}, modelID, "", false)}, history...)
 	}
 	if len(history) > 1 {
 		history = ensureKiroAlternation(history, modelID)
@@ -133,7 +133,7 @@ func normalizeKiroMessages(messages []any) []any {
 		return normalized
 	}
 	if first, _ := normalized[0].(map[string]any); first["role"] != "user" {
-		normalized = append([]any{map[string]any{"role": "user", "content": "(empty placeholder)"}}, normalized...)
+		normalized = append([]any{map[string]any{"role": "user"}}, normalized...)
 	}
 	return normalized
 }
@@ -178,9 +178,6 @@ func kiroSystemPrompt(raw any) string {
 func kiroHistoryMessage(message map[string]any, modelID string) []map[string]any {
 	role, _ := message["role"].(string)
 	text, images, toolResults := kiroContent(message["content"])
-	if text == "" {
-		text = "(empty placeholder)"
-	}
 	if role == "user" {
 		input := map[string]any{"content": text, "modelId": modelID, "origin": "AI_EDITOR"}
 		if len(images) > 0 {
@@ -205,9 +202,6 @@ func kiroCurrentMessage(message map[string]any, modelID, system string, prependS
 	text, images, toolResults := kiroContent(message["content"])
 	if prependSystem && system != "" {
 		text = system + "\n\n" + text
-	}
-	if text == "" {
-		text = "(empty placeholder)"
 	}
 	input := map[string]any{"content": text, "modelId": modelID, "origin": "AI_EDITOR"}
 	if len(images) > 0 {
@@ -345,7 +339,7 @@ func ensureKiroAlternation(history []map[string]any, modelID string) []map[strin
 	for _, item := range history {
 		_, isUser := item["userInputMessage"]
 		if isUser && lastUser {
-			out = append(out, map[string]any{"assistantResponseMessage": map[string]any{"content": "(empty placeholder)"}})
+			out = append(out, map[string]any{"assistantResponseMessage": map[string]any{"content": ""}})
 		}
 		out = append(out, item)
 		lastUser = isUser
