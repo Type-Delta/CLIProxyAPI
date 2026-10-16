@@ -101,6 +101,18 @@ build produces the single-file management artifact with SHA-256
 
 **Last updated:** 2026-09-24
 
+### DL006 - Preserve unavailable provider metrics
+
+CPAUK now suppresses cache-read rates when aggregate token quality is estimated or missing. CPAMC
+keeps estimated input/output/total token counts visible for providers such as Kiro, while showing
+cache read, cache creation, cached, and reasoning metrics as unavailable when the provider did not
+report those buckets. Exact providers retain legitimate zero values. The same rule applies to
+overview sparklines, event cache-rate columns, and event token details. Regression coverage covers
+the CPAUK rate helper and the CPAMC overview model; the CPAMC submodule was rebuilt through the
+canonical management-center build after the change.
+
+**Last updated:** 2026-10-16
+
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
 CPA carries optional CPAUK analytics behind the `internal/cpauk` package boundary. The port adapts observable behavior from upstream CPA Usage Keeper v1.15.0 at commit `696a4659ce1d5d6f2d2d0530e3205eb51fbce889` without importing its GORM, CGO SQLite, HTTP server, authentication, or process-lifecycle architecture. Analytics are disabled by default and have independent startup, health, circuit, maintenance, and shutdown states. Bounded, lossy observer delivery runs only after synchronous per-key accounting; storage errors, panics, queue saturation, and invalid analytics configuration cannot change proxy readiness or request success.

@@ -85,7 +85,7 @@ func (s *SQLiteStore) summaryUncached(ctx context.Context, query model.Query) (m
 			result.proxyRequests, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
 		TokensPerMinute: decimalProductsRatio(
 			result.tokens.Total, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
-		CacheReadRate: optionalPercentage(result.tokens.CacheRead, result.tokens.Input),
+		CacheReadRate: optionalCacheReadRate(result.tokens),
 		RangeDays: decimalRatio(
 			int64(query.End.Sub(query.Start)), int64(24*time.Hour)),
 		AvgRequestsPerDay: decimalProductsRatio(
@@ -829,6 +829,16 @@ func optionalPercentage(value, total int64) *string {
 		result = strings.TrimRight(strings.TrimRight(result, "0"), ".")
 	}
 	return &result
+}
+
+// optionalCacheReadRate is only meaningful when the provider supplied an exact
+// token breakdown. Estimated input/output totals do not establish whether the
+// zero cache-read bucket means "no cache" or "not reported".
+func optionalCacheReadRate(tokens model.TokenUsage) *string {
+	if tokens.Quality != model.TokenQualityExact {
+		return nil
+	}
+	return optionalPercentage(tokens.CacheRead, tokens.Input)
 }
 
 func optionalPercentageFixed(value, total int64, decimals int) *string {

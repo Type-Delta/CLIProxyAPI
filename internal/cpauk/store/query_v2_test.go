@@ -91,6 +91,19 @@ func TestOptionalPercentageAvoidsOverflow(t *testing.T) {
 	}
 }
 
+func TestOptionalCacheReadRateIsUnavailableForEstimatedTokens(t *testing.T) {
+	if got := optionalCacheReadRate(model.TokenUsage{
+		Input: 100, CacheRead: 0, Quality: model.TokenQualityEstimated,
+	}); got != nil {
+		t.Fatalf("estimated cache-read rate = %v, want unavailable", got)
+	}
+	if got := optionalCacheReadRate(model.TokenUsage{
+		Input: 100, CacheRead: 0, Quality: model.TokenQualityExact,
+	}); got == nil || *got != "0" {
+		t.Fatalf("exact zero cache-read rate = %v, want 0", got)
+	}
+}
+
 func TestV2ActivityReturnsOrderedBucketsAndCanonicalCacheCategories(t *testing.T) {
 	database, events := openV2FixtureStore(t)
 	query := v2Query(model.OperationActivity, events[0].RequestedAt, events[0].RequestedAt.Add(15*time.Minute))
