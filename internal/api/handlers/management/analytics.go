@@ -50,12 +50,28 @@ func (h *Handler) PostAnalyticsQuery(c *gin.Context) {
 		writeAnalyticsInvalid(c, err)
 		return
 	}
+	h.postAnalyticsQueryData(c, data)
+}
+
+func (h *Handler) postAnalyticsQueryData(c *gin.Context, data []byte) {
 	query, err := parseAnalyticsBodyQuery(data)
 	if err != nil {
 		writeAnalyticsInvalid(c, err)
 		return
 	}
-	h.executeAnalyticsQuery(c, query)
+	selection := query
+	if strings.HasPrefix(c.Request.URL.Path, "/v8/management/analytics/") {
+		selection = model.Query{}
+		if err := json.Unmarshal(data, &selection); err != nil {
+			writeAnalyticsInvalid(c, err)
+			return
+		}
+		if err := selection.Validate(); err != nil {
+			writeAnalyticsInvalid(c, err)
+			return
+		}
+	}
+	h.executeAnalyticsQuery(c, query, selection)
 }
 
 func (h *Handler) runAnalyticsGET(c *gin.Context, operation model.Operation) {
@@ -64,54 +80,45 @@ func (h *Handler) runAnalyticsGET(c *gin.Context, operation model.Operation) {
 		writeAnalyticsInvalid(c, err)
 		return
 	}
-	h.executeAnalyticsQuery(c, query)
+	h.executeAnalyticsQuery(c, query, query)
 }
 
-func (h *Handler) executeAnalyticsQuery(c *gin.Context, query model.Query) {
-	service := h.analyticsService()
-	if service == nil {
-		writeAnalyticsError(c, cpauk.ErrUnavailable)
-		return
-	}
+func (h *Handler) readAnalyticsQuery(ctx context.Context, service cpauk.Service, query model.Query) (any, error) {
 	var result any
 	var err error
 	reader := service.Reader()
 	switch query.Operation {
 	case model.OperationSummary:
-		result, err = reader.Summary(c.Request.Context(), query)
+		result, err = reader.Summary(ctx, query)
 	case model.OperationTimeseries:
-		result, err = reader.Timeseries(c.Request.Context(), query)
+		result, err = reader.Timeseries(ctx, query)
 	case model.OperationDimensions:
-		result, err = reader.Dimensions(c.Request.Context(), query)
+		result, err = reader.Dimensions(ctx, query)
 	case model.OperationEvents:
-		result, err = reader.Events(c.Request.Context(), query)
+		result, err = reader.Events(ctx, query)
 	case model.OperationLeaderboard:
-		result, err = reader.Leaderboard(c.Request.Context(), query)
+		result, err = reader.Leaderboard(ctx, query)
 	case model.OperationActivity:
 		v2, ok := reader.(interface {
 			Activity(context.Context, model.Query) (model.Activity, error)
 		})
 		if !ok {
-			writeAnalyticsError(c, cpauk.ErrUnavailable)
-			return
+			return nil, cpauk.ErrUnavailable
 		}
-		result, err = v2.Activity(c.Request.Context(), query)
+		result, err = v2.Activity(ctx, query)
 	case model.OperationAnalysis:
 		v2, ok := reader.(interface {
 			Analysis(context.Context, model.Query) (model.Analysis, error)
 		})
 		if !ok {
-			writeAnalyticsError(c, cpauk.ErrUnavailable)
-			return
+			return nil, cpauk.ErrUnavailable
 		}
-		result, err = v2.Analysis(c.Request.Context(), query)
+		result, err = v2.Analysis(ctx, query)
 	default:
-		writeAnalyticsInvalid(c, fmt.Errorf("unsupported operation"))
-		return
+		return nil, fmt.Errorf("unsupported operation")
 	}
 	if err != nil {
-		writeAnalyticsError(c, classifyAnalyticsReadError(err))
-		return
+		return nil, err
 	}
 	if query.Operation == model.OperationDimensions && query.Dimension == "credential" {
 		if page, ok := result.(model.DimensionPage); ok {
@@ -128,9 +135,7 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query model.Query) {
 			result = page
 		}
 	}
-	result = analyticsResultWithRange(result, query)
-	setAnalyticsNoStore(c)
-	c.JSON(http.StatusOK, result)
+	return analyticsResultWithRange(result, query), nil
 }
 
 func analyticsResultWithRange(result any, query model.Query) any {

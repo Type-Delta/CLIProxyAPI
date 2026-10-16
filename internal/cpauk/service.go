@@ -135,23 +135,24 @@ type service struct {
 	startCancel       context.CancelFunc
 	startWG           sync.WaitGroup
 
-	snapshots         *snapshots
-	observer          *observerProxy
-	reader            *readerProxy
-	maint             Maintenance
-	maintProxy        *maintenanceProxy
-	retention         *maintenance.RetentionScheduler
-	identityKey       [32]byte
-	hasIdentityKey    bool
-	configuredKeyIDs  []string
-	rotatedKeyIDs     []string
-	startSeq          atomic.Uint64
-	pricingPending    atomic.Bool
-	pricingGeneration atomic.Uint64
-	pricingNextCheck  atomic.Int64
-	pricingCtx        context.Context
-	pricingCancel     context.CancelFunc
-	pricingWG         sync.WaitGroup
+	snapshots          *snapshots
+	observer           *observerProxy
+	reader             *readerProxy
+	maint              Maintenance
+	maintProxy         *maintenanceProxy
+	retention          *maintenance.RetentionScheduler
+	identityKey        [32]byte
+	hasIdentityKey     bool
+	configuredKeyIDs   []string
+	rotatedKeyIDs      []string
+	startSeq           atomic.Uint64
+	responseCacheEpoch uint64
+	pricingPending     atomic.Bool
+	pricingGeneration  atomic.Uint64
+	pricingNextCheck   atomic.Int64
+	pricingCtx         context.Context
+	pricingCancel      context.CancelFunc
+	pricingWG          sync.WaitGroup
 }
 
 func newPricingLifecycle() (context.Context, context.CancelFunc) {
@@ -507,7 +508,13 @@ func (s *service) UpdatePriceBook(ctx context.Context, book aggregate.PriceBook)
 			err = ErrInternal
 		}
 	}()
-	return pricing.UpdatePriceBook(ctx, book)
+	updated, err = pricing.UpdatePriceBook(ctx, book)
+	if err == nil {
+		s.mu.Lock()
+		s.responseCacheEpoch++
+		s.mu.Unlock()
+	}
+	return updated, err
 }
 
 func (s *service) PricingSnapshot(ctx context.Context) (snapshot store.PricingSnapshot, err error) {
@@ -623,6 +630,9 @@ func (s *service) recordPricingRefresh(generation uint64, result store.PricingRe
 	defer s.mu.Unlock()
 	if s.closed || s.pricingGeneration.Load() != generation {
 		return
+	}
+	if result.Attempted && err == nil && result.Err == nil {
+		s.responseCacheEpoch++
 	}
 	next := pricingRefreshNextCheck(result, err, time.Now())
 	if next.IsZero() {
@@ -975,6 +985,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 			Detach: func(context.Context) error {
 				s.mu.Lock()
 				s.maintenanceActive = true
+				s.responseCacheEpoch++
 				s.mu.Unlock()
 				stateBeforeMaintenance = s.Health()
 				s.snapshots.mutate(func(health *model.Health) {
@@ -1167,6 +1178,22 @@ func (s *service) collectorCallbacks(sequence uint64) collector.Callbacks {
 func (s *service) backendForRead() (Backend, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.backendForReadLocked()
+}
+
+// AnalyticsResponseCacheEpoch invalidates short-lived HTTP snapshots across
+// service, configuration, and maintenance changes. Intake writes deliberately
+// leave the epoch unchanged so callers can share a bounded-staleness snapshot.
+func (s *service) AnalyticsResponseCacheEpoch() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, err := s.backendForReadLocked(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d:%d:%d", s.startSeq.Load(), s.pricingGeneration.Load(), s.responseCacheEpoch), nil
+}
+
+func (s *service) backendForReadLocked() (Backend, error) {
 	if s.closed {
 		return nil, ErrClosed
 	}

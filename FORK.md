@@ -1268,6 +1268,20 @@ CPAUK timeseries queries retain the requested IANA timezone for calendar bucket 
 
 **Last updated:** 2026-10-16
 
+### DL043 - Shared one-minute analytics responses and conditional reads
+
+The v8 management analytics query operations share successful responses for 60 seconds after computation, bounded to 128 entries and 16 MiB. Cache identity includes the operation, original named or explicit range, timezone, normalized filters, key scope, bucket width, pagination, and sort. Concurrent matching requests share one calculation. Rolling presets reuse the cached response's resolved range during that minute; ordinary intake intentionally permits this bounded staleness. Configuration, pricing, service, and maintenance changes invalidate snapshots, and unavailable services cannot return cached results.
+
+Authenticated `GET /v8/management/analytics/query` carries base64url JSON in `X-Analytics-Query`, keeping filters and full key IDs out of URLs. Responses include ETags; a matching `If-None-Match` returns an empty `304`. Existing POST requests share the cache and continue returning `200` bodies. Errors are not cached, and legacy v0 and public viewer routes retain their prior behavior.
+
+CPAMC retains validators and response bodies in bounded, connection-scoped memory, reuses bodies after a `304`, and clears them on connection changes or sign-out. Large queries use POST, and older servers without the GET route retain POST compatibility. Completing a manual page refresh restarts the automatic refresh interval at 60 seconds; hidden-tab, concurrent-refresh, and Retry-After guards remain in place.
+
+**Implementation evidence:** `internal/api/handlers/management/analytics_response_cache.go`, the v8 route and CORS registration, `internal/cpauk/service.go`, their response-cache tests, and the CPAMC analytics API and refresh coordinator.
+
+**Recorded validation:** deterministic cache expiry, concurrent readers, query isolation, conditional GET, authentication, lifecycle invalidation, client session isolation, and manual-refresh scheduling tests pass, including focused Go race tests. A real CPAMC browser session against CPAUK confirmed initial `200` responses, manual refresh through `304`, suppression of the old automatic deadline, and fresh responses about 60 seconds after manual completion. Six concurrent 90-day Analysis requests against a 100k-request fixture completed in about 7.06 seconds; cached conditional reads took 2–3 ms in the local fixture server. The canonical management bundle was rebuilt from CPAMC `45f860b`. The full-suite legacy management-config compatibility and CPAMC legacy-login diagnostic failures remain outside this change.
+
+**Last updated:** 2026-10-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

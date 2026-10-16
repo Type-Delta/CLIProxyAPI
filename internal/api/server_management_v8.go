@@ -48,6 +48,7 @@ func (s *Server) registerManagementV8Routes() {
 	analytics.GET("/keys", s.mgmt.GetAnalyticsKeys)
 	analytics.GET("/leaderboard", s.mgmt.GetAnalyticsLeaderboard)
 	analytics.POST("/query", s.mgmt.PostAnalyticsQuery)
+	analytics.GET("/query", s.mgmt.GetAnalyticsQuery)
 	analytics.POST("/exports", s.mgmt.CreateAnalyticsExport)
 	analytics.POST("/backups", s.mgmt.CreateAnalyticsBackup)
 	analytics.POST("/backups/:id/restore", s.mgmt.RestoreAnalyticsBackup)

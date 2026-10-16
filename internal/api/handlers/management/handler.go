@@ -62,6 +62,7 @@ type Handler struct {
 	pluginHost               *pluginhost.Host
 	usageLimitTracker        *usagelimit.Tracker
 	analytics                cpauk.Service
+	analyticsResponseCache   *analyticsResponseCache
 	analyticsViewers         *AnalyticsViewerStore
 	analyticsViewerAvailable bool
 	analyticsAdminLimiter    *analyticsAdminRateLimiter
@@ -153,6 +154,7 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	}
 	h.mu.Lock()
 	h.cfg = cfg
+	h.analyticsResponseCache = nil
 	h.mu.Unlock()
 
 }
@@ -218,6 +220,7 @@ func (h *Handler) SetAnalyticsService(service cpauk.Service) {
 	}
 	h.mu.Lock()
 	h.analytics = service
+	h.analyticsResponseCache = nil
 	h.mu.Unlock()
 }
 

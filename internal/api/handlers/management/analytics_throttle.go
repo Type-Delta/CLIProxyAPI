@@ -61,7 +61,7 @@ func (h *Handler) AnalyticsRateLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limit := 0
 		switch c.FullPath() {
-		case "/v0/management/analytics/query":
+		case "/v0/management/analytics/query", "/v8/management/analytics/query":
 			// One analytics view fans out into several independent card loads, so the
 			// budget is sized to keep a handful of full page loads per minute well
 			// inside the limit while still bounding a runaway client.

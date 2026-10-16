@@ -129,7 +129,36 @@ Analytics administration is exposed under `/analytics/*`, including
 `/analytics/providers`, `/analytics/quotas`, `/analytics/keys`,
 `/analytics/leaderboard`, query/export, maintenance, and shared-viewer
 operations. These routes accept the same management credential and keep key
-identity filters in bounded request bodies.
+identity filters in bounded request bodies or the conditional query header.
+
+### Analytics response reuse
+
+The seven analytics query operations share successful responses for 60 seconds
+after calculation. Matching requests from multiple authenticated administrators
+reuse one response, and concurrent cache misses share one calculation. Identity
+includes the operation, range, timezone, filters, key scope, bucket width, sort,
+page size, and cursor. Named rolling ranges reuse the original response's
+resolved `meta.range` while cached. New intake can therefore take up to one cache
+interval to appear; configuration, pricing, service, and maintenance changes
+invalidate responses sooner. Errors are not cached.
+
+For conditional reads, send `GET /analytics/query` with an `X-Analytics-Query`
+header containing the query JSON encoded as UTF-8 and unpadded base64url. The
+query schema is identical to the existing POST body. Do not supply URL query
+parameters or a GET body. Keep key IDs and filter values out of URLs.
+
+A successful read returns an `ETag`. Send it as `If-None-Match` on a later GET;
+a matching representation returns `304 Not Modified` with an empty body and
+the ETag. Clients must retain the matching response body to use that result.
+Responses retain `Cache-Control: private, no-store`; CPAMC manages its validators
+and bodies in connection-scoped memory rather than browser persistent storage.
+ETag is exposed to cross-origin management clients through CORS.
+
+`POST /analytics/query` shares the server cache but always returns a `200` body
+on success. CPAMC uses this form when the encoded header exceeds 6000 characters
+or an older server does not support the GET route. The decoded query limit is
+64 KiB for either form. The legacy v0 routes and public shared viewer do not
+participate in this management response cache.
 
 The public shared viewer remains under `/v0/analytics/viewer/*`; it uses its
 separate viewer session and cookie boundary and is not moved under the
