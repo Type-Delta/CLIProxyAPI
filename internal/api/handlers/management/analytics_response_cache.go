@@ -198,7 +198,7 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 	encoded, err := json.Marshal(struct {
 		Epoch string      `json:"epoch"`
 		Query model.Query `json:"query"`
-	}{Epoch: epoch, Query: selection})
+	}{Epoch: epoch, Query: quantizeAnalyticsCacheQuery(selection)})
 	if err != nil {
 		writeAnalyticsError(c, err)
 		return
@@ -248,6 +248,25 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 		return
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", response.body)
+}
+
+// quantizeAnalyticsCacheQuery groups first-page explicit and custom ranges by
+// UTC minute. Computation and response metadata retain the first request's
+// exact range. Cursor continuations keep exact bounds because their signatures
+// are bound to the range returned by that first page.
+func quantizeAnalyticsCacheQuery(query model.Query) model.Query {
+	if query.Cursor != "" {
+		return query
+	}
+	query.Start = query.Start.UTC().Truncate(time.Minute)
+	query.End = query.End.UTC().Truncate(time.Minute)
+	if query.Range != nil && query.Range.Preset == "custom" {
+		rangeCopy := *query.Range
+		rangeCopy.Start = rangeCopy.Start.UTC().Truncate(time.Minute)
+		rangeCopy.End = rangeCopy.End.UTC().Truncate(time.Minute)
+		query.Range = &rangeCopy
+	}
+	return query
 }
 
 func analyticsETagMatches(condition, etag string) bool {

@@ -142,6 +142,15 @@ resolved `meta.range` while cached. New intake can therefore take up to one cach
 interval to appear; configuration, pricing, service, and maintenance changes
 invalidate responses sooner. Errors are not cached.
 
+For requests without a cursor, cache identity floors explicit start and end
+timestamps to whole UTC minutes, including custom named-range bounds. Requests
+that differ only in seconds or fractional seconds share a snapshot. The first
+request's exact bounds are used for calculation and returned in `meta.range`.
+Cursor continuations must use those exact returned bounds and are not rounded;
+the cursor signature remains bound to its original selection. Timezones, filters,
+and neighboring minutes still identify separate entries. The 60-second TTL
+starts when calculation finishes; it does not expire at a wall-clock minute boundary.
+
 For conditional reads, send `GET /analytics/query` with an `X-Analytics-Query`
 header containing the query JSON encoded as UTF-8 and unpadded base64url. The
 query schema is identical to the existing POST body. Do not supply URL query
