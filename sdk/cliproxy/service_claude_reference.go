@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -32,14 +33,16 @@ func RefreshClaudeReference(ctx context.Context, cfg *config.Config, force bool)
 	if err != nil {
 		return nil, err
 	}
-	token := claudeReferenceToken(auths, time.Now())
-	if token == "" {
+	tokens := claudeReferenceTokens(auths, time.Now())
+	if len(tokens) == 0 {
 		return nil, errors.New("Claude reference update requires a current CPA Claude OAuth credential; run --claude-login")
 	}
-	if force {
-		return claudecapture.UpdateNow(ctx, token)
-	}
-	return claudecapture.EnsureCurrent(ctx, token)
+	return updateClaudeReference(ctx, tokens, force, func(updateCtx context.Context, token string, updateForce bool) (*claudecapture.Profile, error) {
+		if updateForce {
+			return claudecapture.UpdateNow(updateCtx, token)
+		}
+		return claudecapture.EnsureCurrent(updateCtx, token)
+	})
 }
 
 func (s *Service) startClaudeReferenceUpdater(ctx context.Context) {
@@ -55,8 +58,11 @@ func (s *Service) startClaudeReferenceUpdater(ctx context.Context) {
 			enabled := s.cfg != nil && s.cfg.ClaudeHeaderDefaults.OAuthSafeguard && !s.cfg.Home.Enabled
 			s.cfgMu.RUnlock()
 			if enabled && !time.Now().Before(retryAfter) {
-				if token := claudeReferenceToken(s.coreManager.List(), time.Now()); token != "" {
-					if _, err := claudecapture.EnsureCurrent(ctx, token); err != nil && ctx.Err() == nil {
+				if tokens := claudeReferenceTokens(s.coreManager.List(), time.Now()); len(tokens) > 0 {
+					_, err := updateClaudeReference(ctx, tokens, false, func(updateCtx context.Context, token string, _ bool) (*claudecapture.Profile, error) {
+						return claudecapture.EnsureCurrent(updateCtx, token)
+					})
+					if err != nil && ctx.Err() == nil {
 						log.WithError(err).Warn("Claude Code reference update failed")
 						retryAfter = time.Now().Add(claudeReferenceFailureRetryInterval)
 					}
@@ -72,6 +78,15 @@ func (s *Service) startClaudeReferenceUpdater(ctx context.Context) {
 }
 
 func claudeReferenceToken(auths []*coreauth.Auth, now time.Time) string {
+	tokens := claudeReferenceTokens(auths, now)
+	if len(tokens) == 0 {
+		return ""
+	}
+	return tokens[0]
+}
+
+func claudeReferenceTokens(auths []*coreauth.Auth, now time.Time) []string {
+	auths = append([]*coreauth.Auth(nil), auths...)
 	sort.Slice(auths, func(i, j int) bool {
 		if auths[i] == nil {
 			return false
@@ -84,6 +99,8 @@ func claudeReferenceToken(auths []*coreauth.Auth, now time.Time) string {
 		}
 		return auths[i].ID < auths[j].ID
 	})
+	tokens := make([]string, 0, len(auths))
+	seen := make(map[string]struct{}, len(auths))
 	for _, auth := range auths {
 		if auth == nil || !strings.EqualFold(auth.Provider, "claude") || auth.Disabled || auth.Status == coreauth.StatusDisabled || auth.AuthKind() != coreauth.AuthKindOAuth || !auth.HasValidAccessToken(now) {
 			continue
@@ -98,10 +115,34 @@ func claudeReferenceToken(auths []*coreauth.Auth, now time.Time) string {
 			continue
 		}
 		if token, ok := auth.Metadata["access_token"].(string); ok && strings.HasPrefix(token, "sk-ant-oat") {
-			return token
+			if _, exists := seen[token]; !exists {
+				seen[token] = struct{}{}
+				tokens = append(tokens, token)
+			}
 		}
 	}
-	return ""
+	return tokens
+}
+
+func updateClaudeReference(ctx context.Context, tokens []string, force bool, update func(context.Context, string, bool) (*claudecapture.Profile, error)) (*claudecapture.Profile, error) {
+	if len(tokens) == 0 {
+		return nil, errors.New("Claude reference update requires a current Claude OAuth credential")
+	}
+	if update == nil {
+		return nil, errors.New("Claude reference update function is unavailable")
+	}
+	errs := make([]error, 0, len(tokens))
+	for _, token := range tokens {
+		profile, err := update(ctx, token, force)
+		if err == nil {
+			return profile, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		errs = append(errs, err)
+	}
+	return nil, fmt.Errorf("all eligible Claude OAuth reference credentials failed: %w", errors.Join(errs...))
 }
 
 func isDirectAnthropicBase(raw string) bool {

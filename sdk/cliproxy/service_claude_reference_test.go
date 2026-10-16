@@ -1,9 +1,12 @@
 package cliproxy
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/claudecapture"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -32,11 +35,33 @@ func TestClaudeReferenceTokenUsesCurrentDirectOAuthCredential(t *testing.T) {
 	quotaBlocked := credential("quota", "sk-ant-oat-quota")
 	quotaBlocked.Quota = coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: now.Add(time.Hour)}
 
-	if got := claudeReferenceToken([]*coreauth.Auth{old, foreign, apiKeyOverride, disabled, expired, unavailable, quotaBlocked, newer}, now); got != "sk-ant-oat-new" {
-		t.Fatalf("selected token = %q, want newest eligible OAuth token", got)
+	if got := claudeReferenceTokens([]*coreauth.Auth{old, foreign, apiKeyOverride, disabled, expired, unavailable, quotaBlocked, newer}, now); len(got) != 2 || got[0] != "sk-ant-oat-new" || got[1] != "sk-ant-oat-old" {
+		t.Fatalf("selected tokens = %#v, want newest eligible OAuth tokens", got)
 	}
 	if got := claudeReferenceToken([]*coreauth.Auth{foreign, apiKeyOverride, disabled, expired, unavailable, quotaBlocked}, now); got != "" {
 		t.Fatalf("selected ineligible token %q", got)
+	}
+}
+
+func TestClaudeReferenceUpdateFallsBackToNextCredential(t *testing.T) {
+	tokens := []string{"sk-ant-oat-disabled-org", "sk-ant-oat-usable"}
+	called := make([]string, 0, len(tokens))
+	wantProfile := &claudecapture.Profile{ClaudeVersion: "2.1.300"}
+	got, err := updateClaudeReference(context.Background(), tokens, false, func(_ context.Context, token string, _ bool) (*claudecapture.Profile, error) {
+		called = append(called, token)
+		if token == tokens[0] {
+			return nil, errors.New("organization disabled Claude Code")
+		}
+		return wantProfile, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != wantProfile {
+		t.Fatalf("profile = %p, want %p", got, wantProfile)
+	}
+	if len(called) != 2 || called[0] != tokens[0] || called[1] != tokens[1] {
+		t.Fatalf("attempted tokens = %#v, want both credentials in order", called)
 	}
 }
 

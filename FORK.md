@@ -1336,3 +1336,18 @@ status 1`.
 
 **Recorded validation:** the bounded-output regression and focused capture,
 executor, and service package suites pass; the disposable server build passes.
+
+### 2026-10-16 - Claude reference credential fallback
+
+Private Claude Code reference refresh now tries every eligible direct Claude OAuth
+credential in refresh order until one capture succeeds. A paused or
+organization-disabled account therefore cannot block a usable Claude account;
+identical access tokens are attempted only once. Manual refresh and the
+background updater share this fallback behavior.
+
+**Implementation evidence:** `sdk/cliproxy/service_claude_reference.go` and
+`sdk/cliproxy/service_claude_reference_test.go`.
+
+**Recorded validation:** the regression test verifies ordered fallback after a
+first credential failure; focused capture, executor, service, and disposable
+server build checks pass.
