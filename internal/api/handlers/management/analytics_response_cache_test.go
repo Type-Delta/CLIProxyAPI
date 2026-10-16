@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 type analyticsResponseReader struct {
@@ -132,6 +134,148 @@ func TestAnalyticsResponseCacheConditionalGETAndPOST(t *testing.T) {
 	}
 }
 
+func TestAnalyticsResponseCacheQuantizesRanges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, form := range []string{"explicit", "custom", "custom_offset", "subminute"} {
+		t.Run(form, func(t *testing.T) {
+			handler, service := responseCacheHandler()
+			now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+			handler.analyticsResponseCache = &analyticsResponseCache{now: func() time.Time { return now }}
+			start, end := "2026-08-01T00:00:01.123456789Z", "2026-08-02T00:00:01.123456789Z"
+			nextStart, nextEnd := "2026-08-01T00:00:59.999999999Z", "2026-08-02T00:00:59.999999999Z"
+			if form == "subminute" {
+				end = "2026-08-01T00:00:02.123456789Z"
+				nextStart, nextEnd = "2026-08-01T00:00:58Z", "2026-08-01T00:00:59Z"
+			}
+			if form == "custom_offset" {
+				start, end = "2026-08-01T07:00:01.123456789+07:00", "2026-08-02T07:00:01.123456789+07:00"
+			}
+			body := func(start, end string) string {
+				if strings.HasPrefix(form, "custom") {
+					return fmt.Sprintf(`{"schema_version":2,"operation":"summary","range":{"preset":"custom","start":%q,"end":%q,"time_zone":"Asia/Bangkok"}}`, start, end)
+				}
+				return fmt.Sprintf(`{"schema_version":2,"operation":"summary","start":%q,"end":%q,"time_zone":"Asia/Bangkok"}`, start, end)
+			}
+			first := responseCacheRequest(handler, http.MethodGet, body(start, end), "")
+			if first.Code != http.StatusOK {
+				t.Fatalf("first request: %d %s", first.Code, first.Body.String())
+			}
+			var summary model.Summary
+			if err := json.Unmarshal(first.Body.Bytes(), &summary); err != nil {
+				t.Fatal(err)
+			}
+			wantStart, _ := time.Parse(time.RFC3339Nano, start)
+			wantEnd, _ := time.Parse(time.RFC3339Nano, end)
+			if !summary.Meta.Range.Start.Equal(wantStart) || !summary.Meta.Range.End.Equal(wantEnd) {
+				t.Fatalf("computation bounds changed: %+v", summary.Meta.Range)
+			}
+			etag := first.Header().Get("ETag")
+			now = now.Add(time.Minute - time.Nanosecond)
+			hit := responseCacheRequest(handler, http.MethodGet, body(nextStart, nextEnd), etag)
+			if hit.Code != http.StatusNotModified || hit.Body.Len() != 0 || service.reader.calls.Load() != 1 {
+				t.Fatalf("sub-minute conditional request: %d %s reads=%d", hit.Code, hit.Body.String(), service.reader.calls.Load())
+			}
+			post := responseCacheRequest(handler, http.MethodPost, body(nextStart, nextEnd), etag)
+			if post.Code != http.StatusOK || post.Body.String() != first.Body.String() || service.reader.calls.Load() != 1 {
+				t.Fatalf("POST did not reuse snapshot: %d %s", post.Code, post.Body.String())
+			}
+			now = now.Add(time.Nanosecond)
+			refreshed := responseCacheRequest(handler, http.MethodGet, body(nextStart, nextEnd), etag)
+			if refreshed.Code != http.StatusOK || service.reader.calls.Load() != 2 {
+				t.Fatalf("expired snapshot: %d reads=%d", refreshed.Code, service.reader.calls.Load())
+			}
+			if err := json.Unmarshal(refreshed.Body.Bytes(), &summary); err != nil {
+				t.Fatal(err)
+			}
+			wantStart, _ = time.Parse(time.RFC3339Nano, nextStart)
+			if !summary.Meta.Range.Start.Equal(wantStart) {
+				t.Fatalf("refresh kept old bounds: %+v", summary.Meta.Range)
+			}
+			// Moving either endpoint across a UTC minute must create another entry.
+			for _, next := range [][2]string{{"2026-08-01T00:01:00Z", "2026-08-02T00:00:59Z"}, {"2026-08-01T00:00:59Z", "2026-08-02T00:01:00Z"}} {
+				response := responseCacheRequest(handler, http.MethodGet, body(next[0], next[1]), refreshed.Header().Get("ETag"))
+				if response.Code != http.StatusOK {
+					t.Fatalf("neighbor minute reused entry: %d", response.Code)
+				}
+			}
+			if service.reader.calls.Load() != 4 {
+				t.Fatalf("neighbor minute reads=%d", service.reader.calls.Load())
+			}
+		})
+	}
+}
+
+type analyticsCacheStoreService struct {
+	*analyticsHandlerService
+	database *store.SQLiteStore
+}
+
+func (service *analyticsCacheStoreService) Reader() cpauk.Reader { return service.database }
+
+func TestAnalyticsResponseCacheMinuteSnapshotKeepsExactCursorBounds(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close(ctx) })
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for index := 1; index <= 3; index++ {
+		event := model.Event{
+			SchemaVersion: 1, AttemptID: fmt.Sprintf("%032x", index), ProxyRequestID: fmt.Sprintf("%032x", index),
+			RequestIDQuality: model.RequestIDSynthetic, KeyID: strings.Repeat("a", 64),
+			RequestedAt: start.Add(time.Duration(index) * time.Second), Provider: "test", ExecutorType: "test",
+			Model: "test", EndpointClass: "responses", Succeeded: true,
+			Tokens: model.TokenUsage{Input: 1, Total: 1, Schema: "normalized-v1", Quality: model.TokenQualityExact},
+		}
+		if err := database.WriteBatch(ctx, []model.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := &Handler{analytics: &analyticsCacheStoreService{analyticsHandlerService: &analyticsHandlerService{state: model.StateReady}, database: database}}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationEvents, Start: start.Add(1500 * time.Millisecond), End: start.Add(64500 * time.Millisecond), TimeZone: "Asia/Bangkok", PageSize: 1}
+	request := func(q model.Query, etag string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return responseCacheRequest(handler, http.MethodGet, string(body), etag)
+	}
+	first := request(query, "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first page: %d %s", first.Code, first.Body.String())
+	}
+	var page model.EventPage
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.TotalCount != 2 || page.Meta.NextCursor == "" || !page.Meta.Range.Start.Equal(query.Start) {
+		t.Fatalf("first page did not use exact bounds: %+v", page)
+	}
+	shifted := query
+	shifted.Start, shifted.End = start.Add(59*time.Second), start.Add(119*time.Second)
+	if hit := request(shifted, first.Header().Get("ETag")); hit.Code != http.StatusNotModified {
+		t.Fatalf("same-minute first page was recomputed: %d %s", hit.Code, hit.Body.String())
+	}
+	query.Start, query.End, query.Cursor = page.Meta.Range.Start, page.Meta.Range.End, page.Meta.NextCursor
+	second := request(query, "")
+	if second.Code != http.StatusOK {
+		t.Fatalf("continuation: %d %s", second.Code, second.Body.String())
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].AttemptID != fmt.Sprintf("%032x", 2) {
+		t.Fatalf("wrong continuation: %+v", page)
+	}
+	query.Start = query.Start.Add(time.Millisecond)
+	invalid := request(query, second.Header().Get("ETag"))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("changed cursor bounds bypassed validation: %d %s", invalid.Code, invalid.Body.String())
+	}
+}
+
 func TestAnalyticsResponseCacheCanonicalScopesAndAllOperations(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	keyA, keyB := strings.Repeat("a", 64), strings.Repeat("b", 64)
@@ -140,7 +284,7 @@ func TestAnalyticsResponseCacheCanonicalScopesAndAllOperations(t *testing.T) {
 			handler, service := responseCacheHandler()
 			query := map[string]any{
 				"schema_version": 2, "operation": operation,
-				"start": "2026-08-01T00:00:00Z", "end": "2026-08-02T00:00:00Z", "time_zone": "UTC",
+				"start": "2026-08-01T00:00:01.123Z", "end": "2026-08-02T00:00:01.123Z", "time_zone": "UTC",
 				"key_ids": []string{keyA, keyB}, "filters": map[string]any{"provider": []string{"a", "b"}},
 			}
 			switch operation {
@@ -158,6 +302,7 @@ func TestAnalyticsResponseCacheCanonicalScopesAndAllOperations(t *testing.T) {
 			if first.Code != http.StatusOK {
 				t.Fatalf("%d %s", first.Code, first.Body.String())
 			}
+			query["start"], query["end"] = "2026-08-01T00:00:59.999Z", "2026-08-02T00:00:59.999Z"
 			query["key_ids"] = []string{keyB, keyA}
 			query["filters"] = map[string]any{"provider": []string{"b", "a", "a"}}
 			encoded, _ = json.Marshal(query)
