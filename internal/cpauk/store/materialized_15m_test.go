@@ -239,6 +239,127 @@ func TestCompactTimeseriesAndDimensionsMatchRawAcrossWidthsAndFilters(t *testing
 	}
 }
 
+func TestCompactTimeseriesGroupsLocalBucketsAndDeduplicatesRequests(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	base := loadFixtureEvents(t)[0]
+	start := time.Date(2026, 10, 6, 17, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	makeEvent := func(index int, at time.Time, proxy string) model.Event {
+		event := base
+		event.AttemptID = fmt.Sprintf("%032x", 700+index)
+		event.ProxyRequestID = proxy
+		event.RequestedAt = at
+		event.KeyID = fmt.Sprintf("%064x", 800+index)
+		event.Tokens.Input = int64(10 + index)
+		event.Tokens.Output = 1
+		event.Tokens.Total = event.Tokens.Input + event.Tokens.Output
+		event.Succeeded = true
+		event.ErrorClass = nil
+		return event
+	}
+	events := []model.Event{
+		makeEvent(0, start.Add(time.Minute), fmt.Sprintf("%032x", 900)),
+		makeEvent(1, start.Add(16*time.Minute), fmt.Sprintf("%032x", 900)),
+		makeEvent(2, end.Add(-time.Minute), fmt.Sprintf("%032x", 901)),
+		makeEvent(3, end.Add(time.Minute), fmt.Sprintf("%032x", 902)),
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationTimeseries,
+		Start: start, End: end, TimeZone: "Asia/Bangkok", BucketWidth: "1d"}
+	result, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Points) != 1 {
+		t.Fatalf("points=%d, want 1: %+v", len(result.Points), result.Points)
+	}
+	point := result.Points[0]
+	if !point.Start.Equal(start) || !point.End.Equal(end) {
+		t.Fatalf("bucket=%s..%s, want %s..%s", point.Start, point.End, start, end)
+	}
+	if point.ProxyRequests != 2 || point.UpstreamAttempts != 3 || point.Tokens.Input != 33 {
+		t.Fatalf("point=%+v, want 2 requests, 3 attempts, 33 input tokens", point)
+	}
+	success, _ := json.Marshal(true)
+	rawQuery := query
+	rawQuery.Filters = map[string]json.RawMessage{"success": success}
+	raw, err := database.Timeseries(ctx, rawQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Points, raw.Points) {
+		t.Fatalf("local compact points differ from raw points\ncompact=%+v\nraw=%+v", result.Points, raw.Points)
+	}
+}
+
+func TestCompactTimeseriesGroupsDSTLocalDay(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	base := loadFixtureEvents(t)[0]
+	start := time.Date(2026, 3, 8, 5, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 9, 4, 0, 0, 0, time.UTC)
+	for index, at := range []time.Time{start.Add(time.Minute), start.Add(2 * time.Hour)} {
+		event := base
+		event.AttemptID = fmt.Sprintf("%032x", 950+index)
+		event.ProxyRequestID = fmt.Sprintf("%032x", 960+index)
+		event.RequestedAt = at
+		if err := database.WriteBatch(ctx, []model.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationTimeseries,
+		Start: start, End: end, TimeZone: "America/New_York", BucketWidth: "1d"}
+	result, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Points) != 1 || !result.Points[0].Start.Equal(start) || !result.Points[0].End.Equal(end) {
+		t.Fatalf("DST points=%+v, want one %s..%s bucket", result.Points, start, end)
+	}
+	if result.Points[0].ProxyRequests != 2 {
+		t.Fatalf("DST requests=%d, want 2", result.Points[0].ProxyRequests)
+	}
+}
+
+func TestCompactTimeseriesUsesCompactInteriorForUnalignedLocalRange(t *testing.T) {
+	ctx := context.Background()
+	database := openMaterialized15mTestStore(t)
+	base := loadFixtureEvents(t)[0]
+	base.Succeeded = true
+	base.ErrorClass = nil
+	start := time.Date(2026, 10, 6, 17, 5, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 9, 16, 55, 0, 0, time.UTC)
+	for index, at := range []time.Time{start.Add(time.Minute), time.Date(2026, 10, 7, 18, 0, 0, 0, time.UTC), end.Add(-time.Minute)} {
+		event := base
+		event.AttemptID = fmt.Sprintf("%032x", 980+index)
+		event.ProxyRequestID = fmt.Sprintf("%032x", 990+index)
+		event.RequestedAt = at
+		if err := database.WriteBatch(ctx, []model.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := model.Query{SchemaVersion: model.QuerySchemaVersionV2, Operation: model.OperationTimeseries,
+		Start: start, End: end, TimeZone: "Asia/Bangkok", BucketWidth: "1d"}
+	database.retentionCutoff = start.Add(-time.Hour)
+	compact, err := database.Timeseries(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	success, _ := json.Marshal(true)
+	rawQuery := query
+	rawQuery.Filters = map[string]json.RawMessage{"success": success}
+	raw, err := database.Timeseries(ctx, rawQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(compact.Points, raw.Points) {
+		t.Fatalf("unaligned local compact points differ from raw points\ncompact=%+v\nraw=%+v", compact.Points, raw.Points)
+	}
+}
+
 func openMaterialized15mTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	database, err := Open(context.Background(), Config{

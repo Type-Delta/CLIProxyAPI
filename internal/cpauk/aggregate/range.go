@@ -49,12 +49,12 @@ func (b Bucketer) Bounds(at time.Time) (time.Time, time.Time, error) {
 	var start, end time.Time
 	switch b.width {
 	case "1d":
-		start = time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, b.location)
-		end = start.AddDate(0, 0, 1)
+		start = localCalendarBoundary(local, b.location)
+		end = localCalendarAdd(start, 0, 0, 1, b.location)
 	case "1w":
 		daysSinceMonday := (int(local.Weekday()) + 6) % 7
-		start = time.Date(local.Year(), local.Month(), local.Day()-daysSinceMonday, 0, 0, 0, 0, b.location)
-		end = start.AddDate(0, 0, 7)
+		start = localCalendarAdd(local, 0, 0, -daysSinceMonday, b.location)
+		end = localCalendarAdd(start, 0, 0, 7, b.location)
 	default:
 		_, offsetSeconds := local.Zone()
 		offset := time.Duration(offsetSeconds) * time.Second
@@ -70,33 +70,34 @@ func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.D
 		return time.Time{}, time.Time{}, fmt.Errorf("load time zone %q: %w", zoneName, err)
 	}
 	localNow := now.In(location)
-	day := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+	day := localCalendarBoundary(localNow, location)
 	var start, end time.Time
 	switch kind {
 	case RangeToday:
-		start, end = day, day.AddDate(0, 0, 1)
+		start, end = day, localCalendarAdd(day, 0, 0, 1, location)
 	case RangeYesterday:
-		start, end = day.AddDate(0, 0, -1), day
+		end = day
+		start = localCalendarAdd(end, 0, 0, -1, location)
 	case RangeCalendarWeek:
 		daysSinceMonday := (int(localNow.Weekday()) + 6) % 7
-		start = day.AddDate(0, 0, -daysSinceMonday)
-		end = start.AddDate(0, 0, 7)
+		start = localCalendarAdd(day, 0, 0, -daysSinceMonday, location)
+		end = localCalendarAdd(start, 0, 0, 7, location)
 	case RangePreviousWeek:
 		daysSinceMonday := (int(localNow.Weekday()) + 6) % 7
-		end = day.AddDate(0, 0, -daysSinceMonday)
-		start = end.AddDate(0, 0, -7)
+		end = localCalendarAdd(day, 0, 0, -daysSinceMonday, location)
+		start = localCalendarAdd(end, 0, 0, -7, location)
 	case RangeCalendarMonth:
-		start = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
-		end = start.AddDate(0, 1, 0)
+		start = calendarBoundary(localNow.Year(), localNow.Month(), 1, location)
+		end = localCalendarAdd(start, 0, 1, 0, location)
 	case RangePreviousMonth:
-		end = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
-		start = end.AddDate(0, -1, 0)
+		end = calendarBoundary(localNow.Year(), localNow.Month(), 1, location)
+		start = localCalendarAdd(end, 0, -1, 0, location)
 	case RangeCalendarYear:
-		start = time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, location)
-		end = start.AddDate(1, 0, 0)
+		start = calendarBoundary(localNow.Year(), time.January, 1, location)
+		end = localCalendarAdd(start, 1, 0, 0, location)
 	case RangePreviousYear:
-		end = time.Date(localNow.Year(), time.January, 1, 0, 0, 0, 0, location)
-		start = end.AddDate(-1, 0, 0)
+		end = calendarBoundary(localNow.Year(), time.January, 1, location)
+		start = localCalendarAdd(end, -1, 0, 0, location)
 	case RangeRolling:
 		if rolling <= 0 {
 			return time.Time{}, time.Time{}, fmt.Errorf("rolling duration must be positive")
@@ -107,6 +108,36 @@ func ResolveRange(kind RangeKind, now time.Time, zoneName string, rolling time.D
 		return time.Time{}, time.Time{}, fmt.Errorf("unsupported range kind %q", kind)
 	}
 	return start.UTC(), end.UTC(), nil
+}
+
+func localCalendarBoundary(at time.Time, location *time.Location) time.Time {
+	local := at.In(location)
+	return calendarBoundary(local.Year(), local.Month(), local.Day(), location)
+}
+
+func localCalendarAdd(at time.Time, years, months, days int, location *time.Location) time.Time {
+	local := at.In(location)
+	probe := time.Date(local.Year()+years, local.Month()+time.Month(months), local.Day()+days, 12, 0, 0, 0, location)
+	return localCalendarBoundary(probe, location)
+}
+
+func calendarBoundary(year int, month time.Month, day int, location *time.Location) time.Time {
+	boundary := time.Date(year, month, day, 0, 0, 0, 0, location)
+	resolved := boundary.In(location)
+	if resolved.Year() == year && resolved.Month() == month && resolved.Day() == day {
+		return boundary
+	}
+	// Some zones skip local midnight when daylight saving starts. Go resolves
+	// that nonexistent wall time to the previous day; advance until the first
+	// instant that belongs to the requested calendar day.
+	for step := time.Hour; step <= 48*time.Hour; step += time.Hour {
+		candidate := boundary.Add(step)
+		resolved = candidate.In(location)
+		if resolved.Year() == year && resolved.Month() == month && resolved.Day() == day {
+			return candidate
+		}
+	}
+	return boundary
 }
 
 // BucketBounds uses calendar arithmetic for day and week widths. That keeps

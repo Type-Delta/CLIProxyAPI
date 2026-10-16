@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -38,6 +39,10 @@ type materialized15mRead struct {
 	Eligible      bool
 	Aggregates    []materialized15mAggregate
 	RequestCounts map[int64]int64
+	// RequestIDs is populated for non-UTC reads. Compact request counts are
+	// grouped in UTC, so local buckets must deduplicate the 15-minute IDs after
+	// applying the query bucketer.
+	RequestIDs map[int64][]string
 }
 
 func (s *SQLiteStore) ReadMaterialized15Minute(ctx context.Context, query model.Query) (materialized15mRead, error) {
@@ -55,9 +60,8 @@ func (s *SQLiteStore) readMaterialized15m(ctx context.Context, query model.Query
 		return result, ErrClosed
 	}
 	kind, values, ok := compact15mSelection(query)
-	if !ok || !compact15mWidthEligible(query.BucketWidth) || query.TimeZone != "UTC" || query.Start.UnixNano()%materialized15mDurationNS != 0 ||
-		query.End.UnixNano()%materialized15mDurationNS != 0 || !compactQueryAligned(query.Start.UnixNano(), query.BucketWidth) ||
-		!compactQueryAligned(query.End.UnixNano(), query.BucketWidth) {
+	if !ok || !compact15mWidthEligible(query.BucketWidth) || query.Start.UnixNano()%materialized15mDurationNS != 0 ||
+		query.End.UnixNano()%materialized15mDurationNS != 0 || !compactQueryAlignedForZone(query) {
 		return result, nil
 	}
 	result.Eligible = true
@@ -120,25 +124,43 @@ GROUP BY bucket_start_ns ORDER BY bucket_start_ns`, arguments...)
 			requestArguments = append(requestArguments, value)
 		}
 	}
-	requestExpression, requestBucketArguments, err := compactRequestBucketExpression(query.BucketWidth)
-	if err != nil {
-		return materialized15mRead{}, err
-	}
-	requestArguments = append(requestBucketArguments, requestArguments...)
-	requestRows, err := tx.QueryContext(ctx, `SELECT compact_bucket,COUNT(DISTINCT proxy_request_id)
+	var requestRows *sql.Rows
+	if query.TimeZone == "UTC" {
+		requestExpression, requestBucketArguments, err := compactRequestBucketExpression(query.BucketWidth)
+		if err != nil {
+			return materialized15mRead{}, err
+		}
+		requestArguments = append(requestBucketArguments, requestArguments...)
+		requestRows, err = tx.QueryContext(ctx, `SELECT compact_bucket,COUNT(DISTINCT proxy_request_id)
 FROM (SELECT `+requestExpression+` AS compact_bucket,proxy_request_id
 FROM analytics_15m_request_ids WHERE `+strings.Join(requestClauses, " AND ")+`)
 GROUP BY compact_bucket ORDER BY compact_bucket`, requestArguments...)
+	} else {
+		result.RequestIDs = map[int64][]string{}
+		requestRows, err = tx.QueryContext(ctx, `SELECT bucket_start_ns,proxy_request_id
+FROM analytics_15m_request_ids WHERE `+strings.Join(requestClauses, " AND ")+`
+ORDER BY bucket_start_ns,proxy_request_id`, requestArguments...)
+	}
 	if err != nil {
 		return materialized15mRead{}, fmt.Errorf("read compact 15-minute request counts: %w", err)
 	}
 	for requestRows.Next() {
-		var bucketStart, count int64
-		if err := requestRows.Scan(&bucketStart, &count); err != nil {
-			_ = requestRows.Close()
-			return materialized15mRead{}, fmt.Errorf("scan compact 15-minute request count: %w", err)
+		if query.TimeZone == "UTC" {
+			var bucketStart, count int64
+			if err := requestRows.Scan(&bucketStart, &count); err != nil {
+				_ = requestRows.Close()
+				return materialized15mRead{}, fmt.Errorf("scan compact 15-minute request count: %w", err)
+			}
+			result.RequestCounts[bucketStart] = count
+			continue
 		}
-		result.RequestCounts[bucketStart] = count
+		var bucketStart int64
+		var requestID []byte
+		if err := requestRows.Scan(&bucketStart, &requestID); err != nil {
+			_ = requestRows.Close()
+			return materialized15mRead{}, fmt.Errorf("scan compact 15-minute request identity: %w", err)
+		}
+		result.RequestIDs[bucketStart] = append(result.RequestIDs[bucketStart], hex.EncodeToString(requestID))
 	}
 	if err := requestRows.Err(); err != nil {
 		_ = requestRows.Close()

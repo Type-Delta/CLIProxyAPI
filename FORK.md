@@ -1258,6 +1258,16 @@ seconds.
 
 **Last updated:** 2026-10-15
 
+### DL042 - Local-time compact analytics reads
+
+CPAUK timeseries queries retain the requested IANA timezone for calendar bucket semantics and response metadata while reading UTC 15-minute materialized storage. Non-UTC queries regroup compact aggregate rows through the existing timezone bucketer and deduplicate request identities across 15-minute bins, preserving local-day, fixed-width, and DST bucket correctness. Queries with unaligned boundaries or retained-history overlap still use the existing exact paths. Calendar boundary resolution now handles zones that skip local midnight instead of producing zero-length day buckets.
+
+**Implementation evidence:** `internal/cpauk/store/{materialized_read.go,query.go,materialized_15m_test.go}`, `internal/cpauk/aggregate/{range.go,aggregate_test.go}`.
+
+**Recorded validation:** fixed-offset, unaligned rolling-range, New York DST, and skipped-midnight Havana/Azores compact-versus-raw and bucket-sequence parity tests pass; a 100k-request fixture comparison reports Asia/Bangkok 1-hour timeseries falling from 479.272 ms to 207.698 ms median (56.7% faster), with 2,160 points and exact raw-path parity. The hybrid unaligned-range check measures 217.700 ms after keeping only the edge minutes on the raw path. `go test ./internal/cpauk/...` and `go build -o cli-proxy-api ./cmd/server && unlink cli-proxy-api` pass. A full `go test ./...` run remains affected by the unrelated existing `internal/api/handlers/management/TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+
+**Last updated:** 2026-10-16
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

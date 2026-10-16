@@ -306,6 +306,29 @@ func (s *SQLiteStore) timeseriesWithOutcomes(ctx context.Context, query model.Qu
 			return materializedTimeseries(query, bucketer, read)
 		}
 	}
+	points := map[int64]*pointState{}
+	if s.retentionCutoff.IsZero() || !query.Start.Before(s.retentionCutoff) {
+		if compactQuery, ok := compactTimeseriesInterior(query, bucketer); ok && s.materialized15mEligible(compactQuery) {
+			read, readErr := s.readMaterialized15m(ctx, compactQuery)
+			if readErr != nil {
+				return model.Timeseries{}, nil, readErr
+			}
+			if read.Eligible {
+				compact, outcomes, compactErr := materializedTimeseries(compactQuery, bucketer, read)
+				if compactErr != nil {
+					return model.Timeseries{}, nil, compactErr
+				}
+				for _, point := range compact.Points {
+					key := point.Start.UnixNano()
+					state := &pointState{point: point, requests: map[string]struct{}{}, proxyRequests: point.ProxyRequests, proxyRequestsSet: true, quality: point.Tokens.Quality}
+					state.succeeded, state.failed = outcomes[key][0], outcomes[key][1]
+					points[key] = state
+				}
+				where += " AND NOT (requested_at_ns >= ? AND requested_at_ns < ?)"
+				arguments = append(arguments, compactQuery.Start.UnixNano(), compactQuery.End.UnixNano())
+			}
+		}
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns, proxy_request_id,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, token_quality, known_cost_nano, unpriced_tokens,
@@ -315,7 +338,6 @@ FROM events `+where, arguments...)
 		return model.Timeseries{}, nil, fmt.Errorf("query analytics timeseries: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	points := map[int64]*pointState{}
 	for rows.Next() {
 		var requestedNS int64
 		var requestID, quality string
@@ -372,7 +394,7 @@ FROM events `+where, arguments...)
 }
 
 func (s *SQLiteStore) materialized15mEligible(query model.Query) bool {
-	if query.TimeZone != "UTC" || (!s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff)) {
+	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return false
 	}
 	if _, _, ok := compact15mSelection(query); !ok {
@@ -384,7 +406,48 @@ func (s *SQLiteStore) materialized15mEligible(query model.Query) bool {
 	if !compact15mWidthEligible(query.BucketWidth) {
 		return false
 	}
-	return compactQueryAligned(query.Start.UnixNano(), query.BucketWidth) && compactQueryAligned(query.End.UnixNano(), query.BucketWidth)
+	return compactQueryAlignedForZone(query)
+}
+
+func compactTimeseriesInterior(query model.Query, bucketer aggregate.Bucketer) (model.Query, bool) {
+	firstStart, firstEnd, err := bucketer.Bounds(query.Start)
+	if err != nil {
+		return model.Query{}, false
+	}
+	compactStart := firstStart
+	if !compactStart.Equal(query.Start) {
+		compactStart = firstEnd
+	}
+	lastStart, _, err := bucketer.Bounds(query.End)
+	if err != nil {
+		return model.Query{}, false
+	}
+	compactEnd := lastStart
+	if lastStart.Equal(query.End) {
+		compactEnd = query.End
+	}
+	if !compactStart.Before(compactEnd) {
+		return model.Query{}, false
+	}
+	compactQuery := query
+	compactQuery.Start, compactQuery.End = compactStart, compactEnd
+	return compactQuery, true
+}
+
+func compactQueryAlignedForZone(query model.Query) bool {
+	if query.TimeZone == "UTC" {
+		return compactQueryAligned(query.Start.UnixNano(), query.BucketWidth) && compactQueryAligned(query.End.UnixNano(), query.BucketWidth)
+	}
+	bucketer, err := aggregate.NewBucketer(query.TimeZone, query.BucketWidth)
+	if err != nil {
+		return false
+	}
+	start, _, err := bucketer.Bounds(query.Start)
+	if err != nil || !start.Equal(query.Start) {
+		return false
+	}
+	end, _, err := bucketer.Bounds(query.End)
+	return err == nil && end.Equal(query.End)
 }
 
 func compactQueryAligned(timestampNS int64, width string) bool {
@@ -448,6 +511,33 @@ func materializedTimeseries(query model.Query, bucketer aggregate.Bucketer, read
 		state := ensurePoint(points, start, end)
 		state.proxyRequests = requestCount
 		state.proxyRequestsSet = true
+	}
+	if len(read.RequestIDs) != 0 {
+		requestSets := make(map[int64]map[string]struct{}, len(read.RequestIDs))
+		for bucketStart, requestIDs := range read.RequestIDs {
+			start, _, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
+			if err != nil {
+				return model.Timeseries{}, nil, err
+			}
+			set := requestSets[start.UnixNano()]
+			if set == nil {
+				set = make(map[string]struct{}, len(requestIDs))
+				requestSets[start.UnixNano()] = set
+			}
+			for _, requestID := range requestIDs {
+				set[requestID] = struct{}{}
+			}
+		}
+		for bucketStart, requestIDs := range requestSets {
+			start := time.Unix(0, bucketStart).UTC()
+			_, end, err := bucketer.Bounds(start)
+			if err != nil {
+				return model.Timeseries{}, nil, err
+			}
+			state := ensurePoint(points, start, end)
+			state.proxyRequests = int64(len(requestIDs))
+			state.proxyRequestsSet = true
+		}
 	}
 	for bucketStart := range points {
 		state := points[bucketStart]

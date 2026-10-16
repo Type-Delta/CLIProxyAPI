@@ -98,6 +98,76 @@ func TestRangeDSTAndMonday(t *testing.T) {
 	}
 }
 
+func TestCalendarBoundariesSurviveSkippedMidnight(t *testing.T) {
+	for _, testCase := range []struct {
+		zone  string
+		year  int
+		month time.Month
+		day   int
+	}{
+		{zone: "America/Santiago", year: 2026, month: time.September, day: 6},
+		{zone: "America/Havana", year: 2026, month: time.March, day: 8},
+		{zone: "Atlantic/Azores", year: 2026, month: time.March, day: 29},
+	} {
+		t.Run(testCase.zone, func(t *testing.T) {
+			location, err := time.LoadLocation(testCase.zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(testCase.year, testCase.month, testCase.day, 12, 0, 0, 0, location).UTC()
+			start, end, err := ResolveRange(RangeToday, now, testCase.zone, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !start.Before(end) {
+				t.Fatalf("range is not increasing: %s..%s", start, end)
+			}
+			bucketer, err := NewBucketer(testCase.zone, "1d")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bucketStart, bucketEnd, err := bucketer.Bounds(now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bucketStart.Equal(start) || !bucketEnd.Equal(end) {
+				t.Fatalf("bucket=%s..%s, range=%s..%s", bucketStart, bucketEnd, start, end)
+			}
+		})
+	}
+}
+
+func TestBucketSequenceAdvancesAcrossSkippedMidnight(t *testing.T) {
+	for _, zone := range []string{"America/Havana", "Atlantic/Azores"} {
+		t.Run(zone, func(t *testing.T) {
+			location, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Date(2026, 3, 7, 12, 0, 0, 0, location)
+			bucketer, err := NewBucketer(zone, "1d")
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := 0
+			for at.Before(time.Date(2026, 3, 10, 12, 0, 0, 0, location)) {
+				start, end, err := bucketer.Bounds(at)
+				if err != nil || !start.Before(end) {
+					t.Fatalf("invalid bucket at %s: %s..%s err=%v", at, start, end, err)
+				}
+				at = end.In(location)
+				seen++
+				if seen > 8 {
+					t.Fatal("bucket sequence did not advance")
+				}
+			}
+			if seen != 4 {
+				t.Fatalf("bucket count=%d, want 4", seen)
+			}
+		})
+	}
+}
+
 func TestBucketerMatchesBucketBoundsAcrossDST(t *testing.T) {
 	for _, testCase := range []struct {
 		zone  string
