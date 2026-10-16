@@ -354,6 +354,10 @@ FROM rollups `+where, arguments...)
 		state.point.Tokens.CacheRead += cacheRead
 		state.point.Tokens.CacheCreation += cacheCreation
 		state.point.Tokens.Total += totalTokens
+		if quality == string(model.TokenQualityExact) {
+			state.exactCacheInput += input
+			state.exactCacheRead += cacheRead
+		}
 		state.point.KnownCost += model.NanoUSD(knownCost)
 		state.point.UnpricedTokens += unpriced
 		state.quality = combineQuality(state.quality, model.TokenQuality(quality))

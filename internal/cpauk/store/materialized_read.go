@@ -33,6 +33,8 @@ type materialized15mAggregate struct {
 	KnownCost        model.NanoUSD
 	UnpricedTokens   int64
 	TokenQuality     model.TokenQuality
+	ExactCacheInput  int64
+	ExactCacheRead   int64
 }
 
 type materialized15mRead struct {
@@ -105,6 +107,10 @@ GROUP BY bucket_start_ns ORDER BY bucket_start_ns`, arguments...)
 			return materialized15mRead{}, fmt.Errorf("scan compact 15-minute aggregate: %w", err)
 		}
 		aggregate.TokenQuality = model.TokenQuality(quality)
+		if aggregate.TokenQuality == model.TokenQualityExact {
+			aggregate.ExactCacheInput = aggregate.InputTokens
+			aggregate.ExactCacheRead = aggregate.CacheReadTokens
+		}
 		result.Aggregates = append(result.Aggregates, aggregate)
 	}
 	if err := rows.Err(); err != nil {
@@ -113,6 +119,46 @@ GROUP BY bucket_start_ns ORDER BY bucket_start_ns`, arguments...)
 	}
 	if err := rows.Close(); err != nil {
 		return materialized15mRead{}, fmt.Errorf("close compact 15-minute aggregate rows: %w", err)
+	}
+	// The compact cache keeps one quality for the whole bucket, so mixed buckets
+	// need their exact cache numerator and denominator recovered from raw rows.
+	// Exact buckets already have both values and require no additional read.
+	mixed := make(map[int64]int)
+	for index, aggregate := range result.Aggregates {
+		if aggregate.TokenQuality != model.TokenQualityExact {
+			mixed[aggregate.BucketStart] = index
+		}
+	}
+	if len(mixed) > 0 {
+		where, args, err := buildWhere(query)
+		if err != nil {
+			return materialized15mRead{}, err
+		}
+		args = append([]any{materialized15mDurationNS, materialized15mDurationNS, materialized15mDurationNS}, args...)
+		cacheRows, err := tx.QueryContext(ctx, `SELECT
+requested_at_ns - ((requested_at_ns % ? + ?) % ?) AS bucket_start,
+SUM(input_tokens), SUM(cache_read_tokens)
+FROM events `+where+` AND token_quality='exact' GROUP BY bucket_start`, args...)
+		if err != nil {
+			return materialized15mRead{}, fmt.Errorf("read mixed-bucket cache metrics: %w", err)
+		}
+		defer func() { _ = cacheRows.Close() }()
+		for cacheRows.Next() {
+			var bucketStart, input, cacheRead int64
+			if err := cacheRows.Scan(&bucketStart, &input, &cacheRead); err != nil {
+				return materialized15mRead{}, fmt.Errorf("scan mixed-bucket cache metrics: %w", err)
+			}
+			if index, ok := mixed[bucketStart]; ok {
+				result.Aggregates[index].ExactCacheInput = input
+				result.Aggregates[index].ExactCacheRead = cacheRead
+			}
+		}
+		if err := cacheRows.Err(); err != nil {
+			return materialized15mRead{}, fmt.Errorf("read mixed-bucket cache metrics: %w", err)
+		}
+		if err := cacheRows.Close(); err != nil {
+			return materialized15mRead{}, fmt.Errorf("close mixed-bucket cache metrics: %w", err)
+		}
 	}
 
 	requestClauses := []string{"bucket_start_ns >= ?", "bucket_start_ns + ? <= ?"}

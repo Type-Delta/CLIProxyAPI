@@ -148,15 +148,18 @@ type Summary struct {
 }
 
 type TimeseriesPoint struct {
-	Start                 time.Time  `json:"start"`
-	End                   time.Time  `json:"end"`
-	ProxyRequests         int64      `json:"proxy_requests"`
-	UpstreamAttempts      int64      `json:"upstream_attempts"`
-	Tokens                TokenUsage `json:"tokens"`
-	KnownCost             NanoUSD    `json:"known_cost_usd"`
-	UnpricedTokens        int64      `json:"unpriced_tokens"`
-	GenerationTimeMS      *int64     `json:"generation_time_ms,omitempty"`
-	GenerationSampleCount int64      `json:"generation_sample_count,omitempty"`
+	Start            time.Time  `json:"start"`
+	End              time.Time  `json:"end"`
+	ProxyRequests    int64      `json:"proxy_requests"`
+	UpstreamAttempts int64      `json:"upstream_attempts"`
+	Tokens           TokenUsage `json:"tokens"`
+	KnownCost        NanoUSD    `json:"known_cost_usd"`
+	UnpricedTokens   int64      `json:"unpriced_tokens"`
+	// CacheReadRate is calculated from exact-token rows only. It is omitted
+	// when a bucket has no usable cache-read denominator.
+	CacheReadRate         string `json:"cache_read_rate,omitempty"`
+	GenerationTimeMS      *int64 `json:"generation_time_ms,omitempty"`
+	GenerationSampleCount int64  `json:"generation_sample_count,omitempty"`
 }
 
 type Timeseries struct {

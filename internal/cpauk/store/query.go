@@ -49,6 +49,8 @@ type pointState struct {
 	proxyRequests    int64
 	proxyRequestsSet bool
 	quality          model.TokenQuality
+	exactCacheInput  int64
+	exactCacheRead   int64
 	succeeded        int64
 	failed           int64
 }
@@ -370,6 +372,10 @@ FROM events `+where, arguments...)
 		state.point.Tokens.CacheRead += cacheRead
 		state.point.Tokens.CacheCreation += cacheCreation
 		state.point.Tokens.Total += totalTokens
+		if quality == string(model.TokenQualityExact) {
+			state.exactCacheInput += input
+			state.exactCacheRead += cacheRead
+		}
 		if cost.Valid {
 			state.point.KnownCost += model.NanoUSD(cost.Int64)
 		}
@@ -491,6 +497,8 @@ func materializedTimeseries(query model.Query, bucketer aggregate.Bucketer, read
 		state.point.Tokens.CacheRead += aggregateRow.CacheReadTokens
 		state.point.Tokens.CacheCreation += aggregateRow.CacheCreate
 		state.point.Tokens.Total += aggregateRow.TotalTokens
+		state.exactCacheInput += aggregateRow.ExactCacheInput
+		state.exactCacheRead += aggregateRow.ExactCacheRead
 		state.point.KnownCost += aggregateRow.KnownCost
 		state.point.UnpricedTokens += aggregateRow.UnpricedTokens
 		if aggregateRow.GenerationSample > 0 {
@@ -566,6 +574,9 @@ func finalizeTimeseries(query model.Query, points map[int64]*pointState) (model.
 		}
 		state.point.Tokens.Schema = "normalized-v1"
 		state.point.Tokens.Quality = state.quality
+		if rate := optionalCacheReadRate(state.exactCacheRead, state.exactCacheInput); rate != nil {
+			state.point.CacheReadRate = *rate
+		}
 		result.Points = append(result.Points, state.point)
 		outcomes[key] = [2]int64{state.succeeded, state.failed}
 	}

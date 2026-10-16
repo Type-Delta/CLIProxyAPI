@@ -108,8 +108,10 @@ requests do not hide cache metrics reported by other providers. CPAMC keeps esti
 input/output/total token counts visible while showing cache read, cache creation, cached, and
 reasoning metrics as unavailable only when no usable exact subset exists. Exact providers retain
 legitimate zero values. The same rule applies to overview sparklines, event cache-rate columns,
-and event token details. Regression coverage covers mixed-quality CPAUK summaries and the CPAMC
-overview model; the CPAMC submodule was rebuilt through the canonical management-center build.
+and event token details. Timeseries buckets carry the exact-subset cache rate too, so a mixed
+bucket still renders a graph point instead of dropping the whole bucket. Regression coverage covers
+raw, compact, and retained mixed-quality timeseries plus the CPAMC overview model; the CPAMC
+submodule was rebuilt through the canonical management-center build.
 
 **Last updated:** 2026-10-16
 

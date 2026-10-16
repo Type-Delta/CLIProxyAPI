@@ -38,7 +38,7 @@ func TestV2SummaryRatesOutcomesAveragesAndCoverage(t *testing.T) {
 
 func TestV2SummaryExcludesEstimatedRowsFromCacheRate(t *testing.T) {
 	database, events := openV2FixtureStore(t)
-	estimated := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(14*time.Minute), true, nil, 0, 0, 1, 1)
+	estimated := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(13*time.Minute), true, nil, 0, 0, 1, 1)
 	estimated.Tokens.Quality = model.TokenQualityEstimated
 	if err := database.WriteBatch(context.Background(), []model.Event{estimated}); err != nil {
 		t.Fatal(err)
@@ -52,6 +52,42 @@ func TestV2SummaryExcludesEstimatedRowsFromCacheRate(t *testing.T) {
 	if summary.CacheReadRate == nil || *summary.CacheReadRate != "20" {
 		t.Fatalf("mixed-quality cache rate = %v, want exact subset rate 20", summary.CacheReadRate)
 	}
+}
+
+func TestV2TimeseriesRetainsExactSubsetCacheRateInMixedBucket(t *testing.T) {
+	database, events := openV2FixtureStore(t)
+	estimated := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(13*time.Minute), true, nil, 0, 0, 1, 1)
+	estimated.Tokens.Quality = model.TokenQualityEstimated
+	if err := database.WriteBatch(context.Background(), []model.Event{estimated}); err != nil {
+		t.Fatal(err)
+	}
+	start := events[0].RequestedAt.Truncate(time.Hour)
+	query := v2Query(model.OperationTimeseries, start, start.Add(time.Hour))
+	query.BucketWidth = "1h"
+	check := func(t *testing.T, query model.Query) {
+		t.Helper()
+		series, err := database.Timeseries(context.Background(), query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(series.Points) != 1 {
+			t.Fatalf("points = %+v, want one mixed bucket", series.Points)
+		}
+		point := series.Points[0]
+		if point.CacheReadRate != "20" || point.Tokens.Quality != model.TokenQualityEstimated || point.Tokens.Total != 800 {
+			t.Fatalf("mixed bucket = %+v, want cache rate 20, estimated quality, and all 800 tokens", point)
+		}
+	}
+	t.Run("compact", func(t *testing.T) { check(t, query) })
+	t.Run("raw", func(t *testing.T) {
+		raw := query
+		raw.Filters = map[string]json.RawMessage{"token_quality": json.RawMessage(`["exact","estimated","missing"]`)}
+		check(t, raw)
+	})
+	if _, err := database.ApplyRetentionPolicy(context.Background(), query.End, time.Time{}, 100); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("retained", func(t *testing.T) { check(t, query) })
 }
 
 func TestV2SummaryKeepsTwoDecimalSuccessRateAndAvoidsRateOverflow(t *testing.T) {
