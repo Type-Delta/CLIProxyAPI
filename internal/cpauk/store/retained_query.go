@@ -19,6 +19,8 @@ COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
 COALESCE(SUM(total_tokens),0), COALESCE(SUM(known_cost_nano),0),
 COALESCE(SUM(unpriced_tokens),0),
+COALESCE(SUM(CASE WHEN token_quality='exact' THEN input_tokens ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN token_quality='exact' THEN cache_read_tokens ELSE 0 END),0),
 CASE WHEN SUM(CASE WHEN token_quality='missing' THEN upstream_attempts ELSE 0 END)>0 THEN 'missing'
 WHEN SUM(CASE WHEN token_quality='estimated' THEN upstream_attempts ELSE 0 END)>0 THEN 'estimated'
 ELSE 'exact' END`
@@ -171,7 +173,7 @@ func scanGroupedTotalsByRequest(ctx context.Context, database *sql.DB, statement
 		if err := rows.Scan(&value, &requestID, &data.proxyRequests, &data.attempts, &data.succeeded, &data.failed,
 			&data.tokens.Input, &data.tokens.Output, &data.tokens.Reasoning, &data.tokens.Cached,
 			&data.tokens.CacheRead, &data.tokens.CacheCreation, &data.tokens.Total,
-			&data.knownCost, &data.unpriced, &quality); err != nil {
+			&data.knownCost, &data.unpriced, &data.exactCacheInput, &data.exactCacheRead, &quality); err != nil {
 			return err
 		}
 		data.tokens.Schema, data.tokens.Quality = "normalized-v1", model.TokenQuality(quality)
@@ -230,7 +232,7 @@ func scanGroupedTotals(ctx context.Context, database *sql.DB, statement string, 
 		if err := rows.Scan(&value, &data.proxyRequests, &data.attempts, &data.succeeded, &data.failed,
 			&data.tokens.Input, &data.tokens.Output, &data.tokens.Reasoning, &data.tokens.Cached,
 			&data.tokens.CacheRead, &data.tokens.CacheCreation, &data.tokens.Total,
-			&data.knownCost, &data.unpriced, &quality); err != nil {
+			&data.knownCost, &data.unpriced, &data.exactCacheInput, &data.exactCacheRead, &quality); err != nil {
 			return err
 		}
 		data.tokens.Schema, data.tokens.Quality = "normalized-v1", model.TokenQuality(quality)

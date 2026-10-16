@@ -36,6 +36,24 @@ func TestV2SummaryRatesOutcomesAveragesAndCoverage(t *testing.T) {
 	}
 }
 
+func TestV2SummaryExcludesEstimatedRowsFromCacheRate(t *testing.T) {
+	database, events := openV2FixtureStore(t)
+	estimated := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(14*time.Minute), true, nil, 0, 0, 1, 1)
+	estimated.Tokens.Quality = model.TokenQualityEstimated
+	if err := database.WriteBatch(context.Background(), []model.Event{estimated}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := v2Query(model.OperationSummary, events[0].RequestedAt, events[0].RequestedAt.Add(15*time.Minute))
+	summary, err := database.Summary(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CacheReadRate == nil || *summary.CacheReadRate != "20" {
+		t.Fatalf("mixed-quality cache rate = %v, want exact subset rate 20", summary.CacheReadRate)
+	}
+}
+
 func TestV2SummaryKeepsTwoDecimalSuccessRateAndAvoidsRateOverflow(t *testing.T) {
 	database, events := openV2FixtureStore(t)
 	large := v2Event(strings.Repeat("4", 32), strings.Repeat("c", 32), strings.Repeat("f", 64), events[0].RequestedAt.Add(20*time.Minute), true, nil, 0, 0, 1, 1)
@@ -92,14 +110,10 @@ func TestOptionalPercentageAvoidsOverflow(t *testing.T) {
 }
 
 func TestOptionalCacheReadRateIsUnavailableForEstimatedTokens(t *testing.T) {
-	if got := optionalCacheReadRate(model.TokenUsage{
-		Input: 100, CacheRead: 0, Quality: model.TokenQualityEstimated,
-	}); got != nil {
-		t.Fatalf("estimated cache-read rate = %v, want unavailable", got)
+	if got := optionalCacheReadRate(0, 0); got != nil {
+		t.Fatalf("no exact cache-read input = %v, want unavailable", got)
 	}
-	if got := optionalCacheReadRate(model.TokenUsage{
-		Input: 100, CacheRead: 0, Quality: model.TokenQualityExact,
-	}); got == nil || *got != "0" {
+	if got := optionalCacheReadRate(0, 100); got == nil || *got != "0" {
 		t.Fatalf("exact zero cache-read rate = %v, want 0", got)
 	}
 }

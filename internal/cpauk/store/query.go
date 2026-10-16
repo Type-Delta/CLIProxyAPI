@@ -25,18 +25,22 @@ COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
 COALESCE(SUM(total_tokens),0), COALESCE(SUM(known_cost_nano),0),
 COALESCE(SUM(unpriced_tokens),0),
+COALESCE(SUM(CASE WHEN token_quality = 'exact' THEN input_tokens ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN token_quality = 'exact' THEN cache_read_tokens ELSE 0 END),0),
 CASE WHEN SUM(CASE WHEN token_quality = 'missing' THEN 1 ELSE 0 END) > 0 THEN 'missing'
 WHEN SUM(CASE WHEN token_quality = 'estimated' THEN 1 ELSE 0 END) > 0 THEN 'estimated'
 ELSE 'exact' END`
 
 type totals struct {
-	proxyRequests int64
-	attempts      int64
-	succeeded     int64
-	failed        int64
-	tokens        model.TokenUsage
-	knownCost     model.NanoUSD
-	unpriced      int64
+	proxyRequests   int64
+	attempts        int64
+	succeeded       int64
+	failed          int64
+	tokens          model.TokenUsage
+	knownCost       model.NanoUSD
+	unpriced        int64
+	exactCacheInput int64
+	exactCacheRead  int64
 }
 
 type pointState struct {
@@ -85,7 +89,7 @@ func (s *SQLiteStore) summaryUncached(ctx context.Context, query model.Query) (m
 			result.proxyRequests, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
 		TokensPerMinute: decimalProductsRatio(
 			result.tokens.Total, int64(time.Minute), int64(query.End.Sub(query.Start)), 1),
-		CacheReadRate: optionalCacheReadRate(result.tokens),
+		CacheReadRate: optionalCacheReadRate(result.exactCacheRead, result.exactCacheInput),
 		RangeDays: decimalRatio(
 			int64(query.End.Sub(query.Start)), int64(24*time.Hour)),
 		AvgRequestsPerDay: decimalProductsRatio(
@@ -178,7 +182,8 @@ func totalsScanArguments(result *totals, quality *string) []any {
 	return []any{&result.proxyRequests, &result.attempts, &result.succeeded, &result.failed,
 		&result.tokens.Input, &result.tokens.Output, &result.tokens.Reasoning,
 		&result.tokens.Cached, &result.tokens.CacheRead, &result.tokens.CacheCreation,
-		&result.tokens.Total, &result.knownCost, &result.unpriced, quality}
+		&result.tokens.Total, &result.knownCost, &result.unpriced,
+		&result.exactCacheInput, &result.exactCacheRead, quality}
 }
 
 func (s *SQLiteStore) rollupTotals(ctx context.Context, query model.Query) (totals, error) {
@@ -194,6 +199,8 @@ COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0),
 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0),
 COALESCE(SUM(total_tokens),0), COALESCE(SUM(known_cost_nano),0),
 COALESCE(SUM(unpriced_tokens),0),
+COALESCE(SUM(CASE WHEN token_quality = 'exact' THEN input_tokens ELSE 0 END),0),
+COALESCE(SUM(CASE WHEN token_quality = 'exact' THEN cache_read_tokens ELSE 0 END),0),
 CASE WHEN SUM(CASE WHEN token_quality = 'missing' THEN upstream_attempts ELSE 0 END) > 0 THEN 'missing'
 WHEN SUM(CASE WHEN token_quality = 'estimated' THEN upstream_attempts ELSE 0 END) > 0 THEN 'estimated'
 ELSE 'exact' END FROM rollups ` + where
@@ -237,6 +244,8 @@ func addTotals(destination *totals, source totals) {
 	destination.tokens.Total += source.tokens.Total
 	destination.knownCost += source.knownCost
 	destination.unpriced += source.unpriced
+	destination.exactCacheInput += source.exactCacheInput
+	destination.exactCacheRead += source.exactCacheRead
 	destination.tokens.Quality = combineQuality(destination.tokens.Quality, source.tokens.Quality)
 }
 
@@ -246,7 +255,8 @@ func scanTotals(row *sql.Row) (totals, error) {
 	err := row.Scan(&result.proxyRequests, &result.attempts, &result.succeeded, &result.failed,
 		&result.tokens.Input, &result.tokens.Output, &result.tokens.Reasoning,
 		&result.tokens.Cached, &result.tokens.CacheRead, &result.tokens.CacheCreation,
-		&result.tokens.Total, &result.knownCost, &result.unpriced, &quality)
+		&result.tokens.Total, &result.knownCost, &result.unpriced,
+		&result.exactCacheInput, &result.exactCacheRead, &quality)
 	result.tokens.Schema = "normalized-v1"
 	result.tokens.Quality = model.TokenQuality(quality)
 	return result, err
@@ -831,14 +841,10 @@ func optionalPercentage(value, total int64) *string {
 	return &result
 }
 
-// optionalCacheReadRate is only meaningful when the provider supplied an exact
-// token breakdown. Estimated input/output totals do not establish whether the
-// zero cache-read bucket means "no cache" or "not reported".
-func optionalCacheReadRate(tokens model.TokenUsage) *string {
-	if tokens.Quality != model.TokenQualityExact {
-		return nil
-	}
-	return optionalPercentage(tokens.CacheRead, tokens.Input)
+// optionalCacheReadRate uses only rows with an exact token breakdown. This lets
+// mixed-provider ranges retain cache data from providers that reported it.
+func optionalCacheReadRate(cacheRead, input int64) *string {
+	return optionalPercentage(cacheRead, input)
 }
 
 func optionalPercentageFixed(value, total int64, decimals int) *string {

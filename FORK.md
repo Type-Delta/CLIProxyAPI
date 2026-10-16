@@ -103,13 +103,13 @@ build produces the single-file management artifact with SHA-256
 
 ### DL006 - Preserve unavailable provider metrics
 
-CPAUK now suppresses cache-read rates when aggregate token quality is estimated or missing. CPAMC
-keeps estimated input/output/total token counts visible for providers such as Kiro, while showing
-cache read, cache creation, cached, and reasoning metrics as unavailable when the provider did not
-report those buckets. Exact providers retain legitimate zero values. The same rule applies to
-overview sparklines, event cache-rate columns, and event token details. Regression coverage covers
-the CPAUK rate helper and the CPAMC overview model; the CPAMC submodule was rebuilt through the
-canonical management-center build after the change.
+CPAUK now calculates cache-read rates from the exact-token subset of a range, so estimated Kiro
+requests do not hide cache metrics reported by other providers. CPAMC keeps estimated
+input/output/total token counts visible while showing cache read, cache creation, cached, and
+reasoning metrics as unavailable only when no usable exact subset exists. Exact providers retain
+legitimate zero values. The same rule applies to overview sparklines, event cache-rate columns,
+and event token details. Regression coverage covers mixed-quality CPAUK summaries and the CPAMC
+overview model; the CPAMC submodule was rebuilt through the canonical management-center build.
 
 **Last updated:** 2026-10-16
 
