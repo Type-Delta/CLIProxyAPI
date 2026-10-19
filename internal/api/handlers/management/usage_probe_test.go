@@ -305,7 +305,7 @@ func TestBuildAuthFileEntryIncludesCredentialMetadata(t *testing.T) {
 	auth := &coreauth.Auth{ID: "credential-id", Provider: "zai", FileName: "account.json", Attributes: map[string]string{
 		"path": "account.json", "label": "Team A", "usage_probe": "zai", "pricing_catalog": "zai-coding-plan",
 	}}
-	entry := (&Handler{}).buildAuthFileEntry(auth)
+	entry := (&Handler{}).buildAuthFileEntry(auth, authFileQuotaContext{})
 	for key, want := range map[string]string{"display_name": "Team A", "usage_probe": "zai", "pricing_catalog": "zai-coding-plan"} {
 		if got, ok := entry[key].(string); !ok || got != want {
 			t.Fatalf("entry[%q] = %#v, want %q", key, entry[key], want)

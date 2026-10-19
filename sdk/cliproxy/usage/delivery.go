@@ -26,7 +26,7 @@ const (
 	DefaultObserverByteCapacity = 64 * 1024 * 1024
 	// DefaultObserverDrainTimeout bounds legacy Stop calls.
 	DefaultObserverDrainTimeout = 5 * time.Second
-	maxObserverLanes            = 64
+	maxObserverLanes            = 128
 )
 
 var (
@@ -579,6 +579,19 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		record.EndpointClass = EndpointClassFromContext(ctx)
 	}
 	record.EndpointClass = truncateUTF8(record.EndpointClass, 256)
+	if strings.TrimSpace(record.APIKey) == "" {
+		record.APIKey = APIKeyFromContext(ctx)
+	}
+	if strings.TrimSpace(record.AccessProvider) == "" {
+		record.AccessProvider = AccessProviderFromContext(ctx)
+	}
+	if !record.IsNativeKey {
+		if native, ok := IsNativeKeyFromContext(ctx); ok {
+			record.IsNativeKey = native
+		} else if record.AccessProvider != "" {
+			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
+		}
+	}
 	record = fillHopMetadata(ctx, record)
 
 	m.mu.Lock()

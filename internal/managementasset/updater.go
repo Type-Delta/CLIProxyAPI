@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpfetch"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -333,7 +334,7 @@ func fetchLatestAssets(ctx context.Context, client *http.Client, releaseURL stri
 		"Accept":     "application/vnd.github+json",
 		"User-Agent": httpUserAgent,
 	}
-	if token := util.ResolveGitHubToken(); token != "" {
+	if token := githubauth.TokenForURL(releaseURL); token != "" {
 		headers["Authorization"] = "Bearer " + token
 	}
 

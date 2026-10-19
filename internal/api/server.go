@@ -24,6 +24,7 @@ import (
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
@@ -132,6 +133,9 @@ type Server struct {
 // Returns:
 //   - *Server: A new server instance
 func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
+	if cfg != nil {
+		cfg = cfg.CloneForRuntime()
+	}
 	optionState := &serverOptionConfig{
 		requestLoggerFactory: defaultRequestLoggerFactory,
 	}
@@ -155,11 +159,35 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		optionState.engineConfigurator(engine)
 	}
 
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = configFilePath
+	}
+
+	envAdminPassword, envAdminPasswordSet := os.LookupEnv("MANAGEMENT_PASSWORD")
+	envAdminPassword = strings.TrimSpace(envAdminPassword)
+	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
+
+	// Create the initial server instance before middleware that reads server configuration.
+	s := &Server{
+		engine:                       engine,
+		handlers:                     handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
+		cfg:                          cfg,
+		accessManager:                accessManager,
+		configFilePath:               configFilePath,
+		currentPath:                  wd,
+		envManagementSecret:          envManagementSecret,
+		wsRoutes:                     make(map[string]struct{}),
+		pluginHost:                   optionState.pluginHost,
+		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
+	}
+
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
 	engine.Use(ProxyRequestIDMiddleware())
+	engine.Use(s.maxRequestBodyBytesMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -179,6 +207,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 			}
 		}
 	}
+	s.requestLogger = requestLogger
+	s.loggerToggle = toggle
 
 	viewerSecurity, errViewerSecurity := newAnalyticsViewerSecurity(AnalyticsViewerSecurityOptions{
 		TrustedProxyCIDRs: cfg.Analytics.Viewer.TrustedProxyCIDRs,
@@ -189,10 +219,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		log.WithError(errViewerSecurity).Warn("analytics viewer security configuration is invalid")
 	}
 	engine.Use(corsMiddlewareWithViewerSecurity(viewerSecurity))
-	wd, err := os.Getwd()
-	if err != nil {
-		wd = configFilePath
-	}
 	usageLimitAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir)
 	usageLimitPath := ""
 	if errResolveAuthDir != nil {
@@ -202,28 +228,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		usageLimitPath = usageLimitSnapshotPath(usageLimitAuthDir)
 	}
 
-	envAdminPassword, envAdminPasswordSet := os.LookupEnv("MANAGEMENT_PASSWORD")
-	envAdminPassword = strings.TrimSpace(envAdminPassword)
-	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
-
-	// Create server instance
-	s := &Server{
-		engine:              engine,
-		handlers:            handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
-		cfg:                 cfg,
-		accessManager:       accessManager,
-		requestLogger:       requestLogger,
-		loggerToggle:        toggle,
-		configFilePath:      configFilePath,
-		currentPath:         wd,
-		envManagementSecret: envManagementSecret,
-		wsRoutes:            make(map[string]struct{}),
-		pluginHost:          optionState.pluginHost,
-		usageLimitTracker:   usagelimit.NewTracker(),
-		usageLimitPath:      usageLimitPath,
-
-		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
-	}
+	s.requestLogger = requestLogger
+	s.loggerToggle = toggle
+	s.usageLimitTracker = usagelimit.NewTracker()
+	s.usageLimitPath = usageLimitPath
 	s.analytics = newAnalyticsService(context.Background(), cfg)
 	go func() {
 		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(context.Background(), s.analytics, nil, cfg.APIKeys); errAnalyticsKeys != nil && !errors.Is(errAnalyticsKeys, cpauk.ErrClosed) {
@@ -265,10 +273,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
+	githubauth.SetToken(cfg.GitHubToken)
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
+	applyClaudeToolSearchConfig(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	if authManager != nil {

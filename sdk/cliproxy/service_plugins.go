@@ -54,6 +54,11 @@ var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Mana
 // holds authUpdateMu.
 var modelRegistrationTaskHook func()
 
+// modelRegistrationTaskPostRunHook, if set, runs synchronously inside model registration
+// tasks after completeModelRegistrationForAuthWithCache completes. Tests use it to inject
+// concurrent auth updates before batch registration finishes.
+var modelRegistrationTaskPostRunHook func(authID string)
+
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
 // This allows external code to monitor API usage and token consumption.
 //
@@ -71,8 +76,8 @@ func (s *Service) registerPluginAuthParser() {
 		parser = s.pluginHost
 	}
 	sdkAuth.RegisterPluginAuthParser(parser)
-	if s != nil && s.watcher != nil {
-		s.watcher.SetPluginAuthParser(parser)
+	if watcher := s.currentWatcher(); watcher != nil {
+		watcher.SetPluginAuthParser(parser)
 	}
 }
 
@@ -174,6 +179,7 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 	if s == nil || s.coreManager == nil || len(auths) == 0 {
 		return
 	}
+	var registeredGen sync.Map
 	tasks := make([]modelRegistrationTask, 0, len(auths))
 	for _, auth := range auths {
 		if auth == nil {
@@ -184,11 +190,31 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 			phase:    modelRegistrationPhase(authForRegistration),
 			category: modelRegistrationCategory(authForRegistration),
 			run: func(compatCache *openAICompatibilityRegistrationCache) {
-				s.completeModelRegistrationForAuthWithCache(ctx, authForRegistration, compatCache)
+				gen := s.completeModelRegistrationForAuthWithCache(ctx, authForRegistration, compatCache)
+				registeredGen.Store(authForRegistration.ID, gen)
+				if modelRegistrationTaskPostRunHook != nil {
+					modelRegistrationTaskPostRunHook(authForRegistration.ID)
+				}
 			},
 		})
 	}
 	s.runModelRegistrationTasks(ctx, tasks)
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+
+	compatCache := s.newOpenAICompatibilityRegistrationCache()
+	for _, latest := range s.coreManager.List() {
+		if latest == nil || latest.ID == "" {
+			continue
+		}
+		lastGenVal, loaded := registeredGen.Load(latest.ID)
+		lastGen, _ := lastGenVal.(uint64)
+		if !loaded || latest.Generation != lastGen {
+			s.ensureExecutorsForAuthWithContext(ctx, latest, false)
+			s.completeModelRegistrationForAuthWithCache(ctx, latest, compatCache)
+		}
+	}
 }
 
 func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRegistrationTask) {

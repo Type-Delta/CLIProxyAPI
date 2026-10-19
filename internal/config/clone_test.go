@@ -139,8 +139,9 @@ func sampleCloneRuntimeConfig() *Config {
 		SDKConfig: SDKConfig{
 			APIKeys: []APIKeyEntry{{Key: "client-key", Limits: &KeyLimits{MaxRequests: 10, MaxTokensM: 20, Resets: "daily"}}},
 			Streaming: StreamingConfig{
-				KeepAliveSeconds: 3,
-				BootstrapRetries: 2,
+				KeepAliveSeconds:      3,
+				BootstrapRetries:      2,
+				SendKeepAliveBeforeFT: true,
 			},
 		},
 		Home: HomeConfig{

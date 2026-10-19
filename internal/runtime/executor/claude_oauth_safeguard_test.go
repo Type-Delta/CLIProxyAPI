@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -234,7 +235,7 @@ func TestClaudeOAuthSafeguardPreservesConfiguredDefaults(t *testing.T) {
 	if effective != cfg {
 		t.Fatal("effective config is a copy; want original config to preserve header defaults")
 	}
-	if got := effective.ClaudeHeaderDefaults; got != cfg.ClaudeHeaderDefaults {
+	if got := effective.ClaudeHeaderDefaults; !reflect.DeepEqual(got, cfg.ClaudeHeaderDefaults) {
 		t.Fatalf("Claude header defaults changed: got %+v, want %+v", got, cfg.ClaudeHeaderDefaults)
 	}
 }

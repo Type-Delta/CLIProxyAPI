@@ -47,7 +47,34 @@ func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadClo
 		defer close(b.queue)
 		defer cancel()
 		var line []byte
+		var frameData [][]byte
 		discarding := false
+		observeFrame := func(at time.Time) {
+			if len(frameData) == 0 {
+				return
+			}
+			payload := bytes.Join(frameData, []byte("\n"))
+			r.observeGenerationPayloadAt(protocol, payload, at)
+			frameData = nil
+		}
+		observeLine := func(value []byte, at time.Time) {
+			trimmed := bytes.TrimSpace(value)
+			if len(trimmed) == 0 {
+				observeFrame(at)
+				return
+			}
+			if bytes.HasPrefix(trimmed, []byte("data:")) {
+				data := bytes.TrimSpace(trimmed[len("data:"):])
+				frameData = append(frameData, bytes.Clone(data))
+				return
+			}
+			if len(frameData) > 0 || bytes.HasPrefix(trimmed, []byte(":")) ||
+				bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("id:")) ||
+				bytes.HasPrefix(trimmed, []byte("retry:")) {
+				return
+			}
+			r.observeGenerationPayloadAt(protocol, value, at)
+		}
 		for {
 			data := make([]byte, generationReadChunkBytes)
 			n, err := body.Read(data)
@@ -73,14 +100,18 @@ func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadClo
 					break
 				}
 				if !discarding {
-					r.observeGenerationPayloadAt(protocol, line, at)
+					observeLine(line, at)
 				}
 				line = line[:0]
 				discarding = false
 				rest = rest[end+1:]
 			}
 			if err != nil && len(line) > 0 && !discarding {
-				r.observeGenerationPayloadAt(protocol, line, at)
+				observeLine(line, at)
+				line = line[:0]
+			}
+			if err != nil && !discarding {
+				observeFrame(at)
 			}
 			item := generationRead{data: data, err: err}
 			select {

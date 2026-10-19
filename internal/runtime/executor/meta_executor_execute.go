@@ -44,7 +44,10 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxy
 	originalPayload := bytes.Clone(originalPayloadSource)
 	isCompat := helps.APIKeyModelIsCompat(req)
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, stream, isCompat)
-	body := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, bytes.Clone(req.Payload), stream, isCompat)
+	body, err := helps.TranslateRequestReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, bytes.Clone(req.Payload), stream, isCompat)
+	if err != nil {
+		return nil, err
+	}
 
 	var errThinking error
 	body, errThinking = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
@@ -68,7 +71,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxy
 		return nil, errNormalizePatch
 	}
 	body = normalizeCodexInstructions(body)
-	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "meta executor", body)
+	body = sanitizeOpenAIResponsesReasoningEncryptedContentKeepForeign(ctx, "meta executor", body)
 	body = helps.SanitizeMetaWebSearchTools(body)
 	body = helps.NormalizeCodexToolIntegerTypes(body, opts.Headers)
 
@@ -172,11 +175,36 @@ type metaCompletedTranslation struct {
 func (e *MetaExecutor) translateMetaCompleted(ctx context.Context, req cliproxyexecutor.Request, prepared *metaPreparedRequest, data []byte, upstreamUsage *helps.StreamUsageBuffer) (metaCompletedTranslation, error) {
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
+	var filteringSubscriptionUsage bool
 	for _, line := range bytes.Split(data, []byte("\n")) {
-		if !bytes.HasPrefix(line, dataTag) {
+		trimmedLine := bytes.TrimSpace(line)
+		if len(trimmedLine) == 0 {
+			filteringSubscriptionUsage = false
 			continue
 		}
-		eventData := bytes.TrimSpace(line[len(dataTag):])
+		if bytes.HasPrefix(trimmedLine, metaEventTag) {
+			eventName := bytes.TrimSpace(trimmedLine[len(metaEventTag):])
+			filteringSubscriptionUsage = bytes.Equal(eventName, []byte(metaSubscriptionUsageEventType))
+			continue
+		}
+		if !bytes.HasPrefix(trimmedLine, dataTag) {
+			continue
+		}
+		eventData := bytes.TrimSpace(trimmedLine[len(dataTag):])
+		eventType := gjson.GetBytes(eventData, "type").String()
+		if isMetaSubscriptionUsageEvent(eventType, eventData) {
+			filteringSubscriptionUsage = false
+			continue
+		}
+		if filteringSubscriptionUsage {
+			if eventType == "" {
+				if gjson.ValidBytes(eventData) {
+					filteringSubscriptionUsage = false
+				}
+				continue
+			}
+			filteringSubscriptionUsage = false
+		}
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			upstreamUsage.Observe(detail, true)
 		}
@@ -293,7 +321,22 @@ func applyMetaAPIHeaders(req *http.Request, auth *cliproxyauth.Auth, token strin
 	util.ApplyCustomHeadersFromAttrs(req, attrs, clientHeaders)
 }
 
-const metaNotFoundCooldown = 5 * time.Minute
+const (
+	metaNotFoundCooldown           = 5 * time.Minute
+	metaSubscriptionUsageEventType = "response.subscription_usage"
+)
+
+var metaEventTag = []byte("event:")
+
+func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
+	if eventType == metaSubscriptionUsageEventType {
+		return true
+	}
+	if eventType == "" && len(eventData) > 0 && gjson.GetBytes(eventData, "subscription").IsObject() {
+		return true
+	}
+	return false
+}
 
 func wrapMetaUpstreamError(statusCode int, body []byte) error {
 	se := statusErr{code: statusCode, msg: string(body)}
