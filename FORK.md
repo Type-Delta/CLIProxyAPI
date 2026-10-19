@@ -54,7 +54,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The fork adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control. The checked-out CPAMC pin also carries the upstream sync through `0da007e` (`merge(upstream): sync CPAMC through v1.26.5`).
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The fork adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control. The checked-out CPAMC pin `e2cb1d6` carries the upstream sync through `0da007e` (`merge(upstream): sync CPAMC through v1.26.5`) plus the restored legacy-backend login diagnostic.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -119,7 +119,7 @@ Mutable and downloaded panels require an adjacent `management-artifact.json` who
 
 **Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
 
-**Recorded validation:** the canonical builder rebuilt the checked-in bundle from CPAMC `0da007e6a8604e2734791c02e2ab89b8202c80e2`; the manifest records HTML SHA-256 `3b61f7a5a41507426b51c0b0cdbc755c54fbab00343800eecf95c5e66da54794`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
+**Recorded validation:** the canonical builder rebuilt the checked-in bundle from CPAMC `e2cb1d6cf7fdd996010d5cebe279e971a9ff222c`; the manifest records HTML SHA-256 `bdaad2c97c31701993456fd3ca34c8024da5fff2c5174110ddd86cc959bd24a9`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
 
 **Last updated:** 2026-10-19
 
@@ -1069,7 +1069,7 @@ largest available tier, Claude summaries prioritize the lower-remaining weekly p
 ties), and OpenCode Go uses its monthly recovery window. Summary and detailed quota rows expose
 credential, remaining percentage, reset timing, and plan details through the shared tooltip path.
 Unavailable allowance fills retain the existing candy-wrap treatment.
-The bundled client is updated to CPAMC pin `0da007e`.
+The bundled client is updated to CPAMC pin `e2cb1d6`.
 
 **Implementation evidence:** the CPAMC gitlink and
 `internal/managementasset/bundled/management.html`.
