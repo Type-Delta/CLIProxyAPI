@@ -4,11 +4,9 @@ This fork keeps per-API-key request and token usage limits, failure-isolated CPA
 
 ## Divergence Log
 
-This is a current-state record only. Each entry describes a surviving difference between `HEAD` and the current upstream base, `57bde35179ecbdca176ca8923d39cc18805774f2`. The 2026-10-07 integration merged upstream's changes after `7fac6b15` without rewriting the published fork history. The prior integration had merged upstream through `7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974` without rewriting the earlier fork commits. The current merge is recorded in the two-parent merge commit on `main`.
+This is a current-state record only. Each entry describes a surviving difference from upstream. Do not record merge or sync details, branch history, current commit pins, or other volatile integration references here; keep those in **Merge History** or the relevant build metadata.
 
-Gate 0 ended at pushed commit `dae4267c70c835d323b00bfd9b2baaeb8386e92e`, where the fork was 10 commits ahead and zero behind the recorded upstream base. The implementation commits after that baseline add the CPAUK package, control plane, CPAMC analytics workspace, runtime fixes, and reproducible release packaging described below. Release validation must confirm zero missing upstream commits, an exact `HEAD`/`origin/main` match, and a CPAMC gitlink that resolves from its pushed `origin/main`.
-
-Keep stable IDs when updating this section; gaps are intentional. When upstream absorbs a difference, remove or rewrite the entry rather than preserving chronology here. Update its behavior, implementation evidence, and validation when the surviving difference changes.
+Update this section only when a new fork feature or behavior is introduced, or when an existing divergence changes. Keep IDs stable and unique: gaps and out-of-order IDs are intentional when entries are removed. If duplicate IDs are found, remove the duplicate when the content is the same; when the content is different, assign the distinct entry the next unused ID. Remove or rewrite an entry when upstream absorbs its difference rather than preserving chronology.
 
 ### DL001 - Per-API-key request and token usage limits
 
@@ -56,13 +54,13 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The initial gitlink pinned `d249ff008e0bc2803deb23fb3e2c62418a1e8d17`; the current gitlink pins CPAMC commit `7d701fd8760454b9614198a9b06e6c0311c729d0`, which merges official CPAMC through `6abace9ffb83a9ac349464ded04bb4e7f7cb309e` and adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The fork adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
-**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and CPAMC commits `c1a2044`, `1f77aae`, `0cb4790`, `a7a342a`, `69e7ab6`, `8e67a42`, `9aeef9e`, `864f394`, `ad545f4`, `7088800`, and `fa25a73`.
+**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and the CPAMC `AGENTS.md` and `FORK.md`.
 
-**Recorded validation:** Bun verification passes 495 tests, ESLint, TypeScript compilation, and the Vite production build. Independent raw-CDP desktop and mobile journeys covered all eight Analytics routes in light and dark themes, including deep-link restore, URL state, rapid route recovery, viewer credential scrubbing, short-hash identity, responsive overflow, control naming, and runtime diagnostics. A seven-day `Asia/Kolkata` Analysis run verified both 168-bucket SVG charts at the start, midpoint, and end with exact 40 px interaction targets and effectively zero target-to-mark drift. Earlier clean-clone validation confirmed both remotes follow the documented convention.
+**Recorded validation:** CPAMC verification, lint, TypeScript compilation, the Vite production build, and independent desktop/mobile browser journeys cover the Analytics routes, configuration contracts, viewer isolation, responsive layout, and runtime diagnostics. Detailed CPAMC validation remains in the submodule's `FORK.md`.
 
 The analytics upgrade adds the animated diamond cost radar, shared p95/max/median timing radar and
 scatter controls, token/cost/generation heatmap modes, cost component columns, and line-shaped
@@ -73,12 +71,9 @@ replacing charts or selections. Vite accepts all development hosts for the reque
 workspace. Provider timings and historical generation remain unavailable where measurements are
 absent; CPAMC does not estimate clock offsets from unrelated online UTC services.
 
-Validation for this pin: `bun run verify` passed 673 tests, ESLint, TypeScript, and production build.
-Isolated Chrome CDP at 1440px and 390px checked light/dark cost gradients, clockwise synchronized
-numbers, radar/heatmap modes, missing timing, numeric header alignment, dashed/solid tooltip markers,
-comparison hover and first-tap behavior, client timezone dates, and a full automatic refresh cycle.
-The cycle retained chart instances and controls; no page overflow or console errors were observed.
-A browser-only fixture verified complete timing axes without changing stored mock data.
+Browser verification covers light/dark cost gradients, radar and heatmap modes, missing timing,
+numeric alignment, comparison interactions, client-timezone dates, automatic refresh, and the
+absence of page overflow or console errors.
 
 The refinement shares Auth Files' segmented control with analytics and moves sortable headers into
 the common Table component. Custom tooltip panels replace native title hints across CPAMC and
@@ -89,31 +84,10 @@ height. All model-cost columns sort, latency metrics explain their measurements,
 are more visible, and refresh spinners no longer dim existing content. Per-comparison assumptions
 replace the standalone comparison section. The user's existing spacing changes are included.
 
-Additional browser verification covered 1024-pixel layouts, dynamic and touch tooltips, equal card
-heights, all added cost sorts, and empty-to-populated latency animation. The CPA compile check passes.
-For the preceding pin, `bun run verify` passed 757 tests and the production build;
-isolated Chrome CDP confirms the Claude OAuth toggle, accessible description,
-keyboard focus, review dialog, config save, and desktop/mobile layout.
-
-The current pin passes `bun run verify` with 759 tests. The canonical Docker
-build produces the single-file management artifact with SHA-256
-`ead8f787e9ed129ce4f075fe61db855e71b41782c202809b338d149c2471e895`.
+Additional browser verification covers intermediate layouts, dynamic and touch tooltips, equal card
+heights, model-cost sorting, latency animation, and the Claude OAuth safeguard control.
 
 **Last updated:** 2026-09-24
-
-### DL006 - Preserve unavailable provider metrics
-
-CPAUK now calculates cache-read rates from the exact-token subset of a range, so estimated Kiro
-requests do not hide cache metrics reported by other providers. CPAMC keeps estimated
-input/output/total token counts visible while showing cache read, cache creation, cached, and
-reasoning metrics as unavailable only when no usable exact subset exists. Exact providers retain
-legitimate zero values. The same rule applies to overview sparklines, event cache-rate columns,
-and event token details. Timeseries buckets carry the exact-subset cache rate too, so a mixed
-bucket still renders a graph point instead of dropping the whole bucket. Regression coverage covers
-raw, compact, and retained mixed-quality timeseries plus the CPAMC overview model; the CPAMC
-submodule was rebuilt through the canonical management-center build.
-
-**Last updated:** 2026-10-16
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
@@ -1082,7 +1056,7 @@ CPA now treats Kiro/Amazon Q as a built-in OAuth provider. The native CLI login 
 
 Kiro credentials register a native executor that translates OpenAI Responses and Claude Messages requests into Kiro `conversationState` payloads, discovers missing Identity Center profile ARNs through `ListAvailableProfiles`, and sanitizes Codex JSON schemas. It sends AWS event-stream requests to `runtime.<region>.kiro.dev` for profiled accounts and the legacy `q.<region>.amazonaws.com` endpoint for profile-less Identity Center/Builder credentials, restores Claude-compatible streaming and non-streaming responses, and normalizes Claude model aliases such as `claude-sonnet-4-5-20250929` to Kiro's dotted IDs. Kiro does not return ordinary input/output token counts, so CPA estimates input tokens from the translated Claude request and output tokens from generated text, reasoning, and tool data while retaining explicit Kiro counts when a runtime variant supplies them. The stream adapter emits each Kiro event's `data:` record through CPA's Claude-to-OpenAI translators, preserves translator state across a complete stream, and emits terminal Responses events with the final response ID and output. Kiro participates in Claude model aliasing, thinking normalization, routing, and load balancing.
 
-CPAMC adds Kiro to the OAuth page, provider branding, auth-file grouping, and quota views. The quota adapter reads Kiro `getUsageLimits` data through the management API and renders included and free-trial request windows, subscription details, overages, and reset times. Profile ARNs are exposed as sanitized metadata only; credential files are never downloaded into the browser. The bundled management artifact is regenerated from CPAMC commit `d9d5138257a164c62f2826a2842fdfd39dd29622`.
+CPAMC adds Kiro to the OAuth page, provider branding, auth-file grouping, and quota views. The quota adapter reads Kiro `getUsageLimits` data through the management API and renders included and free-trial request windows, subscription details, overages, and reset times. Profile ARNs are exposed as sanitized metadata only; credential files are never downloaded into the browser.
 
 The CPAMC Kiro quota body uses the redesigned quota row layout and contributes its plan and request windows to the quota summary strip. A later follow-up (DL033) adds the Kiro GSR recovery probe; Kiro credentials without an available monthly reset timestamp are still excluded under `greedy-soonest-recovery`.
 
@@ -1272,14 +1246,9 @@ CPAUK timeseries queries retain the requested IANA timezone for calendar bucket 
 
 ### DL043 - Shared one-minute analytics responses and conditional reads
 
-Merged `t3/benchmark-cpauk-analytics` into `main`, retaining the mixed-quality cache-rate graphs.
-The combined CPAMC merge is `7ccaa43`; its canonical bundle includes both the graph fix and
-minute-level query validators. Analytics management tests, CPAUK tests, and the server build pass.
-The full CPAMC suite has 1,934 passing tests and the existing legacy-login diagnostic failure.
-
 First-page explicit and custom range cache keys floor both endpoints to UTC minutes. Seconds and fractional seconds no longer split server snapshots or CPAMC validators. Computation and `meta.range` retain the first request's exact bounds. Cursor continuation keys remain exact so signature validation and pagination stay tied to that snapshot. Adjacent minutes, timezones, and filters remain distinct, and cache entries still expire 60 seconds after computation.
 
-Minute-identity regressions reproduce the old misses and cover all seven operations, GET revalidation and POST reuse, TTL expiry, sub-minute ranges, offset equivalence, and exact SQLite cursor continuation. A browser check changes explicit custom bounds within the same minute and observes `304`; crossing an endpoint minute observes `200`. The matching CPAMC bundle uses commit `6110c3f`.
+Minute-identity regressions reproduce the old misses and cover all seven operations, GET revalidation and POST reuse, TTL expiry, sub-minute ranges, offset equivalence, and exact SQLite cursor continuation. A browser check changes explicit custom bounds within the same minute and observes `304`; crossing an endpoint minute observes `200`.
 
 The v8 management analytics query operations share successful responses for 60 seconds after computation, bounded to 128 entries and 16 MiB. Cache identity includes the operation, original named or explicit range, timezone, normalized filters, key scope, bucket width, pagination, and sort. Concurrent matching requests share one calculation. Rolling presets reuse the cached response's resolved range during that minute; ordinary intake intentionally permits this bounded staleness. Configuration, pricing, service, and maintenance changes invalidate snapshots, and unavailable services cannot return cached results.
 
@@ -1290,6 +1259,42 @@ CPAMC retains validators and response bodies in bounded, connection-scoped memor
 **Implementation evidence:** `internal/api/handlers/management/analytics_response_cache.go`, the v8 route and CORS registration, `internal/cpauk/service.go`, their response-cache tests, and the CPAMC analytics API and refresh coordinator.
 
 **Recorded validation:** deterministic cache expiry, concurrent readers, query isolation, conditional GET, authentication, lifecycle invalidation, client session isolation, and manual-refresh scheduling tests pass, including focused Go race tests. A real CPAMC browser session against CPAUK confirmed initial `200` responses, manual refresh through `304`, suppression of the old automatic deadline, and fresh responses about 60 seconds after manual completion. Six concurrent 90-day Analysis requests against a 100k-request fixture completed in about 7.06 seconds; cached conditional reads took 2–3 ms in the local fixture server. The canonical management bundle was rebuilt from CPAMC `6110c3f`. The full-suite legacy management-config compatibility and CPAMC legacy-login diagnostic failures remain outside this change.
+
+**Last updated:** 2026-10-16
+
+### DL044 - Preserve unavailable provider metrics
+
+CPAUK now calculates cache-read rates from the exact-token subset of a range, so estimated Kiro
+requests do not hide cache metrics reported by other providers. CPAMC keeps estimated
+input/output/total token counts visible while showing cache read, cache creation, cached, and
+reasoning metrics as unavailable only when no usable exact subset exists. Exact providers retain
+legitimate zero values. The same rule applies to overview sparklines, event cache-rate columns,
+and event token details. Timeseries buckets carry the exact-subset cache rate too, so a mixed
+bucket still renders a graph point instead of dropping the whole bucket. Regression coverage covers
+raw, compact, and retained mixed-quality timeseries plus the CPAMC overview model; the CPAMC
+submodule was rebuilt through the canonical management-center build.
+
+**Last updated:** 2026-10-16
+
+### DL045 - Reliable Claude Code reference capture
+
+The private Claude Code reference updater repairs a missing activation pointer from a complete
+installed version directory before attempting another network update. Older installations whose
+version directory is directly under `claude-reference` are migrated into the current
+`versions/<version>` layout. Reference update failures retry after five minutes.
+
+Capture failures retain at most 16 KiB of probe output, redact the OAuth token, and preserve
+bounded-memory behavior. Reference refresh tries every eligible direct Claude OAuth credential in
+refresh order until one capture succeeds, while attempting identical access tokens only once.
+Manual refresh and the background updater use the same fallback behavior.
+
+**Implementation evidence:** `internal/claudecapture/{update.go,capture.go,private_test.go,capture_test.go}`,
+`sdk/cliproxy/service_claude_reference.go`, and
+`sdk/cliproxy/service_claude_reference_test.go`.
+
+**Recorded validation:** pointer recovery, legacy-layout migration, bounded capture diagnostics,
+ordered credential fallback, focused capture/executor/service suites, and the disposable server
+build pass.
 
 **Last updated:** 2026-10-16
 
@@ -1317,10 +1322,6 @@ Follow-up correction: the bounded generic observer snapshot now accounts for
 stream flag through observer delivery. Focused usage and usage-context
 regressions cover the byte limits and stream propagation.
 
-### Generation observation and downstream backpressure
-
-Codex observes upstream SSE even for nonstreaming callers. Populated terminal output can establish first-visible-output latency but cannot invent a generation duration. Native HTTP streaming executors observe decoded upstream data independently of downstream forwarding with a bounded queue; Codex WebSockets preserve socket-read timestamps. Saturation marks generation duration unavailable for that attempt, preventing blocked downstream consumers from producing artificially high measured TPS. No duration or TPS cutoff rejects legitimate fast generation. Existing plugin callbacks remain limited to the arrival boundary exposed by the plugin. CPAMC shares the event throughput calculation between table and detail and marks the existing TTFT-based fallback `EST` in the table. Historical events are unchanged.
-
 ### 2026-10-07 - Merge upstream `main` at `57bde351`
 
 Integrated upstream's changes after `7fac6b15` through `57bde35179ecbdca176ca8923d39cc18805774f` in a two-parent merge commit, keeping the fork's analytics, per-key limits, CPAMC integration, and runtime safeguards. The merge target is the current upstream tip verified by the orchestrator.
@@ -1336,53 +1337,3 @@ Validation on 2026-10-07:
 - `go test ./sdk/api/handlers/openai` passed after the stale fixture correction.
 - `go build -o test-output ./cmd/server && unlink test-output` passed.
 - `go test ./...` was run to completion. It first reported the stale OpenAI fixture (corrected above) and then timed out in the pre-existing `sdk/cliproxy/auth` test `TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota`, blocked in `Manager.persist` on its read lock. A standalone `go test ./sdk/cliproxy/auth -run '^TestManager_ApplyProviderQuotaReportForModels_PreservesCredentialQuota$' -count=1 -timeout=45s` reproduces the timeout, so no unrelated auth implementation was changed.
-
-### 2026-10-15 - Claude reference pointer recovery
-
-The private Claude Code reference updater now repairs a missing `active.json`
-pointer from a complete installed version directory before attempting another
-network update. It also migrates the pre-`8619e12b` layout, where the version
-directory lived directly under `claude-reference`, into the current
-`versions/<version>` layout. This covers an interrupted promotion or a restart
-during the small window after publishing the version and before publishing the
-pointer, so requests do not remain blocked until the updater's retry interval.
-Reference update failures retry after five minutes instead of one hour.
-
-**Implementation evidence:** `internal/claudecapture/update.go`,
-`internal/claudecapture/private_test.go`, and
-`sdk/cliproxy/service_claude_reference.go`.
-
-**Recorded validation:** the regression test removes the activation pointer,
-loads the existing private executable and profile, and verifies that the
-pointer is recreated; the legacy-layout test verifies migration into
-`versions/<version>`. The existing active-version test and focused capture,
-executor, and service package suites also pass.
-
-### 2026-10-15 - Claude capture failure diagnostics
-
-Private Claude Code capture failures retain at most 16 KiB of the probe's
-stdout and stderr in the returned error, redact the OAuth token, and preserve
-bounded-memory behavior. This makes release or credential compatibility
-failures diagnosable from the updater log instead of reducing them to `exit
-status 1`.
-
-**Implementation evidence:** `internal/claudecapture/capture.go` and
-`internal/claudecapture/capture_test.go`.
-
-**Recorded validation:** the bounded-output regression and focused capture,
-executor, and service package suites pass; the disposable server build passes.
-
-### 2026-10-16 - Claude reference credential fallback
-
-Private Claude Code reference refresh now tries every eligible direct Claude OAuth
-credential in refresh order until one capture succeeds. A paused or
-organization-disabled account therefore cannot block a usable Claude account;
-identical access tokens are attempted only once. Manual refresh and the
-background updater share this fallback behavior.
-
-**Implementation evidence:** `sdk/cliproxy/service_claude_reference.go` and
-`sdk/cliproxy/service_claude_reference_test.go`.
-
-**Recorded validation:** the regression test verifies ordered fallback after a
-first credential failure; focused capture, executor, service, and disposable
-server build checks pass.
