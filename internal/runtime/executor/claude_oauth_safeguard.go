@@ -18,9 +18,12 @@ var claudeOAuthSafeguardUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[
 
 type claudeOAuthSafeguardError struct {
 	statusErr
+	requestScoped    bool
+	credentialScoped bool
 }
 
-func (claudeOAuthSafeguardError) IsRequestScoped() bool { return true }
+func (e claudeOAuthSafeguardError) IsRequestScoped() bool    { return e.requestScoped }
+func (e claudeOAuthSafeguardError) IsCredentialScoped() bool { return e.credentialScoped }
 
 func newClaudeOAuthSafeguardError(message string) error {
 	return newClaudeOAuthSafeguardErrorWithReference(message, message, "")
@@ -37,7 +40,14 @@ func newClaudeOAuthSafeguardErrorWithReference(message, reason, referenceVersion
 		message += fmt.Sprintf(" (reference Claude Code %s)", strings.TrimSpace(referenceVersion))
 	}
 	log.WithField("reason", reason).Warn("Claude OAuth safeguard rejected request")
-	return claudeOAuthSafeguardError{statusErr{code: http.StatusForbidden, msg: message}}
+	return claudeOAuthSafeguardError{statusErr: statusErr{code: http.StatusForbidden, msg: message}, requestScoped: true}
+}
+
+func newClaudeOAuthSafeguardUnavailableError(message string) error {
+	return claudeOAuthSafeguardError{
+		statusErr:        statusErr{code: http.StatusServiceUnavailable, msg: message},
+		credentialScoped: true,
+	}
 }
 
 type claudeOAuthSafeguard struct {
@@ -65,17 +75,15 @@ func (e *ClaudeExecutor) loadClaudeOAuthSafeguard(baseURL, apiKey string) (*conf
 	}
 	profile, errLoad := load()
 	if errLoad != nil {
-		return nil, nil, newClaudeOAuthSafeguardErrorWithReference(
-			"Claude OAuth safeguard requires a current Claude Code capture: "+errLoad.Error(),
-			"current Claude Code capture unavailable",
-			"",
+		return nil, nil, newClaudeOAuthSafeguardUnavailableError(
+			"Claude OAuth safeguard requires a current Claude Code capture: " + errLoad.Error(),
 		)
 	}
 	if profile == nil {
-		return nil, nil, newClaudeOAuthSafeguardErrorWithReference("Claude OAuth safeguard requires a current Claude Code capture", "Claude OAuth safeguard requires a current Claude Code capture", "")
+		return nil, nil, newClaudeOAuthSafeguardUnavailableError("Claude OAuth safeguard requires a current Claude Code capture")
 	}
 	if profile.Headers["User-Agent"] == "" {
-		return nil, nil, newClaudeOAuthSafeguardErrorWithReference("Claude OAuth safeguard capture lacks User-Agent", "Claude OAuth safeguard capture lacks User-Agent", profile.ClaudeVersion)
+		return nil, nil, newClaudeOAuthSafeguardUnavailableError("Claude OAuth safeguard capture lacks User-Agent")
 	}
 	return e.cfg, &claudeOAuthSafeguard{profile: profile}, nil
 }

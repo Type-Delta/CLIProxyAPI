@@ -2827,6 +2827,11 @@ func isRequestInvalidError(err error) bool {
 	if isRequestScopedError(err) {
 		return true
 	}
+	// Credential-scoped failures must rotate to another credential, even when
+	// their HTTP status would otherwise look like a caller-owned request fault.
+	if isCredentialScopedError(err) {
+		return false
+	}
 	if isCloudflareChallengeError(err) {
 		return false
 	}

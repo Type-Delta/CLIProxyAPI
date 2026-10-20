@@ -1340,6 +1340,24 @@ CPA assembles multiline SSE `data:` fields before classifying token and usage ev
 
 **Last updated:** 2026-10-19
 
+### DL047 - Claude safeguard capture failures fall back across providers
+
+When the direct Claude OAuth safeguard cannot load a current Claude Code
+capture, the selected Claude credential is now treated as unavailable for that
+attempt. Mixed-provider routing can continue to a Kiro credential serving the
+same Claude model, whose native runtime does not use the Claude OAuth
+safeguard. Genuine safeguard rejections of the caller request remain
+request-scoped and still stop processing without cooling credentials.
+
+**Implementation evidence:** `internal/runtime/executor/claude_oauth_safeguard.go`,
+`sdk/cliproxy/auth/conductor_cooldown.go`, and
+`sdk/cliproxy/auth/conductor_claude_safeguard_routing_test.go`.
+
+**Recorded validation:** focused safeguard tests and the mixed Claude/Kiro
+routing regression pass. Production management inspection showed repeated
+Claude reference-capture failures caused by the upstream organization policy,
+while successful Claude-model requests were routed to Kiro.
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

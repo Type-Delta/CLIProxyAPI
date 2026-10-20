@@ -149,9 +149,13 @@ func TestClaudeOAuthSafeguardScopeAndCaptureFailure(t *testing.T) {
 			if guard != nil || err == nil {
 				t.Fatalf("%s %s: guard = %v, error = %v; want fail closed", test.baseURL, test.key, guard, err)
 			}
-			var scoped interface{ IsRequestScoped() bool }
-			if !errors.As(err, &scoped) || !scoped.IsRequestScoped() {
-				t.Fatalf("%s: error = %v, want request-scoped", test.baseURL, err)
+			var credentialScoped interface{ IsCredentialScoped() bool }
+			if !errors.As(err, &credentialScoped) || !credentialScoped.IsCredentialScoped() {
+				t.Fatalf("%s: error = %v, want credential-scoped", test.baseURL, err)
+			}
+			var requestScoped interface{ IsRequestScoped() bool }
+			if errors.As(err, &requestScoped) && requestScoped.IsRequestScoped() {
+				t.Fatalf("%s: error = %v, must not be request-scoped", test.baseURL, err)
 			}
 		} else if guard != nil || err != nil {
 			t.Fatalf("%s %s: guard = %v, error = %v; want unguarded", test.baseURL, test.key, guard, err)
@@ -170,6 +174,18 @@ func TestClaudeOAuthSafeguardScopeAndCaptureFailure(t *testing.T) {
 	}
 	if loads != 2 {
 		t.Fatalf("capture loads = %d, want 2", loads)
+	}
+}
+
+func TestClaudeOAuthSafeguardRequestRejectionRemainsRequestScoped(t *testing.T) {
+	err := newClaudeOAuthSafeguardError("request rejected")
+	var requestScoped interface{ IsRequestScoped() bool }
+	if !errors.As(err, &requestScoped) || !requestScoped.IsRequestScoped() {
+		t.Fatalf("rejection = %v, want request-scoped", err)
+	}
+	var credentialScoped interface{ IsCredentialScoped() bool }
+	if errors.As(err, &credentialScoped) && credentialScoped.IsCredentialScoped() {
+		t.Fatalf("rejection = %v, must not be credential-scoped", err)
 	}
 }
 
