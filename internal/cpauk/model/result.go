@@ -204,6 +204,8 @@ type KeyIdentity struct {
 	Requests                int64      `json:"requests"`
 	TopModel                *string    `json:"top_model"`
 	TopModelTokens          int64      `json:"top_model_tokens"`
+	TopCostModel            *string    `json:"top_cost_model"`
+	TopCostModelUSD         NanoUSD    `json:"top_cost_model_usd"`
 	GenerationTimeMS        *int64     `json:"generation_time_ms"`
 	GenerationSampleCount   int64      `json:"generation_sample_count"`
 	KeyID                   string     `json:"key_id"`

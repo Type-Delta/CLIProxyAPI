@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,4 +102,33 @@ func equalOptionalTime(left, right *time.Time) bool {
 		return left == nil && right == nil
 	}
 	return left.Equal(*right)
+}
+
+func TestKeyCatalogReportsTopCostModelSeparately(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20,
+		PriceBook: fixturePriceBook()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close(context.Background()) }()
+	priced := loadFixtureEvents(t)[0]
+	// The unpriced model leads on tokens while the priced fixture model carries all the cost.
+	unpriced := priced
+	unpriced.AttemptID = strings.Repeat("e", 32)
+	unpriced.ProxyRequestID = strings.Repeat("f", 32)
+	unpriced.Model = "model-unpriced"
+	unpriced.Tokens.Input, unpriced.Tokens.Total = 5_000, 5_030
+	if err := database.WriteBatch(ctx, []model.Event{priced, unpriced}); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 1, Operation: model.OperationDimensions, Dimension: "key", PageSize: 10,
+		Start: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), TimeZone: "UTC"}
+	key := collectKeyCatalog(t, database, query)[priced.KeyID]
+	if key.TopModel == nil || *key.TopModel != "model-unpriced" || key.TopModelTokens != 5_030 {
+		t.Fatalf("top token model = %v/%d", key.TopModel, key.TopModelTokens)
+	}
+	if key.TopCostModel == nil || *key.TopCostModel != "model-f93b" || key.TopCostModelUSD <= 0 || key.TopCostModelUSD != key.KnownCost {
+		t.Fatalf("top cost model = %v/%s, key cost %s", key.TopCostModel, key.TopCostModelUSD, key.KnownCost)
+	}
 }

@@ -1358,6 +1358,24 @@ routing regression pass. Production management inspection showed repeated
 Claude reference-capture failures caused by the upstream organization policy,
 while successful Claude-model requests were routed to Kiro.
 
+### DL048 - Key catalog reports the top-cost model
+
+CPAUK key catalogs add `top_cost_model` and `top_cost_model_usd` alongside the existing token-ranked
+`top_model` / `top_model_tokens`. They come from the same per-key, per-model scan over raw events
+and retained rollups, so the cost leader carries no extra query. Ties keep the token order. A key
+with no known cost leaves `top_cost_model` null. CPAMC uses the field so the Keys catalog's Top
+model column follows the selected Rank by metric (CPAMC DL063). The bundled client is updated to
+CPAMC pin `5d0a0da`.
+
+**Implementation evidence:** `internal/cpauk/store/timing.go`, `internal/cpauk/store/key_catalog.go`,
+`internal/cpauk/model/result.go`, and `TestKeyCatalogReportsTopCostModelSeparately`.
+
+**Recorded validation:** `go test ./internal/cpauk/...` passes; a live local CPA with a priced
+mock upstream returned `cheap-bulk` as the token leader and `pricey-small` as the cost leader for
+the same key.
+
+**Last updated:** 2026-10-22
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

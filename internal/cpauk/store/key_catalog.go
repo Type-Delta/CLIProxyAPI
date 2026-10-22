@@ -160,6 +160,7 @@ func (s *SQLiteStore) KeyCatalog(ctx context.Context, query model.Query) (KeyCat
 		detail := details[keyID]
 		item.Requests = requestCounts[keyID]
 		item.TopModel, item.TopModelTokens = detail.TopModel, detail.TopModelTokens
+		item.TopCostModel, item.TopCostModelUSD = detail.TopCostModel, detail.TopCostModelUSD
 		item.GenerationTimeMS, item.GenerationSampleCount = detail.GenerationTimeMS, detail.GenerationSampleCount
 		if bounds, ok := activity[keyID]; ok {
 			first, last := time.Unix(0, bounds[0]).UTC(), time.Unix(0, bounds[1]).UTC()

@@ -180,9 +180,9 @@ func (s *SQLiteStore) keyUsageDetails(ctx context.Context, query model.Query) (m
 		return nil, err
 	}
 	args := append(rawArgs, retainedArgs...)
-	rows, err := s.db.QueryContext(ctx, `SELECT key_id,model,SUM(tokens),SUM(generation),SUM(samples) FROM (
- SELECT key_id,model,SUM(total_tokens) AS tokens,SUM(generation_time_ms) AS generation,COUNT(generation_time_ms) AS samples FROM events `+rawWhere+` GROUP BY key_id,model
- UNION ALL SELECT key_id,model,SUM(total_tokens),NULL,0 FROM rollups `+retainedWhere+` GROUP BY key_id,model
+	rows, err := s.db.QueryContext(ctx, `SELECT key_id,model,SUM(tokens),COALESCE(SUM(cost),0),SUM(generation),SUM(samples) FROM (
+ SELECT key_id,model,SUM(total_tokens) AS tokens,SUM(known_cost_nano) AS cost,SUM(generation_time_ms) AS generation,COUNT(generation_time_ms) AS samples FROM events `+rawWhere+` GROUP BY key_id,model
+ UNION ALL SELECT key_id,model,SUM(total_tokens),SUM(known_cost_nano),NULL,0 FROM rollups `+retainedWhere+` GROUP BY key_id,model
  ) GROUP BY key_id,model ORDER BY key_id,SUM(tokens) DESC,model`, args...)
 	if err != nil {
 		return nil, err
@@ -196,14 +196,20 @@ func (s *SQLiteStore) keyUsageDetails(ctx context.Context, query model.Query) (m
 	for rows.Next() {
 		var keyID, name string
 		var tokens, count int64
+		var cost model.NanoUSD
 		var generation sql.NullInt64
-		if err := rows.Scan(&keyID, &name, &tokens, &generation, &count); err != nil {
+		if err := rows.Scan(&keyID, &name, &tokens, &cost, &generation, &count); err != nil {
 			return nil, err
 		}
 		item := result[keyID]
 		if item.TopModel == nil {
 			item.TopModel = &name
 			item.TopModelTokens = tokens
+		}
+		// Rows arrive in token order, so a strict comparison keeps the token tie-break for cost.
+		if cost > item.TopCostModelUSD {
+			costModel := name
+			item.TopCostModel, item.TopCostModelUSD = &costModel, cost
 		}
 		if generation.Valid {
 			total := generation.Int64
