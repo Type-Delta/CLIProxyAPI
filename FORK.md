@@ -1365,7 +1365,7 @@ CPAUK key catalogs add `top_cost_model` and `top_cost_model_usd` alongside the e
 and retained rollups, so the cost leader carries no extra query. Ties keep the token order. A key
 with no known cost leaves `top_cost_model` null. CPAMC uses the field so the Keys catalog's Top
 model column follows the selected Rank by metric (CPAMC DL063). The bundled client is updated to
-CPAMC pin `5d0a0da`.
+CPAMC pin `1f2b4b0`.
 
 **Implementation evidence:** `internal/cpauk/store/timing.go`, `internal/cpauk/store/key_catalog.go`,
 `internal/cpauk/model/result.go`, and `TestKeyCatalogReportsTopCostModelSeparately`.
