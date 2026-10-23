@@ -22,11 +22,67 @@ func (s *SQLiteStore) Activity(ctx context.Context, query model.Query) (model.Ac
 	if err != nil {
 		return model.Activity{}, err
 	}
+	if split, ok := activityFrozenBoundary(query); ok {
+		historyQuery := query
+		historyQuery.End = split
+		history, err := s.cachedActivity(ctx, historyQuery)
+		if err != nil {
+			return model.Activity{}, err
+		}
+		liveQuery := query
+		liveQuery.Start = split
+		liveBuckets, err := s.activityBuckets(ctx, liveQuery, grain)
+		if err != nil {
+			return model.Activity{}, err
+		}
+		buckets := append(history.Buckets, liveBuckets...)
+		return model.Activity{Meta: responseMeta(query), Grain: grain, Zone: query.TimeZone, Buckets: buckets}, nil
+	}
+	if historyQueryIsHistorical(query) {
+		return s.cachedActivity(ctx, query)
+	}
+	return s.activityUncached(ctx, query)
+}
+
+func (s *SQLiteStore) activityUncached(ctx context.Context, query model.Query) (model.Activity, error) {
+	grain, err := activityGrain(query.Window)
+	if err != nil {
+		return model.Activity{}, err
+	}
 	buckets, err := s.activityBuckets(ctx, query, grain)
 	if err != nil {
 		return model.Activity{}, err
 	}
 	return model.Activity{Meta: responseMeta(query), Grain: grain, Zone: query.TimeZone, Buckets: buckets}, nil
+}
+
+// activityFrozenBoundary returns the start of the local calendar day containing
+// the query end. Buckets before that boundary are immutable for the dashboard;
+// only the current day must be read again as new usage arrives.
+func activityFrozenBoundary(query model.Query) (time.Time, bool) {
+	location, err := time.LoadLocation(query.TimeZone)
+	if err != nil {
+		return time.Time{}, false
+	}
+	boundary, err := activityDayStart(query.End, query.TimeZone)
+	if err != nil {
+		return time.Time{}, false
+	}
+	localEnd := query.End.In(location)
+	localNow := time.Now().In(location)
+	if localEnd.Year() != localNow.Year() || localEnd.YearDay() != localNow.YearDay() {
+		return time.Time{}, false
+	}
+	return boundary, query.Start.Before(boundary) && boundary.Before(query.End)
+}
+
+func activityDayStart(at time.Time, zone string) (time.Time, error) {
+	bucketer, err := aggregate.NewBucketer(zone, "1d")
+	if err != nil {
+		return time.Time{}, err
+	}
+	start, _, err := bucketer.Bounds(at)
+	return start, err
 }
 
 func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, width string) ([]model.ActivityBucket, error) {
@@ -45,6 +101,10 @@ func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, wi
 	if err != nil {
 		return nil, err
 	}
+	return activityBucketsFromTimeseries(sequence, timeseries, outcomes), nil
+}
+
+func activityBucketsFromTimeseries(sequence []analyticsBucket, timeseries model.Timeseries, outcomes map[int64][2]int64) []model.ActivityBucket {
 	buckets := make([]model.ActivityBucket, len(sequence))
 	byStart := make(map[int64]*model.ActivityBucket, len(sequence))
 	for index, bounds := range sequence {
@@ -65,7 +125,7 @@ func (s *SQLiteStore) activityBuckets(ctx context.Context, query model.Query, wi
 			TotalTokens: point.Tokens.Total, KnownCost: point.KnownCost, UnpricedTokens: point.UnpricedTokens,
 		}
 	}
-	return buckets, nil
+	return buckets
 }
 
 // A rolling year ends in the current local day but starts at a partial day
@@ -90,6 +150,189 @@ func normalizeYearActivityQuery(query model.Query, width string) (model.Query, e
 }
 
 func (s *SQLiteStore) yearActivityBuckets(ctx context.Context, query model.Query) ([]model.ActivityBucket, error) {
+	if boundary, ok := s.activityHotBoundary(query); ok {
+		return s.hybridYearActivityBuckets(ctx, query, boundary)
+	}
+	if !s.hasRetainedOverlap(query) {
+		timeseriesQuery := query
+		timeseriesQuery.Operation = model.OperationTimeseries
+		timeseriesQuery.Window = ""
+		timeseriesQuery.BucketWidth = "1d"
+		timeseries, outcomes, err := s.timeseriesWithOutcomes(ctx, timeseriesQuery)
+		if err != nil {
+			return nil, err
+		}
+		sequence, err := analyticsBucketSequence(query, "1d")
+		if err != nil {
+			return nil, err
+		}
+		return activityBucketsFromTimeseries(sequence, timeseries, outcomes), nil
+	}
+	return s.yearActivityBucketsUncached(ctx, query)
+}
+
+func (s *SQLiteStore) hybridYearActivityBuckets(ctx context.Context, query model.Query, boundary time.Time) ([]model.ActivityBucket, error) {
+	sequence, err := analyticsBucketSequence(query, "1d")
+	if err != nil {
+		return nil, err
+	}
+	buckets := make([]model.ActivityBucket, len(sequence))
+	byStart := make(map[int64]*model.ActivityBucket, len(sequence))
+	for index, bounds := range sequence {
+		buckets[index] = model.ActivityBucket{Start: bounds.start, End: bounds.end}
+		byStart[bounds.start.UnixNano()] = &buckets[index]
+	}
+	retainedQuery := query
+	retainedQuery.End = boundary
+	retained, err := s.yearActivityBucketsUncached(ctx, retainedQuery)
+	if err != nil {
+		return nil, err
+	}
+	for _, bucket := range retained {
+		if target := byStart[bucket.Start.UnixNano()]; target != nil {
+			*target = bucket
+		}
+	}
+	hotQuery := query
+	hotQuery.Start = boundary
+	hotQuery.Operation = model.OperationTimeseries
+	hotQuery.Window = ""
+	hotQuery.BucketWidth = "1d"
+	timeseries, outcomes, err := s.timeseriesWithOutcomes(ctx, hotQuery)
+	if err != nil {
+		return nil, err
+	}
+	hotSequence, err := analyticsBucketSequence(hotQuery, "1d")
+	if err != nil {
+		return nil, err
+	}
+	for _, bucket := range activityBucketsFromTimeseries(hotSequence, timeseries, outcomes) {
+		target := byStart[bucket.Start.UnixNano()]
+		if target == nil {
+			continue
+		}
+		target.Requests += bucket.Requests
+		target.Succeeded += bucket.Succeeded
+		target.Failed += bucket.Failed
+		target.InputTokens += bucket.InputTokens
+		target.OutputTokens += bucket.OutputTokens
+		target.CachedTokens += bucket.CachedTokens
+		target.CacheReadTokens += bucket.CacheReadTokens
+		target.CacheCreationTokens += bucket.CacheCreationTokens
+		target.ReasoningTokens += bucket.ReasoningTokens
+		target.TotalTokens += bucket.TotalTokens
+		target.KnownCost += bucket.KnownCost
+		target.UnpricedTokens += bucket.UnpricedTokens
+	}
+	requestCounts, err := s.hybridActivityRequestCounts(ctx, query, boundary)
+	if err != nil {
+		return nil, err
+	}
+	for start, requests := range requestCounts {
+		if target := byStart[start]; target != nil {
+			target.Requests = int64(len(requests))
+		}
+	}
+	return buckets, nil
+}
+
+func (s *SQLiteStore) hybridActivityRequestCounts(ctx context.Context, query model.Query, boundary time.Time) (map[int64]map[string]struct{}, error) {
+	counts := make(map[int64]map[string]struct{})
+	bucketer, err := aggregate.NewBucketer(query.TimeZone, "1d")
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil, ErrClosed
+	}
+	retainedQuery := query
+	retainedQuery.End = boundary
+	retainedWhere, retainedArguments, err := buildRollupWhere(retainedQuery, "bucket_start_ns", "bucket_end_ns")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT bucket_start_ns,proxy_request_id FROM request_rollups `+retainedWhere, retainedArguments...)
+	if err != nil {
+		return nil, fmt.Errorf("query retained year activity request identities: %w", err)
+	}
+	for rows.Next() {
+		var bucketStart int64
+		var requestID string
+		if err := rows.Scan(&bucketStart, &requestID); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan retained year activity request identity: %w", err)
+		}
+		start, _, err := bucketer.Bounds(time.Unix(0, bucketStart).UTC())
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if counts[start.UnixNano()] == nil {
+			counts[start.UnixNano()] = make(map[string]struct{})
+		}
+		counts[start.UnixNano()][requestID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("read retained year activity request identities: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	hotWhere, hotArguments, err := buildWhere(query)
+	if err != nil {
+		return nil, err
+	}
+	hotArguments = append(hotArguments, boundary.UnixNano())
+	hotWhere += " AND requested_at_ns >= ?"
+	rawRows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns,proxy_request_id FROM events `+hotWhere, hotArguments...)
+	if err != nil {
+		return nil, fmt.Errorf("query hot year activity request identities: %w", err)
+	}
+	for rawRows.Next() {
+		var requestedNS int64
+		var requestID string
+		if err := rawRows.Scan(&requestedNS, &requestID); err != nil {
+			_ = rawRows.Close()
+			return nil, fmt.Errorf("scan hot year activity request identity: %w", err)
+		}
+		start, _, err := bucketer.Bounds(time.Unix(0, requestedNS).UTC())
+		if err != nil {
+			_ = rawRows.Close()
+			return nil, err
+		}
+		if counts[start.UnixNano()] == nil {
+			counts[start.UnixNano()] = make(map[string]struct{})
+		}
+		counts[start.UnixNano()][requestID] = struct{}{}
+	}
+	if err := rawRows.Err(); err != nil {
+		_ = rawRows.Close()
+		return nil, fmt.Errorf("read hot year activity request identities: %w", err)
+	}
+	if err := rawRows.Close(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+func (s *SQLiteStore) activityHotBoundary(query model.Query) (time.Time, bool) {
+	s.mu.RLock()
+	cutoff := s.retentionCutoff
+	s.mu.RUnlock()
+	if cutoff.IsZero() || !query.Start.Before(cutoff) {
+		return time.Time{}, false
+	}
+	boundary, err := activityDayStart(cutoff, query.TimeZone)
+	if err != nil || !cutoff.Equal(boundary) {
+		return time.Time{}, false
+	}
+	return boundary, boundary.Before(query.End)
+}
+
+func (s *SQLiteStore) yearActivityBucketsUncached(ctx context.Context, query model.Query) ([]model.ActivityBucket, error) {
 	sequence, err := analyticsBucketSequence(query, "1d")
 	if err != nil {
 		return nil, err
@@ -239,6 +482,12 @@ cache_creation_tokens,total_tokens,known_cost_nano,unpriced_tokens FROM daily_st
 		}
 	}
 	return buckets, nil
+}
+
+func (s *SQLiteStore) hasRetainedOverlap(query model.Query) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff)
 }
 
 func (s *SQLiteStore) validateDailyStatsRange(ctx context.Context, query model.Query) error {

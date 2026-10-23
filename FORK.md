@@ -1447,7 +1447,25 @@ matrix target, including the macOS and Windows runners without Docker, downloads
 the 503 page while `/management-assets/mascots/claude.webp` returns 404. A rebuild from the pinned
 submodule serves that mascot as `image/webp` with the day-long cache header, and HEAD, traversal,
 and disabled-panel requests behave as described.
+### DL051 - Freeze closed days in overview activity
 
+The CPAMC overview's year-long request-health and token-activity cards now split
+at the current local calendar day. Completed days use the historical CPAUK result
+cache, while the current day is recalculated so new usage appears immediately.
+Activity results participate in the same bounded, generation-keyed cache as other
+historical analytics, so writes inside a closed day invalidate it while tail writes
+leave it reusable. The existing `daily_stats` retention path remains authoritative
+for days older than raw-event retention, including cost, unpriced tokens, and
+request identity handling.
+
+**Implementation evidence:** `internal/cpauk/store/activity.go`,
+`internal/cpauk/store/history_cache.go`, and
+`internal/cpauk/store/activity_test.go`.
+
+**Recorded validation:** On the deterministic 100,000-request fixture, repeated
+activity reads fell from about 127 ms to 5.6 ms for 30 days and from about 408 ms
+to 5.7 ms for 90 days. Focused activity, retention, cache invalidation, and CPAUK
+store tests pass.
 **Last updated:** 2026-10-23
 
 ## Merge History

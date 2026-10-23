@@ -25,6 +25,7 @@ type historyCacheValue struct {
 	operation  model.Operation
 	summary    model.Summary
 	timeseries model.Timeseries
+	activity   model.Activity
 	analysis   model.Analysis
 }
 
@@ -100,6 +101,8 @@ func marshalHistoryCacheValue(value historyCacheValue) ([]byte, error) {
 		return json.Marshal(value.summary)
 	case model.OperationTimeseries:
 		return json.Marshal(value.timeseries)
+	case model.OperationActivity:
+		return json.Marshal(value.activity)
 	case model.OperationAnalysis:
 		return json.Marshal(value.analysis)
 	default:
@@ -131,6 +134,8 @@ func cloneHistoryCacheValue(value historyCacheValue) historyCacheValue {
 		result.summary = cloneJSON(value.summary)
 	case model.OperationTimeseries:
 		result.timeseries = cloneJSON(value.timeseries)
+	case model.OperationActivity:
+		result.activity = cloneJSON(value.activity)
 	case model.OperationAnalysis:
 		result.analysis = cloneJSON(value.analysis)
 	}
@@ -307,6 +312,24 @@ func (s *SQLiteStore) cachedTimeseries(ctx context.Context, query model.Query) (
 	}
 	if cacheable {
 		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationTimeseries, timeseries: result})
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) cachedActivity(ctx context.Context, query model.Query) (model.Activity, error) {
+	key, cacheable, value, hit, err := s.historyCacheGet(ctx, query, false)
+	if err != nil {
+		return model.Activity{}, err
+	}
+	if cacheable && hit {
+		return value.activity, nil
+	}
+	result, err := s.activityUncached(ctx, query)
+	if err != nil {
+		return model.Activity{}, err
+	}
+	if cacheable {
+		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationActivity, activity: result})
 	}
 	return result, nil
 }

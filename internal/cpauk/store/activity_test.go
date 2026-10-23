@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestYearActivityCombinesDailyStatsAndHotEvents(t *testing.T) {
 	if err := database.WriteBatch(ctx, events); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.ApplyRetention(ctx, oldAt.AddDate(0, 0, 2), 100); err != nil {
+	if _, err := database.ApplyRetention(ctx, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 100); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.db.ExecContext(ctx, "DELETE FROM rollups; DELETE FROM request_rollups"); err != nil {
@@ -63,6 +64,100 @@ func TestYearActivityCombinesDailyStatsAndHotEvents(t *testing.T) {
 		Requests: 1, Failed: 1, InputTokens: 300, OutputTokens: 301, ReasoningTokens: 302,
 		CachedTokens: 303, CacheReadTokens: 304, CacheCreationTokens: 305, TotalTokens: 1815,
 	})
+}
+
+func TestHistoricalActivityUsesResultCache(t *testing.T) {
+	database := openMaterialized15mTestStore(t)
+	ctx := context.Background()
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if err := database.WriteBatch(ctx, []model.Event{yearActivityEvent(loadFixtureEvents(t)[0], 91, 92,
+		fmt.Sprintf("%064x", 92), start.Add(2*time.Hour), true, 10)}); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationActivity, Start: start,
+		End: start.AddDate(0, 0, 2), TimeZone: "UTC", Window: "year"}
+	first, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := database.historyCache.historyCacheStats(); entries != 1 {
+		t.Fatalf("historical activity cache entries=%d, want 1", entries)
+	}
+	second, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(second, first) {
+		t.Fatalf("cached activity differs\n got=%+v\nwant=%+v", second, first)
+	}
+}
+
+func TestActivityDayStartUsesCalendarBoundaryForSkippedMidnight(t *testing.T) {
+	zone := "America/Santiago"
+	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	bucketer, err := aggregate.NewBucketer(zone, "1d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _, err := bucketer.Bounds(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := activityDayStart(at, zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("activity day start=%s, want calendar boundary %s", got, want)
+	}
+}
+
+func TestActivityFreezesClosedDaysButRefreshesToday(t *testing.T) {
+	database := openMaterialized15mTestStore(t)
+	ctx := context.Background()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	now := today.Add(12 * time.Hour)
+	start := today.Add(-2 * 24 * time.Hour)
+	fixture := loadFixtureEvents(t)[0]
+	keyID := fmt.Sprintf("%064x", 93)
+	closed := yearActivityEvent(fixture, 94, 95, keyID, today.Add(-time.Hour), true, 10)
+	if err := database.WriteBatch(ctx, []model.Event{closed}); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationActivity, Start: start,
+		End: now, TimeZone: "UTC", Window: "year"}
+	first, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := database.historyCache.historyCacheStats(); entries != 1 {
+		t.Fatalf("frozen activity cache entries=%d, want 1", entries)
+	}
+	todayEvent := yearActivityEvent(fixture, 96, 97, keyID, now.Add(-time.Minute), true, 20)
+	if err := database.WriteBatch(ctx, []model.Event{todayEvent}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Buckets) != len(first.Buckets) || second.Buckets[len(second.Buckets)-1].Requests == first.Buckets[len(first.Buckets)-1].Requests {
+		t.Fatalf("today activity did not refresh: first=%+v second=%+v", first.Buckets[len(first.Buckets)-1], second.Buckets[len(second.Buckets)-1])
+	}
+	late := yearActivityEvent(fixture, 98, 99, keyID, today.Add(-2*time.Hour), true, 30)
+	if err := database.WriteBatch(ctx, []model.Event{late}); err != nil {
+		t.Fatal(err)
+	}
+	third, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedStart := today.Add(-24 * time.Hour)
+	firstClosed, firstOK := activityBucketAt(first.Buckets, closedStart)
+	thirdClosed, thirdOK := activityBucketAt(third.Buckets, closedStart)
+	if !firstOK || !thirdOK || thirdClosed.Requests == firstClosed.Requests {
+		t.Fatalf("historical activity did not invalidate after late write: first=%+v third=%+v", firstClosed, thirdClosed)
+	}
 }
 
 func TestYearActivityPreservesCostAfterRetention(t *testing.T) {
@@ -146,6 +241,39 @@ func TestYearActivityDeduplicatesRequestsAcrossRetainedBoundary(t *testing.T) {
 	afterBucket, ok := activityBucketAt(after.Buckets, day)
 	if !ok || afterBucket.Requests != 2 || afterBucket.Succeeded != 2 || afterBucket.Failed != 1 {
 		t.Fatalf("retained activity bucket = %+v, want two distinct requests", afterBucket)
+	}
+}
+
+func TestYearActivityHybridDeduplicatesRequestsAcrossRetentionCutoff(t *testing.T) {
+	const zone = "UTC"
+	day := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	database := openRetainedCorrectnessStoreInZone(t, zone)
+	fixture := loadFixtureEvents(t)[0]
+	keyID := fmt.Sprintf("%064x", 9)
+	retained := yearActivityEvent(fixture, 201, 301, keyID, day.Add(-30*time.Minute), true, 10)
+	hotRetry := yearActivityEvent(fixture, 202, 301, keyID, day.Add(30*time.Minute), false, 20)
+	hotNew := yearActivityEvent(fixture, 203, 302, keyID, day.Add(90*time.Minute), true, 30)
+	ctx := context.Background()
+	if err := database.WriteBatch(ctx, []model.Event{retained, hotRetry, hotNew}); err != nil {
+		t.Fatal(err)
+	}
+	query := model.Query{SchemaVersion: 2, Operation: model.OperationActivity,
+		Start: day.Add(-24 * time.Hour), End: day.Add(24 * time.Hour), TimeZone: zone, Window: "year"}
+	want, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplyRetention(ctx, day, 100); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.Activity(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBucket, wantOK := activityBucketAt(want.Buckets, day)
+	gotBucket, gotOK := activityBucketAt(got.Buckets, day)
+	if !wantOK || !gotOK || gotBucket.Requests != wantBucket.Requests || gotBucket.Succeeded != wantBucket.Succeeded || gotBucket.Failed != wantBucket.Failed {
+		t.Fatalf("hybrid activity bucket=%+v, want=%+v", gotBucket, wantBucket)
 	}
 }
 
