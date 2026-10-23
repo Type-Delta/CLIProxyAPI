@@ -985,3 +985,15 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 		})
 	}
 }
+
+// analytics is a fork root valid in both layouts, so a legacy v0 save that writes the default
+// analytics block must not turn the next save into a v8 migration.
+func TestLegacyAnalyticsRootIsNotAV8Marker(t *testing.T) {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte("request-retry: 2\nanalytics:\n  hot-retention-days: 90\n"), &root); err != nil {
+		t.Fatal(err)
+	}
+	if IsV8ConfigLayout(root.Content[0]) {
+		t.Fatal("legacy document with an analytics root was detected as a v8 layout")
+	}
+}

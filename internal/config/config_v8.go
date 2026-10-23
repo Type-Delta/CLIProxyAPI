@@ -552,7 +552,9 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	}
 	root = expandConfigAliases(root)
 	sections := v8AllowedRoots()
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client"} {
+	// Shared roots exist in both layouts, so they never mark a document as v8. analytics is a
+	// fork root that legacy saves also write, so it must not flip the next v0 save to v8.
+	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client", "analytics"} {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
