@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
+	"mime"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -356,14 +360,41 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 	c.AbortWithStatus(http.StatusNotFound)
 }
 
+// managementPanelAssetCacheControl lets browsers reuse panel assets without a
+// revalidation round trip; their bytes only change with a new CPA build.
+const managementPanelAssetCacheControl = "public, max-age=86400"
+
+// managementBundleMissingHTML explains a build that shipped no embedded panel.
+const managementBundleMissingHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Management panel not built</title></head>
+<body>
+<h1>Management panel not built</h1>
+<p>This CPA binary was built without the management center bundle.</p>
+<p>Build it with <code>scripts/build-management-center.sh</code> and rebuild CPA, or
+leave management panel auto-update enabled so CPA can download a verified panel.</p>
+</body>
+</html>`
+
+// resolveManagementPanelAsset is a variable so tests can simulate a build without
+// the panel bundle.
+var resolveManagementPanelAsset = managementasset.Resolve
+
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	cfg := s.getConfig()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	asset, errResolve := managementasset.Resolve(s.configFilePath)
+	asset, errResolve := resolveManagementPanelAsset(s.configFilePath)
 	if errResolve != nil {
+		if errors.Is(errResolve, managementasset.ErrBundleMissing) {
+			s.warnManagementBundleMissing(errResolve)
+			c.Header("Cache-Control", "no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			c.Data(http.StatusServiceUnavailable, "text/html; charset=utf-8", []byte(managementBundleMissingHTML))
+			return
+		}
 		log.WithError(errResolve).Error("failed to resolve management control panel asset")
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
@@ -373,4 +404,37 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	c.Header("Referrer-Policy", "no-referrer")
 	c.Header("X-CPAMC-Commit", asset.Manifest.CPAMCCommit)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", asset.HTML)
+}
+
+// serveManagementAsset serves the immutable panel assets (mascots today) that
+// live outside management.html in the embedded bundle.
+func (s *Server) serveManagementAsset(c *gin.Context) {
+	cfg := s.getConfig()
+	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	data, errAsset := managementasset.PanelAsset(c.Param("filepath"))
+	if errAsset != nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	contentType := mime.TypeByExtension(path.Ext(c.Request.URL.Path))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Cache-Control", managementPanelAssetCacheControl)
+	if c.Request.Method == http.MethodHead {
+		c.Header("Content-Type", contentType)
+		c.Header("Content-Length", strconv.Itoa(len(data)))
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Data(http.StatusOK, contentType, data)
+}
+
+func (s *Server) warnManagementBundleMissing(err error) {
+	s.bundleMissingWarn.Do(func() {
+		log.WithError(err).Warn("management control panel unavailable: this build bundles no panel and no valid mutable panel exists")
+	})
 }

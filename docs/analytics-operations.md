@@ -234,7 +234,9 @@ previous binary. Do not downgrade or remove the analytics database; older CPA
 binaries ignore it.
 
 To roll back CPAMC, disable the panel updater and install the prior matching
-`management.html` and `management-artifact.json`, or deploy a CPA build that
-bundles the prior CPAMC gitlink. If no valid mutable pair remains, remove only
-those two named files through recoverable deployment tooling; CPA falls back to
-its bundled artifact.
+`management.html` and `management-artifact.json`, or deploy a CPA build whose
+embedded panel was built from the prior CPAMC gitlink. The panel bundle is build
+output and is not committed, so rolling back a deployed panel means shipping a
+build produced from that gitlink with `scripts/build-management-center.sh`. If no
+valid mutable pair remains, remove only those two named files through recoverable
+deployment tooling; CPA falls back to its embedded panel.

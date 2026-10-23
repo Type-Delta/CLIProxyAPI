@@ -1,9 +1,12 @@
 package managementasset
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,9 @@ import (
 
 func TestBundledArtifactIsValid(t *testing.T) {
 	asset, errResolve := Resolve("")
+	if errors.Is(errResolve, ErrBundleMissing) {
+		t.Skip("this build has no bundled panel; run scripts/build-management-center.sh before testing it")
+	}
 	if errResolve != nil {
 		t.Fatalf("Resolve() error = %v", errResolve)
 	}
@@ -99,6 +105,52 @@ func TestResolveUsesWritablePathLayout(t *testing.T) {
 	}
 	if asset.Source != "mutable" || string(asset.HTML) != string(html) {
 		t.Fatalf("Resolve() source=%q body=%q", asset.Source, asset.HTML)
+	}
+}
+
+func TestResolveReportsMissingBundle(t *testing.T) {
+	original := bundledReadFile
+	bundledReadFile = func(string) ([]byte, error) { return nil, fs.ErrNotExist }
+	t.Cleanup(func() { bundledReadFile = original })
+
+	if _, err := readBundled(); !errors.Is(err, ErrBundleMissing) {
+		t.Fatalf("readBundled() error = %v, want ErrBundleMissing", err)
+	}
+}
+
+func TestPanelAssetRejectsPathsOutsideAssets(t *testing.T) {
+	names := []string{
+		"",
+		"/",
+		"..",
+		"../management.html",
+		"mascots/../../management.html",
+		"mascots/../claude.webp",
+		"mascots//claude.webp",
+		"mascots/claude.webp/",
+		"mascots" + string(rune(92)) + "claude.webp",
+	}
+	for _, name := range names {
+		if _, err := PanelAsset(name); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("PanelAsset(%q) error = %v, want fs.ErrNotExist", name, err)
+		}
+	}
+}
+
+func TestPanelAssetReadsBundledMascot(t *testing.T) {
+	data, errAsset := PanelAsset("mascots/claude.webp")
+	if errors.Is(errAsset, fs.ErrNotExist) {
+		t.Skip("mascots are not in the embedded bundle; run scripts/build-management-center.sh")
+	}
+	if errAsset != nil {
+		t.Fatalf("PanelAsset() error = %v", errAsset)
+	}
+	want, errRead := bundledAssets.ReadFile(bundledRoot + bundledAssetsDir + "/mascots/claude.webp")
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("PanelAsset() returned %d bytes, want %d", len(data), len(want))
 	}
 }
 

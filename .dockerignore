@@ -20,6 +20,11 @@ LICENSE
 web/management-center/node_modules
 web/management-center/dist
 
+# The panel bundle is rebuilt from the pinned submodule during the image build.
+internal/managementasset/bundled/management.html
+internal/managementasset/bundled/management-artifact.json
+internal/managementasset/bundled/management-assets
+
 # Runtime data folders (should be mounted as volumes)
 auths
 logs

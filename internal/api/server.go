@@ -90,6 +90,9 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
+	// bundleMissingWarn limits the missing-panel warning to one log line.
+	bundleMissingWarn sync.Once
+
 	usageLimitTracker  *usagelimit.Tracker
 	usageLimitPath     string
 	usageLimitStop     chan struct{}

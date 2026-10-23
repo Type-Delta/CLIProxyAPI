@@ -1,3 +1,20 @@
+FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS panel-builder
+
+WORKDIR /panel
+
+COPY web/management-center/package.json web/management-center/bun.lock ./
+RUN --mount=type=cache,id=cpamc-bun-1.3.14,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+COPY web/management-center/ ./
+
+ARG CPAMC_COMMIT
+ARG PANEL_BUILT_AT=1970-01-01T00:00:00Z
+RUN test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build \
+    && mkdir -p dist/management-assets \
+    && html_sha="$(sha256sum dist/index.html | cut -d' ' -f1)" \
+    && printf '{"schema_version":1,"cpamc_commit":"%s","management_api":{"min":1,"max":1},"built_at":"%s","sha256":"%s"}\n' \
+         "$CPAMC_COMMIT" "$PANEL_BUILT_AT" "$html_sha" > dist/management-artifact.json
+
 FROM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS builder
 
 WORKDIR /app
@@ -12,6 +29,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+# The panel is always rebuilt from the pinned submodule inside this build, so the
+# embedded bundle never depends on committed or working-tree build output.
+COPY --from=panel-builder /panel/dist/index.html /app/internal/managementasset/bundled/management.html
+COPY --from=panel-builder /panel/dist/management-artifact.json /app/internal/managementasset/bundled/management-artifact.json
+COPY --from=panel-builder /panel/dist/management-assets /app/internal/managementasset/bundled/management-assets
 
 ARG VERSION=dev
 ARG COMMIT=none
@@ -29,8 +52,9 @@ RUN apt-get update \
 RUN mkdir /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
-COPY internal/managementasset/bundled/management.html /CLIProxyAPI/bundled/management.html
-COPY internal/managementasset/bundled/management-artifact.json /CLIProxyAPI/bundled/management-artifact.json
+COPY --from=builder ./app/internal/managementasset/bundled/management.html /CLIProxyAPI/bundled/management.html
+COPY --from=builder ./app/internal/managementasset/bundled/management-artifact.json /CLIProxyAPI/bundled/management-artifact.json
+COPY --from=builder ./app/internal/managementasset/bundled/management-assets /CLIProxyAPI/bundled/management-assets
 COPY LICENSE /CLIProxyAPI/licenses/CPA-LICENSE
 COPY web/management-center/LICENSE /CLIProxyAPI/licenses/CPAMC-LICENSE
 COPY internal/cpauk/LICENSE.upstream /CLIProxyAPI/licenses/CPAUK-LICENSE

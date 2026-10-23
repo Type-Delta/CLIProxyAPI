@@ -1,8 +1,26 @@
+FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS panel-builder
+
+WORKDIR /panel
+
+COPY web/management-center/package.json web/management-center/bun.lock ./
+RUN --mount=type=cache,id=cpamc-bun-1.3.14,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+COPY web/management-center/ ./
+
+ARG CPAMC_COMMIT
+ARG PANEL_BUILT_AT=1970-01-01T00:00:00Z
+RUN test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build \
+    && mkdir -p dist/management-assets \
+    && html_sha="$(sha256sum dist/index.html | cut -d' ' -f1)" \
+    && printf '{"schema_version":1,"cpamc_commit":"%s","management_api":{"min":1,"max":1},"built_at":"%s","sha256":"%s"}\n' \
+         "$CPAMC_COMMIT" "$PANEL_BUILT_AT" "$html_sha" > dist/management-artifact.json
+
 FROM nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913
 
 COPY nginx-web.conf /etc/nginx/conf.d/default.conf
-COPY internal/managementasset/bundled/management.html /usr/share/nginx/html/index.html
-COPY internal/managementasset/bundled/management-artifact.json /usr/share/nginx/html/management-artifact.json
+COPY --from=panel-builder /panel/dist/index.html /usr/share/nginx/html/index.html
+COPY --from=panel-builder /panel/dist/management-artifact.json /usr/share/nginx/html/management-artifact.json
+COPY --from=panel-builder /panel/dist/management-assets /usr/share/nginx/html/management-assets
 COPY web/management-center/LICENSE /usr/share/licenses/CPAMC-LICENSE
 COPY internal/cpauk/LICENSE.upstream /usr/share/licenses/CPAUK-LICENSE
 

@@ -6,6 +6,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        # Required only for `docker compose build`; the image build fails fast when it is empty.
+        CPAMC_COMMIT: ${CPAMC_COMMIT:-}
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}

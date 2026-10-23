@@ -36,15 +36,17 @@ go run ./cmd/server # Run dev server
 go test ./... # Run all tests
 go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && unlink test-output # Verify compile (REQUIRED after changes)
-./scripts/build-management-center.sh # Build CPAMC and refresh the bundled HTML and manifest
+./scripts/build-management-center.sh # Build the CPAMC bundle (HTML, manifest, assets)
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
-After committing changes inside `web/management-center`, run
-`./scripts/build-management-center.sh` from the CPA repository root before committing the matching
-CPA update. Commit the CPAMC gitlink, `internal/managementasset/bundled/management.html`, and
-`internal/managementasset/bundled/management-artifact.json` together. The script requires Docker
-and a clean CPAMC worktree; do not copy `dist/index.html` by hand.
+The `web/management-center` submodule is a required build dependency for anything that ships a
+panel: `internal/managementasset/bundled/` holds build output and is gitignored except for
+`.gitkeep`. Run `./scripts/build-management-center.sh` from the CPA repository root to produce the
+bundle before building, testing, or packaging a panel; a plain `go build` without it serves a 503
+instruction page at `/management.html`. The script requires Docker and a clean CPAMC worktree, and
+accepts `ALLOW_DIRTY_PANEL=1` for local builds against uncommitted panel changes. When advancing the
+CPAMC pin, commit the submodule gitlink only, and never copy `dist/index.html` by hand.
 
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)

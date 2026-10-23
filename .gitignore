@@ -23,6 +23,10 @@ objectstore/*
 # Static assets
 static/*
 
+# Management panel bundle, rebuilt by scripts/build-management-center.sh
+internal/managementasset/bundled/*
+!internal/managementasset/bundled/.gitkeep
+
 # Authentication data
 auths/*
 /auths

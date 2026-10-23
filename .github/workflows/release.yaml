@@ -94,9 +94,30 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file" --draft
           fi
 
+  build-panel:
+    name: build panel bundle
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
+      - name: Build CPAMC bundle
+        run: scripts/build-management-center.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
+          if-no-files-found: error
+
   build-hosted:
     name: build ${{ matrix.target }}
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - build-panel
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -138,6 +159,11 @@ jobs:
       - name: Verify pinned submodules
         shell: bash
         run: scripts/verify-submodules.sh
+      - name: Download panel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -185,13 +211,14 @@ jobs:
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          cp -R internal/managementasset/bundled/management-assets "$archive_dir/"
           mkdir -p "$archive_dir/licenses"
           cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
           cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
           else
-            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
+            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json management-assets licenses
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -215,7 +242,9 @@ jobs:
 
   build-linux-glibc:
     name: build linux-${{ matrix.goarch }} glibc
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - build-panel
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -242,6 +271,11 @@ jobs:
           cache: true
       - name: Verify pinned submodules
         run: scripts/verify-submodules.sh
+      - name: Download panel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -303,10 +337,11 @@ jobs:
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          cp -R internal/managementasset/bundled/management-assets "$archive_dir/"
           mkdir -p "$archive_dir/licenses"
           cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
           cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json management-assets licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -329,7 +364,9 @@ jobs:
 
   build-linux-no-plugin:
     name: build linux-${{ matrix.goarch }} no-plugin
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - build-panel
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -352,6 +389,11 @@ jobs:
           cache: true
       - name: Verify pinned submodules
         run: scripts/verify-submodules.sh
+      - name: Download panel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
       - name: Refresh models catalog
         shell: bash
         run: bash .github/scripts/refresh-model-catalogs.sh
@@ -399,10 +441,11 @@ jobs:
 
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          cp -R internal/managementasset/bundled/management-assets "$archive_dir/"
           mkdir -p "$archive_dir/licenses"
           cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
           cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json management-assets licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -425,7 +468,9 @@ jobs:
 
   build-freebsd:
     name: build ${{ matrix.target }}
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - build-panel
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ matrix.target }}
@@ -457,6 +502,11 @@ jobs:
           cache: true
       - name: Verify pinned submodules
         run: scripts/verify-submodules.sh
+      - name: Download panel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Fetch tags
@@ -573,10 +623,11 @@ jobs:
           cp "dist/${TARGET}/bin/cli-proxy-api" "$archive_dir/cli-proxy-api"
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           cp internal/managementasset/bundled/management.html internal/managementasset/bundled/management-artifact.json "$archive_dir/"
+          cp -R internal/managementasset/bundled/management-assets "$archive_dir/"
           mkdir -p "$archive_dir/licenses"
           cp web/management-center/LICENSE "$archive_dir/licenses/CPAMC-LICENSE"
           cp internal/cpauk/LICENSE.upstream "$archive_dir/licenses/CPAUK-LICENSE"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json licenses
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml management.html management-artifact.json management-assets licenses
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -614,6 +665,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Download panel bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: panel-bundle
+          path: internal/managementasset/bundled
       - uses: actions/download-artifact@v4
         with:
           path: dist

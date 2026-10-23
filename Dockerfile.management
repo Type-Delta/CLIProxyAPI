@@ -9,8 +9,10 @@ COPY web/management-center/ ./
 
 ARG CPAMC_COMMIT
 ARG PANEL_BUILD_NONCE=""
-RUN : "$PANEL_BUILD_NONCE" && test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build
+RUN : "$PANEL_BUILD_NONCE" && test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build \
+    && mkdir -p dist/management-assets
 
 FROM scratch
 
 COPY --from=builder /panel/dist/index.html /management.html
+COPY --from=builder /panel/dist/management-assets /management-assets

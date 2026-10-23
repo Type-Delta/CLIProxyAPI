@@ -5,8 +5,9 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 panel_root="$repository_root/web/management-center"
 output_root="$repository_root/internal/managementasset/bundled"
 
-if ! git -C "$panel_root" diff --quiet || ! git -C "$panel_root" diff --cached --quiet; then
-  echo "management-center submodule is dirty" >&2
+if [ "${ALLOW_DIRTY_PANEL:-}" != "1" ] &&
+  { ! git -C "$panel_root" diff --quiet || ! git -C "$panel_root" diff --cached --quiet; }; then
+  echo "management-center submodule is dirty; commit it or set ALLOW_DIRTY_PANEL=1 for a local build" >&2
   exit 1
 fi
 
@@ -34,8 +35,21 @@ docker build \
   --output "type=local,dest=$build_root" \
   "$repository_root"
 
+unexpected=$(find "$build_root" -mindepth 1 -maxdepth 1 ! -name management.html ! -name management-assets -print)
+if [ -n "$unexpected" ]; then
+  echo "CPAMC dist contains files outside management.html and management-assets:" >&2
+  echo "$unexpected" >&2
+  exit 1
+fi
+
 mkdir -p "$output_root"
 install -m 0644 "$build_root/management.html" "$output_root/management.html"
+
+rm -rf "$output_root/management-assets"
+if [ -d "$build_root/management-assets" ]; then
+  cp -R "$build_root/management-assets" "$output_root/management-assets"
+  find "$output_root/management-assets" -type f -exec chmod 0644 {} +
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
   digest=$(sha256sum "$output_root/management.html" | cut -d' ' -f1)

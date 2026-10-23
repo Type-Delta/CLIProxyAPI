@@ -5,9 +5,12 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,10 +19,25 @@ import (
 const (
 	manifestAssetName          = "management-artifact.json"
 	managementAPISchemaVersion = 1
+	bundledRoot                = "bundled/"
+	bundledAssetsDir           = "management-assets"
 )
 
-//go:embed bundled/management.html bundled/management-artifact.json
+// ErrBundleMissing reports a CPA build whose embedded bundle holds no panel. A
+// plain go build keeps this state until scripts/build-management-center.sh runs.
+var ErrBundleMissing = errors.New("management panel bundle missing from build")
+
+// bundledAssets holds the output of scripts/build-management-center.sh. Only
+// bundled/.gitkeep exists in a fresh checkout, so all: is required to compile.
+//
+//go:embed all:bundled
 var bundledAssets embed.FS
+
+// bundledReadFile reads one file from the embedded bundle. Tests replace it to
+// simulate a build without the panel bundle.
+var bundledReadFile = func(name string) ([]byte, error) {
+	return bundledAssets.ReadFile(name)
+}
 
 // ArtifactManifest binds a CPAMC build to its compatible CPA Management API range.
 type ArtifactManifest struct {
@@ -52,11 +70,14 @@ func Resolve(configFilePath string) (ResolvedAsset, error) {
 }
 
 func readBundled() (ResolvedAsset, error) {
-	html, errHTML := bundledAssets.ReadFile("bundled/" + managementAssetName)
+	html, errHTML := bundledReadFile(bundledRoot + managementAssetName)
+	if errors.Is(errHTML, fs.ErrNotExist) {
+		return ResolvedAsset{}, fmt.Errorf("%w: %s%s is absent; run scripts/build-management-center.sh and rebuild CPA", ErrBundleMissing, bundledRoot, managementAssetName)
+	}
 	if errHTML != nil {
 		return ResolvedAsset{}, fmt.Errorf("read bundled management panel: %w", errHTML)
 	}
-	manifestData, errManifest := bundledAssets.ReadFile("bundled/" + manifestAssetName)
+	manifestData, errManifest := bundledReadFile(bundledRoot + manifestAssetName)
 	if errManifest != nil {
 		return ResolvedAsset{}, fmt.Errorf("read bundled management manifest: %w", errManifest)
 	}
@@ -65,6 +86,23 @@ func readBundled() (ResolvedAsset, error) {
 		return ResolvedAsset{}, fmt.Errorf("validate bundled management panel: %w", errValidate)
 	}
 	return ResolvedAsset{HTML: html, Manifest: manifest, Source: "bundled"}, nil
+}
+
+// PanelAsset returns one immutable panel asset from the embedded bundle, named
+// relative to bundled/management-assets (for example "mascots/claude.webp").
+// Missing files, directories, and names that are not clean relative paths report
+// fs.ErrNotExist so callers can answer 404 without leaking the bundle layout.
+func PanelAsset(name string) ([]byte, error) {
+	name = strings.TrimPrefix(name, "/")
+	if name == "" || name == ".." || strings.HasPrefix(name, "../") ||
+		strings.Contains(name, "\\") || path.Clean(name) != name {
+		return nil, fs.ErrNotExist
+	}
+	data, err := bundledReadFile(bundledRoot + bundledAssetsDir + "/" + name)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func readMutable(configFilePath string) (ResolvedAsset, error) {

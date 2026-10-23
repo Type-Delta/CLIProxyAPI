@@ -113,7 +113,7 @@ A 2026-09-08 metric audit produced eleven corrections. The intake adapter now pe
 
 ### DL006 - Reproducible embedded CPAMC artifact
 
-CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.3.14 container and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Runtime images and release archives consume that canonical HTML and compatibility manifest directly; no product build compares generated artifacts byte-for-byte or compiles an arbitrary panel working tree. No product build clones or floats on a remote CPAMC branch.
+CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.3.14 container and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Runtime images and release archives consume that canonical HTML and compatibility manifest directly; no product build compares generated artifacts byte-for-byte or compiles an arbitrary panel working tree. No product build clones or floats on a remote CPAMC branch. DL050 later stops committing that bundle: panel-shipping builds now produce it from the pinned submodule, and the submodule is a hard build dependency.
 
 Mutable and downloaded panels require an adjacent `management-artifact.json` whose Management API range accepts this CPA build and whose SHA-256 matches the exact HTML bytes. An invalid, missing, incompatible, or tampered mutable panel falls back to the immutable bundled artifact. The former undigested network fallback is removed, and updates default to the Type-Delta CPAMC fork.
 
@@ -1406,6 +1406,47 @@ provider session, inclusive-reasoning, and raw-output-fallback tests pass. The d
 The requested CPAUK, API, and usage suites are green except for the previously recorded
 `TestV0RepeatedSavesKeepLegacyClientAlias` config compatibility failure; the management package
 passes when that unrelated test is skipped.
+
+**Last updated:** 2026-10-23
+
+### DL050 - Management panel bundle is build output; mascots ship as separate assets
+
+`internal/managementasset/bundled/` is no longer committed: only `.gitkeep` is tracked and
+`scripts/build-management-center.sh` regenerates `management.html`, the manifest, and
+`management-assets/` from the pinned `web/management-center` submodule. The embed uses
+`all:bundled`, so a fresh clone still compiles with plain `go build`. That build reports
+`ErrBundleMissing` instead of an internal error: `/management.html` answers 503 with a short
+page naming the build script (logged once at warn) while a valid mutable panel and the panel
+auto-updater keep working exactly as before.
+
+The leaderboard mascots moved out of `management.html` into optional WebP files under CPAMC
+`public/management-assets/mascots/`. CPA serves them through `GET|HEAD /management-assets/*` from
+the embedded `management-assets/` subtree only, under the same home/disabled gates as the panel,
+without a management key and without the example-API-key safe-mode gate. Request paths must be
+clean relative names, so `..`, encoded traversal, directories, and unknown files are 404 and
+nothing is listed. Responses take their content type from the extension and
+`Cache-Control: public, max-age=86400`; a missing asset makes the panel fall back to its logo.
+
+Build plumbing follows the layout: the script copies `management-assets/` and only requires a
+clean submodule by default (`ALLOW_DIRTY_PANEL=1` for local builds), `Dockerfile.management`
+exports the assets, and both runtime Dockerfiles rebuild the panel from the pinned submodule in a
+Bun stage and generate the manifest inside the build from `CPAMC_COMMIT` and `BUILD_DATE` because
+`.dockerignore` excludes `.git`. The release workflow builds the bundle once on Linux and every
+matrix target, including the macOS and Windows runners without Docker, downloads it before
+`go build`; archives ship the HTML, manifest, and assets together.
+
+**Implementation evidence:** `internal/managementasset/{bundle.go,bundle_test.go}`,
+`internal/api/{server_management.go,server_routes.go,server_middleware.go,server_management_assets_test.go}`,
+`scripts/build-management-center.sh`, `Dockerfile`, `Dockerfile.web`, `Dockerfile.management`,
+`.github/workflows/{release.yaml,pr-test-build.yml,docker-image.yml}`, `nginx-web.conf`,
+`docs/management-center.md`, and `docs/analytics-operations.md`.
+
+**Recorded validation:** `gofmt` is clean, `go build -o test-output ./cmd/server` passes,
+`go test ./internal/managementasset/... ./internal/api/...` passes apart from the pre-existing
+`TestV0RepeatedSavesKeepLegacyClientAlias`, and a bundle-less copy of the tree builds and serves
+the 503 page while `/management-assets/mascots/claude.webp` returns 404. A rebuild from the pinned
+submodule serves that mascot as `image/webp` with the day-long cache header, and HEAD, traversal,
+and disabled-panel requests behave as described.
 
 **Last updated:** 2026-10-23
 

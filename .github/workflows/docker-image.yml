@@ -36,6 +36,7 @@ jobs:
       - name: Generate Build Metadata
         run: |
           echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)" >> $GITHUB_ENV
           echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
           echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
       - name: Build and push (amd64)
@@ -50,6 +51,8 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
+            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
+            PANEL_BUILT_AT=${{ env.BUILD_DATE }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-amd64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-amd64
@@ -80,6 +83,7 @@ jobs:
       - name: Generate Build Metadata
         run: |
           echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)" >> $GITHUB_ENV
           echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
           echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
       - name: Build and push (arm64)
@@ -94,6 +98,8 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
+            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
+            PANEL_BUILT_AT=${{ env.BUILD_DATE }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-arm64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-arm64

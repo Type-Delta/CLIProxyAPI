@@ -23,6 +23,8 @@ jobs:
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Build CPAMC bundle
+        run: scripts/build-management-center.sh
       - name: Build
         run: |
           go build -o test-output ./cmd/server
