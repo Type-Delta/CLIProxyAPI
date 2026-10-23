@@ -25,13 +25,14 @@ import (
 )
 
 type analyticsHandlerReader struct {
-	query       model.Query
-	summary     model.Summary
-	timeseries  model.Timeseries
-	dimensions  model.DimensionPage
-	events      model.EventPage
-	leaderboard model.LeaderboardPage
-	err         error
+	query            model.Query
+	summary          model.Summary
+	timeseries       model.Timeseries
+	dimensions       model.DimensionPage
+	events           model.EventPage
+	leaderboard      model.LeaderboardPage
+	modelLeaderboard model.ModelLeaderboard
+	err              error
 }
 
 func (r *analyticsHandlerReader) Summary(_ context.Context, query model.Query) (model.Summary, error) {
@@ -57,6 +58,11 @@ func (r *analyticsHandlerReader) Events(_ context.Context, query model.Query) (m
 func (r *analyticsHandlerReader) Leaderboard(_ context.Context, query model.Query) (model.LeaderboardPage, error) {
 	r.query = query
 	return r.leaderboard, r.err
+}
+
+func (r *analyticsHandlerReader) ModelLeaderboard(_ context.Context, query model.Query) (model.ModelLeaderboard, error) {
+	r.query = query
+	return r.modelLeaderboard, r.err
 }
 
 type analyticsHandlerMaintenance struct{}
@@ -142,6 +148,35 @@ func TestPostAnalyticsQueryPassesBodyKeyScope(t *testing.T) {
 	}
 	if len(reader.query.KeyIDs) != 2 || reader.query.KeyIDs[0] != keyA || reader.query.KeyIDs[1] != keyB {
 		t.Fatalf("key scope = %#v", reader.query.KeyIDs)
+	}
+}
+
+func TestPostAnalyticsModelLeaderboardDispatches(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reader := &analyticsHandlerReader{modelLeaderboard: model.ModelLeaderboard{Awards: []model.ModelLeaderboardAward{
+		{Metric: "most_used", Rows: []model.ModelLeaderboardRow{}},
+		{Metric: "most_reliable", Rows: []model.ModelLeaderboardRow{}},
+		{Metric: "speed", Rows: []model.ModelLeaderboardRow{}},
+		{Metric: "most_talkative", Rows: []model.ModelLeaderboardRow{}},
+	}}}
+	handler := &Handler{analytics: &analyticsHandlerService{reader: reader, state: model.StateReady}}
+	body := `{"schema_version":2,"operation":"model_leaderboard","range":{"preset":"last_n_days","n":7},"time_zone":"UTC"}`
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/analytics/query", strings.NewReader(body))
+	handler.PostAnalyticsQuery(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if reader.query.Operation != model.OperationModelLeaderboard || reader.query.TimeZone != "UTC" || reader.query.End.Sub(reader.query.Start) != 7*24*time.Hour {
+		t.Fatalf("dispatched query = %+v", reader.query)
+	}
+	var response model.ModelLeaderboard
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Awards) != 4 || response.Start.IsZero() || response.End.IsZero() {
+		t.Fatalf("leaderboard response = %+v", response)
 	}
 }
 

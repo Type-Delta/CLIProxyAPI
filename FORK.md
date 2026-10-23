@@ -1376,6 +1376,39 @@ the same key.
 
 **Last updated:** 2026-10-22
 
+### DL049 - Model leaderboard and privacy-preserving session digests
+
+CPAUK accepts the v2 `model_leaderboard` analytics operation and returns four fixed awards in
+one response: distinct sessions used, request reliability, P70 published throughput, and P95
+generated tokens per successful attempt. Every award is global across keys, providers, and
+credentials, contains at most six contiguous ranks, and returns an empty row array when no model
+qualifies. Reliability requires at least 200 upstream attempts; speed requires a P70 of at least
+80 tokens per second and excludes attempts without a published rate.
+
+The collector hashes the trimmed upstream session identifier into a nullable `session_digest`
+field and never persists the raw value. Migration 12 adds the column to existing databases while
+leaving historic rows null. Throughput reuses the event read-time calculation and per-credential
+median acknowledgement baseline. The canonical `normalized-v1` output total already includes
+reasoning for every provider accounting style, so the talkative award adds reasoning only for
+legacy or imported schemas that store separate output buckets. When a valid token breakdown
+cannot supply its output total and the intake adapter falls back to the provider's raw output,
+the event is stamped `raw-fallback-v1`; those attempts are excluded from most_talkative because
+the raw output's relationship to reasoning is provider-dependent. The same events still count
+toward the other awards.
+
+**Implementation evidence:** `internal/cpauk/{collector,model,store}`, `internal/cpauk/service.go`,
+and `internal/api/handlers/management/analytics.go`.
+
+**Recorded validation:** sanitizer, query-contract, fresh-migration, v11-upgrade, empty-store,
+partial-podium, reliability-floor, speed-floor, missing-TPS, tie-break, six-row cap, distinct
+provider session, inclusive-reasoning, and raw-output-fallback tests pass. The disposable
+`cmd/server` build passes.
+The requested CPAUK, API, and usage suites are green except for the previously recorded
+`TestV0RepeatedSavesKeepLegacyClientAlias` config compatibility failure; the management package
+passes when that unrelated test is skipped.
+
+**Last updated:** 2026-10-23
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

@@ -42,6 +42,10 @@ func (r *viewerRouteReader) Leaderboard(_ context.Context, query model.Query) (m
 	r.query = query
 	return model.LeaderboardPage{}, nil
 }
+func (r *viewerRouteReader) ModelLeaderboard(_ context.Context, query model.Query) (model.ModelLeaderboard, error) {
+	r.query = query
+	return model.ModelLeaderboard{}, nil
+}
 
 type viewerRouteMaintenance struct{}
 

@@ -16,6 +16,11 @@ const (
 	TokenQualityMissing   TokenQuality = "missing"
 )
 
+const (
+	AccountingSchemaNormalizedV1  = "normalized-v1"
+	AccountingSchemaRawFallbackV1 = "raw-fallback-v1"
+)
+
 func (q TokenQuality) Valid() bool {
 	return q == TokenQualityExact || q == TokenQualityEstimated || q == TokenQualityMissing
 }
@@ -59,19 +64,22 @@ type Event struct {
 	AuthType              *string          `json:"auth_type"`
 	CredentialID          *string          `json:"credential_id"`
 	CredentialIDAlgorithm *string          `json:"credential_id_algorithm"`
-	Succeeded             bool             `json:"succeeded"`
-	UpstreamStatusCode    *int             `json:"upstream_status_code"`
-	ErrorClass            *string          `json:"error_class"`
-	LatencyMS             int64            `json:"latency_ms"`
-	RoutingTimeMS         *int64           `json:"routing_time_ms,omitempty"`
-	FirstTokenLatencyMS   *int64           `json:"first_token_latency_ms,omitempty"`
-	ProviderLatencyMS     *int64           `json:"provider_latency_ms,omitempty"`
-	GenerationTimeMS      *int64           `json:"generation_time_ms,omitempty"`
-	TimeToFirstTokenMS    *int64           `json:"time_to_first_token_ms"`
-	ServiceTierRequested  *string          `json:"service_tier_requested"`
-	ServiceTierUsed       *string          `json:"service_tier_used"`
-	Generated             bool             `json:"generated"`
-	Tokens                TokenUsage       `json:"tokens"`
+	// SessionDigest identifies one client conversation without retaining its raw
+	// identifier. Historic events recorded before this field remain nil.
+	SessionDigest        *string    `json:"session_digest"`
+	Succeeded            bool       `json:"succeeded"`
+	UpstreamStatusCode   *int       `json:"upstream_status_code"`
+	ErrorClass           *string    `json:"error_class"`
+	LatencyMS            int64      `json:"latency_ms"`
+	RoutingTimeMS        *int64     `json:"routing_time_ms,omitempty"`
+	FirstTokenLatencyMS  *int64     `json:"first_token_latency_ms,omitempty"`
+	ProviderLatencyMS    *int64     `json:"provider_latency_ms,omitempty"`
+	GenerationTimeMS     *int64     `json:"generation_time_ms,omitempty"`
+	TimeToFirstTokenMS   *int64     `json:"time_to_first_token_ms"`
+	ServiceTierRequested *string    `json:"service_tier_requested"`
+	ServiceTierUsed      *string    `json:"service_tier_used"`
+	Generated            bool       `json:"generated"`
+	Tokens               TokenUsage `json:"tokens"`
 	// Hop diagnostics describe each leg of Client -> CPA -> Provider -> CPA -> Client.
 	// They are additive and nullable; events recorded before they existed carry none.
 	ClientMethod      *string    `json:"client_method"`
@@ -192,6 +200,9 @@ func (e Event) Validate() error {
 		if !IsFullKeyID(*e.CredentialID) || *e.CredentialIDAlgorithm != CredentialIDAlgorithm {
 			return fmt.Errorf("invalid credential identity")
 		}
+	}
+	if e.SessionDigest != nil && !IsFullKeyID(*e.SessionDigest) {
+		return fmt.Errorf("invalid session digest")
 	}
 	if e.UpstreamStatusCode != nil && (*e.UpstreamStatusCode < 100 || *e.UpstreamStatusCode > 599) {
 		return fmt.Errorf("invalid upstream status code")

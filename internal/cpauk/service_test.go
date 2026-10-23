@@ -451,6 +451,9 @@ func (b *fakeBackend) Leaderboard(context.Context, model.Query) (model.Leaderboa
 	}
 	return model.LeaderboardPage{}, nil
 }
+func (b *fakeBackend) ModelLeaderboard(context.Context, model.Query) (model.ModelLeaderboard, error) {
+	return model.ModelLeaderboard{}, nil
+}
 
 func waitServiceState(t *testing.T, service Service, state State) {
 	t.Helper()

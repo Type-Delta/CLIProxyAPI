@@ -428,6 +428,30 @@ type LeaderboardPage struct {
 	Rows   []LeaderboardRow `json:"rows"`
 }
 
+// ModelLeaderboard awards rank models globally across keys, providers, and
+// credentials. Optional row fields are omitted for metrics that do not use them.
+type ModelLeaderboard struct {
+	Start  time.Time               `json:"start"`
+	End    time.Time               `json:"end"`
+	Awards []ModelLeaderboardAward `json:"awards"`
+}
+
+type ModelLeaderboardAward struct {
+	Metric string                `json:"metric"`
+	Rows   []ModelLeaderboardRow `json:"rows"`
+}
+
+type ModelLeaderboardRow struct {
+	Rank           int      `json:"rank"`
+	Model          string   `json:"model"`
+	Value          float64  `json:"value"`
+	Providers      *int64   `json:"providers,omitempty"`
+	Attempts       *int64   `json:"attempts,omitempty"`
+	Failed         *int64   `json:"failed,omitempty"`
+	Samples        *int64   `json:"samples,omitempty"`
+	ReasoningShare *float64 `json:"reasoning_share,omitempty"`
+}
+
 // SortLeaderboard applies the contract tie-breaker and assigns ranks from one.
 func SortLeaderboard(rows []LeaderboardRow, sortBy LeaderboardSort) {
 	SortLeaderboardPage(rows, sortBy, 0)

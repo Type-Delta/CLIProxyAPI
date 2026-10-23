@@ -22,6 +22,7 @@ type Reader interface {
 	Dimensions(context.Context, model.Query) (model.DimensionPage, error)
 	Events(context.Context, model.Query) (model.EventPage, error)
 	Leaderboard(context.Context, model.Query) (model.LeaderboardPage, error)
+	ModelLeaderboard(context.Context, model.Query) (model.ModelLeaderboard, error)
 }
 
 // ReaderV2 is additive so existing Reader implementations remain compatible
@@ -1539,6 +1540,16 @@ func (r *readerProxy) Leaderboard(ctx context.Context, query model.Query) (resul
 	err = recoverQuery(func() error { result, err = backend.Leaderboard(ctx, query); return err })
 	r.recordQueryFailure(err)
 	r.decorateMeta(&result.Meta, err)
+	return result, err
+}
+
+func (r *readerProxy) ModelLeaderboard(ctx context.Context, query model.Query) (result model.ModelLeaderboard, err error) {
+	backend, err := r.service.backendForRead()
+	if err != nil {
+		return result, err
+	}
+	err = recoverQuery(func() error { result, err = backend.ModelLeaderboard(ctx, query); return err })
+	r.recordQueryFailure(err)
 	return result, err
 }
 

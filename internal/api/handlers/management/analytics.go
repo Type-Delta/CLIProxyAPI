@@ -98,6 +98,8 @@ func (h *Handler) readAnalyticsQuery(ctx context.Context, service cpauk.Service,
 		result, err = reader.Events(ctx, query)
 	case model.OperationLeaderboard:
 		result, err = reader.Leaderboard(ctx, query)
+	case model.OperationModelLeaderboard:
+		result, err = reader.ModelLeaderboard(ctx, query)
 	case model.OperationActivity:
 		v2, ok := reader.(interface {
 			Activity(context.Context, model.Query) (model.Activity, error)
@@ -161,6 +163,9 @@ func analyticsResultWithRange(result any, query model.Query) any {
 		return value
 	case model.Analysis:
 		value.Meta.Range = resolved
+		return value
+	case model.ModelLeaderboard:
+		value.Start, value.End = resolved.Start, resolved.End
 		return value
 	default:
 		return result
@@ -336,6 +341,12 @@ func resolveAnalyticsRange(query *model.Query, now time.Time) error {
 		return fmt.Errorf("named ranges require query schema version %d", model.QuerySchemaVersionV2)
 	}
 	rangeRequest := query.Range
+	if rangeRequest.TimeZone == "" && query.TimeZone != "" {
+		copy := *rangeRequest
+		copy.TimeZone = query.TimeZone
+		rangeRequest = &copy
+		query.Range = rangeRequest
+	}
 	if err := rangeRequest.Validate(); err != nil {
 		return err
 	}

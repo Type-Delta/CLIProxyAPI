@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -38,6 +40,7 @@ type Source struct {
 	ExecutorType      string
 	Model             string
 	Alias             string
+	SessionID         string
 	APIKey            string
 	AuthID            string
 	AuthIndex         string
@@ -66,7 +69,10 @@ type Source struct {
 	UpstreamURL    string
 	UpstreamSentAt time.Time
 	RawUsage       string
-	Tokens         SourceTokens
+	// RawOutputFallback reports that canonical output accounting was unavailable
+	// and the provider's raw output value was retained instead.
+	RawOutputFallback bool
+	Tokens            SourceTokens
 }
 
 type SourceTokens struct {
@@ -184,6 +190,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 			credentialAlgorithm = &algorithm
 		}
 	}
+	sessionDigest := digestSessionID(record.SessionID)
 
 	var statusCode *int
 	if record.StatusCode != 0 {
@@ -239,6 +246,10 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if !quality.Valid() {
 		return SanitizeResult{}, fmt.Errorf("token quality is invalid")
 	}
+	accountingSchema := model.AccountingSchemaNormalizedV1
+	if record.RawOutputFallback {
+		accountingSchema = model.AccountingSchemaRawFallbackV1
+	}
 
 	event := model.Event{
 		SchemaVersion:         model.EventSchemaVersion,
@@ -255,6 +266,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		AuthType:              authType,
 		CredentialID:          credentialID,
 		CredentialIDAlgorithm: credentialAlgorithm,
+		SessionDigest:         sessionDigest,
 		Succeeded:             !record.Failed,
 		UpstreamStatusCode:    statusCode,
 		ErrorClass:            errorClass,
@@ -283,11 +295,23 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 			CacheRead:     record.Tokens.CacheRead,
 			CacheCreation: record.Tokens.CacheCreation,
 			Total:         record.Tokens.Total,
-			Schema:        "normalized-v1",
+			Schema:        accountingSchema,
 			Quality:       quality,
 		},
 	}
 	return SanitizeResult{Event: event, TruncatedFields: truncated}, nil
+}
+
+// digestSessionID hashes the trimmed client session identifier. The raw value
+// never reaches an Event, storage, or logs.
+func digestSessionID(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(value))
+	result := hex.EncodeToString(digest[:])
+	return &result
 }
 
 func bounded(value string, required bool) (string, int64, error) {

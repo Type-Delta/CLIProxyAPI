@@ -14,7 +14,7 @@ func TestQueryAcceptsV1V2OperationsAndNamedRanges(t *testing.T) {
 		t.Fatalf("v1 query rejected: %v", err)
 	}
 
-	for _, operation := range []string{"activity", "analysis"} {
+	for _, operation := range []string{"activity", "analysis", "model_leaderboard"} {
 		window := ""
 		if operation == "activity" {
 			window = `,"window":"day"`
@@ -28,6 +28,34 @@ func TestQueryAcceptsV1V2OperationsAndNamedRanges(t *testing.T) {
 	namedRange := `{"schema_version":2,"operation":"summary","range":{"preset":"last_n_days","n":7,"time_zone":"Asia/Bangkok"}}`
 	if _, err := ParseQuery([]byte(namedRange)); err != nil {
 		t.Fatalf("v2 named range query rejected: %v", err)
+	}
+}
+
+func TestModelLeaderboardQueryValidation(t *testing.T) {
+	valid := `{"schema_version":2,"operation":"model_leaderboard","range":{"preset":"last_n_days","n":7},"time_zone":"Asia/Bangkok"}`
+	if _, err := ParseQuery([]byte(valid)); err != nil {
+		t.Fatalf("valid model leaderboard query rejected: %v", err)
+	}
+	v1 := `{"schema_version":1,"operation":"model_leaderboard","start":"2026-01-01T00:00:00Z","end":"2026-01-08T00:00:00Z","time_zone":"UTC"}`
+	if _, err := ParseQuery([]byte(v1)); err == nil {
+		t.Fatal("schema v1 model leaderboard query was accepted")
+	}
+	for name, fields := range map[string]string{
+		"key_ids":      `"key_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]`,
+		"filters":      `"filters":{"provider":"codex"}`,
+		"cursor":       `"cursor":"cursor"`,
+		"page_size":    `"page_size":10`,
+		"bucket_width": `"bucket_width":"1h"`,
+		"dimension":    `"dimension":"model"`,
+		"sort_by":      `"sort_by":"tokens"`,
+		"window":       `"window":"day"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			query := `{"schema_version":2,"operation":"model_leaderboard","start":"2026-01-01T00:00:00Z","end":"2026-01-08T00:00:00Z","time_zone":"UTC",` + fields + `}`
+			if _, err := ParseQuery([]byte(query)); err == nil {
+				t.Fatal("unsupported model leaderboard field was accepted")
+			}
+		})
 	}
 }
 

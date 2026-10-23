@@ -111,8 +111,11 @@ func adaptRecord(record coreusage.Record) Source {
 		inputTokens = detail.TokenBreakdown.Input.TotalTokens
 	}
 	outputTokens := detail.OutputTokens
+	rawOutputFallback := false
 	if detail.TokenBreakdown.Valid() && (detail.TokenBreakdown.Output.TotalTokens > 0 || detail.OutputTokens == 0) {
 		outputTokens = detail.TokenBreakdown.Output.TotalTokens
+	} else if detail.OutputTokens > 0 {
+		rawOutputFallback = true
 	}
 	requestQuality := model.RequestIDObserved
 	if record.RequestIDQuality == coreusage.RequestIDSynthetic {
@@ -126,7 +129,8 @@ func adaptRecord(record coreusage.Record) Source {
 		ProxyRequestID: record.ProxyRequestID, RequestQuality: requestQuality,
 		EndpointClass: record.EndpointClass, Provider: record.Provider,
 		ExecutorType: record.ExecutorType, Model: record.Model, Alias: record.Alias,
-		APIKey: record.APIKey, AuthID: record.AuthID, AuthIndex: record.AuthIndex,
+		SessionID: record.SessionID,
+		APIKey:    record.APIKey, AuthID: record.AuthID, AuthIndex: record.AuthIndex,
 		AuthType: record.AuthType, ServiceTier: record.ServiceTier, ResponseTier: responseTier,
 		Generated: record.Generate, RequestedAt: record.RequestedAt, Latency: record.Latency,
 		FirstTokenLatency: record.FirstTokenLatency,
@@ -136,7 +140,8 @@ func adaptRecord(record coreusage.Record) Source {
 		StatusCode: upstreamStatus(record), UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
 		ClientMethod: record.ClientMethod, ClientPath: record.ClientPath, ReceivedAt: record.ReceivedAt,
 		UpstreamMethod: record.UpstreamMethod, UpstreamURL: record.UpstreamURL, UpstreamSentAt: record.UpstreamSentAt,
-		RawUsage: detail.RawUsage,
+		RawUsage:          detail.RawUsage,
+		RawOutputFallback: rawOutputFallback,
 		Tokens: SourceTokens{
 			Input: inputTokens, Output: outputTokens,
 			Reasoning: detail.ReasoningTokens, Cached: detail.CachedTokens,

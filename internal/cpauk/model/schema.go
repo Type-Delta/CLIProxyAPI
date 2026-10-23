@@ -48,6 +48,7 @@ var EventV1FieldSpecs = map[string]FieldSpec{
 	"auth_type":               {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},
 	"credential_id":           {Type: "hmac-sha256", Nullable: true, MaxBytes: 64},
 	"credential_id_algorithm": {Type: "enum", Nullable: true, MaxBytes: 18},
+	"session_digest":          {Type: "sha256", Nullable: true, MaxBytes: 64},
 	"succeeded":               {Type: "boolean", Nullable: false},
 	"upstream_status_code":    {Type: "integer", Nullable: true},
 	"error_class":             {Type: "string", Nullable: true, MaxBytes: MaxStoredStringBytes, Truncate: true},

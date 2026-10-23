@@ -20,13 +20,14 @@ import (
 type Operation string
 
 const (
-	OperationSummary     Operation = "summary"
-	OperationTimeseries  Operation = "timeseries"
-	OperationDimensions  Operation = "dimensions"
-	OperationEvents      Operation = "events"
-	OperationLeaderboard Operation = "leaderboard"
-	OperationActivity    Operation = "activity"
-	OperationAnalysis    Operation = "analysis"
+	OperationSummary          Operation = "summary"
+	OperationTimeseries       Operation = "timeseries"
+	OperationDimensions       Operation = "dimensions"
+	OperationEvents           Operation = "events"
+	OperationLeaderboard      Operation = "leaderboard"
+	OperationActivity         Operation = "activity"
+	OperationAnalysis         Operation = "analysis"
+	OperationModelLeaderboard Operation = "model_leaderboard"
 )
 
 type LeaderboardSort string
@@ -147,6 +148,7 @@ var allowedQueryFilters = map[Operation]map[string]string{
 		"success": "bool", "error_class": "strings", "status_code": "integers",
 		"token_quality": "strings",
 	},
+	OperationModelLeaderboard: {},
 }
 
 var allowedDimensions = map[string]struct{}{
@@ -157,7 +159,7 @@ var allowedDimensions = map[string]struct{}{
 var allowedBucketWidths = map[string]time.Duration{
 	"1m": time.Minute, "5m": 5 * time.Minute, "15m": 15 * time.Minute,
 	"30m": 30 * time.Minute,
-	"1h": time.Hour, "1d": 24 * time.Hour, "1w": 7 * 24 * time.Hour,
+	"1h":  time.Hour, "1d": 24 * time.Hour, "1w": 7 * 24 * time.Hour,
 }
 
 // ParseQuery rejects unknown JSON fields before applying operation-specific
@@ -204,6 +206,12 @@ func (q *Query) Validate() error {
 		if q.SchemaVersion != QuerySchemaVersionV2 {
 			return fmt.Errorf("named ranges require query schema version %d", QuerySchemaVersionV2)
 		}
+		// The management contract carries the IANA zone beside the named range.
+		// Accept that form as an alias for RangeRequest.TimeZone.
+		if q.Range.TimeZone == "" && q.TimeZone != "" && q.Start.IsZero() && q.End.IsZero() {
+			q.Range.TimeZone = q.TimeZone
+			q.TimeZone = ""
+		}
 		if !q.Start.IsZero() || !q.End.IsZero() || q.TimeZone != "" {
 			return fmt.Errorf("range cannot be combined with start, end, or time_zone")
 		}
@@ -248,6 +256,13 @@ func (q *Query) Validate() error {
 	}
 
 	switch q.Operation {
+	case OperationModelLeaderboard:
+		if q.SchemaVersion != QuerySchemaVersionV2 {
+			return fmt.Errorf("model_leaderboard requires query schema version %d", QuerySchemaVersionV2)
+		}
+		if len(q.KeyIDs) != 0 || len(q.Filters) != 0 || q.Cursor != "" || q.PageSize != 0 || q.BucketWidth != "" || q.Dimension != "" || q.SortBy != "" || q.Window != "" {
+			return fmt.Errorf("model_leaderboard does not accept key_ids, filters, cursor, page_size, bucket_width, dimension, sort_by, or window")
+		}
 	case OperationActivity:
 		if q.SchemaVersion != QuerySchemaVersionV2 {
 			return fmt.Errorf("activity requires query schema version %d", QuerySchemaVersionV2)

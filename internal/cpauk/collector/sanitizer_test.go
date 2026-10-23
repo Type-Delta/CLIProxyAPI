@@ -2,6 +2,8 @@ package collector
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -78,6 +80,39 @@ func TestSanitizerNeverPersistsLowEntropyRawKey(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), rawKey) {
 		t.Fatalf("sanitized event contains raw low-entropy key: %s", encoded)
+	}
+}
+
+func TestSanitizerDigestsTrimmedSessionID(t *testing.T) {
+	const rawSession = "  conversation-42  "
+	sanitizer := NewSanitizer(SanitizerOptions{
+		NewID: func() (string, error) { return "91a83fb43b38e8770e7648440a89fc48", nil },
+	})
+	record := validRecord()
+	record.SessionID = rawSession
+	result, err := sanitizer.Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256([]byte(strings.TrimSpace(rawSession)))
+	if result.Event.SessionDigest == nil || *result.Event.SessionDigest != hex.EncodeToString(want[:]) {
+		t.Fatalf("session digest = %v", result.Event.SessionDigest)
+	}
+	encoded, err := json.Marshal(result.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), strings.TrimSpace(rawSession)) {
+		t.Fatalf("event leaked raw session ID: %s", encoded)
+	}
+
+	record.SessionID = "   "
+	result, err = sanitizer.Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.SessionDigest != nil {
+		t.Fatalf("blank session digest = %q", *result.Event.SessionDigest)
 	}
 }
 
@@ -254,6 +289,34 @@ func TestAdapterPersistsGeminiCanonicalOutputAndReasoning(t *testing.T) {
 	}
 	if price.KnownCost == nil || *price.KnownCost != 200_000 || price.UnpricedTokens != 0 {
 		t.Fatalf("priced Gemini event = %+v, want known cost 200000 nano USD and no unpriced tokens", price)
+	}
+}
+
+func TestAdapterMarksInconsistentBreakdownRawOutputFallback(t *testing.T) {
+	record := validRecord()
+	record.Detail = coreusage.Detail{
+		OutputTokens: 100, ReasoningTokens: 40, TotalTokens: 140,
+		TokenBreakdown: coreusage.TokenBreakdown{
+			SchemaVersion: coreusage.TokenAccountingSchemaVersion,
+			Quality:       coreusage.TokenAccountingQualityInconsistent,
+		},
+	}
+	source := adaptRecord(record)
+	if !source.RawOutputFallback || source.Tokens.Output != 100 || source.Tokens.Reasoning != 40 {
+		t.Fatalf("adapted fallback tokens = %+v fallback=%t", source.Tokens, source.RawOutputFallback)
+	}
+	sanitizer := NewSanitizer(SanitizerOptions{
+		NewID: func() (string, error) { return "91a83fb43b38e8770e7648440a89fc48", nil },
+	})
+	result, err := sanitizer.Sanitize(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Tokens.Schema != model.AccountingSchemaRawFallbackV1 {
+		t.Fatalf("accounting schema = %q", result.Event.Tokens.Schema)
+	}
+	if result.Event.Tokens.Output != 100 || result.Event.Tokens.Reasoning != 40 {
+		t.Fatalf("sanitized fallback tokens = %+v", result.Event.Tokens)
 	}
 }
 
