@@ -77,13 +77,17 @@ type Record struct {
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
 	Generate *bool
 	// Stream reports whether the request was executed in streaming mode.
-	Stream      bool
+	Stream bool
+	// StreamKnown distinguishes an explicit nonstream request from unknown mode.
+	StreamKnown bool
 	RequestedAt time.Time
 	Latency     time.Duration
 	TTFT        time.Duration
 	// GenerationTime measures first-to-last substantive token arrivals on the local monotonic clock.
 	// nil means the request did not expose observable streaming token boundaries.
 	GenerationTime *time.Duration
+	// OutputTiming retains source-reader evidence for a matching arrival rate.
+	OutputTiming *OutputTiming
 	// FirstTokenLatency measures dispatch to the first substantive streaming token, without TTFT fallback.
 	// nil means no substantive token was observed on a measured transport.
 	FirstTokenLatency *time.Duration
@@ -400,15 +404,21 @@ func WithStream(ctx context.Context, stream bool) context.Context {
 // StreamFromContext returns whether the request was executed in streaming mode.
 // Missing values default to false.
 func StreamFromContext(ctx context.Context) bool {
+	stream, _ := LookupStreamFromContext(ctx)
+	return stream
+}
+
+// LookupStreamFromContext returns the client request mode and whether it was supplied.
+func LookupStreamFromContext(ctx context.Context) (bool, bool) {
 	if ctx == nil {
-		return false
+		return false, false
 	}
 	raw := ctx.Value(streamContextKey{})
 	switch value := raw.(type) {
 	case bool:
-		return value
+		return value, true
 	default:
-		return false
+		return false, false
 	}
 }
 

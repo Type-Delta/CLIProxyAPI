@@ -271,7 +271,7 @@ func (s *Server) getAnalyticsViewerEvents(c *gin.Context, store *managementHandl
 			Provider: event.Provider, Model: event.Model, EndpointClass: event.EndpointClass,
 			Succeeded: event.Succeeded, UpstreamStatusCode: event.UpstreamStatusCode, ErrorClass: event.ErrorClass,
 			LatencyMS: event.LatencyMS, Tokens: event.Tokens, KnownCost: event.KnownCost,
-			UnpricedTokens: event.UnpricedTokens,
+			UnpricedTokens: event.UnpricedTokens, ThroughputInfo: event.ThroughputInfo, EffectiveOutputTokensPerSecond: event.EffectiveOutputTokensPerSecond, TokensPerSecond: event.TokensPerSecond, SpeedEstimated: event.SpeedEstimated,
 		})
 	}
 	managementHandlers.SetAnalyticsNoStore(c)

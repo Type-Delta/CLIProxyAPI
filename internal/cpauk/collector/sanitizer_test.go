@@ -363,15 +363,19 @@ type fakeIntake struct {
 	rejected       int64
 	truncated      int64
 	panicOnEnqueue bool
+	events         []Event
 }
 
 func (f *fakeIntake) Generation() uint64 { return f.generation }
 func (f *fakeIntake) EnqueueProxyResponse(generation uint64, _ ProxyResponsePatch) bool {
 	return generation == f.generation
 }
-func (f *fakeIntake) Enqueue(generation uint64, _ Event) bool {
+func (f *fakeIntake) Enqueue(generation uint64, event Event) bool {
 	if f.panicOnEnqueue {
 		panic("injected enqueue panic")
+	}
+	if generation == f.generation {
+		f.events = append(f.events, event)
 	}
 	return generation == f.generation
 }
@@ -434,5 +438,109 @@ func TestSanitizerPreservesLocalLatencyNullZeroAndRejectsNegative(t *testing.T) 
 	record.ProviderLatency = &negative
 	if _, err := sanitizer.Sanitize(adaptRecord(record)); err == nil {
 		t.Fatal("accepted negative provider latency")
+	}
+}
+
+func TestSanitizerPreservesIndependentOutputTimingWithoutMutableReferences(t *testing.T) {
+	sanitizer := NewSanitizer(SanitizerOptions{})
+	record := validRecord()
+	record.Stream = true
+	record.ReasoningEffort = "HIGH"
+	record.OutputTiming = &coreusage.OutputTiming{FirstBatchBytes: 10, TotalBytes: 100, LargestBatchBytes: 50, MaxInterarrivalNS: 700000000, Version: 1, Protocol: "kiro", Source: "source_reader", Status: "observed", FirstArrivalNS: 20000000000, LastArrivalNS: 21000000000, ArrivalCount: 3, WindowTokens: 1500, TokenQuality: coreusage.TokenQualityEstimated, Coverage: "wire_deltas"}
+	source := adaptRecord(record)
+	result, err := sanitizer.Sanitize(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Stream == nil || !*result.Event.Stream || result.Event.ReasoningEffort == nil || *result.Event.ReasoningEffort != "high" {
+		t.Fatalf("request mode=%+v", result.Event)
+	}
+	record.OutputTiming.WindowTokens = 9000
+	source.OutputTiming.WindowTokens = 8000
+	*source.Stream = false
+	if result.Event.Stream == nil || !*result.Event.Stream {
+		t.Fatal("stream mode retained mutable source pointer")
+	}
+	if got := result.Event.OutputTiming; got == nil || got.WindowTokens != 1500 || got.FirstArrivalNS != 20000000000 || got.TotalBytes != 100 || got.LargestBatchBytes != 50 || got.FirstBatchBytes != 10 || got.MaxInterarrivalNS != 700000000 {
+		t.Fatalf("timing=%+v", got)
+	}
+	result.Event.EnrichThroughput()
+	if result.Event.TokensPerSecond == nil || *result.Event.TokensPerSecond != 1500 {
+		t.Fatalf("rate=%v", result.Event.TokensPerSecond)
+	}
+	record.OutputTiming.Status = "unavailable"
+	record.OutputTiming.Reason = "sensitive-provider-message"
+	if result, err := sanitizer.Sanitize(adaptRecord(record)); err != nil || result.Event.OutputTiming != nil || result.TruncatedFields != 1 {
+		t.Fatalf("invalid optional timing retained: %+v err=%v", result, err)
+	}
+}
+
+func TestSanitizerDropsUnknownReasoningHints(t *testing.T) {
+	sanitizer := NewSanitizer(SanitizerOptions{})
+	for _, effort := range []string{"", "secret-provider-payload", strings.Repeat("x", 10000)} {
+		record := validRecord()
+		record.ReasoningEffort = effort
+		result, err := sanitizer.Sanitize(adaptRecord(record))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event.ReasoningEffort != nil {
+			t.Fatalf("unknown reasoning hint retained")
+		}
+	}
+}
+
+func TestAdapterRetainsBillingWhenOptionalTimingIsMalformed(t *testing.T) {
+	intake := &fakeIntake{generation: 1}
+	adapter := NewAdapter(intake, NewSanitizer(SanitizerOptions{}))
+	record := validRecord()
+	record.OutputTiming = &coreusage.OutputTiming{Version: 1, Status: "unavailable", Reason: "backpressure", TokenQuality: coreusage.TokenQualityMissing}
+	adapter.HandleUsage(context.Background(), record)
+	if len(intake.events) != 1 || intake.rejected != 0 || adapter.Dropped() != 0 || intake.truncated != 1 {
+		t.Fatalf("events=%d rejected=%d dropped=%d truncated=%d", len(intake.events), intake.rejected, adapter.Dropped(), intake.truncated)
+	}
+	event := intake.events[0]
+	if event.OutputTiming != nil || event.Tokens.Input != 70 || event.Tokens.Total != 100 || event.Tokens.Output <= 0 {
+		t.Fatalf("accounting lost with malformed timing: %+v", event)
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("retained event invalid: %v", err)
+	}
+	event.OutputTiming = &model.OutputTiming{Version: 1, Status: "unavailable", Reason: "backpressure", TokenQuality: model.TokenQualityMissing}
+	if err := event.Validate(); err == nil {
+		t.Fatal("direct event validation accepted malformed telemetry")
+	}
+}
+
+func TestAdapterRetainsUnknownAndExplicitStreamModes(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		stream, known bool
+		want          *bool
+	}{
+		{"unknown", false, false, nil},
+		{"explicit nonstream", false, true, new(false)},
+		{"explicit stream", true, true, new(true)},
+		{"legacy stream", true, false, new(true)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			intake := &fakeIntake{generation: 1}
+			adapter := NewAdapter(intake, NewSanitizer(SanitizerOptions{}))
+			record := validRecord()
+			record.Stream = test.stream
+			record.StreamKnown = test.known
+			adapter.HandleUsage(context.Background(), record)
+			if len(intake.events) != 1 {
+				t.Fatalf("events=%d rejected=%d", len(intake.events), intake.rejected)
+			}
+			got := intake.events[0].Stream
+			if test.want == nil {
+				if got != nil {
+					t.Fatalf("unknown stream=%v", *got)
+				}
+			} else if got == nil || *got != *test.want {
+				t.Fatalf("stream=%v want=%v", got, *test.want)
+			}
+		})
 	}
 }

@@ -146,6 +146,7 @@ type contextSnapshot struct {
 	serviceTier    string
 	generate       bool
 	stream         bool
+	streamKnown    bool
 }
 
 // Manager delivers trusted callbacks inline and generic observers through
@@ -871,6 +872,16 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		record.Detail.RawUsage = ""
 	}
 	record.ResponseHeaders = copyHeaders(record.ResponseHeaders, &remaining)
+	if record.OutputTiming != nil {
+		value := *record.OutputTiming
+		value.Protocol = copyString(value.Protocol)
+		value.Source = copyString(value.Source)
+		value.Status = copyString(value.Status)
+		value.Reason = copyString(value.Reason)
+		value.TokenQuality = TokenQuality(copyString(string(value.TokenQuality)))
+		value.Coverage = copyString(value.Coverage)
+		record.OutputTiming = &value
+	}
 	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency, &record.RoutingTime} {
 		if *field != nil {
 			value := **field
@@ -882,6 +893,7 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		record.Generate = &generate
 	}
 
+	stream, streamKnown := LookupStreamFromContext(ctx)
 	snapshot := contextSnapshot{
 		proxyRequestID: record.ProxyRequestID,
 		endpointClass:  copyString(EndpointClassFromContext(ctx)),
@@ -889,7 +901,8 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		reasoning:      copyString(ReasoningEffortFromContext(ctx)),
 		serviceTier:    copyString(ServiceTierFromContext(ctx)),
 		generate:       GenerateFromContext(ctx),
-		stream:         StreamFromContext(ctx),
+		stream:         stream,
+		streamKnown:    streamKnown,
 	}
 	snapshot.base, _ = snapshotObserverContext(ctx, &remaining)
 	return record, snapshot, int64(MaxObserverSnapshotBytes - remaining)
@@ -930,12 +943,18 @@ func (s contextSnapshot) context() context.Context {
 	ctx = WithReasoningEffort(ctx, s.reasoning)
 	ctx = WithServiceTier(ctx, s.serviceTier)
 	ctx = WithGenerate(ctx, s.generate)
-	ctx = WithStream(ctx, s.stream)
+	if s.streamKnown {
+		ctx = WithStream(ctx, s.stream)
+	}
 	return ctx
 }
 
 func cloneRecord(record Record) Record {
 	record.ResponseHeaders = record.ResponseHeaders.Clone()
+	if record.OutputTiming != nil {
+		value := *record.OutputTiming
+		record.OutputTiming = &value
+	}
 	for _, field := range []**time.Duration{&record.GenerationTime, &record.FirstTokenLatency, &record.ProviderLatency, &record.RoutingTime} {
 		if *field != nil {
 			value := **field

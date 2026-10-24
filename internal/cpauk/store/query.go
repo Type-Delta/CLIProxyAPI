@@ -166,7 +166,7 @@ FROM raw_totals CROSS JOIN retained_totals CROSS JOIN request_count CROSS JOIN t
 	items := []struct{ name, source string }{
 		{"e2e", "observed"}, {"latency", "observed_dispatch_to_first_token"},
 		{"provider_latency", "observed_dispatch_to_response"}, {"ttft", "observed"},
-		{"generation", "observed_first_to_last_token"},
+		{"generation", "observed_first_to_last_arrival"},
 	}
 	timings := make(map[string]model.TimingMetric, len(items))
 	for index, item := range items {
@@ -655,7 +655,7 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
 price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest`
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest, output_timing, stream, reasoning_effort`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -694,10 +694,6 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+countWhere, countArguments...).Scan(&totalCount); err != nil {
 		return model.EventPage{}, fmt.Errorf("count analytics events: %w", err)
 	}
-	medians, err := s.credentialAckMedians(ctx, query)
-	if err != nil {
-		return model.EventPage{}, err
-	}
 	rows, err := s.db.QueryContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" ORDER BY requested_at_ns DESC, attempt_id ASC LIMIT ?", arguments...)
 	if err != nil {
 		return model.EventPage{}, fmt.Errorf("query analytics events: %w", err)
@@ -724,7 +720,7 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 		}
 	}
 	for index := range result.Events {
-		applyThroughput(&result.Events[index], medians)
+		result.Events[index].EnrichThroughput()
 	}
 	return result, nil
 }
@@ -758,11 +754,7 @@ func (s *SQLiteStore) EventByAttemptID(ctx context.Context, attemptID string, qu
 	if err != nil {
 		return model.Event{}, false, err
 	}
-	medians, err := s.credentialAckMedians(ctx, query)
-	if err != nil {
-		return model.Event{}, false, err
-	}
-	applyThroughput(&event, medians)
+	event.EnrichThroughput()
 	return event, true, nil
 }
 
@@ -1172,6 +1164,8 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var knownCost sql.NullInt64
 	var clientMethod, clientPath, upstreamMethod, upstreamURL, usageRaw, errorBody, proxyError sql.NullString
 	var receivedNS, sentNS, respondedNS, proxyStatus sql.NullInt64
+	var outputTiming, reasoningEffort sql.NullString
+	var stream sql.NullBool
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
 		&event.EndpointClass, &authType, &credentialID, &credentialAlgorithm, &event.Succeeded,
@@ -1181,9 +1175,19 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
 		&priceRuleID, &priceSource, &importBatchID, &generation,
 		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
-		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest)
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
+	}
+	if stream.Valid {
+		event.Stream = &stream.Bool
+	}
+	event.ReasoningEffort = scanNullableString(reasoningEffort)
+	if outputTiming.Valid {
+		event.OutputTiming = &model.OutputTiming{}
+		if err := json.Unmarshal([]byte(outputTiming.String), event.OutputTiming); err != nil {
+			return model.Event{}, fmt.Errorf("decode output timing: %w", err)
+		}
 	}
 	if routingTime.Valid {
 		event.RoutingTimeMS = &routingTime.Int64

@@ -50,6 +50,7 @@ type UsageReporter struct {
 	serviceTier         string
 	generate            bool
 	stream              bool
+	streamKnown         bool
 	requestedAt         time.Time
 	requestContext      context.Context
 	routingTime         *time.Duration
@@ -66,6 +67,7 @@ type UsageReporter struct {
 	lastTokenAt         time.Time
 	generationInvalid   bool
 	readerOwned         bool
+	outputObservation   outputObservation
 	upstreamMu          sync.Mutex
 	upstreamMethod      string
 	upstreamURL         string
@@ -204,6 +206,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if traceID == "" {
 		traceID = internallogging.GetRequestID(ctx)
 	}
+	stream, streamKnown := usage.LookupStreamFromContext(ctx)
 	reporter := &UsageReporter{
 		requestID:       uuid.NewString(),
 		traceID:         traceID,
@@ -223,7 +226,8 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reasoning:       usage.ReasoningEffortFromContext(ctx),
 		serviceTier:     usage.ServiceTierFromContext(ctx),
 		generate:        usage.GenerateFromContext(ctx),
-		stream:          usage.StreamFromContext(ctx),
+		stream:          stream,
+		streamKnown:     streamKnown,
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -239,6 +243,7 @@ func (r *UsageReporter) SetStream(stream bool) {
 		return
 	}
 	r.stream = stream
+	r.streamKnown = true
 }
 
 // SetSessionHierarchy sets the explicit session and parent session identifiers.
@@ -718,8 +723,10 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	// Additional-model records describe a side model (image generation tool usage) that
 	// the upstream response model never refers to, so they must stay empty.
 	responseModel := ""
+	var outputTiming *usage.OutputTiming
 	if model == r.model {
 		responseModel = r.ResponseModel()
+		outputTiming = r.outputTiming()
 	}
 	return usage.Record{
 		RequestID:           r.requestID,
@@ -749,10 +756,12 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ResponseModel:       responseModel,
 		Generate:            usage.GenerateFlag(r.generate),
 		Stream:              r.stream,
+		StreamKnown:         r.streamKnown,
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
 		GenerationTime:      r.generationDuration(),
+		OutputTiming:        outputTiming,
 		FirstTokenLatency:   firstTokenLatency,
 		RoutingTime:         routingTime,
 		ProviderLatency:     providerLatency,
@@ -1893,10 +1902,17 @@ func (r *UsageReporter) ObserveGenerationTokenAt(at time.Time) {
 
 // InvalidateGenerationTiming marks token timing unreliable for this dispatch.
 func (r *UsageReporter) InvalidateGenerationTiming() {
+	r.InvalidateGenerationTimingReason("backpressure")
+}
+
+// InvalidateGenerationTimingReason retains why source timing cannot be trusted.
+func (r *UsageReporter) InvalidateGenerationTimingReason(reason string) {
 	if r != nil {
 		r.ttftMu.Lock()
 		r.generationInvalid = true
-
+		if r.outputObservation.reason == "" {
+			r.outputObservation.reason = reason
+		}
 		r.ttftMu.Unlock()
 	}
 }
@@ -1950,6 +1966,7 @@ func (r *UsageReporter) StartUpstreamTiming() {
 	r.lastTokenAt = time.Time{}
 	r.generationInvalid = false
 	r.readerOwned = false
+	r.outputObservation = outputObservation{}
 	r.providerLatency = nil
 }
 

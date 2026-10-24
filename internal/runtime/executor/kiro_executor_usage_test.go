@@ -1,10 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"hash/crc32"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -47,6 +50,12 @@ func TestKiroExecutorExecutePublishesUsage(t *testing.T) {
 
 	record := capture.await(t)
 	assertKiroUsageRecord(t, record)
+	if record.Stream || !record.StreamKnown {
+		t.Fatal("nonstream client execution inherited upstream EventStream mode")
+	}
+	if record.FirstTokenLatency == nil || record.GenerationTime == nil {
+		t.Fatalf("Kiro content has no source timing: first=%v generation=%v", record.FirstTokenLatency, record.GenerationTime)
+	}
 }
 
 func TestKiroExecutorExecuteStreamPublishesUsageOnce(t *testing.T) {
@@ -77,6 +86,12 @@ func TestKiroExecutorExecuteStreamPublishesUsageOnce(t *testing.T) {
 
 	record := capture.await(t)
 	assertKiroUsageRecord(t, record)
+	if !record.Stream || !record.StreamKnown {
+		t.Fatal("direct streaming execution lost client stream mode")
+	}
+	if record.FirstTokenLatency == nil || record.GenerationTime == nil {
+		t.Fatalf("Kiro content has no source timing: first=%v generation=%v", record.FirstTokenLatency, record.GenerationTime)
+	}
 	select {
 	case extra := <-capture.records:
 		t.Fatalf("unexpected second usage record: %+v", extra)
@@ -233,5 +248,51 @@ func assertKiroUsageRecord(t *testing.T, record coreusage.Record) {
 	}
 	if strings.TrimSpace(record.Fail.Body) != "" {
 		t.Fatalf("unexpected failure body: %q", record.Fail.Body)
+	}
+}
+
+func TestKiroBinarySourceTimingIncludesSuppressedReasoningAndIgnoresMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		events    []kiroTestEvent
+		wantCount int64
+	}{
+		{"reasoning", []kiroTestEvent{{name: "reasoningContentEvent", payload: map[string]any{"text": "suppressed reasoning"}}, {name: "meteringEvent", payload: map[string]any{"outputTokens": 9999}}}, 1},
+		{"tool", []kiroTestEvent{{name: "toolUseEvent", payload: map[string]any{"toolUseId": "tool-1", "name": "run", "input": "{}"}}, {name: "toolUseEvent", payload: map[string]any{"toolUseId": "tool-1", "stop": true}}}, 1},
+		{"metadata", []kiroTestEvent{{name: "meteringEvent", payload: map[string]any{"outputTokens": 9999}}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := newKiroUsageCapture(t, t.Name())
+			ctx := coreusage.WithRequestedModelAlias(context.Background(), t.Name())
+			r := helps.NewUsageReporter(ctx, "kiro", "claude-sonnet-4-6", nil)
+			r.StartUpstreamTiming()
+			var raw []byte
+			for _, event := range tc.events {
+				raw = append(raw, kiroTestEventFrame(t, event.name, event.payload)...)
+			}
+			body := trackKiroGenerationBody(ctx, r, io.NopCloser(bytes.NewReader(raw)))
+			got, err := io.ReadAll(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(raw, got) {
+				t.Fatal("binary observer changed source bytes")
+			}
+			r.Publish(ctx, coreusage.Detail{OutputTokens: 9999})
+			record := capture.await(t)
+			timing := record.OutputTiming
+			if timing == nil || timing.Protocol != "kiro" || timing.Source != "source_reader" || timing.Coverage != "wire_deltas" || timing.ArrivalCount != tc.wantCount {
+				t.Fatalf("binary source evidence = %+v", timing)
+			}
+			if timing.Status != "unavailable" || timing.Reason != "insufficient_arrivals" {
+				t.Fatalf("single read fabricated interval: %+v", timing)
+			}
+			if (record.FirstTokenLatency != nil) != (tc.wantCount > 0) {
+				t.Fatalf("substantive source timing = %v", record.FirstTokenLatency)
+			}
+		})
 	}
 }

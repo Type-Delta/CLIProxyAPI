@@ -47,6 +47,9 @@ func TestGenerationBodyOverflowPreservesBytesAndInvalidatesTiming(t *testing.T) 
 			if r.generationDuration() != nil {
 				t.Fatal("saturated timing became measured again")
 			}
+			if got := r.outputTiming(); got.Status != "unavailable" || got.Reason != "backpressure" {
+				t.Fatalf("queue pressure provenance lost: %+v", got)
+			}
 			first, _, _ := r.localLatencies()
 			if (first != nil) != observedFirst {
 				t.Fatal("first-token reliability changed")

@@ -20,7 +20,7 @@ func TestSessionDigestMigrationFreshDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close(context.Background()) }()
-	if database.SchemaVersion() != 12 {
+	if database.SchemaVersion() != 13 {
 		t.Fatalf("schema version = %d", database.SchemaVersion())
 	}
 	var columns int
@@ -52,11 +52,11 @@ func TestSessionDigestMigrationUpgradesV11Database(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN session_digest`); err != nil {
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; ALTER TABLE events DROP COLUMN session_digest`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=12`); err != nil {
+	if _, err := raw.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version>=12`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestSessionDigestMigrationUpgradesV11Database(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close(context.Background()) }()
-	if database.SchemaVersion() != 12 {
+	if database.SchemaVersion() != 13 {
 		t.Fatalf("upgraded schema version = %d", database.SchemaVersion())
 	}
 	var withDigest, total int64

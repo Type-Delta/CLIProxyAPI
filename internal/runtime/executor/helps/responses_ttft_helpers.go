@@ -126,7 +126,13 @@ func ObserveResponsesTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter.readerOwnsGeneration() {
 		return
 	}
-	ObserveResponsesTokenEventAt(reporter, payload, time.Now())
+	// Delivery-time callers retain legacy diagnostics only. Qualified output
+	// timing requires a timestamp captured by the actual source reader.
+	if isResponsesTokenEvent(payload, false) {
+		reporter.ObserveGenerationToken()
+	} else {
+		reporter.observeResponsesFirstOutputAt(payload, time.Now())
+	}
 	if reporter.IsTTFTSet() {
 		return
 	}

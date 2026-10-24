@@ -405,7 +405,7 @@ FROM ranked GROUP BY name,sample_count`
 		"latency":          {Source: "observed_dispatch_to_first_token"},
 		"provider_latency": {Source: "observed_dispatch_to_response"},
 		"ttft":             {Source: "observed"},
-		"generation":       {Source: "observed_first_to_last_token"},
+		"generation":       {Source: "observed_first_to_last_arrival"},
 	}
 	rows, err := s.db.QueryContext(ctx, statement, arguments...)
 	if err != nil {

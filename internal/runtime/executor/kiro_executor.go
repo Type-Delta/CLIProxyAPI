@@ -170,6 +170,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	targetModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
+	reporter.SetStream(false)
 	defer reporter.TrackFailure(ctx, &err)
 	if upstreamModel := NormalizeKiroModelID(targetModel); upstreamModel != "" && upstreamModel != targetModel {
 		reporter.SetUpstreamModel(upstreamModel)
@@ -195,7 +196,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		return resp, statusErr{
@@ -204,6 +205,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
 		}
 	}
+	response.Body = trackKiroGenerationBody(ctx, reporter, response.Body)
 	result, err := collectKiroEvents(response.Body, req.Model, requestPayload)
 	if err != nil {
 		return resp, err
@@ -222,6 +224,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	targetModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewExecutorUsageReporter(ctx, e, targetModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 	if upstreamModel := NormalizeKiroModelID(targetModel); upstreamModel != "" && upstreamModel != targetModel {
 		reporter.SetUpstreamModel(upstreamModel)
@@ -255,7 +258,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
 		}
 	}
-	response.Body = reporter.TrackGenerationBody(ctx, response.Body, "claude")
+	response.Body = trackKiroGenerationBody(ctx, reporter, response.Body)
 	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var translateParam any
@@ -665,6 +668,47 @@ func collectKiroEvents(body io.Reader, model string, requestPayload []byte) (*ki
 	result := newKiroEventAccumulator(model, requestPayload)
 	err := parseKiroEventStream(body, func(eventName string, data map[string]any) bool { result.consume(eventName, data); return true })
 	return result, err
+}
+
+func trackKiroGenerationBody(ctx context.Context, reporter *helps.UsageReporter, body io.ReadCloser) io.ReadCloser {
+	var lastText, lastThinking string
+	toolNames := make(map[string]string)
+	return reporter.TrackKiroGenerationBody(ctx, body, maxKiroFrameSize, func(frame []byte) (string, error) {
+		var text string
+		err := parseKiroEventStream(bytes.NewReader(frame), func(event string, data map[string]any) bool {
+			switch event {
+			case "assistantResponseEvent":
+				value, _ := data["content"].(string)
+				text = kiroDelta(value, &lastText)
+			case "reasoningContentEvent":
+				value, _ := data["text"].(string)
+				text = kiroDelta(value, &lastThinking)
+			case "toolUseEvent":
+				id, _ := data["toolUseId"].(string)
+				name, _ := data["name"].(string)
+				if id == "" && name == "" {
+					break
+				}
+				if _, seen := toolNames[id]; !seen && len(toolNames) >= 256 {
+					reporter.InvalidateGenerationTimingReason("coverage_limit")
+					break
+				}
+				if name != toolNames[id] {
+					text = name
+					toolNames[id] = name
+				}
+				if input := data["input"]; input != nil {
+					if fragment, ok := input.(string); ok {
+						text += fragment
+					} else if encoded, errMarshal := json.Marshal(input); errMarshal == nil {
+						text += string(encoded)
+					}
+				}
+			}
+			return true
+		})
+		return text, err
+	})
 }
 
 func parseKiroEventStream(body io.Reader, callback func(string, map[string]any) bool) error {

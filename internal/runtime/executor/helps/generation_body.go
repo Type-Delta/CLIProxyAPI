@@ -36,9 +36,93 @@ func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadClo
 	if r == nil || body == nil {
 		return body
 	}
-	r.ttftMu.Lock()
-	r.readerOwned = true
-	r.ttftMu.Unlock()
+	return r.TrackGenerationBodyObserver(ctx, body, r.generationSSEObserver(protocol))
+}
+
+func (r *UsageReporter) generationSSEObserver(protocol string) func([]byte, time.Time, error) {
+	r.SetOutputTimingSource(protocol, "source_reader", "visible_deltas")
+	var line []byte
+	var frameData [][]byte
+	frameBytes := 0
+	discarding := false
+	observeFrame := func(at time.Time) {
+		if len(frameData) == 0 {
+			return
+		}
+		payload := bytes.Join(frameData, []byte("\n"))
+		r.observeGenerationPayloadAt(protocol, payload, at)
+		frameData = nil
+		frameBytes = 0
+	}
+	observeLine := func(value []byte, at time.Time) {
+		trimmed := bytes.TrimSpace(value)
+		if len(trimmed) == 0 {
+			observeFrame(at)
+			return
+		}
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			data := bytes.TrimSpace(trimmed[len("data:"):])
+			if frameBytes+len(data) > generationFrameBytes {
+				r.InvalidateGenerationTimingReason("frame_limit")
+				frameData = nil
+				return
+			}
+			frameBytes += len(data)
+			frameData = append(frameData, bytes.Clone(data))
+			return
+		}
+		if len(frameData) > 0 || bytes.HasPrefix(trimmed, []byte(":")) ||
+			bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("id:")) ||
+			bytes.HasPrefix(trimmed, []byte("retry:")) {
+			return
+		}
+		r.observeGenerationPayloadAt(protocol, value, at)
+	}
+	observe := func(data []byte, at time.Time, readErr error) {
+		rest := data
+		for len(rest) > 0 {
+			end := bytes.IndexByte(rest, '\n')
+			part := rest
+			if end >= 0 {
+				part = rest[:end]
+			}
+			if !discarding {
+				if len(line)+len(part) > generationFrameBytes {
+					r.InvalidateGenerationTimingReason("frame_limit")
+					line = nil
+					discarding = true
+				} else {
+					line = append(line, part...)
+				}
+			}
+			if end < 0 {
+				break
+			}
+			if !discarding {
+				observeLine(line, at)
+			}
+			line = line[:0]
+			discarding = false
+			rest = rest[end+1:]
+		}
+		if readErr != nil && len(line) > 0 && !discarding {
+			observeLine(line, at)
+			line = line[:0]
+		}
+		if readErr != nil && !discarding {
+			observeFrame(at)
+		}
+	}
+	return observe
+}
+
+// TrackGenerationBodyObserver reads independently of downstream delivery and
+// supplies one monotonic timestamp for each source read to a protocol observer.
+// Observers must retain bounded state and must never change the received bytes.
+func (r *UsageReporter) TrackGenerationBodyObserver(ctx context.Context, body io.ReadCloser, observe func([]byte, time.Time, error)) io.ReadCloser {
+	if r == nil || body == nil {
+		return body
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	b := &generationBody{source: body, cancel: cancel, done: make(chan struct{}), queue: make(chan generationRead, generationReadQueueChunks)}
 	go func() { <-ctx.Done(); b.sourceOnce.Do(func() { _ = body.Close() }) }()
@@ -46,72 +130,13 @@ func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadClo
 		defer close(b.done)
 		defer close(b.queue)
 		defer cancel()
-		var line []byte
-		var frameData [][]byte
-		discarding := false
-		observeFrame := func(at time.Time) {
-			if len(frameData) == 0 {
-				return
-			}
-			payload := bytes.Join(frameData, []byte("\n"))
-			r.observeGenerationPayloadAt(protocol, payload, at)
-			frameData = nil
-		}
-		observeLine := func(value []byte, at time.Time) {
-			trimmed := bytes.TrimSpace(value)
-			if len(trimmed) == 0 {
-				observeFrame(at)
-				return
-			}
-			if bytes.HasPrefix(trimmed, []byte("data:")) {
-				data := bytes.TrimSpace(trimmed[len("data:"):])
-				frameData = append(frameData, bytes.Clone(data))
-				return
-			}
-			if len(frameData) > 0 || bytes.HasPrefix(trimmed, []byte(":")) ||
-				bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("id:")) ||
-				bytes.HasPrefix(trimmed, []byte("retry:")) {
-				return
-			}
-			r.observeGenerationPayloadAt(protocol, value, at)
-		}
 		for {
 			data := make([]byte, generationReadChunkBytes)
 			n, err := body.Read(data)
 			at := time.Now()
 			data = data[:n]
-			rest := data
-			for len(rest) > 0 {
-				end := bytes.IndexByte(rest, '\n')
-				part := rest
-				if end >= 0 {
-					part = rest[:end]
-				}
-				if !discarding {
-					if len(line)+len(part) > generationFrameBytes {
-						r.InvalidateGenerationTiming()
-						line = nil
-						discarding = true
-					} else {
-						line = append(line, part...)
-					}
-				}
-				if end < 0 {
-					break
-				}
-				if !discarding {
-					observeLine(line, at)
-				}
-				line = line[:0]
-				discarding = false
-				rest = rest[end+1:]
-			}
-			if err != nil && len(line) > 0 && !discarding {
-				observeLine(line, at)
-				line = line[:0]
-			}
-			if err != nil && !discarding {
-				observeFrame(at)
+			if observe != nil {
+				observe(data, at, err)
 			}
 			item := generationRead{data: data, err: err}
 			select {
@@ -172,21 +197,25 @@ func (r *UsageReporter) readerOwnsGeneration() bool {
 }
 
 func (r *UsageReporter) observeGenerationPayloadAt(protocol string, payload []byte, at time.Time) {
-	switch protocol {
-	case "responses":
-		ObserveResponsesTokenEventAt(r, payload, at)
-	case "claude":
-		if isClaudeTokenEvent(payload, false) {
-			r.ObserveGenerationTokenAt(at)
-		}
-	case "gemini":
-		if isGeminiTokenEvent(payload, false) {
-			r.ObserveGenerationTokenAt(at)
-		}
-	default:
-		if isChatTokenEvent(payload, false) {
-			r.ObserveGenerationTokenAt(at)
-		}
+	trimmed := bytes.TrimSpace(payload)
+	if bytes.Equal(trimmed, []byte("[DONE]")) || len(trimmed) == 0 {
+		return
+	}
+	if !gjson.ValidBytes(trimmed) {
+		r.InvalidateGenerationTimingReason("malformed_stream")
+		return
+	}
+	text, unsupported := outputDeltaText(protocol, payload)
+	if unsupported {
+		r.InvalidateGenerationTimingReason("unsupported_protocol")
+		return
+	}
+	if text != "" {
+		r.ObserveOutputDeltaAt(text, at)
+		return
+	}
+	if protocol == "responses" {
+		r.observeResponsesFirstOutputAt(payload, at)
 	}
 }
 
@@ -195,10 +224,11 @@ func ObserveResponsesTokenEventAt(r *UsageReporter, payload []byte, at time.Time
 	if r == nil {
 		return
 	}
-	if isResponsesTokenEvent(payload, false) {
-		r.ObserveGenerationTokenAt(at)
-		return
-	}
+	r.SetOutputTimingSource("responses", "websocket_reader", "visible_deltas")
+	r.observeGenerationPayloadAt("responses", payload, at)
+}
+
+func (r *UsageReporter) observeResponsesFirstOutputAt(payload []byte, at time.Time) {
 	payload = JSONPayload(payload)
 	event := gjson.GetBytes(payload, "type").String()
 	// Completed snapshots can establish first visible output, never a duration.

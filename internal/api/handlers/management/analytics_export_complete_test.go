@@ -21,6 +21,13 @@ func TestAnalyticsExportsRetainRecordedEventFields(t *testing.T) {
 	const rawSuffix = `"}`
 	raw := model.RawJSON(rawPrefix + strings.Repeat("x", 40960-len(rawPrefix)-len(rawSuffix)) + rawSuffix)
 	event := model.Event{RequestedAt: stamp, FirstTokenLatencyMS: &zero, ProviderLatencyMS: &zero, RoutingTimeMS: &zero, GenerationTimeMS: &zero, UpstreamUsageRaw: &raw, ReceivedAt: &stamp, Tokens: model.TokenUsage{Total: 42}}
+	event.LatencyMS = 1000
+	event.Stream = new(false)
+	effort := "high"
+	event.ReasoningEffort = &effort
+	event.Tokens = model.TokenUsage{Output: 42, Total: 42, Schema: model.AccountingSchemaNormalizedV1, Quality: model.TokenQualityExact}
+	event.OutputTiming = &model.OutputTiming{FirstBatchBytes: 10, TotalBytes: 100, LargestBatchBytes: 50, MaxInterarrivalNS: 700000000, Version: 1, Protocol: "kiro", Source: "source_reader", Status: "observed", FirstArrivalNS: 20000000001, LastArrivalNS: 21000000001, ArrivalCount: 3, WindowTokens: 32, TokenQuality: model.TokenQualityEstimated, Coverage: "wire_deltas"}
+	event.EnrichThroughput()
 	// Populate every optional recorded field so omitempty cannot conceal omissions.
 	value := reflect.ValueOf(&event).Elem()
 	for i := 0; i < value.NumField(); i++ {
@@ -37,13 +44,6 @@ func TestAnalyticsExportsRetainRecordedEventFields(t *testing.T) {
 	if err = json.Unmarshal(canonicalBytes, &canonical); err != nil {
 		t.Fatal(err)
 	}
-	// Throughput is derived at read time from the surrounding credential history rather than
-	// recorded on the event, so exports of recorded fields deliberately omit it.
-	if _, ok := canonical["tokens_per_second"]; !ok {
-		t.Fatal("response-only field tokens_per_second is missing from the event JSON")
-	}
-	delete(canonical, "tokens_per_second")
-	delete(canonical, "speed_estimated")
 	reader := &analyticsHandlerReader{events: model.EventPage{Events: []model.Event{event}}}
 	handler := &Handler{analytics: &analyticsHandlerService{reader: reader, state: model.StateReady}}
 	export := func(format string) []byte {
@@ -89,7 +89,7 @@ func TestAnalyticsExportsRetainRecordedEventFields(t *testing.T) {
 			t.Errorf("CSV JSON/scalar %s changed: %.80s", key, got)
 		}
 	}
-	if cells["total_tokens"] != "42" || cells["routing_time_ms"] != "0" {
+	if cells["total_tokens"] != "42" || cells["routing_time_ms"] != "0" || cells["tokens_per_second"] != "32" || cells["effective_output_tokens_per_second"] != "42" || cells["speed_estimated"] != "true" || cells["stream"] != "false" || cells["reasoning_effort"] != "high" {
 		t.Fatal("legacy totals or zero timing lost")
 	}
 }

@@ -503,19 +503,23 @@ type ViewerSummary struct {
 }
 
 type ViewerEvent struct {
-	AttemptID          string     `json:"attempt_id"`
-	ProxyRequestID     string     `json:"proxy_request_id"`
-	RequestedAt        time.Time  `json:"requested_at"`
-	Provider           string     `json:"provider"`
-	Model              string     `json:"model"`
-	EndpointClass      string     `json:"endpoint_class"`
-	Succeeded          bool       `json:"succeeded"`
-	UpstreamStatusCode *int       `json:"upstream_status_code"`
-	ErrorClass         *string    `json:"error_class"`
-	LatencyMS          int64      `json:"latency_ms"`
-	Tokens             TokenUsage `json:"tokens"`
-	KnownCost          *NanoUSD   `json:"known_cost_usd"`
-	UnpricedTokens     int64      `json:"unpriced_tokens"`
+	ThroughputInfo                 *ThroughputInfo `json:"throughput,omitempty"`
+	EffectiveOutputTokensPerSecond *float64        `json:"effective_output_tokens_per_second,omitempty"`
+	TokensPerSecond                *float64        `json:"tokens_per_second,omitempty"`
+	SpeedEstimated                 bool            `json:"speed_estimated,omitempty"`
+	AttemptID                      string          `json:"attempt_id"`
+	ProxyRequestID                 string          `json:"proxy_request_id"`
+	RequestedAt                    time.Time       `json:"requested_at"`
+	Provider                       string          `json:"provider"`
+	Model                          string          `json:"model"`
+	EndpointClass                  string          `json:"endpoint_class"`
+	Succeeded                      bool            `json:"succeeded"`
+	UpstreamStatusCode             *int            `json:"upstream_status_code"`
+	ErrorClass                     *string         `json:"error_class"`
+	LatencyMS                      int64           `json:"latency_ms"`
+	Tokens                         TokenUsage      `json:"tokens"`
+	KnownCost                      *NanoUSD        `json:"known_cost_usd"`
+	UnpricedTokens                 int64           `json:"unpriced_tokens"`
 }
 
 type ViewerEventPage struct {

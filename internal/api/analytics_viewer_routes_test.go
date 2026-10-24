@@ -205,6 +205,10 @@ func TestViewerEventsStripAdminOnlyIdentityFields(t *testing.T) {
 		RequestedAt: time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC), Provider: "provider", Model: "model",
 		EndpointClass: "responses", CredentialID: &credentialID, CredentialIDAlgorithm: &algorithm,
 	}}}
+	reader.events.Events[0].Tokens = model.TokenUsage{Output: 200, Total: 200, Schema: model.AccountingSchemaNormalizedV1, Quality: model.TokenQualityExact}
+	reader.events.Events[0].LatencyMS = 2000
+	reader.events.Events[0].OutputTiming = &model.OutputTiming{Version: 1, Protocol: "chat", Source: "source_reader", Status: "observed", FirstArrivalNS: 1, LastArrivalNS: 1000000001, ArrivalCount: 5, WindowTokens: 100, TokenQuality: model.TokenQualityEstimated, Coverage: "visible_deltas"}
+	reader.events.Events[0].EnrichThroughput()
 	token, _, err := store.Exchange(created.Credential)
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +219,11 @@ func TestViewerEventsStripAdminOnlyIdentityFields(t *testing.T) {
 	engine.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	for _, required := range []string{`"throughput":{"status":"observed"`, `"tokens_per_second":100`, `"effective_output_tokens_per_second":100`, `"speed_estimated":true`} {
+		if !strings.Contains(recorder.Body.String(), required) {
+			t.Fatalf("viewer omitted rate %q: %s", required, recorder.Body.String())
+		}
 	}
 	for _, forbidden := range []string{strings.Repeat("a", 64), credentialID, "credential_id", "key_id"} {
 		if strings.Contains(recorder.Body.String(), forbidden) {

@@ -683,6 +683,11 @@ func analyticsExportValueString(value any) string {
 		return typed.UTC().Format(time.RFC3339Nano)
 	case bool:
 		return strconv.FormatBool(typed)
+	case *bool:
+		if typed == nil {
+			return ""
+		}
+		return strconv.FormatBool(*typed)
 	case int:
 		return strconv.Itoa(typed)
 	case int64:
@@ -702,6 +707,12 @@ func analyticsExportValueString(value any) string {
 			return ""
 		}
 		return string(*typed)
+	case *model.OutputTiming, *model.ThroughputInfo, *float64:
+		encoded, _ := json.Marshal(typed)
+		if string(encoded) == "null" {
+			return ""
+		}
+		return string(encoded)
 	case model.TokenUsage:
 		encoded, _ := json.Marshal(typed)
 		return string(encoded)

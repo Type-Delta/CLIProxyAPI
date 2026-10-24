@@ -186,3 +186,28 @@ func TestManagerPublishBackfillsContextAuthFields(t *testing.T) {
 		t.Fatal("timed out waiting for usage record")
 	}
 }
+
+func TestLookupStreamFromContextPreservesUnknownAndExplicitFalse(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ctx           context.Context
+		stream, known bool
+	}{
+		{"nil", nil, false, false},
+		{"missing", context.Background(), false, false},
+		{"false", WithStream(context.Background(), false), false, true},
+		{"true", WithStream(context.Background(), true), true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, known := LookupStreamFromContext(tc.ctx)
+			if stream != tc.stream || known != tc.known || StreamFromContext(tc.ctx) != tc.stream {
+				t.Fatalf("stream=%v known=%v, want stream=%v known=%v", stream, known, tc.stream, tc.known)
+			}
+			_, frozen, _ := freezeObserverSnapshot(tc.ctx, Record{})
+			stream, known = LookupStreamFromContext(frozen.context())
+			if stream != tc.stream || known != tc.known {
+				t.Fatalf("observer context changed stream=%v known=%v", stream, known)
+			}
+		})
+	}
+}

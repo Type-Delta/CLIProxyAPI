@@ -103,7 +103,7 @@ CPAUK also persists an optional observed generation duration: the local monotoni
 
 Versioned fixtures record events, token categories, deterministic credential identities, key display identities, ranges, pricing, limit windows, viewer isolation, maintenance envelopes, imports, reconciliation, and stable pagination. `test/perf` includes a production adapter covering HTTP, streaming, WebSocket, retries, blocked SQLite, and saturated queues. Its long median-of-five certification remains opt-in because it requires the documented dedicated-runner metadata and power controls.
 
-A 2026-09-08 metric audit produced eleven corrections. The intake adapter now persists the canonical inclusive output total (Gemini candidate plus thought tokens) alongside the input total, so reasoning is priced. `TokenUsage.UnclassifiedTokens()` derives the remainder of the authoritative total that no bucket explains; a matched price rule reports that remainder as unpriced instead of claiming full coverage, and repricing inherits the rule. Analysis model rows, matrix cells, and activity buckets expose `unpriced_tokens`, and CPAMC uses it to qualify model efficiency as unknown or partial rather than ranking it as $0/M; token charts and the distribution add an explicit unclassified category so stacks sum to the total, and event speed uses the recorded generation interval, labels the TTFT fallback as an estimate, and shows unavailable when neither exists. Migration 005 adds `known_cost_nano` and `unpriced_tokens` to `daily_stats` so year activity keeps cost after retention; year activity deduplicates request identities across the raw/retained boundary; the public `success` filter maps to the `succeeded` column; retained credentials keep their auth type and actual last-observed timestamp instead of a bucket end; upstream v1.15 imports no longer force `exact` quality, so all-zero usage is inferred as `missing`; and the collector counts batches discarded at shutdown as abandoned so accepted equals written plus dropped plus abandoned. Existing stored event and rollup token buckets are unchanged; historical repair still requires the explicit provider-scoped migration noted above.
+A 2026-09-08 metric audit produced eleven corrections. The intake adapter now persists the canonical inclusive output total (Gemini candidate plus thought tokens) alongside the input total, so reasoning is priced. `TokenUsage.UnclassifiedTokens()` derives the remainder of the authoritative total that no bucket explains; a matched price rule reports that remainder as unpriced instead of claiming full coverage, and repricing inherits the rule. Analysis model rows, matrix cells, and activity buckets expose `unpriced_tokens`, and CPAMC uses it to qualify model efficiency as unknown or partial rather than ranking it as $0/M; token charts and the distribution add an explicit unclassified category so stacks sum to the total, and event speed follows the qualified arrival-window and separate effective-rate contract in DL052. Migration 005 adds `known_cost_nano` and `unpriced_tokens` to `daily_stats` so year activity keeps cost after retention; year activity deduplicates request identities across the raw/retained boundary; the public `success` filter maps to the `succeeded` column; retained credentials keep their auth type and actual last-observed timestamp instead of a bucket end; upstream v1.15 imports no longer force `exact` quality, so all-zero usage is inferred as `missing`; and the collector counts batches discarded at shutdown as abandoned so accepted equals written plus dropped plus abandoned. Existing stored event and rollup token buckets are unchanged; historical repair still requires the explicit provider-scoped migration noted above.
 
 **Implementation evidence:** `internal/cpauk`, `internal/cpauk/collector/adapter.go`, `internal/cpauk/collector/sanitizer_test.go`, `internal/cpauk/testdata/upstream-v1.15.0`, `sdk/cliproxy/usage/{manager.go,delivery.go}`, and `test/perf`.
 
@@ -698,32 +698,16 @@ divergence entry for its recorded commit and artifact digest.
 
 **Last updated:** 2026-09-16
 
-### DL020 - Credential-scoped throughput estimation
+### DL020 - Backend throughput reporting
 
-The event throughput column only replaced a recorded generation duration when it was missing or
-zero, so compressed observations of a millisecond or a few milliseconds survived as physically
-impossible rates. CPA now treats a recorded generation interval as unusable when
-`(provider_latency_ms + wait) * 0.08 > generation_time_ms`, where the wait is
-`first_token_latency_ms - provider_latency_ms`, and publishes
-`output tokens / (provider_latency_ms + wait + generation_time_ms - median provider latency)`
-instead. The estimate expresses the whole measured request minus the credential's normal
-acknowledgement overhead. This replaces the earlier rule that no TPS threshold rejected fast
-generation.
-
-The baseline is the median `provider_latency_ms` for the **same credential** over the twenty-four
-hours ending at the query range end, because one credential backs one upstream account and a
-baseline mixed across credentials would skew the result. The store computes it with one windowed
-query per event read and applies it to both the events list and the single-event detail. A
-credential with no observation in that window, a missing or non-positive provider acknowledgement,
-or a non-positive span leaves the rate unpublished rather than guessed; the wait and generation
-intervals count as zero when they were not recorded, and an event with no recorded first-token
-latency keeps its measured rate because nothing suggests compression.
-
-The derivation moved out of CPAMC so the table, the detail chart, the export path, and any other
-client agree on one value. Events now carry response-only `tokens_per_second` and
-`speed_estimated`; intake and storage still persist neither. CPAMC renders the published rate and
-marks an estimate with its compact `EST` badge, and shows `Unavailable` when a server publishes no
-rate.
+Event throughput is calculated by the backend so the events table, detail view, exports, and
+other clients agree. The original credential-median subtraction estimator and 8% timing rule
+were replaced by DL052 after they produced unstable rates from missing generation observations.
+The backend now qualifies a matching local arrival window and separately exposes effective
+output over the whole attempt. Historical rows without the required observation evidence do
+not receive an invented arrival rate. The compatibility fields `tokens_per_second` and
+`speed_estimated` mirror the qualified arrival value and its token-count quality; clients use
+the explicit `throughput` object to distinguish the method and unavailable reason.
 
 Plugin executor streams no longer flush a partial usage line at 64 KiB. Long usage-bearing
 completion lines are assembled until a complete line or valid JSON payload is available, so
@@ -735,20 +719,11 @@ telemetry is not discarded; the generic usage delivery manager remains bounded s
 `internal/pluginhost/adapters_executors.go`, and the CPAMC
 `src/features/analytics/views/events/eventDiagnostics.ts` and `src/types/analytics.ts`.
 
-**Recorded validation:** focused model tests cover the observed branch, the threshold boundary, the
-compressed-generation estimate, the zero-valued inputs, and every unavailable input; store tests
-cover the credential-scoped median, the trailing-day window, and the detail lookup. `go test
-./...`, the required disposable server build, and the CPAMC suite, type-check, lint, and production
-bundle pass. A temporary CPA served a fixture copied from the real analytics database: the events
-API published the expected `1000` estimated tokens per second for a compressed 10 ms generation,
-and the bundled panel and event detail rendered `1,000 tokens/s` with the `EST`/`Estimated` label
-at desktop and 390 px widths without overflow.
+**Validation:** Current arrival-rate and telemetry validation is recorded under DL052. The
+former credential-median tests and estimated-speed UI checks documented here were superseded
+along with that estimator.
 
-The bundled panel was rebuilt from CPAMC commit
-`8fabf52c5a223352c3cd16eb9f91ae680190e947` with artifact digest
-`ce3e9e4883d157dd60873bbbe247e264300d9832d59c60ad0dcbbeb60b87c5ad`.
-
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-24
 
 ### DL021 - Provider selectors and OpenCode Go usage tracking
 
@@ -1379,16 +1354,15 @@ the same key.
 ### DL049 - Model leaderboard and privacy-preserving session digests
 
 CPAUK accepts the v2 `model_leaderboard` analytics operation and returns four fixed awards in
-one response: distinct sessions used, request reliability, P70 published throughput, and P95
+one response: distinct sessions used, request reliability, P70 qualified arrival throughput, and P95
 generated tokens per successful attempt. Every award is global across keys, providers, and
 credentials, contains at most six contiguous ranks, and returns an empty row array when no model
 qualifies. Reliability requires at least 200 upstream attempts; speed requires a P70 of at least
-80 tokens per second and excludes attempts without a published rate.
+80 tokens per second and includes only successful attempts with qualified arrival evidence.
 
 The collector hashes the trimmed upstream session identifier into a nullable `session_digest`
 field and never persists the raw value. Migration 12 adds the column to existing databases while
-leaving historic rows null. Throughput reuses the event read-time calculation and per-credential
-median acknowledgement baseline. The canonical `normalized-v1` output total already includes
+leaving historic rows null. Throughput reuses the qualified event arrival-window calculation from DL052. The canonical `normalized-v1` output total already includes
 reasoning for every provider accounting style, so the talkative award adds reasoning only for
 legacy or imported schemas that store separate output buckets. When a valid token breakdown
 cannot supply its output total and the intake adapter falls back to the provider's raw output,
@@ -1467,6 +1441,59 @@ activity reads fell from about 127 ms to 5.6 ms for 30 days and from about 408 m
 to 5.7 ms for 90 days. Focused activity, retention, cache invalidation, and CPAUK
 store tests pass.
 **Last updated:** 2026-10-23
+
+### DL052 - Qualified arrival rates and timing evidence
+
+TPS no longer subtracts a historical response-latency median or compares generation duration
+with a fraction of pre-generation waiting time. Arrival throughput uses a bounded cumulative
+output collector at the upstream reader, excluding the entire first substantive read batch
+from both the counted token window and its elapsed interval. The collector tokenizes the first
+batch prefix and final content at publication rather than summing independently tokenized
+fragments. Token estimates are marked separately from observed timing. Hidden reasoning usage
+is never added to a visible-delta numerator.
+
+A public arrival rate requires at least three distinct substantive reads, a 100 ms span, and
+16 tokens in the matched window. These are minimum sampling requirements, not speed ceilings;
+well-observed rates above 1,000 TPS remain supported. Unsupported, malformed, oversized,
+backpressured, and insufficient observations retain explicit unavailable reasons. The bounded
+collector stores counts and timing only, never response text. Effective output rate uses the
+whole attempt duration and consistent normalized output usage, and remains a separate metric.
+
+Kiro's Amazon binary EventStream is observed before translation on both streaming and
+nonstreaming client paths. Codex and xAI WebSocket observations retain source-read timestamps
+through delivery queues. Nullable `output_timing` evidence records protocol/source, monotonic
+arrival offsets, distinct batch count, aligned token count and quality, coverage, substantive
+byte totals and batch sizes, and the longest interarrival gap. Migration 013 also preserves
+client stream mode and recorded reasoning preference. The preference is a request hint, not
+proof of the final upstream setting after payload overrides. Legacy rows keep these fields
+unknown; importing or restoring data does not manufacture evidence or persist derived rates.
+
+Event list/detail, JSON/CSV exports, the public viewer, and the management panel use the same
+rate contract. The speed leaderboard includes successful qualified arrival observations only,
+with qualified samples and successful-attempt coverage. It does not rank whole-attempt rates,
+failed attempts, or predictions as observed arrival speeds. Existing raw first-to-last timing
+aggregates remain available and are labelled as arrival spans.
+
+This draft collects the evidence needed for later chronological prediction evaluation. It
+does not enable a cohort predictor or claim calibrated confidence from historical rows that
+lack this evidence. External benchmarks can inform investigation but never clamp measurements.
+
+**Implementation evidence:** `sdk/cliproxy/usage/output_timing.go`,
+`internal/runtime/executor/helps/output_observation.go`,
+`internal/runtime/executor/helps/kiro_generation_body.go`,
+`internal/cpauk/model/output_timing.go`,
+`internal/cpauk/store/migrations/013_output_timing.sql`, and the CPAMC analytics consumers.
+
+**Validation:** The full Go suite passes, including migration 012-to-013, import/backup
+round-trips, export parity, query-filter independence, and viewer privacy tests. Runtime and SDK
+race tests pass. CPAMC passes 2,112 tests, lint, type checking, and the production build.
+Real Kiro calls in both client modes produced qualified arrival windows; an OpenAI-compatible
+DeepSeek stream also qualified, with rate formulas matching captured counts and durations.
+Desktop and mobile checks cover events, separate arrival/effective detail values, and leaderboard
+coverage. A replay of 30,378 historical attempts withheld unsupported arrival rates while retaining
+24,271 consistent whole-attempt rates. A deterministic 1,500 TPS case remains valid without a cap.
+
+**Last updated:** 2026-10-24
 
 ## Merge History
 

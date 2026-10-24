@@ -117,6 +117,7 @@ func TestModelLeaderboardSpeedFloorAndPublishedTPSOnly(t *testing.T) {
 		event.Tokens.Output = output
 		if tps {
 			event.GenerationTimeMS = &generation
+			event.OutputTiming = &model.OutputTiming{Version: 1, Protocol: "chat", Source: "source_reader", Status: "observed", FirstArrivalNS: 1, LastArrivalNS: 1 + generation*int64(time.Millisecond), ArrivalCount: 5, WindowTokens: output, TokenQuality: model.TokenQualityEstimated, Coverage: "visible_deltas"}
 		}
 		return event
 	}
@@ -128,6 +129,9 @@ func TestModelLeaderboardSpeedFloorAndPublishedTPSOnly(t *testing.T) {
 		makeSpeed(5, "tie-b", 1_000, 1_000, true),
 		makeSpeed(6, "no-tps", 10_000, 0, false),
 	}
+	failed := makeSpeed(7, "failed-fast", 5000, 1000, true)
+	failed.Succeeded = false
+	events = append(events, failed)
 	writeLeaderboardEvents(t, database, events)
 	result, err := database.ModelLeaderboard(context.Background(), leaderboardQuery())
 	if err != nil {
@@ -255,7 +259,7 @@ func TestModelLeaderboardExcludesRawOutputFallbackFromTalkative(t *testing.T) {
 	if rows := awardRows(t, result, "most_reliable"); len(rows) != 1 || rows[0].Attempts == nil || *rows[0].Attempts != 200 {
 		t.Fatalf("raw fallback reliability = %+v", rows)
 	}
-	if rows := awardRows(t, result, "speed"); len(rows) != 1 || rows[0].Samples == nil || *rows[0].Samples != 200 {
+	if rows := awardRows(t, result, "speed"); len(rows) != 0 {
 		t.Fatalf("raw fallback speed = %+v", rows)
 	}
 }

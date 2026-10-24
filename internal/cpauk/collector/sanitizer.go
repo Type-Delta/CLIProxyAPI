@@ -52,6 +52,9 @@ type Source struct {
 	Latency           time.Duration
 	TTFT              time.Duration
 	GenerationTime    *time.Duration
+	OutputTiming      *model.OutputTiming
+	Stream            *bool
+	ReasoningEffort   string
 	FirstTokenLatency *time.Duration
 	RoutingTime       *time.Duration
 	ProviderLatency   *time.Duration
@@ -118,6 +121,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if record.RoutingTime != nil && *record.RoutingTime < 0 || record.FirstTokenLatency != nil && *record.FirstTokenLatency < 0 || record.ProviderLatency != nil && *record.ProviderLatency < 0 || record.Latency < 0 || record.TTFT < 0 || record.GenerationTime != nil && *record.GenerationTime < 0 {
 		return SanitizeResult{}, fmt.Errorf("latency is negative")
 	}
+
 	if err := validateTokens(record.Tokens); err != nil {
 		return SanitizeResult{}, err
 	}
@@ -142,6 +146,10 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	}
 
 	truncated := int64(0)
+	if record.OutputTiming.Validate() != nil {
+		record.OutputTiming = nil
+		truncated++
+	}
 	provider, count, err := bounded(record.Provider, true)
 	truncated += count
 	if err != nil {
@@ -251,6 +259,19 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		accountingSchema = model.AccountingSchemaRawFallbackV1
 	}
 
+	if record.OutputTiming != nil {
+		timing := *record.OutputTiming
+		record.OutputTiming = &timing
+	}
+	var stream *bool
+	if record.Stream != nil {
+		value := *record.Stream
+		stream = &value
+	}
+	var reasoningEffort *string
+	if value := strings.ToLower(strings.TrimSpace(record.ReasoningEffort)); model.ValidReasoningEffort(value) {
+		reasoningEffort = &value
+	}
 	event := model.Event{
 		SchemaVersion:         model.EventSchemaVersion,
 		AttemptID:             attemptID,
@@ -273,20 +294,22 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		LatencyMS:             record.Latency.Milliseconds(),
 		TimeToFirstTokenMS:    ttft,
 		GenerationTimeMS:      generation,
-		FirstTokenLatencyMS:   firstTokenLatency,
-		RoutingTimeMS:         routingTime,
-		ProviderLatencyMS:     providerLatency,
-		ServiceTierRequested:  requestedTier,
-		ServiceTierUsed:       responseTier,
-		Generated:             generated(record.Generated),
-		ClientMethod:          hops.clientMethod,
-		ClientPath:            hops.clientPath,
-		ReceivedAt:            hops.receivedAt,
-		UpstreamMethod:        hops.upstreamMethod,
-		UpstreamURL:           hops.upstreamURL,
-		UpstreamSentAt:        hops.upstreamSentAt,
-		UpstreamUsageRaw:      hops.rawUsage,
-		UpstreamErrorBody:     hops.errorBody,
+		OutputTiming:          record.OutputTiming,
+		Stream:                stream, ReasoningEffort: reasoningEffort,
+		FirstTokenLatencyMS:  firstTokenLatency,
+		RoutingTimeMS:        routingTime,
+		ProviderLatencyMS:    providerLatency,
+		ServiceTierRequested: requestedTier,
+		ServiceTierUsed:      responseTier,
+		Generated:            generated(record.Generated),
+		ClientMethod:         hops.clientMethod,
+		ClientPath:           hops.clientPath,
+		ReceivedAt:           hops.receivedAt,
+		UpstreamMethod:       hops.upstreamMethod,
+		UpstreamURL:          hops.upstreamURL,
+		UpstreamSentAt:       hops.upstreamSentAt,
+		UpstreamUsageRaw:     hops.rawUsage,
+		UpstreamErrorBody:    hops.errorBody,
 		Tokens: model.TokenUsage{
 			Input:         record.Tokens.Input,
 			Output:        record.Tokens.Output,

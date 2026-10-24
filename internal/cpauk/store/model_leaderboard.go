@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -48,13 +49,8 @@ func (s *SQLiteStore) ModelLeaderboard(ctx context.Context, query model.Query) (
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return model.ModelLeaderboard{}, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
-	medians, err := s.credentialAckMedians(ctx, query)
-	if err != nil {
-		return model.ModelLeaderboard{}, err
-	}
 	rows, err := s.db.QueryContext(ctx, `SELECT model,provider,succeeded,session_digest,
-output_tokens,reasoning_tokens,accounting_schema,credential_id,provider_latency_ms,
-first_token_latency_ms,generation_time_ms FROM events `+where+` AND model <> ''`, arguments...)
+output_tokens,reasoning_tokens,accounting_schema,output_timing FROM events `+where+` AND model <> ''`, arguments...)
 	if err != nil {
 		return model.ModelLeaderboard{}, fmt.Errorf("query model leaderboard events: %w", err)
 	}
@@ -63,11 +59,10 @@ first_token_latency_ms,generation_time_ms FROM events `+where+` AND model <> ''`
 	for rows.Next() {
 		var modelName, provider, accountingSchema string
 		var succeeded bool
-		var sessionDigest, credentialID sql.NullString
+		var sessionDigest, outputTiming sql.NullString
 		var output, reasoning int64
-		var providerLatency, firstTokenLatency, generationTime sql.NullInt64
 		if err := rows.Scan(&modelName, &provider, &succeeded, &sessionDigest, &output, &reasoning,
-			&accountingSchema, &credentialID, &providerLatency, &firstTokenLatency, &generationTime); err != nil {
+			&accountingSchema, &outputTiming); err != nil {
 			return model.ModelLeaderboard{}, fmt.Errorf("scan model leaderboard event: %w", err)
 		}
 		item := stats[modelName]
@@ -83,21 +78,15 @@ first_token_latency_ms,generation_time_ms FROM events `+where+` AND model <> ''`
 		if sessionDigest.Valid && sessionDigest.String != "" {
 			item.sessions[sessionDigest.String] = struct{}{}
 		}
-		event := model.Event{
-			Tokens:              model.TokenUsage{Output: output},
-			CredentialID:        nullableString(credentialID),
-			ProviderLatencyMS:   nullableInt64(providerLatency),
-			FirstTokenLatencyMS: nullableInt64(firstTokenLatency),
-			GenerationTimeMS:    nullableInt64(generationTime),
-		}
-		var medianAck *float64
-		if event.CredentialID != nil {
-			if median, ok := medians[*event.CredentialID]; ok {
-				medianAck = &median
+		if succeeded && outputTiming.Valid {
+			var timing model.OutputTiming
+			if err := json.Unmarshal([]byte(outputTiming.String), &timing); err != nil {
+				return model.ModelLeaderboard{}, fmt.Errorf("decode leaderboard timing: %w", err)
 			}
-		}
-		if speed, _, ok := event.Throughput(medianAck); ok {
-			item.speeds = append(item.speeds, speed)
+			info := (model.Event{OutputTiming: &timing}).ArrivalThroughput()
+			if info.TokensPerSecond != nil {
+				item.speeds = append(item.speeds, *info.TokensPerSecond)
+			}
 		}
 		if succeeded {
 			generated, counted := generatedTokens(accountingSchema, output, reasoning)
@@ -160,8 +149,9 @@ func modelAwardSpeed(stats map[string]*modelLeaderboardStats) model.ModelLeaderb
 			continue
 		}
 		samples := int64(len(item.speeds))
+		successful := item.attempts - item.failed
 		candidates = append(candidates, modelLeaderboardCandidate{tie: samples, row: model.ModelLeaderboardRow{
-			Model: name, Value: p70, Samples: &samples,
+			Model: name, Value: p70, Samples: &samples, Attempts: &successful,
 		}})
 	}
 	return finishModelAward("speed", candidates)

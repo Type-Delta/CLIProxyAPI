@@ -585,6 +585,8 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	var readCh chan codexWebsocketRead
 	if sess != nil {
 		readCh = sess.activate(conn)
+	} else {
+		readCh = startWebsocketReadAhead(conn, closer, false)
 	}
 
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -740,7 +742,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readXAIWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := readXAIWebsocketMessage(ctx, sess, conn, readCh, reporter)
 			if errRead != nil {
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
@@ -1325,48 +1327,23 @@ func shouldRetryXAIWebsocketSend(err error) bool {
 	return shouldRetryCodexWebsocketSend(err)
 }
 
-func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead) (int, []byte, error) {
+func readXAIWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead, reporter *helps.UsageReporter) (int, []byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if sess == nil {
-		if conn == nil {
-			return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
-		}
-		msgType, payload, errRead := conn.ReadMessage()
-		return msgType, payload, errRead
-	}
-	if conn == nil {
-		return 0, nil, fmt.Errorf("xai websockets executor: websocket conn is nil")
-	}
-	if readCh == nil {
-		return 0, nil, fmt.Errorf("xai websockets executor: session read channel is nil")
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return 0, nil, ctx.Err()
-		case ev, ok := <-readCh:
-			if !ok {
-				return 0, nil, fmt.Errorf("xai websockets executor: session read channel closed")
-			}
-			if ev.conn != conn {
-				continue
-			}
-			if ev.err != nil {
-				return 0, nil, ev.err
-			}
-			return ev.msgType, ev.payload, nil
-		}
-	}
+	return readWebsocketMessage(ctx, conn, readCh, reporter, "xai")
 }
 
 func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {
 	if e == nil || sess == nil || conn == nil {
 		return
 	}
+	var previousCh chan codexWebsocketRead
+	budget := newCodexWebsocketReadBudget()
+	unreliable := false
 	for {
 		msgType, payload, errRead := conn.ReadMessage()
+		observedAt := time.Now()
 		if errRead != nil {
 			sess.markTerminalError(conn, errRead)
 			invalidate := func() {
@@ -1421,10 +1398,12 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		if ch == nil {
 			continue
 		}
-		select {
-		case ch <- codexWebsocketRead{conn: conn, msgType: msgType, payload: payload}:
-		case <-done:
+		if ch != previousCh {
+			previousCh, unreliable = ch, false
+			budget = newCodexWebsocketReadBudget()
 		}
+		event := codexWebsocketRead{conn: conn, msgType: msgType, payload: payload, observedAt: observedAt, timingUnreliable: unreliable}
+		enqueueCodexWebsocketRead(ch, done, event, budget, &unreliable)
 	}
 }
 

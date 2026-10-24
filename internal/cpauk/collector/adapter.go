@@ -125,7 +125,18 @@ func adaptRecord(record coreusage.Record) Source {
 	if responseTier == "" {
 		responseTier = record.Detail.ResponseServiceTier
 	}
+	var timing *model.OutputTiming
+	if record.OutputTiming != nil {
+		value := record.OutputTiming
+		timing = &model.OutputTiming{Version: value.Version, Protocol: value.Protocol, Source: value.Source, Status: value.Status, Reason: value.Reason, FirstArrivalNS: value.FirstArrivalNS, LastArrivalNS: value.LastArrivalNS, ArrivalCount: value.ArrivalCount, WindowTokens: value.WindowTokens, TokenQuality: model.TokenQuality(value.TokenQuality), Coverage: value.Coverage, FirstBatchBytes: value.FirstBatchBytes, TotalBytes: value.TotalBytes, LargestBatchBytes: value.LargestBatchBytes, MaxInterarrivalNS: value.MaxInterarrivalNS}
+	}
+	var stream *bool
+	if record.StreamKnown || record.Stream {
+		value := record.Stream
+		stream = &value
+	}
 	return Source{
+		Stream: stream, ReasoningEffort: record.ReasoningEffort,
 		ProxyRequestID: record.ProxyRequestID, RequestQuality: requestQuality,
 		EndpointClass: record.EndpointClass, Provider: record.Provider,
 		ExecutorType: record.ExecutorType, Model: record.Model, Alias: record.Alias,
@@ -136,7 +147,7 @@ func adaptRecord(record coreusage.Record) Source {
 		FirstTokenLatency: record.FirstTokenLatency,
 		RoutingTime:       record.RoutingTime,
 		ProviderLatency:   record.ProviderLatency,
-		GenerationTime:    record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed,
+		OutputTiming:      timing, GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed,
 		StatusCode: upstreamStatus(record), UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
 		ClientMethod: record.ClientMethod, ClientPath: record.ClientPath, ReceivedAt: record.ReceivedAt,
 		UpstreamMethod: record.UpstreamMethod, UpstreamURL: record.UpstreamURL, UpstreamSentAt: record.UpstreamSentAt,

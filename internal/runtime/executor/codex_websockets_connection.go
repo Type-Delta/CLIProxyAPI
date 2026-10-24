@@ -150,13 +150,19 @@ func frameCodexWebsocketRequestBody(body []byte) []byte {
 // startCodexWebsocketReadAhead observes frames before downstream forwarding can stall.
 // The request-owned closer stops both a blocked socket read and a blocked queue send.
 func startCodexWebsocketReadAhead(conn *websocket.Conn, closer *websocketConnectionCloser) chan codexWebsocketRead {
+	return startWebsocketReadAhead(conn, closer, true)
+}
+
+func startWebsocketReadAhead(conn *websocket.Conn, closer *websocketConnectionCloser, codexLiveness bool) chan codexWebsocketRead {
 	ch := make(chan codexWebsocketRead, 64)
 	go func() {
 		defer close(ch)
 		unreliable := false
 		budget := newCodexWebsocketReadBudget()
 		for {
-			_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
+			if codexLiveness {
+				_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
+			}
 			kind, payload, err := conn.ReadMessage()
 			event := codexWebsocketRead{conn: conn, msgType: kind, payload: payload, err: err, observedAt: time.Now(), timingUnreliable: unreliable}
 			if !enqueueCodexWebsocketRead(ch, closer.done, event, budget, &unreliable) {
@@ -171,16 +177,21 @@ func startCodexWebsocketReadAhead(conn *websocket.Conn, closer *websocketConnect
 }
 
 func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead, reporter *helps.UsageReporter) (int, []byte, error) {
+	return readWebsocketMessage(ctx, conn, readCh, reporter, "codex")
+}
+
+func readWebsocketMessage(ctx context.Context, conn *websocket.Conn, readCh chan codexWebsocketRead, reporter *helps.UsageReporter, provider string) (int, []byte, error) {
 	if conn == nil || readCh == nil {
-		return 0, nil, fmt.Errorf("codex websockets executor: missing connection or read channel")
+		return 0, nil, fmt.Errorf("%s websockets executor: missing connection or read channel", provider)
 	}
+	reporter.SetOutputTimingSource("responses", "websocket_reader", "visible_deltas")
 	for {
 		select {
 		case <-ctx.Done():
 			return 0, nil, ctx.Err()
 		case ev, ok := <-readCh:
 			if !ok {
-				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
+				return 0, nil, fmt.Errorf("%s websockets executor: session read channel closed", provider)
 			}
 			if ev.budget != nil {
 				ev.budget.release(len(ev.payload))
