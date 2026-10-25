@@ -142,7 +142,7 @@ func (h *Handler) CreateAnalyticsExport(c *gin.Context) {
 
 var analyticsEventExportColumns = []string{
 	"schema_version", "attempt_id", "proxy_request_id", "request_id_quality", "key_id", "requested_at", "provider", "executor_type", "model", "requested_alias", "endpoint_class", "auth_type", "credential_id", "credential_id_algorithm", "session_digest", "succeeded", "upstream_status_code", "error_class", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "service_tier_requested", "service_tier_used", "generated", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "accounting_schema", "token_quality", "known_cost_usd", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source",
-	"first_token_latency_ms", "provider_latency_ms", "routing_time_ms", "tokens", "output_timing", "stream", "reasoning_effort", "throughput", "tokens_per_second", "speed_estimated", "effective_output_tokens_per_second",
+	"first_token_latency_ms", "provider_latency_ms", "routing_time_ms", "tokens", "output_timing", "stream", "reasoning_effort", "throughput", "throughput_estimate", "tokens_per_second", "speed_estimated", "effective_output_tokens_per_second",
 	"client_method", "client_path", "received_at", "upstream_method", "upstream_url", "upstream_sent_at", "upstream_usage_raw", "upstream_error_body", "proxy_status_code", "proxy_error", "responded_at",
 }
 
@@ -159,7 +159,7 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 		"total_tokens": event.Tokens.Total, "accounting_schema": event.Tokens.Schema, "token_quality": event.Tokens.Quality,
 		"known_cost_usd": event.KnownCost, "unpriced_tokens": event.UnpricedTokens,
 		"first_token_latency_ms": event.FirstTokenLatencyMS, "provider_latency_ms": event.ProviderLatencyMS, "routing_time_ms": event.RoutingTimeMS,
-		"output_timing": event.OutputTiming, "stream": event.Stream, "reasoning_effort": event.ReasoningEffort, "throughput": event.ThroughputInfo, "tokens_per_second": event.TokensPerSecond, "speed_estimated": event.SpeedEstimated, "effective_output_tokens_per_second": event.EffectiveOutputTokensPerSecond,
+		"output_timing": event.OutputTiming, "stream": event.Stream, "reasoning_effort": event.ReasoningEffort, "throughput": event.ThroughputInfo, "throughput_estimate": event.ThroughputEstimate, "tokens_per_second": event.TokensPerSecond, "speed_estimated": event.SpeedEstimated, "effective_output_tokens_per_second": event.EffectiveOutputTokensPerSecond,
 		"tokens": event.Tokens, "client_method": event.ClientMethod, "client_path": event.ClientPath, "received_at": event.ReceivedAt,
 		"upstream_method": event.UpstreamMethod, "upstream_url": event.UpstreamURL, "upstream_sent_at": event.UpstreamSentAt,
 		"upstream_usage_raw": event.UpstreamUsageRaw, "upstream_error_body": event.UpstreamErrorBody,

@@ -722,6 +722,7 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	for index := range result.Events {
 		result.Events[index].EnrichThroughput()
 	}
+	s.enrichArrivalEstimates(ctx, result.Events)
 	return result, nil
 }
 
@@ -755,6 +756,9 @@ func (s *SQLiteStore) EventByAttemptID(ctx context.Context, attemptID string, qu
 		return model.Event{}, false, err
 	}
 	event.EnrichThroughput()
+	items := []model.Event{event}
+	s.enrichArrivalEstimates(ctx, items)
+	event = items[0]
 	return event, true, nil
 }
 
@@ -1185,8 +1189,9 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	event.ReasoningEffort = scanNullableString(reasoningEffort)
 	if outputTiming.Valid {
 		event.OutputTiming = &model.OutputTiming{}
-		if err := json.Unmarshal([]byte(outputTiming.String), event.OutputTiming); err != nil {
-			return model.Event{}, fmt.Errorf("decode output timing: %w", err)
+		if err := json.Unmarshal([]byte(outputTiming.String), event.OutputTiming); err != nil || event.OutputTiming.Validate() != nil {
+			// Optional telemetry must not hide the request's accounting record.
+			event.OutputTiming = nil
 		}
 	}
 	if routingTime.Valid {

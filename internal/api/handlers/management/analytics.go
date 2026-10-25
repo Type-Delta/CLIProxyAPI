@@ -707,7 +707,7 @@ func analyticsExportValueString(value any) string {
 			return ""
 		}
 		return string(*typed)
-	case *model.OutputTiming, *model.ThroughputInfo, *float64:
+	case *model.OutputTiming, *model.ThroughputInfo, *model.ThroughputEstimate, *float64:
 		encoded, _ := json.Marshal(typed)
 		if string(encoded) == "null" {
 			return ""

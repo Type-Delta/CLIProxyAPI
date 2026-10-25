@@ -1501,9 +1501,9 @@ with qualified samples and successful-attempt coverage. It does not rank whole-a
 failed attempts, or predictions as observed arrival speeds. Existing raw first-to-last timing
 aggregates remain available and are labelled as arrival spans.
 
-This draft collects the evidence needed for later chronological prediction evaluation. It
-does not enable a cohort predictor or claim calibrated confidence from historical rows that
-lack this evidence. External benchmarks can inform investigation but never clamp measurements.
+The initial telemetry draft deferred prediction until observed history was available. DL053
+adds guarded estimates for eligible unmeasured attempts. Historical rows without this evidence
+remain unavailable; external benchmarks never clamp measurements.
 
 **Implementation evidence:** `sdk/cliproxy/usage/output_timing.go`,
 `internal/runtime/executor/helps/output_observation.go`,
@@ -1521,6 +1521,60 @@ coverage. A replay of 30,378 historical attempts withheld unsupported arrival ra
 24,271 consistent whole-attempt rates. A deterministic 1,500 TPS case remains valid without a cap.
 
 **Last updated:** 2026-10-24
+
+### DL053 - Guarded historical arrival-rate estimates
+
+Unmeasured successful attempts can receive a separate `throughput_estimate` from recent
+comparable observations. The estimate never replaces `throughput`, its compatibility aliases,
+or the whole-attempt effective rate. Event lists, details, JSON/CSV exports and public viewers
+share the contract. The panel marks the fallback as Estimated, shows the historical P10/P90
+range and sample/validation evidence, and never derives a timing bar from a predicted rate.
+Measured-speed rankings continue to exclude predictions.
+
+History is isolated by client key, provider, model, executor, credential, protocol, reader
+source, coverage, request mode, reasoning preference and service tiers. Unknown preferences
+match only unknown preferences. Only native successful observations with at least one second,
+64 matching tokens and ten distinct arrivals can train the predictor. Prediction values are
+never labels. History is limited to the latest 200 unique qualifying requests in 24 hours,
+completed strictly before the target started; the newest observation must be within two hours.
+No model whitelist or TPS ceiling is applied.
+
+The latest 20 observations validate a frozen median and empirical P10/P90 range fitted on at
+least 50 earlier observations. Training must also have completed before the earliest validation
+request started, preventing overlapping requests from leaking later results into validation.
+Median absolute percentage error must be at most 25%, its 90th percentile at most 60%, and
+historical-range coverage at least 75%. These are historical admission checks, not guarantees
+about future accuracy or confidence probabilities. Sparse, stale, unstable or ineligible
+history produces an explicit unavailable result. Source-reported reasoning preference remains
+a hint, not proof of the final applied setting.
+
+Migration 014 adds a partial expression index for strict cohort and completion-range lookups.
+Queries read only label evidence, stop after 200 qualifying unique requests, and do not depend
+on display filters or pagination. Optional history-read failures suppress the estimate without
+failing the accounting read. Imported derived predictions are discarded and imported rows do
+not train the estimator. Client-key isolation also protects shared-viewer history metadata.
+
+**Implementation evidence:** `internal/cpauk/model/throughput_estimate.go`,
+`internal/cpauk/store/throughput_estimate.go`,
+`internal/cpauk/store/migrations/014_arrival_estimate_index.sql`, shared analytics exports/viewers,
+and the CPAMC event table and detail diagnostics.
+
+**Validation:** The full Go suite, canonical embedded-panel build and server build pass.
+CPAMC passes 2,120 tests, lint, type checking and its production build. Regression tests cover
+future and overlapping completions, sparse/drifted history, client-key isolation, imports,
+filter/pagination invariance, malformed optional timing, migration 013-to-014 and indexed
+lookup plans. A 10,000-row legacy-noise benchmark retained roughly 1 ms detail lookups.
+Independent review also swept 5,593 captured events across 12 pages and reproduced all 23
+unmeasured-event estimates; API/export/viewer and observation-preservation checks pass.
+
+Actual Go replay on 5,433 captured attempts admitted 430 of 4,090 measured successful targets
+for out-of-sample evaluation, with 15.1% median error and 61.8% P90 error. A separate later set
+admitted 12 measured targets with 7.2% median error; another later set admitted none, correctly
+leaving accuracy unclaimed. The 23 unmeasured estimates have no accuracy ground truth. These
+selective, session-correlated results do not establish general calibration; Sol retained large
+tail errors. No model whitelist or gate thresholds were tuned to hide those limitations.
+
+**Last updated:** 2026-10-25
 
 ## Merge History
 

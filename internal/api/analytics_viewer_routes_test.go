@@ -209,6 +209,13 @@ func TestViewerEventsStripAdminOnlyIdentityFields(t *testing.T) {
 	reader.events.Events[0].LatencyMS = 2000
 	reader.events.Events[0].OutputTiming = &model.OutputTiming{Version: 1, Protocol: "chat", Source: "source_reader", Status: "observed", FirstArrivalNS: 1, LastArrivalNS: 1000000001, ArrivalCount: 5, WindowTokens: 100, TokenQuality: model.TokenQualityEstimated, Coverage: "visible_deltas"}
 	reader.events.Events[0].EnrichThroughput()
+	predicted := reader.events.Events[0]
+	predicted.AttemptID = strings.Repeat("3", 32)
+	predicted.OutputTiming = nil
+	predicted.EnrichThroughput()
+	rate, low, high := 1500.0, 1200.0, 1700.0
+	predicted.ThroughputEstimate = &model.ThroughputEstimate{Status: "estimated", Method: "cohort_median_v1", TokensPerSecond: &rate, HistoricalP10: &low, HistoricalP90: &high, TrainingSamples: 50, ValidationSamples: 20, AsOf: predicted.RequestedAt}
+	reader.events.Events = append(reader.events.Events, predicted)
 	token, _, err := store.Exchange(created.Credential)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +227,7 @@ func TestViewerEventsStripAdminOnlyIdentityFields(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	for _, required := range []string{`"throughput":{"status":"observed"`, `"tokens_per_second":100`, `"effective_output_tokens_per_second":100`, `"speed_estimated":true`} {
+	for _, required := range []string{`"throughput":{"status":"observed"`, `"tokens_per_second":100`, `"effective_output_tokens_per_second":100`, `"speed_estimated":true`, `"throughput_estimate":{"status":"estimated"`, `"historical_p10":1200`, `"training_samples":50`, `"validation_samples":20`} {
 		if !strings.Contains(recorder.Body.String(), required) {
 			t.Fatalf("viewer omitted rate %q: %s", required, recorder.Body.String())
 		}

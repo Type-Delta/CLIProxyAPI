@@ -126,3 +126,42 @@ func TestAnalyticsExportNullDiagnosticsStayNull(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsEstimateExportsKeepPredictionSeparate(t *testing.T) {
+	rate, low, high := 1500.0, 1200.0, 1700.0
+	event := model.Event{ThroughputInfo: &model.ThroughputInfo{Status: "unavailable", Method: "arrival_window_v1", Reason: "insufficient_tokens"}, ThroughputEstimate: &model.ThroughputEstimate{Status: "estimated", Method: "cohort_median_v1", TokensPerSecond: &rate, HistoricalP10: &low, HistoricalP90: &high, TrainingSamples: 50, ValidationSamples: 20}}
+	reader := &analyticsHandlerReader{events: model.EventPage{Events: []model.Event{event}}}
+	var output bytes.Buffer
+	if _, err := writeAnalyticsEventsJSON(context.Background(), &output, reader, model.Query{Operation: model.OperationEvents}, 1); err != nil {
+		t.Fatal(err)
+	}
+	var exported []map[string]json.RawMessage
+	if err := json.Unmarshal(output.Bytes(), &exported); err != nil {
+		t.Fatal(err)
+	}
+	var estimate model.ThroughputEstimate
+	if err := json.Unmarshal(exported[0]["throughput_estimate"], &estimate); err != nil || !reflect.DeepEqual(estimate, *event.ThroughputEstimate) {
+		t.Fatalf("estimate=%+v err=%v", estimate, err)
+	}
+	if string(exported[0]["tokens_per_second"]) != "null" || string(exported[0]["speed_estimated"]) != "false" {
+		t.Fatalf("prediction leaked into aliases: %s", output.String())
+	}
+	output.Reset()
+	if _, err := writeAnalyticsEventsCSV(context.Background(), &output, reader, model.Query{Operation: model.OperationEvents}, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(&output).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range rows[0] {
+		if name == "throughput_estimate" {
+			if err := json.Unmarshal([]byte(rows[1][i]), &estimate); err != nil || !reflect.DeepEqual(estimate, *event.ThroughputEstimate) {
+				t.Fatalf("CSV estimate=%+v err=%v", estimate, err)
+			}
+		}
+		if name == "tokens_per_second" && rows[1][i] != "" {
+			t.Fatal("CSV prediction leaked into observed scalar")
+		}
+	}
+}

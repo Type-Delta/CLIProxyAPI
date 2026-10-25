@@ -108,6 +108,8 @@ type Event struct {
 	// Query-time arrival and whole-attempt rates are derived from this event alone.
 	ThroughputInfo                 *ThroughputInfo `json:"throughput,omitempty"`
 	EffectiveOutputTokensPerSecond *float64        `json:"effective_output_tokens_per_second,omitempty"`
+	// Query-time cohort predictions are separate from observed rate aliases.
+	ThroughputEstimate *ThroughputEstimate `json:"throughput_estimate,omitempty"`
 	// Query-time throughput enrichment, filled only when an event is read from durable storage.
 	// TokensPerSecond aliases the qualified arrival rate; SpeedEstimated describes its token count.
 	TokensPerSecond *float64 `json:"tokens_per_second,omitempty"`
