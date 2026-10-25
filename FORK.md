@@ -1378,6 +1378,15 @@ credentials, contains at most six contiguous ranks, and returns an empty row arr
 qualifies. Reliability requires at least 200 upstream attempts; speed requires a P70 of at least
 80 tokens per second and includes only successful attempts with qualified arrival evidence.
 
+CPAMC renders these four fixed award headers and descriptions before the ranking query finishes,
+with neutral skeletons replacing the ranking decorations until data arrives, and reserved podium
+and runners-up space for empty or partial results. The range chip reserves its localized dates,
+pending mascot images show the family lab logo, and Speed Maniac states its P70 qualification
+floor of 80 tok/s in every supported locale.
+The existing four-award contract supplies the card order and count without an additional API.
+The shared skeleton uses distinct theme-derived gradient colors, including White and Light
+themes whose hover and tertiary backgrounds are identical, and respects reduced-motion settings.
+
 The collector hashes the trimmed upstream session identifier into a nullable `session_digest`
 field and never persists the raw value. Migration 12 adds the column to existing databases while
 leaving historic rows null. Throughput reuses the qualified event arrival-window calculation from DL052. The canonical `normalized-v1` output total already includes
@@ -1399,7 +1408,7 @@ The requested CPAUK, API, and usage suites are green except for the previously r
 `TestV0RepeatedSavesKeepLegacyClientAlias` config compatibility failure; the management package
 passes when that unrelated test is skipped.
 
-**Last updated:** 2026-10-23
+**Last updated:** 2026-10-25
 
 ### DL050 - Management panel bundle is build output; mascots ship as separate assets
 
