@@ -1529,7 +1529,9 @@ comparable observations. The estimate never replaces `throughput`, its compatibi
 or the whole-attempt effective rate. Event lists, details, JSON/CSV exports and public viewers
 share the contract. The panel marks the fallback as Estimated, shows the historical P10/P90
 range and sample/validation evidence, and never derives a timing bar from a predicted rate.
-Measured-speed rankings continue to exclude predictions.
+Measured-speed rankings continue to exclude predictions. Estimated-token and predicted-rate
+markers use the compact `EST` label in the event table, details, and timing graph; their
+tooltips preserve the distinction between approximate token counts and historical predictions.
 
 History is isolated by client key, provider, model, executor, credential, protocol, reader
 source, coverage, request mode, reasoning preference and service tiers. Unknown preferences
