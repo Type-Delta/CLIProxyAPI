@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,11 +19,12 @@ import (
 // then runs through the real APICall transport, credential injection and quota
 // parsing without any outbound request.
 type gsrProbeFixture struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	seen   []string
-	status int
-	body   string
+	server  *httptest.Server
+	mu      sync.Mutex
+	seen    []string
+	headers []http.Header
+	status  int
+	body    string
 }
 
 func newGSRProbeFixture(t *testing.T) *gsrProbeFixture {
@@ -30,7 +32,8 @@ func newGSRProbeFixture(t *testing.T) *gsrProbeFixture {
 	fixture := &gsrProbeFixture{status: http.StatusOK}
 	fixture.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.mu.Lock()
-		fixture.seen = append(fixture.seen, r.Method+" https://"+r.Host+r.URL.Path)
+		fixture.seen = append(fixture.seen, r.Method+" https://"+r.Host+r.URL.RequestURI())
+		fixture.headers = append(fixture.headers, r.Header.Clone())
 		status, body := fixture.status, fixture.body
 		fixture.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -177,8 +180,15 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 				t.Fatalf("RefreshQuotaForRouting() error = %v", errRefresh)
 			}
 			requests := fixture.requests()
-			if len(requests) != 1 || requests[0] != test.wantRequest {
-				t.Fatalf("probe requests = %#v, want exactly %q", requests, test.wantRequest)
+			wantRequests := []string{test.wantRequest}
+			switch coreauth.QuotaRecoveryProviderForAuth(auth) {
+			case "codex":
+				wantRequests = append(wantRequests, "GET "+codexResetCreditsURL)
+			case "claude":
+				wantRequests = append(wantRequests, "GET "+claudeResetGrantsQuotaURL)
+			}
+			if !slices.Equal(requests, wantRequests) {
+				t.Fatalf("probe requests = %#v, want %#v", requests, wantRequests)
 			}
 			updated, ok := handler.authManager.GetByID(auth.ID)
 			if !ok || updated == nil {

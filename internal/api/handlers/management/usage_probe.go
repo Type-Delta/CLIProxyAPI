@@ -586,6 +586,21 @@ func runUsageProbeWindows(ctx context.Context, h *Handler, auth *coreauth.Auth, 
 		"Accept":        "application/json",
 		"Authorization": "Bearer $TOKEN$",
 	}
+	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
+	case "claude":
+		headers["Anthropic-Beta"] = "oauth-2025-04-20"
+		headers["User-Agent"] = "claude-cli/2.1.280 (external, cli)"
+		if h.cfg != nil && strings.TrimSpace(h.cfg.ClaudeHeaderDefaults.UserAgent) != "" {
+			headers["User-Agent"] = strings.TrimSpace(h.cfg.ClaudeHeaderDefaults.UserAgent)
+		}
+	case "codex":
+		if accountID, ok := auth.Metadata["account_id"].(string); ok && strings.TrimSpace(accountID) != "" {
+			headers["Chatgpt-Account-Id"] = strings.TrimSpace(accountID)
+		}
+		if h.cfg != nil && strings.TrimSpace(h.cfg.CodexHeaderDefaults.UserAgent) != "" {
+			headers["User-Agent"] = strings.TrimSpace(h.cfg.CodexHeaderDefaults.UserAgent)
+		}
+	}
 	key := buildQuotaCacheKey(h, auth, http.MethodGet, parsedURL, "", headers, "")
 	outcome := h.getQuotaCache().do(ctx, key, func(requestContext context.Context) quotaCallOutcome {
 		return h.executeAPICall(requestContext, http.MethodGet, targetURL, "", auth, "", headers, "")
@@ -878,6 +893,23 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	if resetAt.IsZero() {
 		return fmt.Errorf("provider %q returned no usable recovery timestamp", provider)
 	}
+	manual := coreauth.ManualResetObservation{}
+	if provider == "codex" || provider == "claude" {
+		manual.Provider = provider
+		targetURL := codexResetCreditsURL
+		if provider == "claude" {
+			targetURL = claudeResetGrantsQuotaURL
+		}
+		_, errManual := runUsageProbeWindows(ctx, h, auth, provider, targetURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
+			expiry, errParse := parseManualResetExpiry(provider, body, time.Now().UTC())
+			manual.ExpiresAt = expiry
+			return nil, errParse
+		})
+		manual.ObservedAt = time.Now().UTC()
+		if errManual != nil {
+			log.WithError(errManual).WithField("auth_id", auth.ID).Debug("manual reset expiry unavailable; using quota window")
+		}
+	}
 	quota := auth.Quota.Clone()
 	if quota.Signals == nil {
 		quota.Signals = make(map[string]string)
@@ -887,6 +919,7 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 		quota.Signals["kiro_plan_type"] = plan
 	}
 	quota.ObservedAt = time.Now().UTC()
+	quota.ManualReset = manual
 	_, errUpdate := h.authManager.UpdateQuotaObservation(ctx, auth.ID, quota)
 	return errUpdate
 }

@@ -310,6 +310,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	} else if mode == updateModeQuotaObservation {
 		updatedQuota := auth.Quota.Clone()
 		auth = existing.Clone()
+		auth.Quota = mergeQuotaObservation(auth.Quota, updatedQuota)
 		auth.Quota.Signals = updatedQuota.Signals
 		auth.Quota.ObservedAt = updatedQuota.ObservedAt
 	}
@@ -379,6 +380,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.Quota = existing.Quota
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
+			auth.Quota.ManualReset = observation.ManualReset
 			applyCooldownFields(&auth.Quota, existing.Quota)
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status

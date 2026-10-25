@@ -225,8 +225,16 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 	}
 
 	missing := make([]*Auth, 0, len(candidates))
+	now := time.Now()
 	for _, candidate := range candidates {
-		if candidate != nil && RecoveryTimestampForAuth(candidate, model).IsZero() {
+		if candidate == nil {
+			continue
+		}
+		provider := QuotaRecoveryProviderForAuth(candidate)
+		manual := candidate.Quota.ManualReset
+		needsManualReset := (provider == "codex" || provider == "claude") &&
+			(manual.Provider != provider || manual.ObservedAt.After(now) || !manual.ObservedAt.After(now.Add(-3*time.Minute)))
+		if RecoveryTimestampForAuth(candidate, model).IsZero() || needsManualReset {
 			missing = append(missing, candidate.Clone())
 		}
 	}

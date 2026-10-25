@@ -78,3 +78,66 @@ func TestAuthRecoveryTimestampUsesProviderWindowPreference(t *testing.T) {
 		t.Fatalf("normal Claude recovery = %v, want 3h", got.Sub(now))
 	}
 }
+
+func TestGSRManualResetExpiry(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	weekly := now.Add(6 * 24 * time.Hour)
+	manual := now.Add(2 * 24 * time.Hour)
+	for _, test := range []struct {
+		name, provider, model, signal, manualProvider string
+		expires, observed, want                       time.Time
+	}{
+		{"codex earlier credit", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", manual, now, manual},
+		{"claude earlier grant", "claude", "claude-sonnet-4-5", "Anthropic-Ratelimit-Unified-7d-Reset", "claude", manual, now, manual},
+		{"later credit", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", weekly.Add(time.Hour), now, weekly},
+		{"expired credit", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", now, now, weekly},
+		{"missing expiry", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", time.Time{}, now, weekly},
+		{"unobserved credit", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", manual, time.Time{}, weekly},
+		{"future observation", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "codex", manual, now.Add(time.Hour), weekly},
+		{"wrong quota provider", "codex", "gpt-5", "X-Codex-Secondary-Reset-At", "claude", manual, now, weekly},
+		{"fable independent allowance", "claude", "claude-fable-5-1", "Anthropic-Ratelimit-Unified-7d_oi-Reset", "claude", manual, now, weekly},
+		{"spark independent allowance", "codex", "gpt-5.3-codex-spark", "X-Codex-Secondary-Reset-At", "codex", manual, now, weekly},
+		{"code review independent allowance", "codex", "codex-auto-review", "X-Codex-Secondary-Reset-At", "codex", manual, now, weekly},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			auth := &Auth{Provider: test.provider, Quota: QuotaState{
+				Signals: map[string]string{test.signal: weekly.Format(time.RFC3339)},
+				ManualReset: ManualResetObservation{Provider: test.manualProvider,
+					ObservedAt: test.observed, ExpiresAt: test.expires},
+			}}
+			got, ok := authRecoveryTimestampAt(auth, "mixed", test.model, now)
+			if !ok || !got.Equal(test.want) {
+				t.Fatalf("recovery = %v, %v; want %v", got, ok, test.want)
+			}
+			if auth.Quota.Signals[test.signal] != weekly.Format(time.RFC3339) {
+				t.Fatal("routing changed the reported weekly reset")
+			}
+		})
+	}
+}
+
+func TestGSRManualResetGetsSameShareAsWeeklyReset(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manual := now.Add(48 * time.Hour)
+	auths := []*Auth{
+		{ID: "manual", Provider: "codex", Quota: QuotaState{
+			Signals:     map[string]string{"X-Codex-Secondary-Reset-At": now.Add(6 * 24 * time.Hour).Format(time.RFC3339)},
+			ManualReset: ManualResetObservation{Provider: "codex", ObservedAt: now, ExpiresAt: manual},
+		}},
+		{ID: "weekly", Provider: "codex", Quota: QuotaState{
+			Signals: map[string]string{"X-Codex-Secondary-Reset-At": manual.Format(time.RFC3339)},
+		}},
+	}
+	selector := &GreedySoonestRecoverySelector{}
+	counts := make(map[string]int)
+	for i := 0; i < 100; i++ {
+		picked, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, auths)
+		if errPick != nil {
+			t.Fatal(errPick)
+		}
+		counts[picked.ID]++
+	}
+	if counts["manual"] != 50 || counts["weekly"] != 50 {
+		t.Fatalf("routing shares = %v, want 50:50", counts)
+	}
+}

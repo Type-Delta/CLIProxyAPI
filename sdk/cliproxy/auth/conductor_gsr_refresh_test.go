@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func TestPrepareQuotaRecoveryCandidatesRefreshesMissingAndReusesCache(t *testing
 	manager := NewManager(nil, quotaRecoveryTestSelector{}, nil)
 	cachedReset := time.Now().Add(12 * time.Hour)
 	for _, auth := range []*Auth{
-		{ID: "cached", Provider: "codex", Quota: QuotaState{NextRecoverAt: cachedReset}},
+		{ID: "cached", Provider: "codex", Quota: QuotaState{NextRecoverAt: cachedReset, ManualReset: ManualResetObservation{Provider: "codex", ObservedAt: time.Now()}}},
 		{ID: "missing", Provider: "codex"},
 	} {
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
@@ -143,7 +144,7 @@ func TestPrepareQuotaRecoveryCandidatesRefreshesMissingAndReusesCache(t *testing
 func TestPrepareQuotaRecoveryCandidatesKeepsFailedRefreshForFallback(t *testing.T) {
 	manager := NewManager(nil, quotaRecoveryTestSelector{}, nil)
 	for _, auth := range []*Auth{
-		{ID: "cached", Provider: "codex", Quota: QuotaState{NextRecoverAt: time.Now().Add(time.Hour)}},
+		{ID: "cached", Provider: "codex", Quota: QuotaState{NextRecoverAt: time.Now().Add(time.Hour), ManualReset: ManualResetObservation{Provider: "codex", ObservedAt: time.Now()}}},
 		{ID: "failed", Provider: "codex"},
 	} {
 		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
@@ -157,6 +158,88 @@ func TestPrepareQuotaRecoveryCandidatesKeepsFailedRefreshForFallback(t *testing.
 	}
 	if len(candidates) != 2 || preparation.refreshTried != 1 || preparation.refreshError != 1 {
 		t.Fatalf("failed refresh preparation = candidates=%d preparation=%#v", len(candidates), preparation)
+	}
+}
+
+func TestGSRRefreshesManualResetWithKnownWeeklyReset(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		t.Run(provider, func(t *testing.T) {
+			now := time.Now().UTC()
+			manager := NewManager(nil, &GreedySoonestRecoverySelector{}, nil)
+			for _, id := range []string{"first", "second"} {
+				_, errRegister := manager.Register(context.Background(), &Auth{
+					ID: id, Provider: provider, Quota: QuotaState{NextRecoverAt: now.Add(6 * 24 * time.Hour)},
+				})
+				if errRegister != nil {
+					t.Fatal(errRegister)
+				}
+			}
+			manager.SetQuotaRecoveryRefresher(func(ctx context.Context, auth *Auth, _ string) error {
+				quota := auth.Quota.Clone()
+				quota.ManualReset = ManualResetObservation{Provider: provider, ObservedAt: now, ExpiresAt: now.Add(48 * time.Hour)}
+				_, errUpdate := manager.UpdateQuotaObservation(ctx, auth.ID, quota)
+				return errUpdate
+			})
+			_, preparation, errPrepare := manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "test-model")
+			if errPrepare != nil || preparation.refreshed != 2 {
+				t.Fatalf("initial refresh = %+v, %v; want two manual reset checks", preparation, errPrepare)
+			}
+			_, preparation, errPrepare = manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "test-model")
+			if errPrepare != nil || preparation.refreshTried != 0 {
+				t.Fatalf("cached refresh = %+v, %v; want no checks", preparation, errPrepare)
+			}
+
+			// Age the observation explicitly instead of waiting for cache expiry.
+			for _, auth := range manager.List() {
+				auth.Quota.ManualReset.ObservedAt = now.Add(-4 * time.Minute)
+				if _, errUpdate := manager.Update(context.Background(), auth); errUpdate != nil {
+					t.Fatal(errUpdate)
+				}
+			}
+			_, preparation, errPrepare = manager.prepareQuotaRecoveryCandidates(context.Background(), manager.List(), "test-model")
+			if errPrepare != nil || preparation.refreshed != 2 {
+				t.Fatalf("stale refresh = %+v, %v; want two checks", preparation, errPrepare)
+			}
+		})
+	}
+}
+
+func TestGSRManualResetSurvivesTrafficAndClearsWhenSpent(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	manager := NewManager(nil, nil, nil)
+	manual := ManualResetObservation{Provider: "codex", ObservedAt: now, ExpiresAt: now.Add(48 * time.Hour)}
+	auth, errRegister := manager.Register(context.Background(), &Auth{ID: "manual", Provider: "codex", Quota: QuotaState{ManualReset: manual}})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	quota := QuotaState{}
+	quota.ObserveResponseHeadersForProvider("codex", http.Header{
+		"X-Codex-Secondary-Reset-At": []string{now.Add(6 * 24 * time.Hour).Format(time.RFC3339)},
+	}, now.Add(time.Second))
+	updated, errUpdate := manager.UpdateQuotaObservation(context.Background(), auth.ID, quota)
+	if errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	if updated.Quota.ManualReset != manual {
+		t.Fatalf("response headers lost manual reset observation: %+v", updated.Quota)
+	}
+	if got, ok := authRecoveryTimestampAt(updated, "codex", "gpt-5", now.Add(time.Second)); !ok || !got.Equal(manual.ExpiresAt) {
+		t.Fatalf("post-traffic recovery = %v, %v; want manual expiry", got, ok)
+	}
+	quota = updated.Quota.Clone()
+	quota.ManualReset = ManualResetObservation{Provider: "codex", ObservedAt: now.Add(2 * time.Second)}
+	updated, errUpdate = manager.UpdateQuotaObservation(context.Background(), auth.ID, quota)
+	if errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	if got, ok := authRecoveryTimestampAt(updated, "codex", "gpt-5", now.Add(2*time.Second)); !ok || !got.Equal(now.Add(6*24*time.Hour)) {
+		t.Fatalf("spent credit recovery = %v, %v; want weekly reset", got, ok)
+	}
+	// A delayed observation must not restore a spent credit.
+	quota.ManualReset = manual
+	updated, errUpdate = manager.UpdateQuotaObservation(context.Background(), auth.ID, quota)
+	if errUpdate != nil || !updated.Quota.ManualReset.ExpiresAt.IsZero() {
+		t.Fatalf("stale credit restored: %+v, %v", updated, errUpdate)
 	}
 }
 

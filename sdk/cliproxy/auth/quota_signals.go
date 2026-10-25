@@ -218,6 +218,9 @@ func isQuotaSignalHeaderForProvider(provider, name string) bool {
 // unioning signals captured at different times, so merging an older snapshot
 // can never resurrect a stale watermark.
 func mergeQuotaObservation(target, source QuotaState) QuotaState {
+	if !source.ManualReset.ObservedAt.IsZero() && !source.ManualReset.ObservedAt.Before(target.ManualReset.ObservedAt) {
+		target.ManualReset = source.ManualReset
+	}
 	if source.ObservedAt.IsZero() || source.ObservedAt.Before(target.ObservedAt) {
 		return target
 	}

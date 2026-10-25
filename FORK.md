@@ -1021,20 +1021,38 @@ raw quota totals are never compared across providers.
 The recovery window is provider-specific: Claude Fable uses the Fable weekly
 window, other Claude models use the normal weekly window, Codex and GLM use the
 weekly window, and OpenCode Go uses the monthly window. A missing cached reset is
-refreshed synchronously through the shared management quota cache; failed refreshes
-exclude that credential, and an empty eligible set returns an explicit routing error.
+refreshed synchronously through the shared management quota cache; incomplete
+recovery data uses the request-level round-robin fallback described in DL036.
+Codex available `codex_rate_limits` credits and eligible Claude `cedar_ember`
+grants that clear `seven_day` can shorten the effective recovery deadline to
+their earliest future expiry. For example, a credit expiring in two days gives
+an account with a six-day weekly reset the same recovery weight as a two-day
+weekly reset. The provider's reported weekly reset remains unchanged.
+Manual reset observations refresh on demand every three minutes even when a
+weekly reset is already cached, and survive ordinary response-header snapshots
+and cooldown transitions. Spent, expired, paused, ineligible, or not-yet-started
+credits do not contribute an expiry; failed optional reads retain normal weekly
+routing. Claude grants that require reaching a limit still count while the
+account is healthy. Independent Fable, Spark, and code-review allowances do not
+inherit an expiry from a reset of the shared allowance.
 Management routing reads and writes normalize the aliases to the canonical strategy.
 
 **Implementation evidence:** `internal/config/config_types.go`,
 `sdk/cliproxy/service_config.go`, `sdk/cliproxy/auth/`, `sdk/cliproxy/auth/scheduler.go`,
 `internal/api/handlers/management/config_basic.go`,
-`internal/api/handlers/management/usage_probe.go`, `internal/api/server.go`, and
+`internal/api/handlers/management/{usage_probe,gsr_manual_reset}.go`, `internal/api/server.go`, and
 `config.example.yaml`.
 
 **Recorded validation:** focused routing normalization and service selector tests pass,
 including the canonical name, aliases, and session-affinity wrapping.
+Manual-reset regressions cover expiry selection, actual weighted shares, provider
+identity, refresh cadence, spent credits, and preservation across response headers.
+Local HTTP fixtures exercise both provider reads, cached replay and the auth
+manager's selection path with the six-day weekly/two-day manual-reset example.
+The full repository suite, focused auth and management race tests, canonical
+panel build, and disposable server compile check pass.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-25
 
 ### DL029 - CPAMC quota summary redesign
 

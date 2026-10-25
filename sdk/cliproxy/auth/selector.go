@@ -934,6 +934,20 @@ func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) 
 		if reset := providerSignalRecoveryTimestamp(auth, provider, model, now); !reset.IsZero() {
 			addEarliest(reset)
 		}
+		manual := auth.Quota.ManualReset
+		modelKey := strings.ToLower(canonicalModelKey(model))
+		if manual.Provider == provider && !manual.ObservedAt.IsZero() && !manual.ObservedAt.After(now) {
+			switch provider {
+			case "codex":
+				if modelKey != "codex-auto-review" && !strings.HasSuffix(modelKey, "-spark") {
+					addEarliest(manual.ExpiresAt)
+				}
+			case "claude":
+				if !strings.Contains(modelKey, "fable") {
+					addEarliest(manual.ExpiresAt)
+				}
+			}
+		}
 	}
 	return deadline, !deadline.IsZero()
 }

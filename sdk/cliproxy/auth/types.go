@@ -300,6 +300,17 @@ type QuotaState struct {
 	// Cooldown transitions must use applyCooldownFields so they cannot replace
 	// this snapshot.
 	Signals map[string]string `json:"signals,omitempty"`
+	// ManualReset is observed separately because ordinary response headers do
+	// not report the availability or expiry of manual reset credits.
+	ManualReset ManualResetObservation `json:"manual_reset,omitzero"`
+}
+
+// ManualResetObservation records the earliest available weekly reset credit.
+// A zero ExpiresAt with a nonzero ObservedAt records a check with no usable expiry.
+type ManualResetObservation struct {
+	Provider   string    `json:"provider"`
+	ObservedAt time.Time `json:"observed_at"`
+	ExpiresAt  time.Time `json:"expires_at,omitzero"`
 }
 
 // Clone returns an independent copy of the quota state.
