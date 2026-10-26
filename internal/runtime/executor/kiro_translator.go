@@ -7,19 +7,24 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
-var kiroModelVersion = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku)-\d+)[._-](\d+)(?:[-_].*)?$`)
+// Eight-digit release dates are separate from the one- or two-digit minor version.
+var kiroModelVersion = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku|fable)-\d+)(?:[._-](\d{1,2}))?(?:[-_]\d{8})?(?:\[[^\]]+\])?(?:-thinking)?$`)
 
 // NormalizeKiroModelID converts public Claude model aliases to the dotted IDs
 // accepted by runtime.<region>.kiro.dev.
 func NormalizeKiroModelID(model string) string {
-	model = strings.TrimSpace(model)
+	model = strings.TrimSpace(thinking.ParseSuffix(strings.TrimSpace(model)).ModelName)
 	if model == "" {
 		return model
 	}
 	if match := kiroModelVersion.FindStringSubmatch(strings.ToLower(model)); len(match) == 3 {
-		return match[1] + "." + match[2]
+		if match[2] != "" {
+			return match[1] + "." + match[2]
+		}
+		return match[1]
 	}
 	return strings.TrimSuffix(model, "-thinking")
 }

@@ -1618,6 +1618,34 @@ tail errors. No model whitelist or gate thresholds were tuned to hide those limi
 
 **Last updated:** 2026-10-25
 
+### DL054 - Kiro model ID normalization
+
+Kiro wire IDs use dotted minor versions, including `claude-fable-5.1`. The
+normalizer now includes Fable, removes CPA reasoning suffixes before conversion,
+and strips Claude context and release-date suffixes. A dated major-only model
+such as `claude-opus-5-20260724` resolves to `claude-opus-5` instead of treating
+the date as a minor version. Both current and historical user messages receive
+the normalized ID before payload rules run.
+
+Kiro registration still uses the shared Claude catalog, which can advertise
+models absent from a credential's Kiro catalog. Those availability restrictions
+remain enforced by Kiro.
+
+**Implementation evidence:** `internal/runtime/executor/kiro_translator.go`,
+`internal/runtime/executor/kiro_translator_test.go`, and
+`internal/runtime/executor/kiro_executor_models_test.go`.
+
+**Recorded validation:** the full executor package tests, executor `go vet`, and
+server build pass. Regressions exercise wire IDs in both executor modes with
+Claude Messages, Chat Completions, and Responses input, and retain the existing
+final-payload ordering check. A disposable CPA server built from this checkout
+completed 13 live Kiro requests: Fable 5.1 and Sonnet 5 with a reasoning suffix
+through all three public protocols, streaming and buffered, plus Opus 5.5 with
+a reasoning suffix. Every response contained the requested text and streaming
+responses reached their terminal event.
+
+**Last updated:** 2026-10-26
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

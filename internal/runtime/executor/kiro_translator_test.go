@@ -14,10 +14,24 @@ import (
 
 func TestNormalizeKiroModelID(t *testing.T) {
 	for input, want := range map[string]string{
-		"claude-haiku-4-5-20251001":  "claude-haiku-4.5",
-		"claude-sonnet-4-5":          "claude-sonnet-4.5",
-		"claude-opus-4.6":            "claude-opus-4.6",
-		"claude-sonnet-4-5-thinking": "claude-sonnet-4.5",
+		"claude-haiku-4-5-20251001":           "claude-haiku-4.5",
+		"claude-sonnet-4-5":                   "claude-sonnet-4.5",
+		"claude-opus-4.6":                     "claude-opus-4.6",
+		"claude-sonnet-4-5-thinking":          "claude-sonnet-4.5",
+		"claude-fable-5-1":                    "claude-fable-5.1",
+		"claude-fable-5.1":                    "claude-fable-5.1",
+		"claude-sonnet-5(high)":               "claude-sonnet-5",
+		"claude-sonnet-5-5(high)":             "claude-sonnet-5.5",
+		"claude-opus-5-5(16384)":              "claude-opus-5.5",
+		"claude-sonnet-4-20250514":            "claude-sonnet-4",
+		"claude-opus-5-20260724":              "claude-opus-5",
+		"claude-opus-5-5[1m]":                 "claude-opus-5.5",
+		"claude-fable-5-1-20260916[1m](high)": "claude-fable-5.1",
+		"claude-opus-5-5-thinking(high)":      "claude-opus-5.5",
+		" CLAUDE-FABLE-5-1 ":                  "claude-fable-5.1",
+		"gpt-5.6-sol":                         "gpt-5.6-sol",
+		"custom-model":                        "custom-model",
+		"":                                    "",
 	} {
 		if got := NormalizeKiroModelID(input); got != want {
 			t.Errorf("NormalizeKiroModelID(%q) = %q, want %q", input, got, want)
