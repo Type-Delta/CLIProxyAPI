@@ -180,7 +180,7 @@ func TestThroughputEstimateIndexMigrationUpgradesV13(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(ctx, `DROP INDEX events_arrival_estimate_idx; DELETE FROM schema_migrations WHERE version=14`); err != nil {
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX events_arrival_estimate_idx; DELETE FROM schema_migrations WHERE version>=14`); err != nil {
 		t.Fatal(err)
 	}
 	if err := raw.Close(); err != nil {
@@ -191,7 +191,7 @@ func TestThroughputEstimateIndexMigrationUpgradesV13(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = upgraded.Close(ctx) })
-	if upgraded.SchemaVersion() != 14 {
+	if upgraded.SchemaVersion() != 15 {
 		t.Fatalf("schema=%d", upgraded.SchemaVersion())
 	}
 	if _, err := os.Stat(config.Path + ".pre-migration-v14"); err != nil {

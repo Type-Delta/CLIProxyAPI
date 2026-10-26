@@ -22,11 +22,21 @@ type PricingRule struct {
 	OutputPerMillion        *model.NanoUSD
 	CacheReadMultiplier     string
 	CacheCreationMultiplier string
+	ServiceTierPrices       map[string]ServiceTierPrice `json:",omitempty"`
 	Source                  string
 	// Catalog marks rules loaded from the managed remote catalog. It is kept
 	// separate from Source so user supplied source labels cannot masquerade as
 	// automatic rules.
 	Catalog bool
+}
+
+// ServiceTierPrice holds complete token rates for one provider service tier.
+// Cache multipliers are relative to this tier's input price.
+type ServiceTierPrice struct {
+	InputPerMillion         model.NanoUSD `json:"input_per_million_usd"`
+	OutputPerMillion        model.NanoUSD `json:"output_per_million_usd"`
+	CacheReadMultiplier     string        `json:"cache_read_multiplier,omitempty"`
+	CacheCreationMultiplier string        `json:"cache_creation_multiplier,omitempty"`
 }
 
 type PriceBook struct {
@@ -59,12 +69,46 @@ func (r PricingRule) Validate() error {
 	if _, err := multiplier(r.CacheCreationMultiplier); err != nil {
 		return fmt.Errorf("pricing rule %s cache-creation multiplier: %w", r.ID, err)
 	}
+	if len(r.ServiceTierPrices) > 32 {
+		return fmt.Errorf("pricing rule %s has too many service tiers", r.ID)
+	}
+	for tier, price := range r.ServiceTierPrices {
+		if tier == "" || tier != strings.ToLower(strings.TrimSpace(tier)) || len(tier) > model.MaxStoredStringBytes {
+			return fmt.Errorf("pricing rule %s has an invalid service tier", r.ID)
+		}
+		if price.InputPerMillion < 0 || price.OutputPerMillion < 0 {
+			return fmt.Errorf("pricing rule %s service tier %s contains a negative price", r.ID, tier)
+		}
+		if _, err := multiplier(price.CacheReadMultiplier); err != nil {
+			return fmt.Errorf("pricing rule %s service tier %s cache-read multiplier: %w", r.ID, tier, err)
+		}
+		if _, err := multiplier(price.CacheCreationMultiplier); err != nil {
+			return fmt.Errorf("pricing rule %s service tier %s cache-creation multiplier: %w", r.ID, tier, err)
+		}
+	}
 	return nil
 }
 
 func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	rule := p.match(event.Provider, event.Model, event.RequestedAlias)
-	if rule == nil || rule.InputPerMillion == nil || rule.OutputPerMillion == nil {
+	if rule == nil {
+		return PriceResult{UnpricedTokens: event.Tokens.Total}, nil
+	}
+	// A returned default tier is authoritative even when priority was requested.
+	tier := ""
+	if event.ServiceTierUsed != nil {
+		tier = strings.TrimSpace(*event.ServiceTierUsed)
+	}
+	if tier == "" && event.ServiceTierRequested != nil {
+		tier = strings.TrimSpace(*event.ServiceTierRequested)
+	}
+	if price, ok := rule.ServiceTierPrices[strings.ToLower(tier)]; ok {
+		selected := *rule
+		selected.InputPerMillion, selected.OutputPerMillion = &price.InputPerMillion, &price.OutputPerMillion
+		selected.CacheReadMultiplier, selected.CacheCreationMultiplier = price.CacheReadMultiplier, price.CacheCreationMultiplier
+		rule = &selected
+	}
+	if rule.InputPerMillion == nil || rule.OutputPerMillion == nil {
 		return PriceResult{UnpricedTokens: event.Tokens.Total}, nil
 	}
 	if *rule.InputPerMillion < 0 || *rule.OutputPerMillion < 0 {

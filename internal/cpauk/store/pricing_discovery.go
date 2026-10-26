@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 
 const (
 	modelsDevURL          = "https://models.dev/api.json"
+	modelsDevV2URL        = "https://models.dev/experimental/v2.0/api.json"
 	maxModelsDevBodyBytes = 32 << 20
 )
 
@@ -357,8 +359,11 @@ type modelsDevProvider struct {
 }
 
 type modelsDevModel struct {
-	ID   string        `json:"id"`
-	Cost modelsDevCost `json:"cost"`
+	ID           string        `json:"id"`
+	Cost         modelsDevCost `json:"cost"`
+	Experimental struct {
+		Modes map[string]modelsDevMode `json:"modes"`
+	} `json:"experimental"`
 }
 
 type modelsDevCost struct {
@@ -366,33 +371,49 @@ type modelsDevCost struct {
 	Output     json.RawMessage `json:"output"`
 	CacheRead  json.RawMessage `json:"cache_read"`
 	CacheWrite json.RawMessage `json:"cache_write"`
+	Text       *struct {
+		Input struct {
+			Price json.RawMessage `json:"price"`
+			Unit  string          `json:"unit"`
+			Cache struct {
+				Read     json.RawMessage `json:"read"`
+				Write    json.RawMessage `json:"write"`
+				Explicit struct {
+					Write json.RawMessage `json:"write"`
+				} `json:"explicit"`
+			} `json:"cache"`
+		} `json:"input"`
+		Output struct {
+			Price json.RawMessage `json:"price"`
+			Unit  string          `json:"unit"`
+		} `json:"output"`
+	} `json:"text"`
+	Multipliers []struct {
+		When   map[string]json.RawMessage `json:"when"`
+		Factor json.RawMessage            `json:"factor"`
+	} `json:"multipliers"`
+}
+
+type modelsDevMode struct {
+	ServiceTier string        `json:"service_tier"`
+	Cost        modelsDevCost `json:"cost"`
+	Body        struct {
+		ServiceTier string `json:"service_tier"`
+	} `json:"body"`
+	Provider struct {
+		Body struct {
+			ServiceTier string `json:"service_tier"`
+		} `json:"body"`
+	} `json:"provider"`
 }
 
 func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
+	providers, body, err := f.fetchProviders(ctx, modelsDevV2URL)
+	if err != nil && ctx.Err() == nil {
+		providers, body, err = f.fetchProviders(ctx, modelsDevURL)
+	}
 	if err != nil {
 		return PricingCatalog{}, err
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "CLIProxyAPI/models.dev-pricing")
-	response, err := f.client.Do(request)
-	if err != nil {
-		return PricingCatalog{}, fmt.Errorf("fetch models.dev catalog: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return PricingCatalog{}, fmt.Errorf("models.dev returned HTTP %d", response.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxModelsDevBodyBytes+1))
-	if err != nil {
-		return PricingCatalog{}, fmt.Errorf("read models.dev catalog: %w", err)
-	}
-	if len(body) > maxModelsDevBodyBytes {
-		return PricingCatalog{}, fmt.Errorf("models.dev catalog exceeds %d bytes", maxModelsDevBodyBytes)
-	}
-	var providers map[string]modelsDevProvider
-	if err := json.Unmarshal(body, &providers); err != nil {
-		return PricingCatalog{}, fmt.Errorf("decode models.dev catalog: %w", err)
 	}
 	rules := make([]aggregate.PricingRule, 0)
 	providersList := make([]CatalogProvider, 0, len(providers))
@@ -479,6 +500,38 @@ func (f modelsDevFetcher) Fetch(ctx context.Context) (PricingCatalog, error) {
 	return PricingCatalog{Rules: rules, Digest: fmt.Sprintf("%x", digest[:]), Providers: providersList, BindingsDigest: catalogBindingsDigest(bindings)}, nil
 }
 
+func (f modelsDevFetcher) fetchProviders(ctx context.Context, url string) (map[string]modelsDevProvider, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "CLIProxyAPI/models.dev-pricing")
+	response, err := f.client.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch models.dev catalog: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("models.dev returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxModelsDevBodyBytes+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read models.dev catalog: %w", err)
+	}
+	if len(body) > maxModelsDevBodyBytes {
+		return nil, nil, fmt.Errorf("models.dev catalog exceeds %d bytes", maxModelsDevBodyBytes)
+	}
+	var providers map[string]modelsDevProvider
+	if err := json.Unmarshal(body, &providers); err != nil {
+		return nil, nil, fmt.Errorf("decode models.dev catalog: %w", err)
+	}
+	if len(providers) == 0 {
+		return nil, nil, fmt.Errorf("models.dev returned an empty catalog")
+	}
+	return providers, body, nil
+}
+
 type modelsDevProviderMapping struct {
 	cpa       string
 	modelsDev string
@@ -554,24 +607,165 @@ func kiroBedrockFallbackRules(bedrock modelsDevProvider, existing []aggregate.Pr
 }
 
 func modelsDevRule(provider string, entry modelsDevModel) (aggregate.PricingRule, error) {
-	input, inputOK, err := parseModelsDevPrice(entry.Cost.Input)
+	cost, err := entry.Cost.tokenPrices()
 	if err != nil {
 		return aggregate.PricingRule{}, err
 	}
-	output, outputOK, err := parseModelsDevPrice(entry.Cost.Output)
+	base, known, err := modelsDevTierPrice(cost)
 	if err != nil {
 		return aggregate.PricingRule{}, err
-	}
-	var inputPtr, outputPtr *model.NanoUSD
-	if inputOK && outputOK {
-		inputPtr, outputPtr = &input, &output
 	}
 	rule := aggregate.PricingRule{Provider: provider, ID: "models.dev:" + provider + ":" + entry.ID,
-		Model: entry.ID, InputPerMillion: inputPtr, OutputPerMillion: outputPtr,
-		CacheReadMultiplier:     cacheMultiplier(entry.Cost.CacheRead, input, inputOK),
-		CacheCreationMultiplier: cacheMultiplier(entry.Cost.CacheWrite, input, inputOK),
+		Model:                   entry.ID,
+		CacheReadMultiplier:     base.CacheReadMultiplier,
+		CacheCreationMultiplier: base.CacheCreationMultiplier,
 		Source:                  ModelsDevSource, Catalog: true}
+	if known {
+		rule.InputPerMillion, rule.OutputPerMillion = &base.InputPerMillion, &base.OutputPerMillion
+	}
+	tierCosts := make(map[string]modelsDevCost)
+	for _, adjustment := range entry.Cost.Multipliers {
+		// Other conditions need request metadata that token pricing does not have.
+		if len(adjustment.When) != 1 {
+			continue
+		}
+		var condition map[string]json.RawMessage
+		if json.Unmarshal(adjustment.When["service_tier"], &condition) != nil || len(condition) != 1 {
+			continue
+		}
+		var tier string
+		if json.Unmarshal(condition["equals"], &tier) != nil || tier == "" {
+			continue
+		}
+		previous, ok := tierCosts[tier]
+		if !ok {
+			previous = cost
+		}
+		next := previous
+		for _, component := range []struct {
+			price *json.RawMessage
+			path  []string
+		}{
+			{&next.Input, []string{"text", "input", "price"}},
+			{&next.Output, []string{"text", "output", "price"}},
+			{&next.CacheRead, []string{"text", "input", "cache", "read"}},
+			{&next.CacheWrite, []string{"text", "input", "cache", "write"}},
+		} {
+			if len(*component.price) == 0 || string(*component.price) == "null" {
+				continue
+			}
+			factor, err := modelsDevFactor(adjustment.Factor, component.path)
+			if err != nil {
+				return aggregate.PricingRule{}, fmt.Errorf("models.dev model %s service tier %s: %w", entry.ID, tier, err)
+			}
+			value, ok := new(big.Rat).SetString(string(*component.price))
+			if !ok {
+				return aggregate.PricingRule{}, fmt.Errorf("models.dev model %s service tier %s has invalid token price %q", entry.ID, tier, *component.price)
+			}
+			*component.price = json.RawMessage(value.Mul(value, factor).FloatString(30))
+		}
+		tierCosts[tier] = next
+	}
+	for name, mode := range entry.Experimental.Modes {
+		tier := mode.ServiceTier
+		if tier == "" {
+			tier = mode.Body.ServiceTier
+		}
+		if tier == "" {
+			tier = mode.Provider.Body.ServiceTier
+		}
+		if tier == "" {
+			tier = name
+		}
+		modeCost, err := mode.Cost.tokenPrices()
+		if err != nil {
+			return aggregate.PricingRule{}, err
+		}
+		if _, known, err := modelsDevTierPrice(modeCost); err != nil {
+			return aggregate.PricingRule{}, err
+		} else if known {
+			tierCosts[tier] = modeCost
+		}
+	}
+	for tier, cost := range tierCosts {
+		price, known, err := modelsDevTierPrice(cost)
+		if err != nil {
+			return aggregate.PricingRule{}, err
+		}
+		if known {
+			if rule.ServiceTierPrices == nil {
+				rule.ServiceTierPrices = make(map[string]aggregate.ServiceTierPrice)
+			}
+			rule.ServiceTierPrices[strings.ToLower(strings.TrimSpace(tier))] = price
+		}
+	}
 	return rule, nil
+}
+
+// tokenPrices normalizes v2 text rates and v1 token rates at the catalog boundary.
+func (cost modelsDevCost) tokenPrices() (modelsDevCost, error) {
+	if cost.Text == nil {
+		return cost, nil
+	}
+	text := cost.Text
+	if (text.Input.Unit != "" && text.Input.Unit != "token") || (text.Output.Unit != "" && text.Output.Unit != "token") {
+		return modelsDevCost{}, nil
+	}
+	write := text.Input.Cache.Write
+	if len(write) == 0 {
+		write = text.Input.Cache.Explicit.Write
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(write), []byte("{")) {
+		// Object order identifies the provider's default cache TTL in models.dev.
+		decoder := json.NewDecoder(bytes.NewReader(write))
+		_, _ = decoder.Token()
+		if decoder.More() {
+			_, _ = decoder.Token()
+			var defaultPrice json.RawMessage
+			if err := decoder.Decode(&defaultPrice); err != nil {
+				return modelsDevCost{}, fmt.Errorf("decode models.dev cache write price: %w", err)
+			}
+			write = defaultPrice
+		} else {
+			write = nil
+		}
+	}
+	return modelsDevCost{Input: text.Input.Price, Output: text.Output.Price, CacheRead: text.Input.Cache.Read, CacheWrite: write}, nil
+}
+
+func modelsDevTierPrice(cost modelsDevCost) (aggregate.ServiceTierPrice, bool, error) {
+	input, inputOK, err := parseModelsDevPrice(cost.Input)
+	if err != nil {
+		return aggregate.ServiceTierPrice{}, false, err
+	}
+	output, outputOK, err := parseModelsDevPrice(cost.Output)
+	if err != nil {
+		return aggregate.ServiceTierPrice{}, false, err
+	}
+	return aggregate.ServiceTierPrice{InputPerMillion: input, OutputPerMillion: output,
+		CacheReadMultiplier:     cacheMultiplier(cost.CacheRead, input, inputOK),
+		CacheCreationMultiplier: cacheMultiplier(cost.CacheWrite, input, inputOK)}, inputOK && outputOK, nil
+}
+
+func modelsDevFactor(raw json.RawMessage, path []string) (*big.Rat, error) {
+	for bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+		if len(path) == 0 {
+			return big.NewRat(1, 1), nil
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, err
+		}
+		raw, path = fields[path[0]], path[1:]
+		if len(raw) == 0 {
+			return big.NewRat(1, 1), nil
+		}
+	}
+	value, ok := new(big.Rat).SetString(strings.TrimSpace(string(raw)))
+	if !ok || value.Sign() < 0 {
+		return nil, fmt.Errorf("invalid nonnegative models.dev price factor %q", raw)
+	}
+	return value, nil
 }
 
 func parseModelsDevPrice(raw json.RawMessage) (model.NanoUSD, bool, error) {

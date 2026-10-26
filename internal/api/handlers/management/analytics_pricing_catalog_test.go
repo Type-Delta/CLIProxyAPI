@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,28 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
+
+func TestAnalyticsPricingServiceTierRoundTrip(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &analyticsPricingTestService{analyticsHandlerService: &analyticsHandlerService{reader: &analyticsHandlerReader{}, state: model.StateReady}}
+	handler := &Handler{analytics: service}
+	body := `{"rules":[{"rule_id":"tier-rule","match":{"model":"model"},"input_per_million_usd":"1","output_per_million_usd":"2","service_tier_prices":{"priority":{"input_per_million_usd":"2.5","output_per_million_usd":"5","cache_read_multiplier":"0.1"}},"source":"admin"}]}`
+	ctx, response := v2Request(http.MethodPut, "/v8/management/analytics/pricing", body)
+	handler.PutAnalyticsPricing(ctx)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"service_tier_prices":{"priority":`) {
+		t.Fatalf("PUT status=%d body=%s", response.Code, response.Body.String())
+	}
+	ctx, response = v2Request(http.MethodGet, "/v8/management/analytics/pricing", "")
+	handler.GetAnalyticsPricing(ctx)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"input_per_million_usd":"2.5"`) {
+		t.Fatalf("GET status=%d body=%s", response.Code, response.Body.String())
+	}
+	priority := "priority"
+	priced, err := service.book.Price(model.Event{Model: "model", ServiceTierUsed: &priority, Tokens: model.TokenUsage{Input: 100, Output: 100, Total: 200}})
+	if err != nil || priced.KnownCost == nil || priced.KnownCost.String() != "0.00075" {
+		t.Fatalf("price=%+v err=%v", priced, err)
+	}
+}
 
 type catalogProvidersHandlerService struct {
 	*analyticsHandlerService

@@ -79,6 +79,56 @@ func TestPriceBookTracksUnclassifiedTokens(t *testing.T) {
 	}
 }
 
+func TestPriceBookServiceTierSelection(t *testing.T) {
+	input, output := model.NanoUSD(1_000_000_000), model.NanoUSD(2_000_000_000)
+	rule := PricingRule{ID: "catalog", Provider: "codex", Model: "model", Source: "models.dev", Catalog: true,
+		InputPerMillion: &input, OutputPerMillion: &output, CacheReadMultiplier: "0.1", CacheCreationMultiplier: "1.25",
+		ServiceTierPrices: map[string]ServiceTierPrice{
+			"priority": {InputPerMillion: 2_500_000_000, OutputPerMillion: 5_000_000_000, CacheReadMultiplier: "0.1", CacheCreationMultiplier: "1.25"},
+			"flex":     {InputPerMillion: 500_000_000, OutputPerMillion: 1_000_000_000, CacheReadMultiplier: "0.1", CacheCreationMultiplier: "1.25"},
+		}}
+	book := PriceBook{Rules: []PricingRule{rule}}
+	for _, test := range []struct {
+		requested, used string
+		want            model.NanoUSD
+	}{
+		{"", "", 267_000}, {"priority", "", 667_500}, {"priority", "default", 267_000},
+		{"auto", "priority", 667_500}, {"priority", "flex", 133_500}, {"flex", "", 133_500},
+		{"priority", "unknown", 267_000}, {"auto", "", 267_000}, {" PRIORITY ", " ", 667_500},
+	} {
+		t.Run(test.requested+"/"+test.used, func(t *testing.T) {
+			event := model.Event{Provider: "codex", Model: "model", ServiceTierRequested: &test.requested, ServiceTierUsed: &test.used,
+				Tokens: model.TokenUsage{Input: 100, Output: 100, CacheRead: 40, CacheCreation: 12, Total: 200}}
+			priced, err := book.Price(event)
+			if err != nil || priced.KnownCost == nil || *priced.KnownCost != test.want || priced.UnpricedTokens != 0 {
+				t.Fatalf("price=%+v err=%v, want %d", priced, err, test.want)
+			}
+			manual := rule
+			manual.ID, manual.Catalog, manual.ServiceTierPrices = "manual", false, nil
+			manualBook := PriceBook{Rules: []PricingRule{rule, manual}}
+			priced, err = manualBook.Price(event)
+			if err != nil || priced.RuleID != "manual" || priced.KnownCost == nil || *priced.KnownCost != 267_000 {
+				t.Fatalf("manual override price=%+v err=%v", priced, err)
+			}
+		})
+	}
+}
+
+func TestPricingRuleRejectsInvalidServiceTierPrices(t *testing.T) {
+	for _, test := range []struct {
+		tier  string
+		price ServiceTierPrice
+	}{
+		{"", ServiceTierPrice{}}, {"Priority", ServiceTierPrice{}}, {"priority", ServiceTierPrice{InputPerMillion: -1}},
+		{"priority", ServiceTierPrice{CacheReadMultiplier: "-1"}}, {"priority", ServiceTierPrice{CacheCreationMultiplier: "invalid"}},
+	} {
+		rule := PricingRule{ID: "rule", Model: "model", Source: "test", ServiceTierPrices: map[string]ServiceTierPrice{test.tier: test.price}}
+		if err := rule.Validate(); err == nil {
+			t.Fatalf("accepted tier %q price %+v", test.tier, test.price)
+		}
+	}
+}
+
 func TestRangeDSTAndMonday(t *testing.T) {
 	now := time.Date(2026, 3, 8, 16, 0, 0, 0, time.UTC)
 	start, end, err := ResolveRange(RangeToday, now, "America/New_York", 0)

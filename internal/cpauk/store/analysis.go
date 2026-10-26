@@ -444,12 +444,13 @@ func percentileOffset(count, numerator, denominator int64) int64 {
 	return (numerator*count+denominator-1)/denominator - 1
 }
 
-const analysisCostEventSelect = `provider,model,requested_alias,
+const analysisCostEventSelect = `provider,model,requested_alias,service_tier_requested,service_tier_used,
 input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,
 known_cost_nano,unpriced_tokens,price_rule_id,price_source`
 
 type analysisPriceKey struct {
 	provider, model, alias   string
+	requestedTier, usedTier  string
 	hasAlias                 bool
 	input, output, cacheRead int64
 	cacheCreation, total     int64
@@ -485,6 +486,12 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 		if event.RequestedAlias != nil {
 			key.alias, key.hasAlias = *event.RequestedAlias, true
 		}
+		if event.ServiceTierRequested != nil {
+			key.requestedTier = *event.ServiceTierRequested
+		}
+		if event.ServiceTierUsed != nil {
+			key.usedTier = *event.ServiceTierUsed
+		}
 		if cached, ok := priceCache[key]; ok {
 			return cached.result, cached.err
 		}
@@ -496,9 +503,9 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 	var pricedTokens int64
 	for rows.Next() {
 		var event model.Event
-		var requestedAlias, priceRuleID, priceSource sql.NullString
+		var requestedAlias, requestedTier, usedTier, priceRuleID, priceSource sql.NullString
 		var knownCost sql.NullInt64
-		if err := rows.Scan(&event.Provider, &event.Model, &requestedAlias,
+		if err := rows.Scan(&event.Provider, &event.Model, &requestedAlias, &requestedTier, &usedTier,
 			&event.Tokens.Input, &event.Tokens.Output, &event.Tokens.CacheRead, &event.Tokens.CacheCreation, &event.Tokens.Total,
 			&knownCost, &event.UnpricedTokens, &priceRuleID, &priceSource); err != nil {
 			return model.AnalysisCostComponents{}, fmt.Errorf("scan analysis costs: %w", err)
@@ -506,6 +513,7 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 		if requestedAlias.Valid {
 			event.RequestedAlias = &requestedAlias.String
 		}
+		event.ServiceTierRequested, event.ServiceTierUsed = scanNullableString(requestedTier), scanNullableString(usedTier)
 		if knownCost.Valid {
 			value := model.NanoUSD(knownCost.Int64)
 			event.KnownCost = &value

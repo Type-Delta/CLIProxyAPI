@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +12,54 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
+
+func TestServiceTierPricingMigrationPreservesExistingPrices(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "analytics.db")
+	fetcher := &testPricingFetcher{catalog: testPricingCatalog(1_000_000_000, 2_000_000_000)}
+	database := openDiscoveryStore(t, path, fetcher, &now)
+	if _, err := database.RefreshPricing(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manualInput, manualOutput := model.NanoUSD(3_000_000_000), model.NanoUSD(4_000_000_000)
+	if _, err := database.UpdatePriceBook(ctx, aggregate.PriceBook{Rules: []aggregate.PricingRule{{ID: "manual", Model: "manual-model", InputPerMillion: &manualInput, OutputPerMillion: &manualOutput, Source: "admin"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.ExecContext(ctx, `ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices;
+ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices;
+DELETE FROM schema_migrations WHERE version=15;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database = openDiscoveryStore(t, path, fetcher, &now)
+	if database.SchemaVersion() != 15 {
+		t.Fatalf("schema=%d", database.SchemaVersion())
+	}
+	snapshot, err := database.PricingSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Catalog) != 1 || len(snapshot.Overrides) != 1 || *snapshot.Catalog[0].InputPerMillion != 1_000_000_000 || *snapshot.Overrides[0].InputPerMillion != manualInput || len(snapshot.Catalog[0].ServiceTierPrices) != 0 || !snapshot.Provenance.CatalogExpiresAt.IsZero() {
+		t.Fatalf("migrated pricing=%+v", snapshot)
+	}
+	if _, err := os.Stat(path + ".pre-migration-v15"); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.count() != 1 {
+		t.Fatal("migration must not trigger an eager catalog fetch")
+	}
+}
 
 func TestDurablePricingCatalogUpdatesWritesAndSurvivesRestart(t *testing.T) {
 	ctx := context.Background()

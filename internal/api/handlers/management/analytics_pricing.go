@@ -33,14 +33,15 @@ type analyticsPricingSnapshot struct {
 }
 
 type analyticsPricingRule struct {
-	RuleID                  string                `json:"rule_id"`
-	Match                   analyticsPricingMatch `json:"match"`
-	InputPerMillion         *model.NanoUSD        `json:"input_per_million_usd"`
-	OutputPerMillion        *model.NanoUSD        `json:"output_per_million_usd"`
-	CacheReadMultiplier     string                `json:"cache_read_multiplier,omitempty"`
-	CacheCreationMultiplier string                `json:"cache_creation_multiplier,omitempty"`
-	Source                  string                `json:"source"`
-	UpdatedAt               *time.Time            `json:"updated_at"`
+	RuleID                  string                                `json:"rule_id"`
+	Match                   analyticsPricingMatch                 `json:"match"`
+	InputPerMillion         *model.NanoUSD                        `json:"input_per_million_usd"`
+	OutputPerMillion        *model.NanoUSD                        `json:"output_per_million_usd"`
+	CacheReadMultiplier     string                                `json:"cache_read_multiplier,omitempty"`
+	CacheCreationMultiplier string                                `json:"cache_creation_multiplier,omitempty"`
+	ServiceTierPrices       map[string]aggregate.ServiceTierPrice `json:"service_tier_prices,omitempty"`
+	Source                  string                                `json:"source"`
+	UpdatedAt               *time.Time                            `json:"updated_at"`
 }
 
 type analyticsPricingMatch struct {
@@ -142,7 +143,8 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 			Provider: rule.Match.Provider, ID: rule.RuleID, Model: rule.Match.Model, Alias: rule.Match.Alias,
 			InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion,
 			CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier,
-			Source: rule.Source,
+			ServiceTierPrices: rule.ServiceTierPrices,
+			Source:            rule.Source,
 		}
 		if err := converted.Validate(); err != nil {
 			writeAnalyticsInvalid(c, err)
@@ -199,7 +201,8 @@ func pricingSnapshot(book aggregate.PriceBook, syncState string) analyticsPricin
 			RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias},
 			InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion,
 			CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier,
-			Source: rule.Source,
+			ServiceTierPrices: rule.ServiceTierPrices,
+			Source:            rule.Source,
 		}
 		if rule.Catalog {
 			snapshot.Catalog = append(snapshot.Catalog, converted)
@@ -264,7 +267,7 @@ func effectivePricingRules(rules []aggregate.PricingRule) []analyticsPricingRule
 	}
 	result := make([]analyticsPricingRule, 0, len(rules))
 	for _, rule := range manual {
-		result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, Source: rule.Source})
+		result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, ServiceTierPrices: rule.ServiceTierPrices, Source: rule.Source})
 	}
 	for _, rule := range catalog {
 		shadowed := false
@@ -278,7 +281,7 @@ func effectivePricingRules(rules []aggregate.PricingRule) []analyticsPricingRule
 			}
 		}
 		if !shadowed {
-			result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, Source: rule.Source})
+			result = append(result, analyticsPricingRule{RuleID: rule.ID, Match: analyticsPricingMatch{Provider: rule.Provider, Model: rule.Model, Alias: rule.Alias}, InputPerMillion: rule.InputPerMillion, OutputPerMillion: rule.OutputPerMillion, CacheReadMultiplier: rule.CacheReadMultiplier, CacheCreationMultiplier: rule.CacheCreationMultiplier, ServiceTierPrices: rule.ServiceTierPrices, Source: rule.Source})
 		}
 	}
 	return result

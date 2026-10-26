@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -369,10 +370,14 @@ func insertPricingRule(ctx context.Context, tx *sql.Tx, rule aggregate.PricingRu
 	if catalog {
 		table = "pricing_catalog_rules"
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO `+table+`
-(rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,cache_read_multiplier,cache_creation_multiplier,source)
-VALUES (?,?,?,?,?,?,?,?,?)`, rule.ID, rule.Provider, rule.Model, rule.Alias, input, output,
-		rule.CacheReadMultiplier, rule.CacheCreationMultiplier, rule.Source)
+	tiers, err := json.Marshal(rule.ServiceTierPrices)
+	if err != nil {
+		return fmt.Errorf("encode service tier prices: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO `+table+`
+(rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,cache_read_multiplier,cache_creation_multiplier,source,service_tier_prices)
+VALUES (?,?,?,?,?,?,?,?,?,?)`, rule.ID, rule.Provider, rule.Model, rule.Alias, input, output,
+		rule.CacheReadMultiplier, rule.CacheCreationMultiplier, rule.Source, string(tiers))
 	return err
 }
 
@@ -426,7 +431,7 @@ cache_read_multiplier,cache_creation_multiplier,source FROM pricing_rules ORDER 
 		return aggregate.PriceBook{}, PricingProvenance{}, err
 	}
 	manualRows, err := database.QueryContext(ctx, `SELECT rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,
-cache_read_multiplier,cache_creation_multiplier,source FROM pricing_manual_rules ORDER BY rule_id`)
+cache_read_multiplier,cache_creation_multiplier,source,service_tier_prices FROM pricing_manual_rules ORDER BY rule_id`)
 	if err != nil {
 		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing manual rules: %w", err)
 	}
@@ -434,12 +439,16 @@ cache_read_multiplier,cache_creation_multiplier,source FROM pricing_manual_rules
 	for manualRows.Next() {
 		var rule aggregate.PricingRule
 		var input, output sql.NullInt64
-		if err := manualRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
+		var tiers string
+		if err := manualRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source, &tiers); err != nil {
 			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("scan pricing manual rule: %w", err)
 		}
 		if input.Valid {
 			inputValue, outputValue := model.NanoUSD(input.Int64), model.NanoUSD(output.Int64)
 			rule.InputPerMillion, rule.OutputPerMillion = &inputValue, &outputValue
+		}
+		if err := json.Unmarshal([]byte(tiers), &rule.ServiceTierPrices); err != nil {
+			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("decode pricing manual service tiers: %w", err)
 		}
 		book.Rules = append(book.Rules, rule)
 	}
@@ -447,7 +456,7 @@ cache_read_multiplier,cache_creation_multiplier,source FROM pricing_manual_rules
 		return aggregate.PriceBook{}, PricingProvenance{}, err
 	}
 	catalogRows, err := database.QueryContext(ctx, `SELECT rule_id,provider,model,alias,input_per_million_nano,output_per_million_nano,
-cache_read_multiplier,cache_creation_multiplier,source FROM pricing_catalog_rules ORDER BY rule_id`)
+cache_read_multiplier,cache_creation_multiplier,source,service_tier_prices FROM pricing_catalog_rules ORDER BY rule_id`)
 	if err != nil {
 		return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("load pricing catalog rules: %w", err)
 	}
@@ -455,13 +464,17 @@ cache_read_multiplier,cache_creation_multiplier,source FROM pricing_catalog_rule
 	for catalogRows.Next() {
 		var rule aggregate.PricingRule
 		var input, output sql.NullInt64
+		var tiers string
 		rule.Catalog = true
-		if err := catalogRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source); err != nil {
+		if err := catalogRows.Scan(&rule.ID, &rule.Provider, &rule.Model, &rule.Alias, &input, &output, &rule.CacheReadMultiplier, &rule.CacheCreationMultiplier, &rule.Source, &tiers); err != nil {
 			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("scan pricing catalog rule: %w", err)
 		}
 		if input.Valid {
 			inputValue, outputValue := model.NanoUSD(input.Int64), model.NanoUSD(output.Int64)
 			rule.InputPerMillion, rule.OutputPerMillion = &inputValue, &outputValue
+		}
+		if err := json.Unmarshal([]byte(tiers), &rule.ServiceTierPrices); err != nil {
+			return aggregate.PriceBook{}, PricingProvenance{}, fmt.Errorf("decode pricing catalog service tiers: %w", err)
 		}
 		book.Rules = append(book.Rules, rule)
 	}
@@ -551,6 +564,7 @@ func (s *SQLiteStore) CatalogProviders(ctx context.Context) (providers []Catalog
 func clonePricingRules(rules []aggregate.PricingRule) []aggregate.PricingRule {
 	result := append([]aggregate.PricingRule(nil), rules...)
 	for index := range result {
+		result[index].ServiceTierPrices = maps.Clone(result[index].ServiceTierPrices)
 		if result[index].InputPerMillion != nil {
 			input := *result[index].InputPerMillion
 			output := *result[index].OutputPerMillion
