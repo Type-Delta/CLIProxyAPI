@@ -1418,7 +1418,9 @@ qualifies. Reliability requires at least 200 upstream attempts; speed requires a
 CPAMC renders these four fixed award headers and descriptions before the ranking query finishes,
 with neutral skeletons replacing the ranking decorations until data arrives, and reserved podium
 and runners-up space for empty or partial results. The range chip reserves its localized dates,
-pending mascot images show the family lab logo, and Speed Maniac states its P70 qualification
+pending mascot images show the family lab logo. Loaded mascot images use block layout to
+fit the same inner frame without inline baseline overflow; rank medals remain unclipped.
+Speed Maniac states its P70 qualification
 floor of 80 tok/s in every supported locale.
 The existing four-award contract supplies the card order and count without an additional API.
 The shared skeleton uses distinct theme-derived gradient colors, including White and Light
