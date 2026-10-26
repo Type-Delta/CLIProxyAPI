@@ -116,6 +116,12 @@ translations, including tooltip placement and Escape dismissal. The canonical em
 panel builds, `go test ./...` and the disposable server compile pass, and a live loopback
 CPA serves the exact embedded HTML bytes.
 
+Keys displays Last activity before First activity in the desktop table and mobile cards.
+Client verification and desktop/mobile browser checks cover the order, matching lifetime
+timestamps, and both activity sorts.
+The canonical bundle, management-asset tests, server compile, and live embedded-HTML smoke
+check pass for the updated client.
+
 **Last updated:** 2026-10-26
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
