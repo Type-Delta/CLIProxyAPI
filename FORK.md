@@ -54,7 +54,7 @@ The Codex Live audio and data-channel bridge integration test creates every test
 
 ### DL004 - Pinned Type-Delta management client
 
-CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The fork adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control. The checked-out CPAMC pin `e2cb1d6` carries the upstream sync through `0da007e` (`merge(upstream): sync CPAMC through v1.26.5`) plus the restored legacy-backend login diagnostic.
+CPA includes the Type-Delta CPAMC fork as a required submodule at `web/management-center`. The fork adds structured key management, the isolated Analytics workspace, complete visual analytics configuration, full `int64` storage precision, safe CRLF YAML normalization, Config-card spacing, routed icon tabs, URL-backed range and key filters, collision-safe key identities, consistent controls and Skeleton loading states, a persistent Analytics shell with in-page portal content, CPAUK-fidelity usage and management views, and the Claude OAuth capture safeguard control. The submodule gitlink records the client revision included by each CPA build.
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
@@ -87,7 +87,36 @@ replace the standalone comparison section. The user's existing spacing changes a
 Additional browser verification covers intermediate layouts, dynamic and touch tooltips, equal card
 heights, model-cost sorting, latency animation, and the Claude OAuth safeguard control.
 
-**Last updated:** 2026-10-19
+Usage cost comparisons split the 48,000 USD to 1 million USD range into Ford Mustang GT,
+Porsche 911 GT3 RS, and Lamborghini Aventador SVJ bands, using illustrative benchmarks of
+48,000, 250,000, and 520,000 USD. Explanations in all six locales disclose the model years
+and US MSRP basis, including the Aventador's historical launch price.
+The 1,000 USD to 48,000 USD range uses iPhone 17 Pro 256GB, Apple Vision Pro,
+Rolex Submariner, NVIDIA RTX PRO 6000 Blackwell, and Tesla Model 3 RWD comparisons at
+1,000, 4,000, 10,000, 17,000, and 37,000 USD, with dated price assumptions in all six locales.
+The 200 USD to 1,000 USD band uses LEGO Back to the Future DeLorean sets at a rounded
+200 USD per set, replacing months of an AI subscription.
+The 1 million USD to 25 million USD range uses Gravity Jet Suits at 500,000 USD each,
+Princess F55 yachts at 2.5 million USD each, and an illustrative 15 million USD F1-car build
+estimate. The F1 tooltip includes a partial historical component-cost breakdown, with
+research, development, and season operations excluded.
+Super Bowl airtime covers 25 million to 30 million USD. The following bands compare
+AH-64E Apache helicopters from 30 million to 40 million USD, MQ-9A Reaper drones from
+40 million to 60 million USD, and F/A-18E/F Super Hornets from 60 million to 70 million USD.
+Their benchmarks are 35 million, 50 million, and 67 million USD, with fiscal-year prices
+and the Reaper's upper-end sensor configuration disclosed in all six locales.
+Processing-time comparisons end the work-week band at 88 Earth days, then compare Mercury
+years until 210 Earth days and one-way Mars journeys until one Julian Earth year. The
+benchmarks use 88 and 210 Earth days, with favorable-launch-window assumptions and the
+Perseverance cruise reference explained in all six locales.
+
+Comparison-refresh validation: CPAMC passes all 2,126 tests, ESLint, TypeScript, and its
+production build. Desktop/mobile Chrome CDP checks cover the revised bands and all six F1
+translations, including tooltip placement and Escape dismissal. The canonical embedded
+panel builds, `go test ./...` and the disposable server compile pass, and a live loopback
+CPA serves the exact embedded HTML bytes.
+
+**Last updated:** 2026-10-26
 
 ### DL005 - Failure-isolated embedded CPA Usage Keeper
 
