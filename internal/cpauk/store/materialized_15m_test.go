@@ -131,7 +131,7 @@ func TestMigrationBackfillsMaterialized15MinuteAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, "ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; ALTER TABLE events DROP COLUMN session_digest; DROP TABLE IF EXISTS analytics_15m_request_ids; DROP TABLE IF EXISTS analytics_15m_compact; DROP TABLE IF EXISTS analytics_15m_requests; DROP TABLE IF EXISTS analytics_15m; DELETE FROM schema_migrations WHERE version >= 10"); err != nil {
+	if _, err := direct.ExecContext(ctx, "ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; ALTER TABLE events DROP COLUMN session_digest; DROP TABLE IF EXISTS analytics_15m_request_ids; DROP TABLE IF EXISTS analytics_15m_compact; DROP TABLE IF EXISTS analytics_15m_requests; DROP TABLE IF EXISTS analytics_15m; DELETE FROM schema_migrations WHERE version >= 10"); err != nil {
 		_ = direct.Close()
 		t.Fatal(err)
 	}

@@ -19,6 +19,7 @@ import (
 )
 
 type analyticsPricingSnapshot struct {
+	KiroUSDPerCredit *model.NanoUSD         `json:"kiro_usd_per_credit"`
 	CurrencyUnit     string                 `json:"currency_unit"`
 	Rounding         string                 `json:"rounding"`
 	Rules            []analyticsPricingRule `json:"rules"`
@@ -81,7 +82,7 @@ func (h *Handler) GetAnalyticsPricing(c *gin.Context) {
 	if !ok {
 		setAnalyticsNoStore(c)
 		c.JSON(http.StatusOK, analyticsPricingSnapshot{
-			CurrencyUnit: "nano_usd", Rounding: "half_away_from_zero_once_per_event",
+			CurrencyUnit: "nano_usd", Rounding: "half_away_from_zero_once_per_event", KiroUSDPerCredit: func() *model.NanoUSD { rate := (aggregate.PriceBook{}).EffectiveKiroRate(); return &rate }(),
 			Rules: []analyticsPricingRule{}, Missing: []model.PricingMissing{}, SyncState: "not_configured",
 		})
 		return
@@ -135,7 +136,11 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 		writeAnalyticsInvalid(c, fmt.Errorf("unsupported rounding %q", request.Rounding))
 		return
 	}
-	book := aggregate.PriceBook{Rules: make([]aggregate.PricingRule, 0, len(request.Rules))}
+	if request.KiroUSDPerCredit != nil && *request.KiroUSDPerCredit < 0 {
+		writeAnalyticsInvalid(c, fmt.Errorf("negative credit rate"))
+		return
+	}
+	book := aggregate.PriceBook{KiroUSDPerCredit: request.KiroUSDPerCredit, Rules: make([]aggregate.PricingRule, 0, len(request.Rules))}
 	seenRuleIDs := make(map[string]struct{}, len(request.Rules))
 	seenMatches := make(map[string]struct{}, len(request.Rules))
 	for _, rule := range request.Rules {
@@ -192,8 +197,10 @@ func (h *Handler) PutAnalyticsPricing(c *gin.Context) {
 }
 
 func pricingSnapshot(book aggregate.PriceBook, syncState string) analyticsPricingSnapshot {
+	rate := book.EffectiveKiroRate()
 	snapshot := analyticsPricingSnapshot{
-		CurrencyUnit: "nano_usd", Rounding: "half_away_from_zero_once_per_event",
+		KiroUSDPerCredit: &rate,
+		CurrencyUnit:     "nano_usd", Rounding: "half_away_from_zero_once_per_event",
 		Rules: make([]analyticsPricingRule, 0, len(book.Rules)), Missing: []model.PricingMissing{}, SyncState: syncState,
 	}
 	for _, rule := range book.Rules {
@@ -224,7 +231,7 @@ func pricingSnapshotFromDurable(durable store.PricingSnapshot, now time.Time) an
 	} else if now.Before(durable.Provenance.CatalogExpiresAt) {
 		state = "ready"
 	}
-	response := pricingSnapshot(aggregate.PriceBook{Rules: durable.Rules}, state)
+	response := pricingSnapshot(aggregate.PriceBook{Rules: durable.Rules, KiroUSDPerCredit: durable.KiroUSDPerCredit}, state)
 	if !durable.Provenance.SyncedAt.IsZero() {
 		updatedAt := durable.Provenance.SyncedAt.UTC()
 		response.UpdatedAt = &updatedAt

@@ -182,3 +182,22 @@ func TestGenerationDiagnosticsEnvelopeAllowsEscaping(t *testing.T) {
 		t.Fatal("error cap changed")
 	}
 }
+
+func TestProviderCreditsSurviveSanitizationIndependentlyOfRawUsage(t *testing.T) {
+	record := validRecord()
+	record.Detail.ProviderCredits = "0e10"
+	record.Detail.RawUsage = strings.Repeat("x", model.MaxRawGenerationBytes+100)
+	result, err := newHopSanitizer().Sanitize(adaptRecord(record))
+	if err != nil || result.Event.ProviderCredits == nil || *result.Event.ProviderCredits != "0" {
+		t.Fatalf("credits: %+v %v", result.Event.ProviderCredits, err)
+	}
+	record.Detail.ProviderCredits = "1.2300e-2"
+	result, err = newHopSanitizer().Sanitize(adaptRecord(record))
+	if err != nil || result.Event.ProviderCredits == nil || *result.Event.ProviderCredits != "0.0123" {
+		t.Fatalf("normalized credits: %+v %v", result.Event.ProviderCredits, err)
+	}
+	record.Detail.ProviderCredits = "-1"
+	if _, err = newHopSanitizer().Sanitize(adaptRecord(record)); err == nil {
+		t.Fatal("invalid credits accepted")
+	}
+}

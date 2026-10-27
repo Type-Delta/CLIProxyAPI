@@ -65,13 +65,14 @@ type Source struct {
 	// FailureBody is the raw provider error body; it is bounded before storage.
 	FailureBody string
 	// Hop diagnostics; zero values mean "not observed".
-	ClientMethod   string
-	ClientPath     string
-	ReceivedAt     time.Time
-	UpstreamMethod string
-	UpstreamURL    string
-	UpstreamSentAt time.Time
-	RawUsage       string
+	ClientMethod    string
+	ClientPath      string
+	ReceivedAt      time.Time
+	UpstreamMethod  string
+	UpstreamURL     string
+	UpstreamSentAt  time.Time
+	RawUsage        string
+	ProviderCredits string
 	// RawOutputFallback reports that canonical output accounting was unavailable
 	// and the provider's raw output value was retained instead.
 	RawOutputFallback bool
@@ -272,7 +273,15 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	if value := strings.ToLower(strings.TrimSpace(record.ReasoningEffort)); model.ValidReasoningEffort(value) {
 		reasoningEffort = &value
 	}
+	var credits *string
+	if record.ProviderCredits != "" {
+		if !model.ValidProviderCredits(record.ProviderCredits) {
+			return SanitizeResult{}, fmt.Errorf("invalid provider credits")
+		}
+		credits = &record.ProviderCredits
+	}
 	event := model.Event{
+		ProviderCredits:       credits,
 		SchemaVersion:         model.EventSchemaVersion,
 		AttemptID:             attemptID,
 		ProxyRequestID:        proxyRequestID,

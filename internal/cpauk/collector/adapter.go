@@ -135,6 +135,12 @@ func adaptRecord(record coreusage.Record) Source {
 		value := record.Stream
 		stream = &value
 	}
+	credits := detail.ProviderCredits
+	if credits != "" {
+		if normalized, err := coreusage.NormalizeProviderCredits(credits); err == nil {
+			credits = normalized
+		}
+	}
 	return Source{
 		Stream: stream, ReasoningEffort: record.ReasoningEffort,
 		ProxyRequestID: record.ProxyRequestID, RequestQuality: requestQuality,
@@ -152,6 +158,7 @@ func adaptRecord(record coreusage.Record) Source {
 		ClientMethod: record.ClientMethod, ClientPath: record.ClientPath, ReceivedAt: record.ReceivedAt,
 		UpstreamMethod: record.UpstreamMethod, UpstreamURL: record.UpstreamURL, UpstreamSentAt: record.UpstreamSentAt,
 		RawUsage:          detail.RawUsage,
+		ProviderCredits:   credits,
 		RawOutputFallback: rawOutputFallback,
 		Tokens: SourceTokens{
 			Input: inputTokens, Output: outputTokens,

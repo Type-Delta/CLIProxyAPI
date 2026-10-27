@@ -1188,7 +1188,47 @@ the configured business payload.
 
 The bundled CPAMC labels credit-billed Kiro allowances as credits with fractional amounts, shows the row percentage unrounded with the same formatter as the quota summary and timeline, and gives the Kiro timeline lane its monthly period so the current window draws a bar.
 
-Kiro usage is priced with Amazon Bedrock rates from the models.dev `amazon-bedrock` catalog when no other catalog rule covers the model. Anthropic Bedrock IDs map to CPA Claude IDs by dropping the `anthropic.` prefix and `-vN[:M]` suffix. The `global.` cross-region price wins over the bare regional ID, and regional prefixes such as `us.` or `eu.` are ignored. An explicit `kiro` catalog binding takes precedence. Existing events keep their stored cost until a reprice job runs (`internal/cpauk/store/pricing_discovery.go`, `TestModelsDevFeedPricesKiroWithBedrockFallback`).
+Kiro attempts retain the last valid `meteringEvent` credit snapshot as an exact,
+bounded decimal quantity, including reported zero. Credits survive SDK delivery
+independently of optional raw diagnostics and remain available on failures after
+metering arrives. They are separate from estimated token counts and do not imply
+cache-read or cache-write token measurements.
+
+CPAUK prices metered Kiro attempts as reported credits multiplied by the configured
+`kiro_usd_per_credit` rate, defaulting to USD 0.02 and treating every credit as an
+included credit. Arithmetic is decimal and rounds once per attempt to nano-USD;
+the measured credits already include the model multiplier. Explicit manual
+model/alias overrides remain authoritative, including unknown-price overrides.
+Automatic credit pricing precedes catalog token pricing. Missing metering retains
+the existing token-price fallback or unpriced result. This conversion estimates
+usage cost and does not reconstruct a subscription invoice.
+
+The analytics database preserves reported credits and the applied rate alongside
+the existing monetary cost and pricing source. Changing the rate affects subsequent
+attempts; explicit repricing recomputes retained events from their stored credits.
+Legacy pricing writes that omit the setting preserve its current value, and catalog
+refreshes do not reset it. Migration 016 leaves older credit measurements null.
+Events without metering cannot be retroactively credit-priced, and compacted history
+keeps its existing repricing limits. JSON/CSV exports preserve the new metering and
+rate fields.
+
+CPAMC exposes the conversion rate in Pricing and the reported quantity, applied
+rate and source in request details. Credit-based amounts remain part of normal
+monetary totals and cost-per-token ratios, while the cost chart and model table
+display only the existing token categories. The undisplayed amount is not assigned
+to input/output/cache categories. Component coverage can be incomplete even when
+the full monetary total is known. The API retains the separate amount for exact
+accounting. Token volume and throughput retain their independent estimates. All
+six locales describe the pricing basis and included-credit assumption.
+
+Kiro requests without metering can use Amazon Bedrock rates from the models.dev
+`amazon-bedrock` catalog when no other catalog rule covers the model. Anthropic
+Bedrock IDs map to CPA Claude IDs by dropping the `anthropic.` prefix and `-vN[:M]`
+suffix. The `global.` cross-region price wins over the bare regional ID, and regional
+prefixes such as `us.` or `eu.` are ignored. An explicit `kiro` catalog binding takes
+precedence within catalog pricing. Existing events keep their stored cost until a
+reprice job runs (`internal/cpauk/store/pricing_discovery.go`,
+`TestModelsDevFeedPricesKiroWithBedrockFallback`).
 
 **Recorded validation:** Kiro usage tests cover non-streaming and streaming success, a single stream record, and 429 failures. Live requests through an Identity Center credential produced one analytics event each (Claude and OpenAI-format, streaming and non-streaming), and the quota page showed matching credit percentages in the summary, row, and monthly timeline bar.
 
@@ -1203,6 +1243,20 @@ input count; an explicit `/compact` reduces a 140,258-token conversation to 884
 retained tokens and the resumed session completes successfully.
 The canonical Docker image also completes live buffered and streaming Kiro requests
 with matching corrected usage.
+
+Credit-pricing checks cover precise and bounded metering, explicit zero, failed
+responses after metering, manual and unknown-price precedence, migration 015-to-016,
+restart/catalog-refresh/legacy-write preservation, repricing and checkpoint changes,
+mixed token/credit components, import validation, export parity, and backup restore.
+Regressions also prevent stale live overrides after restoring an empty price book
+and distinguish applied credit pricing from a caller-selected source label. The full
+Go suite, focused race tests, vet, server build and canonical Docker build pass.
+Both a native server and the Docker image complete all six Claude Messages, Chat
+Completions and Responses modes with metering, stored cost, summaries, analysis and
+JSON/CSV exports agreeing. A rate change survives restart and reprices retained
+events. CPAMC passes 2,136 tests, lint, TypeScript and production build; desktop and
+mobile CDP checks cover rate editing, event details and the token-category breakdown,
+including hidden-credit totals and non-overlapping radar labels.
 
 **Last updated:** 2026-10-27
 

@@ -33,9 +33,9 @@ func TestServiceTierPricingMigrationPreservesExistingPrices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = raw.ExecContext(ctx, `ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices;
+	_, err = raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices;
 ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices;
-DELETE FROM schema_migrations WHERE version=15;`)
+DELETE FROM schema_migrations WHERE version>=15;`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ DELETE FROM schema_migrations WHERE version=15;`)
 		t.Fatal(err)
 	}
 	database = openDiscoveryStore(t, path, fetcher, &now)
-	if database.SchemaVersion() != 15 {
+	if database.SchemaVersion() != 16 {
 		t.Fatalf("schema=%d", database.SchemaVersion())
 	}
 	snapshot, err := database.PricingSnapshot(ctx)

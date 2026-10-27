@@ -40,14 +40,23 @@ type ServiceTierPrice struct {
 }
 
 type PriceBook struct {
-	Rules []PricingRule
+	Rules            []PricingRule
+	KiroUSDPerCredit *model.NanoUSD
+}
+
+func (p PriceBook) EffectiveKiroRate() model.NanoUSD {
+	if p.KiroUSDPerCredit != nil {
+		return *p.KiroUSDPerCredit
+	}
+	return 20_000_000
 }
 
 type PriceResult struct {
-	KnownCost      *model.NanoUSD
-	UnpricedTokens int64
-	RuleID         string
-	Source         string
+	KnownCost         *model.NanoUSD
+	UnpricedTokens    int64
+	RuleID            string
+	Source            string
+	PriceUSDPerCredit *model.NanoUSD
 }
 
 func (r PricingRule) Validate() error {
@@ -91,6 +100,24 @@ func (r PricingRule) Validate() error {
 
 func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	rule := p.match(event.Provider, event.Model, event.RequestedAlias)
+	if (rule == nil || rule.Catalog) && event.Provider == "kiro" && event.ProviderCredits != nil {
+		if !model.ValidProviderCredits(*event.ProviderCredits) {
+			return PriceResult{}, fmt.Errorf("invalid provider credits")
+		}
+		rate := p.EffectiveKiroRate()
+		if rate < 0 {
+			return PriceResult{}, fmt.Errorf("negative credit rate")
+		}
+		credits, ok := new(big.Rat).SetString(*event.ProviderCredits)
+		if !ok {
+			return PriceResult{}, fmt.Errorf("invalid provider credits")
+		}
+		cost, err := roundRat(credits.Mul(credits, new(big.Rat).SetInt64(int64(rate))))
+		if err != nil {
+			return PriceResult{}, err
+		}
+		return PriceResult{KnownCost: &cost, RuleID: "kiro-usd-per-credit", Source: "kiro-credits", PriceUSDPerCredit: &rate}, nil
+	}
 	if rule == nil {
 		return PriceResult{UnpricedTokens: event.Tokens.Total}, nil
 	}

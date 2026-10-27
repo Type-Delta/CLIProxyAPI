@@ -167,7 +167,7 @@ func pricingRefreshResult(book aggregate.PriceBook, provenance PricingProvenance
 }
 
 func pricingSnapshot(book aggregate.PriceBook, provenance PricingProvenance) PricingSnapshot {
-	snapshot := PricingSnapshot{Rules: clonePricingRules(book.Rules), Provenance: provenance}
+	snapshot := PricingSnapshot{KiroUSDPerCredit: book.KiroUSDPerCredit, Rules: clonePricingRules(book.Rules), Provenance: provenance}
 	for _, rule := range book.Rules {
 		if rule.Catalog {
 			snapshot.Catalog = append(snapshot.Catalog, clonePricingRules([]aggregate.PricingRule{rule})[0])
@@ -336,7 +336,7 @@ func (s *SQLiteStore) replacePricingCatalog(ctx context.Context, catalog Pricing
 		}
 	}
 	rules = append(rules, catalog.Rules...)
-	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(rules)}
+	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(rules), KiroUSDPerCredit: manualBook.KiroUSDPerCredit}
 	return nil
 }
 

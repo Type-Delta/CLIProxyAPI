@@ -99,12 +99,14 @@ type Event struct {
 	RespondedAt       *time.Time `json:"responded_at"`
 	// Query-time pricing enrichment is omitted from sanitized intake events and
 	// populated only when an event is read from durable storage.
-	KnownCost      *NanoUSD `json:"known_cost_usd,omitempty"`
-	UnpricedTokens int64    `json:"unpriced_tokens,omitempty"`
-	PriceRuleID    string   `json:"price_rule_id,omitempty"`
-	PriceSource    string   `json:"price_source,omitempty"`
-	ImportBatchID  string   `json:"import_batch_id,omitempty"`
-	Source         string   `json:"source,omitempty"`
+	ProviderCredits   *string  `json:"provider_credits,omitempty"`
+	PriceUSDPerCredit *NanoUSD `json:"price_usd_per_credit,omitempty"`
+	KnownCost         *NanoUSD `json:"known_cost_usd,omitempty"`
+	UnpricedTokens    int64    `json:"unpriced_tokens,omitempty"`
+	PriceRuleID       string   `json:"price_rule_id,omitempty"`
+	PriceSource       string   `json:"price_source,omitempty"`
+	ImportBatchID     string   `json:"import_batch_id,omitempty"`
+	Source            string   `json:"source,omitempty"`
 	// Query-time arrival and whole-attempt rates are derived from this event alone.
 	ThroughputInfo                 *ThroughputInfo `json:"throughput,omitempty"`
 	EffectiveOutputTokensPerSecond *float64        `json:"effective_output_tokens_per_second,omitempty"`
@@ -117,6 +119,14 @@ type Event struct {
 }
 
 func (e Event) Validate() error {
+	if e.ProviderCredits != nil {
+		if !ValidProviderCredits(*e.ProviderCredits) {
+			return fmt.Errorf("invalid provider credits")
+		}
+	}
+	if e.PriceUSDPerCredit != nil && *e.PriceUSDPerCredit < 0 {
+		return fmt.Errorf("invalid credit rate")
+	}
 	if e.ReasoningEffort != nil && !ValidReasoningEffort(*e.ReasoningEffort) {
 		return fmt.Errorf("invalid reasoning effort")
 	}

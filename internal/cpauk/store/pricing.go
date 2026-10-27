@@ -38,10 +38,11 @@ type PricingProvenance struct {
 }
 
 type PricingSnapshot struct {
-	Rules      []aggregate.PricingRule
-	Overrides  []aggregate.PricingRule
-	Catalog    []aggregate.PricingRule
-	Provenance PricingProvenance
+	KiroUSDPerCredit *model.NanoUSD
+	Rules            []aggregate.PricingRule
+	Overrides        []aggregate.PricingRule
+	Catalog          []aggregate.PricingRule
+	Provenance       PricingProvenance
 }
 
 type PricingRefreshResult struct {
@@ -97,6 +98,9 @@ func (s *SQLiteStore) UpdatePriceBook(ctx context.Context, book aggregate.PriceB
 		}
 		manual = append(manual, rule)
 	}
+	if book.KiroUSDPerCredit != nil && *book.KiroUSDPerCredit < 0 {
+		return aggregate.PriceBook{}, fmt.Errorf("negative credit rate")
+	}
 	if err := validatePricingRules(manual); err != nil {
 		return aggregate.PriceBook{}, err
 	}
@@ -122,7 +126,7 @@ func (s *SQLiteStore) UpdatePriceBook(ctx context.Context, book aggregate.PriceB
 	provenance.CatalogRetryAt = currentProvenance.CatalogRetryAt
 	provenance.CatalogLastError = currentProvenance.CatalogLastError
 	provenance.CatalogBindingsDigest = currentProvenance.CatalogBindingsDigest
-	if err := replaceManualPricingRules(ctx, s.db, manual, provenance); err != nil {
+	if err := replaceManualPricingRules(ctx, s.db, manual, provenance, book.KiroUSDPerCredit); err != nil {
 		return aggregate.PriceBook{}, err
 	}
 	// Re-read after the transaction so ordering and pointer ownership stay
@@ -131,7 +135,7 @@ func (s *SQLiteStore) UpdatePriceBook(ctx context.Context, book aggregate.PriceB
 	if err != nil {
 		return aggregate.PriceBook{}, err
 	}
-	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(updated.Rules)}
+	s.config.PriceBook = clonePriceBook(updated)
 	return updated, nil
 }
 
@@ -151,7 +155,7 @@ func (s *SQLiteStore) ReplacePricingRules(ctx context.Context, rules []aggregate
 	if err != nil {
 		return err
 	}
-	s.config.PriceBook = aggregate.PriceBook{Rules: clonePricingRules(book.Rules)}
+	s.config.PriceBook = clonePriceBook(book)
 	return nil
 }
 
@@ -178,7 +182,7 @@ func (s *SQLiteStore) PricingSnapshot(ctx context.Context) (PricingSnapshot, err
 			overrides = append(overrides, rule)
 		}
 	}
-	return PricingSnapshot{Rules: clonePricingRules(book.Rules), Overrides: overrides, Catalog: catalog, Provenance: provenance}, nil
+	return PricingSnapshot{KiroUSDPerCredit: book.KiroUSDPerCredit, Rules: clonePricingRules(book.Rules), Overrides: overrides, Catalog: catalog, Provenance: provenance}, nil
 }
 
 func (s *SQLiteStore) PricingMissing(ctx context.Context, selected model.Range) ([]model.PricingMissing, error) {
@@ -332,7 +336,7 @@ func replacePricingRules(ctx context.Context, database *sql.DB, rules []aggregat
 	return nil
 }
 
-func replaceManualPricingRules(ctx context.Context, database *sql.DB, rules []aggregate.PricingRule, provenance PricingProvenance) error {
+func replaceManualPricingRules(ctx context.Context, database *sql.DB, rules []aggregate.PricingRule, provenance PricingProvenance, rate *model.NanoUSD) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin pricing overrides update: %w", err)
@@ -354,6 +358,12 @@ func replaceManualPricingRules(ctx context.Context, database *sql.DB, rules []ag
 	if err := writePricingProvenance(ctx, tx, provenance); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("record pricing provenance: %w", err)
+	}
+	if rate != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_metadata(key,value) VALUES ('kiro_usd_per_credit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, rate.String()); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("save credit rate: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit pricing overrides: %w", err)
@@ -409,6 +419,18 @@ func unixNanoOrZero(value time.Time) int64 {
 
 func loadPricingRules(ctx context.Context, database *sql.DB) (aggregate.PriceBook, PricingProvenance, error) {
 	book := aggregate.PriceBook{}
+	var rateText string
+	rateErr := database.QueryRowContext(ctx, "SELECT value FROM analytics_metadata WHERE key='kiro_usd_per_credit'").Scan(&rateText)
+	if rateErr != nil && rateErr != sql.ErrNoRows {
+		return book, PricingProvenance{}, rateErr
+	}
+	if rateErr == nil {
+		rate, err := model.ParseNanoUSD(rateText)
+		if err != nil || rate < 0 {
+			return book, PricingProvenance{}, fmt.Errorf("invalid stored credit rate")
+		}
+		book.KiroUSDPerCredit = &rate
+	}
 	rows, err := database.QueryContext(ctx, `SELECT rule_id,'',model,alias,input_per_million_nano,output_per_million_nano,
 cache_read_multiplier,cache_creation_multiplier,source FROM pricing_rules ORDER BY rule_id`)
 	if err != nil {
@@ -573,4 +595,13 @@ func clonePricingRules(rules []aggregate.PricingRule) []aggregate.PricingRule {
 		}
 	}
 	return result
+}
+
+func clonePriceBook(book aggregate.PriceBook) aggregate.PriceBook {
+	book.Rules = clonePricingRules(book.Rules)
+	if book.KiroUSDPerCredit != nil {
+		rate := *book.KiroUSDPerCredit
+		book.KiroUSDPerCredit = &rate
+	}
+	return book
 }

@@ -338,6 +338,7 @@ func (s *SQLiteStore) Restore(ctx context.Context, databasePath, manifestPath st
 		return fmt.Errorf("open restored analytics database: %w", err)
 	}
 	candidate := &SQLiteStore{db: database, config: s.config, identityKey: identity}
+	candidate.config.PriceBook = aggregate.PriceBook{}
 	if err := candidate.initialize(ctx, false); err != nil {
 		_ = database.Close()
 		rollback()
@@ -347,6 +348,7 @@ func (s *SQLiteStore) Restore(ctx context.Context, databasePath, manifestPath st
 	s.identityKey = candidate.identityKey
 	s.identityEpoch = candidate.identityEpoch
 	s.currentSchema = candidate.currentSchema
+	s.config.PriceBook = candidate.config.PriceBook
 	s.retentionCutoff = candidate.retentionCutoff
 	s.historyCache.clear()
 	return nil

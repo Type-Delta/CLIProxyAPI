@@ -836,6 +836,12 @@ func (m *Manager) Stats() ManagerStats {
 
 func freezeObserverSnapshot(ctx context.Context, record Record) (Record, contextSnapshot, int64) {
 	remaining := MaxObserverSnapshotBytes - 512
+	credits, err := NormalizeProviderCredits(record.Detail.ProviderCredits)
+	if err != nil {
+		credits = ""
+	}
+	record.Detail.ProviderCredits = strings.Clone(credits)
+	remaining -= len(credits)
 	copyString := func(value string) string {
 		value = truncateUTF8(value, remaining)
 		remaining -= len(value)

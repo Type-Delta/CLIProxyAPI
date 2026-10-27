@@ -260,6 +260,7 @@ type AnalysisLatency struct {
 }
 
 type AnalysisCostComponents struct {
+	CreditBasedUSD       string                `json:"credit_based_usd"`
 	Models               []ModelCostComponents `json:"models"`
 	Meta                 AnalysisSectionMeta   `json:"meta"`
 	UncachedInputUSD     string                `json:"uncached_input_usd"`
@@ -589,6 +590,7 @@ type ProcessingTime struct {
 }
 
 type ModelCostComponents struct {
+	CreditBasedUSD   string `json:"credit_based_usd"`
 	Model            string `json:"model"`
 	UncachedInputUSD string `json:"uncached_input_usd"`
 	CacheReadUSD     string `json:"cache_read_usd"`

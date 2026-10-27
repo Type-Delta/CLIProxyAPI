@@ -58,7 +58,7 @@ func TestCompactReviewMigrationFromSchemaTenPreservesExactRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := direct.ExecContext(ctx, `ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; ALTER TABLE events DROP COLUMN session_digest; DROP TABLE analytics_15m_compact; DROP TABLE analytics_15m_request_ids; DELETE FROM schema_migrations WHERE version>=11`); err != nil {
+	if _, err := direct.ExecContext(ctx, `ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; ALTER TABLE events DROP COLUMN session_digest; DROP TABLE analytics_15m_compact; DROP TABLE analytics_15m_request_ids; DELETE FROM schema_migrations WHERE version>=11`); err != nil {
 		t.Fatal(err)
 	}
 	legacySQL, err := migrationFiles.ReadFile("migrations/010_materialized_15m.sql")

@@ -501,3 +501,76 @@ func TestKiroBinarySourceTimingIncludesSuppressedReasoningAndIgnoresMetadata(t *
 		})
 	}
 }
+
+func TestKiroExecutorCreditSnapshotsAndFailures(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/fail=%t", stream, fail), func(t *testing.T) {
+				capture := newKiroUsageCapture(t, t.Name())
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					writeKiroTestEvents(t, w, []kiroTestEvent{
+						{name: "meteringEvent", payload: map[string]any{"unit": "CREDIT", "usage": json.Number("1.234567890123456789")}},
+						{name: "meteringEvent", payload: map[string]any{"unit": "tokens", "usage": 99}},
+						{name: "meteringEvent", payload: map[string]any{"unit": "credit", "usage": -1}},
+						{name: "meteringEvent", payload: map[string]any{"unit": "credit", "usage": json.Number("1e-18")}},
+						{name: "meteringEvent", payload: map[string]any{"unit": "credit", "usage": json.Number("1e-19")}},
+						{name: "assistantResponseEvent", payload: map[string]any{"content": "OK"}},
+					})
+					if fail {
+						_, _ = w.Write([]byte("truncated"))
+					}
+				}))
+				defer server.Close()
+				executor := NewKiroExecutor(&config.Config{})
+				request := cliproxyexecutor.Request{Model: "claude-sonnet-4-6", Payload: []byte(`{"messages":[{"role":"user","content":"Hello"}]}`)}
+				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: stream}
+				ctx := kiroUsageTestContext(server, t.Name())
+				var err error
+				if stream {
+					var result *cliproxyexecutor.StreamResult
+					result, err = executor.ExecuteStream(ctx, kiroUsageTestAuth(), request, opts)
+					if err == nil {
+						for chunk := range result.Chunks {
+							if chunk.Err != nil {
+								err = chunk.Err
+							}
+						}
+					}
+				} else {
+					_, err = executor.Execute(ctx, kiroUsageTestAuth(), request, opts)
+				}
+				if (err != nil) != fail {
+					t.Fatalf("error=%v, fail=%t", err, fail)
+				}
+				record := capture.await(t)
+				if record.Detail.ProviderCredits != "0.000000000000000001" || record.Failed != fail {
+					t.Fatalf("record: %+v", record)
+				}
+				if record.Detail.CacheReadTokens != 0 || record.Detail.CacheCreationTokens != 0 || record.Detail.TokenQuality != coreusage.TokenQualityEstimated {
+					t.Fatalf("usage: %+v", record.Detail)
+				}
+			})
+		}
+	}
+}
+
+func TestKiroMeteringZeroAndNumericTokenFields(t *testing.T) {
+	events := []kiroTestEvent{
+		{name: "meteringEvent", payload: map[string]any{"unit": "CREDIT", "usage": json.Number("2.1"), "contextUsagePercentage": json.Number("2.5"), "inputTokens": json.Number("1e2"), "outputTokens": json.Number("2.0")}},
+		{name: "meteringEvent", payload: map[string]any{"unit": "CREDIT", "usage": json.Number("0.00")}},
+		{name: "meteringEvent", payload: map[string]any{"usage": json.Number("4")}},
+		{name: "metadataEvent", payload: map[string]any{"unit": "CREDIT", "usage": json.Number("5")}},
+	}
+	var frames []byte
+	for _, event := range events {
+		frames = append(frames, kiroTestEventFrame(t, event.name, event.payload)...)
+	}
+	result, err := collectKiroEvents(bytes.NewReader(frames), "model", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := result.usageDetail()
+	if detail.ProviderCredits != "0" || detail.InputTokens != 100 || detail.OutputTokens != 2 || result.contextUsagePercentage == nil || *result.contextUsagePercentage != 2.5 {
+		t.Fatalf("detail=%+v percentage=%v", detail, result.contextUsagePercentage)
+	}
+}

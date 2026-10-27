@@ -195,9 +195,10 @@ func (s *SQLiteStore) historyPricingDigestLocked(ctx context.Context) (string, e
 		return "", err
 	}
 	payload := struct {
+		Rate       model.NanoUSD     `json:"rate"`
 		Rules      any               `json:"rules"`
 		Provenance PricingProvenance `json:"provenance"`
-	}{Rules: book.Rules, Provenance: provenance}
+	}{Rate: book.EffectiveKiroRate(), Rules: book.Rules, Provenance: provenance}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err

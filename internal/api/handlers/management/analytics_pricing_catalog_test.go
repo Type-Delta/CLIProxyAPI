@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +69,45 @@ func TestGetAnalyticsPricingCatalogProviders(t *testing.T) {
 	}
 	if !service.refreshed || len(body.Providers) != 1 || body.Providers[0].Name != "Z.AI" || body.CatalogUpdatedAt == nil {
 		t.Fatalf("refreshed=%t body=%+v", service.refreshed, body)
+	}
+}
+
+func TestAnalyticsPricingCreditRateContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &analyticsPricingTestService{analyticsHandlerService: &analyticsHandlerService{reader: &analyticsHandlerReader{}, state: model.StateReady}}
+	handler := &Handler{analytics: service}
+	ctx, response := v2Request(http.MethodGet, "/v8/management/analytics/pricing", "")
+	handler.GetAnalyticsPricing(ctx)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"kiro_usd_per_credit":"0.02"`) {
+		t.Fatalf("default: %d %s", response.Code, response.Body.String())
+	}
+	ctx, response = v2Request(http.MethodPut, "/v8/management/analytics/pricing", `{"rules":[],"kiro_usd_per_credit":"0"}`)
+	handler.PutAnalyticsPricing(ctx)
+	if response.Code != http.StatusOK || service.book.KiroUSDPerCredit == nil || *service.book.KiroUSDPerCredit != 0 || !strings.Contains(response.Body.String(), `"kiro_usd_per_credit":"0"`) {
+		t.Fatalf("zero: %d %s", response.Code, response.Body.String())
+	}
+	ctx, response = v2Request(http.MethodPut, "/v8/management/analytics/pricing", `{"rules":[],"kiro_usd_per_credit":"-1"}`)
+	handler.PutAnalyticsPricing(ctx)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("negative: %d %s", response.Code, response.Body.String())
+	}
+	ctx, response = v2Request(http.MethodPut, "/v8/management/analytics/pricing", `{"rules":[]}`)
+	handler.PutAnalyticsPricing(ctx)
+	if response.Code != http.StatusOK || service.book.KiroUSDPerCredit != nil {
+		t.Fatalf("omission must reach store unset: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAnalyticsCreditExportValues(t *testing.T) {
+	credits := "0"
+	rate := model.NanoUSD(0)
+	event := model.Event{ProviderCredits: &credits, PriceUSDPerCredit: &rate, PriceSource: "kiro-credits"}
+	values := analyticsEventExportValues(event)
+	if !slices.Contains(analyticsEventExportColumns, "provider_credits") || !slices.Contains(analyticsEventExportColumns, "price_usd_per_credit") || values["provider_credits"] != event.ProviderCredits || values["price_usd_per_credit"] != event.PriceUSDPerCredit {
+		t.Fatalf("export values: %+v", values)
+	}
+	data, err := json.Marshal(event)
+	if err != nil || !strings.Contains(string(data), `"provider_credits":"0"`) || !strings.Contains(string(data), `"price_usd_per_credit":"0"`) {
+		t.Fatalf("json: %s %v", data, err)
 	}
 }

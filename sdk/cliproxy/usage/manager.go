@@ -111,6 +111,8 @@ type Failure struct {
 
 // Detail holds the token usage breakdown.
 type Detail struct {
+	// ProviderCredits is the canonical reported credit quantity; empty means absent.
+	ProviderCredits     string
 	InputTokens         int64
 	OutputTokens        int64
 	ReasoningTokens     int64

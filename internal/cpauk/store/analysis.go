@@ -446,7 +446,7 @@ func percentileOffset(count, numerator, denominator int64) int64 {
 
 const analysisCostEventSelect = `provider,model,requested_alias,service_tier_requested,service_tier_used,
 input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,
-known_cost_nano,unpriced_tokens,price_rule_id,price_source`
+known_cost_nano,unpriced_tokens,price_rule_id,price_source,price_usd_per_credit_nano`
 
 type analysisPriceKey struct {
 	provider, model, alias   string
@@ -476,7 +476,7 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 		return model.AnalysisCostComponents{}, fmt.Errorf("query analysis costs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	totals := make([]model.NanoUSD, 4)
+	totals := make([]model.NanoUSD, 5)
 	modelTotals := map[string][]model.NanoUSD{}
 	priceCache := make(map[analysisPriceKey]analysisPriceCacheValue)
 	priceCached := func(event model.Event) (aggregate.PriceResult, error) {
@@ -504,10 +504,10 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 	for rows.Next() {
 		var event model.Event
 		var requestedAlias, requestedTier, usedTier, priceRuleID, priceSource sql.NullString
-		var knownCost sql.NullInt64
+		var knownCost, creditRate sql.NullInt64
 		if err := rows.Scan(&event.Provider, &event.Model, &requestedAlias, &requestedTier, &usedTier,
 			&event.Tokens.Input, &event.Tokens.Output, &event.Tokens.CacheRead, &event.Tokens.CacheCreation, &event.Tokens.Total,
-			&knownCost, &event.UnpricedTokens, &priceRuleID, &priceSource); err != nil {
+			&knownCost, &event.UnpricedTokens, &priceRuleID, &priceSource, &creditRate); err != nil {
 			return model.AnalysisCostComponents{}, fmt.Errorf("scan analysis costs: %w", err)
 		}
 		if requestedAlias.Valid {
@@ -523,6 +523,15 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 		}
 		if priceSource.Valid {
 			event.PriceSource = priceSource.String
+		}
+		if event.PriceSource == "kiro-credits" && creditRate.Valid && event.KnownCost != nil {
+			if modelTotals[event.Model] == nil {
+				modelTotals[event.Model] = make([]model.NanoUSD, 5)
+			}
+			modelTotals[event.Model][4] += *event.KnownCost
+			totals[4] += *event.KnownCost
+			pricedTokens += max(int64(0), event.Tokens.Total-event.UnpricedTokens)
+			continue
 		}
 		current, errPrice := priceCached(event)
 		if errPrice != nil {
@@ -558,12 +567,12 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 		}
 		reconcileCostComponents(componentCosts, parts, *event.KnownCost)
 		if modelTotals[event.Model] == nil {
-			modelTotals[event.Model] = make([]model.NanoUSD, 4)
+			modelTotals[event.Model] = make([]model.NanoUSD, 5)
 		}
 		for index, cost := range componentCosts {
 			modelTotals[event.Model][index] += cost
 		}
-		for index := range totals {
+		for index := range componentCosts {
 			totals[index] += componentCosts[index]
 		}
 	}
@@ -575,9 +584,10 @@ func (s *SQLiteStore) analysisCosts(ctx context.Context, query model.Query) (mod
 	}
 	result := model.AnalysisCostComponents{Models: []model.ModelCostComponents{}}
 	for name, costs := range modelTotals {
-		result.Models = append(result.Models, model.ModelCostComponents{Model: name, UncachedInputUSD: costs[0].String(), CacheReadUSD: costs[1].String(), CacheCreationUSD: costs[2].String(), OutputUSD: costs[3].String(), TotalUSD: (costs[0] + costs[1] + costs[2] + costs[3]).String()})
+		result.Models = append(result.Models, model.ModelCostComponents{Model: name, CreditBasedUSD: costs[4].String(), UncachedInputUSD: costs[0].String(), CacheReadUSD: costs[1].String(), CacheCreationUSD: costs[2].String(), OutputUSD: costs[3].String(), TotalUSD: (costs[0] + costs[1] + costs[2] + costs[3] + costs[4]).String()})
 	}
 	slices.SortFunc(result.Models, func(a, b model.ModelCostComponents) int { return strings.Compare(a.Model, b.Model) })
+	result.CreditBasedUSD = totals[4].String()
 	result.UncachedInputUSD = totals[0].String()
 	result.CacheReadUSD = totals[1].String()
 	result.CacheCreationUSD = totals[2].String()

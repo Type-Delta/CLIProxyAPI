@@ -287,6 +287,8 @@ WHERE key IN ('identity_fingerprint','identity_epoch')`).Scan(&identityMetadata)
 	}
 	if len(book.Rules) != 0 {
 		s.config.PriceBook = book
+	} else if book.KiroUSDPerCredit != nil {
+		s.config.PriceBook.KiroUSDPerCredit = book.KiroUSDPerCredit
 	}
 	rows, err := s.db.QueryContext(ctx, "SELECT grain, completed_cutoff_ns FROM retention_state WHERE grain IN ('raw', 'raw_checkpoint')")
 	if err != nil {

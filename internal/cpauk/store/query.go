@@ -655,7 +655,7 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
 price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest, output_timing, stream, reasoning_effort`
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest, output_timing, stream, reasoning_effort, provider_credits, price_usd_per_credit_nano`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -1170,6 +1170,8 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var receivedNS, sentNS, respondedNS, proxyStatus sql.NullInt64
 	var outputTiming, reasoningEffort sql.NullString
 	var stream sql.NullBool
+	var credits sql.NullString
+	var creditRate sql.NullInt64
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
 		&event.EndpointClass, &authType, &credentialID, &credentialAlgorithm, &event.Succeeded,
@@ -1179,9 +1181,14 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
 		&priceRuleID, &priceSource, &importBatchID, &generation,
 		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
-		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort)
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort, &credits, &creditRate)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
+	}
+	event.ProviderCredits = scanNullableString(credits)
+	if creditRate.Valid {
+		rate := model.NanoUSD(creditRate.Int64)
+		event.PriceUSDPerCredit = &rate
 	}
 	if stream.Valid {
 		event.Stream = &stream.Bool

@@ -212,6 +212,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	response.Body = trackKiroGenerationBody(ctx, reporter, response.Body)
 	result, err := collectKiroEvents(response.Body, req.Model, requestPayload)
 	if err != nil {
+		reporter.PublishFailureWithDetail(ctx, result.usageDetail(), err)
 		return resp, err
 	}
 	e.resolveContextWindow(ctx, auth, body, result)
@@ -440,6 +441,7 @@ type kiroEventAccumulator struct {
 	activeBlock               string
 	nextBlockIndex            int
 	contextUsagePercentage    *float64
+	providerCredits           string
 	contextWindow             int
 	inputTokensReported       bool
 	outputTokensReported      bool
@@ -504,8 +506,22 @@ func (a *kiroEventAccumulator) consume(eventName string, data map[string]any) []
 			a.finalizeToolInput(index)
 		}
 	case "contextUsageEvent", "meteringEvent", "metadataEvent":
-		if value, ok := data["contextUsagePercentage"].(float64); ok && !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0 && value <= 100 {
+		value, ok := data["contextUsagePercentage"].(float64)
+		if number, isNumber := data["contextUsagePercentage"].(json.Number); isNumber {
+			var err error
+			value, err = number.Float64()
+			ok = err == nil
+		}
+		if ok && !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0 && value <= 100 {
 			a.contextUsagePercentage = &value
+		}
+		if eventName == "meteringEvent" {
+			unit, _ := data["unit"].(string)
+			if number, isNumber := data["usage"].(json.Number); isNumber && strings.EqualFold(unit, "credit") {
+				if credits, err := usage.NormalizeProviderCredits(string(number)); err == nil {
+					a.providerCredits = credits
+				}
+			}
 		}
 		if value, ok := numberField(data, "outputTokens", "totalOutputTokens"); ok && value >= 0 {
 			a.outputTokens = value
@@ -686,11 +702,12 @@ func (a *kiroEventAccumulator) usageDetail() usage.Detail {
 	outputTokens := int64(a.outputTokens)
 	totalTokens := inputTokens + outputTokens
 	return usage.Detail{
-		InputTokens:    inputTokens,
-		OutputTokens:   outputTokens,
-		TotalTokens:    totalTokens,
-		TokenBreakdown: usage.NewIndependentTokenBreakdown(inputTokens, 0, 0, outputTokens, 0, totalTokens),
-		TokenQuality:   usage.TokenQualityEstimated,
+		InputTokens:     inputTokens,
+		OutputTokens:    outputTokens,
+		TotalTokens:     totalTokens,
+		TokenBreakdown:  usage.NewIndependentTokenBreakdown(inputTokens, 0, 0, outputTokens, 0, totalTokens),
+		TokenQuality:    usage.TokenQualityEstimated,
+		ProviderCredits: a.providerCredits,
 	}
 }
 
@@ -721,8 +738,10 @@ func numberField(data map[string]any, keys ...string) (int, bool) {
 				return int(value), true
 			}
 		case json.Number:
-			n, err := value.Int64()
-			return int(n), err == nil
+			n, err := value.Float64()
+			if err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0 && n < float64(int(^uint(0)>>1)) && math.Trunc(n) == n {
+				return int(n), true
+			}
 		case int:
 			return value, true
 		}
@@ -835,7 +854,9 @@ func parseKiroEventStream(body io.Reader, callback func(string, map[string]any) 
 			return fmt.Errorf("Kiro stream exception %s: %s", eventName, strings.TrimSpace(string(payload)))
 		}
 		var data map[string]any
-		if len(payload) == 0 || eventName == "" || json.Unmarshal(payload, &data) != nil || data == nil {
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.UseNumber()
+		if len(payload) == 0 || eventName == "" || decoder.Decode(&data) != nil || data == nil || !json.Valid(payload) {
 			return fmt.Errorf("invalid Kiro event frame %q", eventName)
 		}
 		sawEvent = true
