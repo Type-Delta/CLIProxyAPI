@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +21,55 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestKiroContextAccountingPreservesReportedCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		counts     map[string]any
+		wantInput  int
+		wantOutput int
+	}{
+		{name: "estimated input", counts: map[string]any{"outputTokens": 5}, wantInput: 2545, wantOutput: 5},
+		{name: "reported input", counts: map[string]any{"inputTokens": 12, "outputTokens": 5}, wantInput: 12, wantOutput: 5},
+		{name: "reported zero input", counts: map[string]any{"inputTokens": 0, "outputTokens": 5}, wantInput: 0, wantOutput: 5},
+		{name: "reported zero output", counts: map[string]any{"outputTokens": 0}, wantInput: 2550, wantOutput: 0},
+		{name: "nested reported counts", counts: map[string]any{"tokenUsage": map[string]any{"inputTokens": 12, "outputTokens": 5}}, wantInput: 12, wantOutput: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accumulator := newKiroEventAccumulator("claude-opus-5-5", []byte(`{"messages":[{"role":"user","content":"Reply OK"}]}`))
+			accumulator.contextWindow = 10000
+			accumulator.consume("metadataEvent", tc.counts)
+			accumulator.consume("assistantResponseEvent", map[string]any{"content": "OK"})
+			accumulator.consume("contextUsageEvent", map[string]any{"contextUsagePercentage": 25.5})
+			body := accumulator.claudeResponse("claude-opus-5-5")
+			if got := gjson.GetBytes(body, "usage.input_tokens").Int(); got != int64(tc.wantInput) {
+				t.Fatalf("input = %d, want %d", got, tc.wantInput)
+			}
+			if got := gjson.GetBytes(body, "usage.output_tokens").Int(); got != int64(tc.wantOutput) {
+				t.Fatalf("output = %d, want %d", got, tc.wantOutput)
+			}
+			chunks := accumulator.finishSSE("claude-opus-5-5")
+			for _, event := range decodeKiroSSE(t, chunks) {
+				if event.name == "message_delta" && (gjson.GetBytes(event.payload, "usage.input_tokens").Int() != int64(tc.wantInput) || gjson.GetBytes(event.payload, "usage.output_tokens").Int() != int64(tc.wantOutput)) {
+					t.Fatalf("final stream usage = %s", event.payload)
+				}
+			}
+		})
+	}
+}
+
+func TestKiroContextAccountingInvalidPercentageKeepsEstimate(t *testing.T) {
+	for _, value := range []any{nil, "25", -1.0, 0.0, 101.0, math.NaN(), math.Inf(1)} {
+		accumulator := newKiroEventAccumulator("claude-opus-5-5", []byte(`{"messages":[{"role":"user","content":"Reply OK"}]}`))
+		want := accumulator.inputTokens
+		accumulator.contextWindow = 800000
+		accumulator.consume("contextUsageEvent", map[string]any{"contextUsagePercentage": value})
+		accumulator.consume("assistantResponseEvent", map[string]any{"content": "OK"})
+		if got := accumulator.usageDetail().InputTokens; got != int64(want) {
+			t.Fatalf("percentage %v changed input count from %d to %d", value, want, got)
+		}
+	}
+}
 
 func TestKiroEventAccumulatorEstimatesUsageWhenKiroOmitsTokenCounts(t *testing.T) {
 	accumulator := newKiroEventAccumulator("claude-sonnet-4-6", []byte(`{"messages":[{"role":"user","content":"Count this request"}]}`))

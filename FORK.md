@@ -1162,7 +1162,29 @@ The CPAMC Kiro login card offers AWS Builder ID or IAM Identity Center. Identity
 
 Kiro now uses the shared executor usage reporter for both non-streaming and streaming requests. The completed event accumulator supplies its estimated input and output token counts to the usage record, which feeds analytics and per-key limits. Non-2xx and transport failures are tracked as failures, while streaming publishes only after the terminal SSE chunks have been emitted. The reporter's one-shot publish guard makes the terminal success or failure outcome the only record for the attempt.
 
-**Implementation evidence:** `internal/runtime/executor/kiro_executor.go` and `internal/runtime/executor/kiro_executor_usage_test.go`.
+Completed usage uses Kiro's `contextUsagePercentage` and the selected wire model's
+`tokenLimits.maxInputTokens` from `ListAvailableModels`. The catalog is scoped to
+the credential, region and effective profile, follows pagination, and refreshes
+after three hours. Failed refreshes retain the last successful catalog and retry
+after one minute. Missing limits or invalid percentages preserve local estimates;
+there is no hardcoded context-window fallback. Catalog requests respect credential
+proxy routing and do not replace inference timing or upstream diagnostics.
+
+The percentage estimates occupied context for the completed exchange. CPA subtracts
+locally estimated output, including reasoning and tool inputs, to derive estimated
+input. Explicit upstream counters take precedence, including zero. Counts remain
+marked estimated because context occupancy includes provider overhead and does not
+establish exact billable input/output. Streaming content is forwarded immediately;
+the final `message_delta` corrects input and output usage for Claude clients and the
+OpenAI translators. The local token-count endpoint uses the same Claude-request
+estimator as inference instead of dividing serialized JSON bytes by four. Context
+lookup reads the final wire model and profile after payload rules without changing
+the configured business payload.
+
+**Implementation evidence:** `internal/runtime/executor/kiro_executor.go`,
+`internal/runtime/executor/kiro_executor_usage_test.go`,
+`internal/runtime/executor/kiro_stream_test.go`, and
+`internal/runtime/executor/helps/kiro_models.go` with its unit tests.
 
 The bundled CPAMC labels credit-billed Kiro allowances as credits with fractional amounts, shows the row percentage unrounded with the same formatter as the quota summary and timeline, and gives the Kiro timeline lane its monthly period so the current window draws a bar.
 
@@ -1170,7 +1192,19 @@ Kiro usage is priced with Amazon Bedrock rates from the models.dev `amazon-bedro
 
 **Recorded validation:** Kiro usage tests cover non-streaming and streaming success, a single stream record, and 429 failures. Live requests through an Identity Center credential produced one analytics event each (Claude and OpenAI-format, streaming and non-streaming), and the quota page showed matching credit percentages in the summary, row, and monthly timeline bar.
 
-**Last updated:** 2026-10-12
+Context-accounting regressions cover all three public protocols in both response
+modes, final-stream corrections, catalog pagination and account/profile isolation,
+concurrent refreshes, stale-on-error retention, missing models, invalid percentages,
+explicit zero counters, and payload-configured wire model/profile selection. The
+full Go suite, focused Kiro race tests, executor vet checks, and server build pass.
+Live Kiro requests pass through Claude Messages, Chat Completions and Responses in
+both modes with matching corrected usage. Native Claude Code retains the corrected
+input count; an explicit `/compact` reduces a 140,258-token conversation to 884
+retained tokens and the resumed session completes successfully.
+The canonical Docker image also completes live buffered and streaming Kiro requests
+with matching corrected usage.
+
+**Last updated:** 2026-10-27
 
 ### DL035 - Kiro streamed tool-input reconstruction
 

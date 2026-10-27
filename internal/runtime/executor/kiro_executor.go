@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -34,8 +37,9 @@ const (
 
 // KiroExecutor sends Claude-compatible requests to the Kiro runtime endpoint.
 type KiroExecutor struct {
-	cfg *config.Config
-	mu  sync.Mutex
+	cfg          *config.Config
+	mu           sync.Mutex
+	modelCatalog helps.KiroModelCatalog
 }
 
 func NewKiroExecutor(cfg *config.Config) *KiroExecutor { return &KiroExecutor{cfg: cfg} }
@@ -210,6 +214,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	if err != nil {
 		return resp, err
 	}
+	e.resolveContextWindow(ctx, auth, body, result)
 	claudePayload := result.claudeResponse(req.Model)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var patch any
@@ -305,6 +310,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 			return
 		}
+		e.resolveContextWindow(ctx, auth, body, events)
 		for _, payload := range events.finishSSE(req.Model) {
 			if !emit(payload) {
 				publishFailure(ctx.Err())
@@ -344,11 +350,46 @@ func kiroRequestPayload(req cliproxyexecutor.Request, opts cliproxyexecutor.Opti
 }
 
 func (e *KiroExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	count := len(req.Payload) / 4
-	if count < 1 {
-		count = 1
+	count, err := helps.CountClaudeInputTokens(kiroRequestPayload(req, opts))
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("kiro executor: estimate input tokens: %w", err)
 	}
-	return cliproxyexecutor.Response{Payload: []byte(fmt.Sprintf(`{"input_tokens":%d}`, count))}, nil
+	payload := []byte(fmt.Sprintf(`{"input_tokens":%d}`, count))
+	return cliproxyexecutor.Response{Payload: sdktranslator.TranslateTokenCount(ctx, sdktranslator.FormatClaude, cliproxyexecutor.ResponseFormatOrSource(opts), count, payload)}, nil
+}
+
+// resolveContextWindow fetches limits only when a percentage can correct usage.
+// Catalog traffic stays outside the inference reporter's transport observations.
+func (e *KiroExecutor) resolveContextWindow(ctx context.Context, auth *cliproxyauth.Auth, body []byte, events *kiroEventAccumulator) {
+	if events.contextUsagePercentage == nil || events.inputTokensReported {
+		return
+	}
+	model := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.modelId").String()
+	if model == "" {
+		return
+	}
+	region := authValue(auth, "region", kiroauth.DefaultRegion)
+	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/ListAvailableModels", region)
+	query := url.Values{"origin": {"AI_EDITOR"}}
+	if profile := gjson.GetBytes(body, "profileArn").String(); profile != "" {
+		query.Set("profileArn", profile)
+	}
+	request, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
+	if errRequest != nil {
+		return
+	}
+	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
+		return
+	}
+	request.Header.Del("X-Amz-Target")
+	request.Header.Del("X-Amzn-Kiro-Agent-Mode")
+	request.Header.Set("Accept", "application/json")
+	credentialID := ""
+	if auth != nil {
+		credentialID = auth.ID
+	}
+	limits := e.modelCatalog.Lookup(ctx, helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0), credentialID, request, NormalizeKiroModelID(model))
+	events.contextWindow = limits.MaxInputTokens
 }
 
 func authValue(auth *cliproxyauth.Auth, key, fallback string) string {
@@ -398,6 +439,10 @@ type kiroEventAccumulator struct {
 	lastThinking              string
 	activeBlock               string
 	nextBlockIndex            int
+	contextUsagePercentage    *float64
+	contextWindow             int
+	inputTokensReported       bool
+	outputTokensReported      bool
 }
 
 func newKiroEventAccumulator(model string, requestPayload []byte) *kiroEventAccumulator {
@@ -458,16 +503,17 @@ func (a *kiroEventAccumulator) consume(eventName string, data map[string]any) []
 		if stop, _ := data["stop"].(bool); stop {
 			a.finalizeToolInput(index)
 		}
-	case "meteringEvent":
-		// Some Kiro variants expose token fields here. The standard runtime
-		// instead exposes billing usage and contextUsagePercentage, so keep the
-		// explicit token fields when they are present and estimate below when
-		// they are absent.
-		if value, ok := numberField(data, "outputTokens", "totalOutputTokens"); ok && value > 0 {
-			a.outputTokens = value
+	case "contextUsageEvent", "meteringEvent", "metadataEvent":
+		if value, ok := data["contextUsagePercentage"].(float64); ok && !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0 && value <= 100 {
+			a.contextUsagePercentage = &value
 		}
-		if value, ok := numberField(data, "inputTokens", "totalInputTokens"); ok && value > 0 {
+		if value, ok := numberField(data, "outputTokens", "totalOutputTokens"); ok && value >= 0 {
+			a.outputTokens = value
+			a.outputTokensReported = true
+		}
+		if value, ok := numberField(data, "inputTokens", "totalInputTokens"); ok && value >= 0 {
 			a.inputTokens = value
+			a.inputTokensReported = true
 		}
 	}
 	return nil
@@ -505,7 +551,7 @@ func (a *kiroEventAccumulator) finalizeToolInputs() {
 
 func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 	a.finalizeToolInputs()
-	a.ensureOutputTokens()
+	a.ensureUsage()
 	var out [][]byte
 	index := a.nextBlockIndex
 	if a.activeBlock != "" {
@@ -530,7 +576,7 @@ func (a *kiroEventAccumulator) finishSSE(model string) [][]byte {
 	if len(a.toolUses) > 0 {
 		stop = "tool_use"
 	}
-	out = append(out, claudeSSE("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": a.outputTokens}}), claudeSSE("message_stop", map[string]any{"type": "message_stop"}))
+	out = append(out, claudeSSE("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"input_tokens": a.inputTokens, "output_tokens": a.outputTokens}}), claudeSSE("message_stop", map[string]any{"type": "message_stop"}))
 	return out
 }
 
@@ -564,7 +610,7 @@ func (a *kiroEventAccumulator) closeActiveBlock() []byte {
 }
 func (a *kiroEventAccumulator) claudeResponse(model string) []byte {
 	a.finalizeToolInputs()
-	a.ensureOutputTokens()
+	a.ensureUsage()
 	content := []map[string]any{}
 	if a.text != "" {
 		content = append(content, map[string]any{"type": "text", "text": a.text})
@@ -582,7 +628,7 @@ func (a *kiroEventAccumulator) claudeResponse(model string) []byte {
 }
 
 func (a *kiroEventAccumulator) ensureOutputTokens() {
-	if a.outputTokens > 0 {
+	if a.outputTokensReported || a.outputTokens > 0 {
 		return
 	}
 	parts := make([]string, 0, 1+len(a.toolUses))
@@ -613,8 +659,29 @@ func (a *kiroEventAccumulator) ensureOutputTokens() {
 	a.outputTokens = (len([]rune(joined)) + 3) / 4
 }
 
-func (a *kiroEventAccumulator) usageDetail() usage.Detail {
+// ensureUsage anchors the completed exchange to Kiro's occupied-context signal.
+// Output and hidden overhead remain estimates, rather than exact billing counts.
+func (a *kiroEventAccumulator) ensureUsage() {
 	a.ensureOutputTokens()
+	if a.inputTokensReported || a.contextUsagePercentage == nil || a.contextWindow <= 0 {
+		return
+	}
+	occupied := math.Ceil(*a.contextUsagePercentage / 100 * float64(a.contextWindow))
+	if occupied >= float64(int(^uint(0)>>1)) {
+		return
+	}
+	total := int(occupied)
+	if a.outputTokens > total {
+		if a.outputTokensReported {
+			return
+		}
+		a.outputTokens = total
+	}
+	a.inputTokens = total - a.outputTokens
+}
+
+func (a *kiroEventAccumulator) usageDetail() usage.Detail {
+	a.ensureUsage()
 	inputTokens := int64(a.inputTokens)
 	outputTokens := int64(a.outputTokens)
 	totalTokens := inputTokens + outputTokens
@@ -650,7 +717,9 @@ func numberField(data map[string]any, keys ...string) (int, bool) {
 	for _, key := range keys {
 		switch value := data[key].(type) {
 		case float64:
-			return int(value), true
+			if !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value < float64(int(^uint(0)>>1)) && math.Trunc(value) == value {
+				return int(value), true
+			}
 		case json.Number:
 			n, err := value.Int64()
 			return int(n), err == nil
@@ -658,8 +727,12 @@ func numberField(data map[string]any, keys ...string) (int, bool) {
 			return value, true
 		}
 	}
-	if nested, ok := data["usage"].(map[string]any); ok {
-		return numberField(nested, keys...)
+	for _, key := range []string{"usage", "tokenUsage"} {
+		if nested, ok := data[key].(map[string]any); ok {
+			if value, found := numberField(nested, keys...); found {
+				return value, true
+			}
+		}
 	}
 	return 0, false
 }
