@@ -58,9 +58,14 @@ CPA includes the Type-Delta CPAMC fork as a required submodule at `web/managemen
 
 The CPAMC checkout keeps Type-Delta as `origin` and the official repository as `upstream`. Its own `AGENTS.md` and `FORK.md` record the shared CPA, CPAUK, and CPAMC glossary, validation commands, current divergences, and append-only merge history.
 
+Usage's Top Models card uses 100% stacked areas for Tokens and Price, with actual amounts in
+tooltips, and overlapping, unstacked duration lines for Output window. Model colors and ranking
+highlighting persist across modes; the chart and ranking fit narrow screens after viewport changes.
+All three Top Models modes use straight segments with smoothing explicitly disabled.
+
 **Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and the CPAMC `AGENTS.md` and `FORK.md`.
 
-**Recorded validation:** CPAMC verification, lint, TypeScript compilation, the Vite production build, and independent desktop/mobile browser journeys cover the Analytics routes, configuration contracts, viewer isolation, responsive layout, and runtime diagnostics. Detailed CPAMC validation remains in the submodule's `FORK.md`.
+**Recorded validation:** CPAMC verification, lint, TypeScript compilation, the Vite production build, and independent desktop/mobile browser journeys cover the Analytics routes, configuration contracts, viewer isolation, responsive layout, and runtime diagnostics. Top Models verification includes 2,128 passing frontend tests, all three modes with synthetic analytics responses on desktop/mobile, the canonical Docker panel build, and a compiled-server smoke check serving the bundled `/management.html` with HTTP 200. Detailed CPAMC validation remains in the submodule's `FORK.md`.
 
 The analytics upgrade adds the animated diamond cost radar, shared p95/max/median timing radar and
 scatter controls, token/cost/generation heatmap modes, cost component columns, and line-shaped
