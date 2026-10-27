@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storageusage"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/usagelimit"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -57,6 +58,7 @@ type Handler struct {
 	allowRemoteOverride      bool
 	envSecret                string
 	logDir                   string
+	storageUsage             storageusage.Meter
 	postAuthHook             coreauth.PostAuthHook
 	postAuthPersistHook      coreauth.PostAuthHook
 	pluginHost               *pluginhost.Host

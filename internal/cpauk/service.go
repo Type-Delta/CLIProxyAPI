@@ -156,6 +156,14 @@ type service struct {
 	pricingWG          sync.WaitGroup
 }
 
+// LocalStoragePath reports the active database location, including when a new
+// configured path is waiting for a restart.
+func (s *service) LocalStoragePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.Path
+}
+
 func newPricingLifecycle() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
 }

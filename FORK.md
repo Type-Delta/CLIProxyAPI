@@ -1680,6 +1680,43 @@ responses reached their terminal event.
 
 **Last updated:** 2026-10-26
 
+### DL055 - Local storage usage in Config Panel
+
+The authenticated `GET /v8/management/storage` endpoint reports local CPA log and data
+allocation, other occupied space, usable capacity, and available bytes for each backing
+filesystem. Usable capacity excludes filesystem-reserved blocks. CPA data covers the auth
+and state directories, the active analytics database and sidecars, local storage mirrors,
+plugins, configuration, and mutable management assets. Backups inside these managed locations
+are included; remote storage and backups elsewhere are excluded. The endpoint accepts no scan
+paths from clients and returns file locations and sizes without reading file contents.
+
+Accounting deduplicates overlapping directories and hard links, counts allocated storage
+rather than sparse-file logical size, resolves configured symlinks without following nested
+symlink targets, and reports partial scans. A custom analytics database does not claim its
+entire parent directory. Its active path is measured when a new configured path awaits restart.
+Missing directories still expose the capacity of their existing filesystem. Scans are coalesced
+and cached for 15 seconds, with invalidation when measured locations change.
+
+CPAMC adds a theme-aware stacked bar and a numeric legend to Collection and storage, with
+one breakdown per filesystem, refresh, a measurement timestamp, and expandable measured
+locations. All six locales include loading, unavailable, unsupported, and partial-result copy.
+
+**Implementation evidence:** `internal/storageusage/`,
+`internal/api/handlers/management/{storage.go,storage_test.go,handler.go}`,
+`internal/api/{server_management_v8.go,server_management_v8_test.go}`,
+`internal/cpauk/service.go`, and the CPAMC storage API and Config Panel components.
+
+**Validation:** Focused storage, management, API, and analytics tests pass. The full Go suite
+passes on rerun; the initial run hit existing websocket-upload and HTTP-interrupt timing
+failures, and both tests passed three isolated reruns. Windows and macOS storage-package
+compile checks pass. The canonical panel build, server compile, CPAMC tests, lint, TypeScript,
+and single-file production build pass. Live native-process measurements match filesystem
+statistics, and a real analytics backup is included under CPA data. The repository Docker
+image builds and serves the panel; its storage endpoint reports the bind-mounted filesystem
+and rejects unauthenticated requests.
+
+**Last updated:** 2026-10-27
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

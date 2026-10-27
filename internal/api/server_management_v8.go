@@ -31,6 +31,7 @@ func (s *Server) registerManagementV8Routes() {
 	// public analytics viewer on /v0/analytics/viewer; only its management APIs
 	// live under this authenticated v8 group.
 	v8.GET("/capabilities", s.mgmt.GetCapabilities)
+	v8.GET("/storage", s.mgmt.GetStorageUsage)
 	analytics := v8.Group("/analytics")
 	analytics.Use(analyticsRecoveryMiddleware(), rejectAnalyticsKeyIdentityInURL(), s.mgmt.AnalyticsRateLimitMiddleware())
 	analytics.GET("/health", s.mgmt.GetAnalyticsHealth)
