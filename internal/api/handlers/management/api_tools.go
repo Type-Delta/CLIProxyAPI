@@ -156,11 +156,11 @@ func (h *Handler) APICall(c *gin.Context) {
 	switch requestKind {
 	case quotaRequestCacheable:
 		outcome = h.getQuotaCache().do(c.Request.Context(), cacheKey, execute)
-	case quotaRequestCodexConsume:
+	case quotaRequestCodexConsume, quotaRequestClaudeReset:
 		outcome = execute(c.Request.Context())
 		if outcome.successfulResponse() {
 			h.getQuotaCache().invalidateAuth(cacheKey.authHash)
-			if auth != nil && h.authManager != nil {
+			if requestKind == quotaRequestCodexConsume && auth != nil && h.authManager != nil {
 				if _, errReset := h.authManager.ApplyProviderQuotaReportForModels(context.WithoutCancel(c.Request.Context()), auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, nil)); errReset != nil {
 					log.WithError(errReset).WithField("auth_id", auth.ID).Debug("failed to clear Codex standard cooldown after reset-credit consume")
 				}

@@ -116,7 +116,7 @@ func quotaHandler(proxy *quotaProxy) *Handler {
 	return &Handler{cfg: &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: ""}}, authManager: manager, quotaCache: newAPICallQuotaCache(time.Now)}
 }
 
-func quotaCall(t *testing.T, h *Handler, proxy *quotaProxy, authIndex, method, target, parameter, data string) apiCallResponse {
+func quotaCall(t *testing.T, h *Handler, proxy *quotaProxy, authIndex, method, target, parameter, data string, forceRefresh ...bool) apiCallResponse {
 	t.Helper()
 	payload := map[string]any{
 		"auth_index": authIndex,
@@ -125,6 +125,9 @@ func quotaCall(t *testing.T, h *Handler, proxy *quotaProxy, authIndex, method, t
 		"proxy_url":  "",
 		"header":     map[string]string{"X-Test-Parameter": parameter},
 		"data":       data,
+	}
+	if len(forceRefresh) > 0 {
+		payload["force_refresh"] = forceRefresh[0]
 	}
 	raw, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
@@ -501,6 +504,89 @@ func TestAPICallQuotaRefresh429BackoffPreventsFurtherProviderCalls(t *testing.T)
 	}
 	if got := proxy.count.Load(); got != 1 {
 		t.Fatalf("provider call count = %d, want one while retry-after is active", got)
+	}
+}
+
+func TestAPICallQuotaRefresh429ElapsedRetryAfterUsesFallback(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	for _, retryAfter := range []string{"0", now.Format(http.TimeFormat), now.Add(-time.Minute).Format(http.TimeFormat)} {
+		t.Run(retryAfter, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			clock := now
+			h.quotaCache = newAPICallQuotaCache(func() time.Time { return clock })
+			proxy.setResponse(http.StatusTooManyRequests, http.Header{"Retry-After": {retryAfter}}, `{"error":"slow down"}`)
+			quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeUsageQuotaURL, "same", "")
+			clock = clock.Add(quota429FallbackTTL - time.Second)
+			cached := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeUsageQuotaURL, "same", "", true)
+			if got := proxy.count.Load(); got != 1 {
+				t.Fatalf("provider calls during fallback = %d, want one even for forced refresh", got)
+			}
+			if got := cached.Header["Retry-After"]; len(got) != 1 || got[0] != "1" {
+				t.Fatalf("cached Retry-After = %v, want one second remaining", got)
+			}
+			clock = clock.Add(time.Second)
+			quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeUsageQuotaURL, "same", "")
+			if got := proxy.count.Load(); got != 2 {
+				t.Fatalf("provider calls after fallback = %d, want two", got)
+			}
+		})
+	}
+}
+
+func TestAPICallClaudeResetGrantReadsShareCacheAndAllowFreshPreflight(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"eligible":true,"grants":[]}}`)
+	first := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeResetGrantsQuotaURL, "same", "")
+	proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"eligible":false,"grants":[]}}`)
+	cached := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeResetGrantsQuotaURL, "same", "")
+	if cached.Body != first.Body || proxy.count.Load() != 1 {
+		t.Fatalf("routine grant reads did not share the cached response: calls=%d", proxy.count.Load())
+	}
+	fresh := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, claudeResetGrantsQuotaURL, "same", "", true)
+	if fresh.Body == first.Body || proxy.count.Load() != 2 {
+		t.Fatalf("forced preflight did not fetch fresh grants: calls=%d", proxy.count.Load())
+	}
+}
+
+func TestAPICallClaudeResetGrantReadsShareUsageBackoff(t *testing.T) {
+	for _, firstURL := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
+		t.Run(firstURL, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			proxy.setResponse(http.StatusTooManyRequests, http.Header{"Retry-After": {"180"}}, `{"error":"slow down"}`)
+			quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, firstURL, "same", "")
+			for _, target := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
+				response := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "", true)
+				if response.StatusCode != http.StatusTooManyRequests {
+					t.Fatalf("status = %d, want cached 429", response.StatusCode)
+				}
+			}
+			if got := proxy.count.Load(); got != 1 {
+				t.Fatalf("provider calls during shared cooldown = %d, want one", got)
+			}
+		})
+	}
+}
+
+func TestAPICallClaudeResetInvalidatesQuotaAndGrantReads(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	for _, target := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
+		quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
+	}
+	proxy.setResponse(http.StatusOK, nil, `{"result":"reset"}`)
+	quotaCall(t, h, proxy, "credential-a-claude", http.MethodPost, "https://api.anthropic.com/api/organizations/11111111-2222-3333-4444-555555555555/reset_rate_limits", "same", `{"program":"cedar_ember"}`)
+	proxy.setResponse(http.StatusOK, nil, `{"fresh":true}`)
+	for _, target := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
+		response := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
+		if response.Body != `{"fresh":true}` {
+			t.Fatalf("response after reset = %s, want fresh quota and grants", response.Body)
+		}
+	}
+	if got := proxy.count.Load(); got != 5 {
+		t.Fatalf("provider calls = %d, want two reads, one reset, two fresh reads", got)
 	}
 }
 

@@ -31,6 +31,7 @@ const (
 	quotaRequestNotCacheable quotaRequestKind = iota
 	quotaRequestCacheable
 	quotaRequestCodexConsume
+	quotaRequestClaudeReset
 )
 
 // quotaCacheKey contains only digests. Raw credentials, headers, and proxy
@@ -261,10 +262,13 @@ func (q *apiCallQuotaCache) purgeExpiredLocked(now time.Time) {
 
 func (q *apiCallQuotaCache) retryAfterForOutcome(outcome quotaCallOutcome, now time.Time) (time.Duration, bool) {
 	if outcome.retryAfterProvided {
-		return nonNegativeDuration(outcome.retryAfter), true
+		if outcome.retryAfter > 0 {
+			return outcome.retryAfter, true
+		}
+		return quota429FallbackTTL, false
 	}
 	if outcome.response.StatusCode == http.StatusTooManyRequests {
-		if retryAfter, ok := parseRetryAfter(outcome.response.Header, now); ok {
+		if retryAfter, ok := parseRetryAfter(outcome.response.Header, now); ok && retryAfter > 0 {
 			return retryAfter, true
 		}
 	}
@@ -366,8 +370,8 @@ func quotaRateLimitFromError(err error) (time.Duration, bool, bool) {
 }
 
 // parseRetryAfter supports both RFC 7231 forms: delta-seconds and HTTP-date.
-// A valid date in the past means retry immediately; malformed or overflowing
-// values use the caller's fallback.
+// Elapsed deadlines parse as zero; callers choose a fallback when no positive
+// retry delay remains. Malformed or overflowing values fail parsing.
 func parseRetryAfter(headers map[string][]string, now time.Time) (time.Duration, bool) {
 	var raw string
 	for key, values := range headers {
@@ -572,8 +576,14 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 	}
 	switch provider {
 	case "claude":
-		if method == http.MethodGet && exactQuotaURL(rawURL, claudeProfileQuotaURL, claudeUsageQuotaURL) {
+		if method == http.MethodGet && exactQuotaURL(rawURL, claudeProfileQuotaURL, claudeUsageQuotaURL, claudeResetGrantsQuotaURL) {
 			return quotaRequestCacheable
+		}
+		if method == http.MethodPost && rawURL != nil {
+			parts := strings.Split(rawURL.EscapedPath(), "/")
+			if len(parts) == 5 && parts[1] == "api" && parts[2] == "organizations" && parts[3] != "" && parts[4] == "reset_rate_limits" && exactQuotaURL(rawURL, "https://api.anthropic.com"+rawURL.EscapedPath()) {
+				return quotaRequestClaudeReset
+			}
 		}
 	case "codex":
 		if method == http.MethodGet && exactQuotaURL(rawURL, codexUsageQuotaURL, codexResetCreditsURL) {

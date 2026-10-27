@@ -391,8 +391,8 @@ resolution so repeated refreshes also share credential acquisition work.
 
 An upstream HTTP 429 blocks further quota requests for the same credential and
 provider until `Retry-After` expires. Both delta-seconds and HTTP-date values are
-supported; missing or invalid values use a three-minute backoff. The backoff
-covers sibling quota endpoints and provider fallback hosts, including 429s
+supported; missing, invalid, zero, or elapsed values use a three-minute backoff.
+The backoff covers sibling quota endpoints and provider fallback hosts, including 429s
 received during token refresh or before an interrupted response body. Other
 credentials remain independent. A 429 uses its retry deadline instead of the ordinary
 three-minute result lifetime.
@@ -408,6 +408,22 @@ An explicit `force_refresh` on a recognized quota read drops that request's
 cached result before fetching upstream, while keeping any active 429 backoff.
 CPAMC uses this for Codex usage when an administrator presses "Refresh all
 credentials" so a provider-side automatic reset can be observed immediately.
+
+Claude reset-grant display reads at `/api/oauth/usage?cedar_ember=1&skip_spend=1`
+share the same cache and credential backoff as ordinary usage reads. CPAMC forces
+fresh grant and organization reads before spending a reset grant; these reads
+bypass successful cached results while respecting active backoff. Successful
+Claude reset requests invalidate the credential's cached quota and grant results,
+preserving any active backoff. The retained-snapshot notice states the last
+successful check time; a separate error strip describes a failed refresh.
+
+Refresh-protection follow-up validation: the full Go suite, focused race tests,
+server build, and canonical panel build pass. A browser against the updated
+backend and live Claude quota endpoint confirms that repeated usage, profile,
+and grant display reads reuse all three upstream response IDs. Simulated 429,
+loading, and recovery states retain the last successful snapshot and display
+separate status and error text on desktop and mobile.
+
 State is held in memory per CPA management handler, shared by its clients, and
 resets when CPA restarts; separate CPA processes do not share it.
 
