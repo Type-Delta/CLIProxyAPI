@@ -1114,22 +1114,31 @@ panel build, and disposable server compile check pass.
 
 ### DL029 - CPAMC quota summary redesign
 
+Claude cards resolve the profile's `rate_limit_tier` into Max for 5x and Pro Max
+for 20x. Summary capacity uses allowance multipliers rather than subscription
+prices, so one account of each tier contributes 125% of Pro Max, with remaining
+quota weighted by those same shares. Summary and card plan labels share the
+same translation keys. The `iguana_necktie` dollar-credit pool displays its
+localized Cloud session credits label, including in its tooltip.
+
 The bundled CPAMC quota page adds provider summaries while preserving the existing header,
 refresh controls, provider tabs, search, sorting, and credential list. Summary percentages use the
 largest available tier, Claude summaries prioritize the lower-remaining weekly pool (Fable wins
 ties), and OpenCode Go uses its monthly recovery window. Summary and detailed quota rows expose
 credential, remaining percentage, reset timing, and plan details through the shared tooltip path.
 Unavailable allowance fills retain the existing candy-wrap treatment.
-The bundled client is updated to CPAMC pin `e2cb1d6`.
+The bundled client is updated to CPAMC pin `bed0f92`.
 
 **Implementation evidence:** the CPAMC gitlink and
 `internal/managementasset/bundled/management.html`.
 
 **Recorded validation:** focused quota tests, TypeScript, lint, production build, canonical Docker
-management bundle build, and the required server build pass. The full CPAMC suite has one
-pre-existing legacy-backend probe failure on the local base.
+management bundle build, and the required server build pass. The Claude tier follow-up passes
+76 focused tests and live-account desktop/mobile browser checks, including 125% of Pro Max
+capacity and the localized credit label and tooltip. The full CPAMC suite records 2,113 passes
+and the existing analytics SCSS import failure.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-27
 
 ### DL030 - Kiro OAuth, Claude-compatible routing, and quota support
 
