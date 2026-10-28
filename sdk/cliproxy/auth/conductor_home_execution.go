@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	"github.com/tidwall/sjson"
 )
 
@@ -89,6 +90,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
 		selection, errSelection := m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
 		if errSelection != nil {
+			recordExceptionalRouting(ctx, routing.ModeHome, routing.DecidedByHome, nil, retryRound, errSelection)
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if lastErr != nil && errors.As(errSelection, &homeCooldown) && homeCooldown != nil {
@@ -101,6 +103,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			return cliproxyexecutor.Response{}, errSelection
 		}
 		auth := selection.CloneAuthForRoute(routeModel)
+		recordExceptionalRouting(ctx, routing.ModeHome, routing.DecidedByHome, auth, retryRound, nil)
 		if auth == nil || selection.Executor == nil {
 			selection.End("missing_execution_target")
 			return cliproxyexecutor.Response{}, &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -128,6 +131,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		if errBind != nil {
 			selection.End("attempt_bind_failed")
 			return cliproxyexecutor.Response{}, errBind
+		}
+		if holder := routing.HolderFromContext(ctx); holder != nil {
+			execCtx = routing.WithTrace(execCtx, holder.Last())
 		}
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)

@@ -444,6 +444,9 @@ func NormalizeRoutingStrategy(strategy string) (string, bool) {
 
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
+	// Rules applies ordered request conditions to credential routing.
+	Rules []RoutingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first",
 	// and "greedy-soonest-recovery" (alias: "gsr").
@@ -476,6 +479,40 @@ type RoutingConfig struct {
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+}
+
+// RoutingRule narrows a request to matching credential IDs.
+type RoutingRule struct {
+	Name    string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Enabled *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	When    *RoutingCondition `yaml:"when,omitempty" json:"when,omitempty"`
+	RouteTo []string          `yaml:"route-to" json:"route-to"`
+}
+
+// RoutingCondition is one node in a routing rule's boolean condition tree.
+// Exactly one field must be set.
+type RoutingCondition struct {
+	All    []RoutingCondition  `yaml:"all,omitempty" json:"all,omitempty"`
+	Any    []RoutingCondition  `yaml:"any,omitempty" json:"any,omitempty"`
+	Not    *RoutingCondition   `yaml:"not,omitempty" json:"not,omitempty"`
+	Model  *RoutingMatch       `yaml:"model,omitempty" json:"model,omitempty"`
+	APIKey *RoutingMatch       `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+	Header *RoutingHeaderMatch `yaml:"header,omitempty" json:"header,omitempty"`
+	Client *RoutingMatch       `yaml:"client,omitempty" json:"client,omitempty"`
+}
+
+// RoutingMatch is one leaf match operation. Exactly one operator must be set.
+type RoutingMatch struct {
+	Is    string   `yaml:"is,omitempty" json:"is,omitempty"`
+	Match string   `yaml:"match,omitempty" json:"match,omitempty"`
+	Regex string   `yaml:"regex,omitempty" json:"regex,omitempty"`
+	In    []string `yaml:"in,omitempty" json:"in,omitempty"`
+}
+
+// RoutingHeaderMatch matches any value of the named incoming HTTP header.
+type RoutingHeaderMatch struct {
+	Name         string `yaml:"name" json:"name"`
+	RoutingMatch `yaml:",inline" json:",inline"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

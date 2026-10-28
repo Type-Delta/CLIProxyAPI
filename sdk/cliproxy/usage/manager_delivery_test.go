@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 type pluginFunc func(context.Context, Record)
@@ -265,6 +267,22 @@ func TestManagerBoundsSessionIDsInGenericSnapshot(t *testing.T) {
 	got := <-records
 	if gotBytes := len(got.SessionID) + len(got.ParentSessionID); gotBytes > MaxObserverSnapshotBytes {
 		t.Fatalf("session snapshot strings use %d bytes, maximum %d", gotBytes, MaxObserverSnapshotBytes)
+	}
+}
+
+func TestObserverSnapshotCarriesBoundedImmutableRoutingTrace(t *testing.T) {
+	trace := &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeLocal, DecidedBy: routing.DecidedByStrategy, Pick: 0}
+	frozen, _, _ := freezeObserverSnapshot(context.Background(), Record{RoutingTrace: trace})
+	if frozen.RoutingTrace != trace {
+		t.Fatalf("trace pointer = %p, want %p", frozen.RoutingTrace, trace)
+	}
+	oversized := &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeLocal, DecidedBy: routing.DecidedByStrategy, Pick: 0, Candidates: make([]routing.Candidate, 2000)}
+	for index := range oversized.Candidates {
+		oversized.Candidates[index] = routing.Candidate{ID: strings.Repeat("x", 64), Provider: "provider", Gate: routing.GateCooldown, Priority: index}
+	}
+	frozen, _, _ = freezeObserverSnapshot(context.Background(), Record{RoutingTrace: oversized})
+	if frozen.RoutingTrace != nil {
+		t.Fatal("oversized observer trace was retained")
 	}
 }
 

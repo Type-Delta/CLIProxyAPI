@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
@@ -148,6 +149,11 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	}
 	if errValidate := newCfg.ValidateCredentialWeights(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
+		return configCommit{}
+	}
+
+	if _, _, errCompile := routing.Compile(newCfg); errCompile != nil {
+		log.WithError(errCompile).Warn("rejected config update with invalid routing rules")
 		return configCommit{}
 	}
 

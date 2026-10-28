@@ -1702,6 +1702,10 @@ func (p *observerProxy) clear() {
 	}
 }
 
+func (p *observerProxy) TraceCaptureActive() bool {
+	return p != nil && p.target.Load() != nil
+}
+
 // HandleProxyResponse forwards the downstream outcome to the active adapter.
 func (p *observerProxy) HandleProxyResponse(response coreusage.ProxyResponse) {
 	if p == nil {
@@ -1863,6 +1867,23 @@ func (r *readerProxy) Events(ctx context.Context, query model.Query) (result mod
 		return result, err
 	}
 	err = recoverQuery(func() error { result, err = backend.Events(ctx, query); return err })
+	r.recordQueryFailure(err)
+	r.decorateMeta(&result.Meta, err)
+	return result, err
+}
+
+func (r *readerProxy) EventsForExport(ctx context.Context, query model.Query) (result model.EventPage, err error) {
+	backend, err := r.service.backendForRead()
+	if err != nil {
+		return result, err
+	}
+	exporter, ok := backend.(interface {
+		EventsForExport(context.Context, model.Query) (model.EventPage, error)
+	})
+	if !ok {
+		return r.Events(ctx, query)
+	}
+	err = recoverQuery(func() error { result, err = exporter.EventsForExport(ctx, query); return err })
 	r.recordQueryFailure(err)
 	r.decorateMeta(&result.Meta, err)
 	return result, err

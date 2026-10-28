@@ -27,7 +27,7 @@ type gsrProbeFixture struct {
 	body    string
 }
 
-func newGSRProbeFixture(t *testing.T) *gsrProbeFixture {
+func newGSRProbeFixture(t *testing.T, handlers ...http.Handler) *gsrProbeFixture {
 	t.Helper()
 	fixture := &gsrProbeFixture{status: http.StatusOK}
 	fixture.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +36,10 @@ func newGSRProbeFixture(t *testing.T) *gsrProbeFixture {
 		fixture.headers = append(fixture.headers, r.Header.Clone())
 		status, body := fixture.status, fixture.body
 		fixture.mu.Unlock()
+		if len(handlers) > 0 {
+			handlers[0].ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))

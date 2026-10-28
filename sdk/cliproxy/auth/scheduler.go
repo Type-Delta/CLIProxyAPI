@@ -426,6 +426,50 @@ func (s *authScheduler) resetAuthGenerationLocked(authID string) {
 	}
 }
 
+// captureScheduledTier records the ready view actually passed to the scheduler.
+// The scheduler lock is held by the caller.
+func captureScheduledTier(ctx context.Context, shards []*modelScheduler, preferWebsocket bool, priority int, predicate func(*scheduledAuth) bool) {
+	if ctx == nil {
+		return
+	}
+	if capture, _ := ctx.Value(routingCaptureKey{}).(*routingCapture); capture == nil {
+		return
+	}
+	var auths []*Auth
+	for _, shard := range shards {
+		if shard == nil {
+			continue
+		}
+		bucket := shard.readyByPriority[priority]
+		if bucket == nil {
+			continue
+		}
+		view := &bucket.all
+		if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
+			view = &bucket.ws
+		}
+		for _, entry := range view.flat {
+			if entry != nil && entry.auth != nil && (predicate == nil || predicate(entry)) {
+				auths = append(auths, entry.auth)
+			}
+		}
+	}
+	captureRoutingTier(ctx, auths)
+}
+
+func captureSingleScheduledTier(ctx context.Context, shard *modelScheduler, preferWebsocket bool, predicate func(*scheduledAuth) bool) {
+	if ctx == nil {
+		return
+	}
+	if capture, _ := ctx.Value(routingCaptureKey{}).(*routingCapture); capture == nil {
+		return
+	}
+	shard.promoteExpiredLocked(time.Now())
+	if priority, ok := shard.highestReadyPriorityLocked(preferWebsocket, predicate); ok {
+		captureScheduledTier(ctx, []*modelScheduler{shard}, preferWebsocket, priority, predicate)
+	}
+}
+
 // pickSingle returns the next auth for a single provider/model request using scheduler state.
 func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
 	return s.pickSingleWithStrategy(ctx, provider, model, opts, tried, schedulerStrategyCurrent)
@@ -455,6 +499,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+	captureSingleScheduledTier(ctx, shard, preferWebsocket, predicate)
 	if strategy == schedulerStrategyGreedySoonestRecovery {
 		if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(preferWebsocket, predicate); errPick != nil {
 			return nil, errPick
@@ -527,6 +572,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+		captureSingleScheduledTier(ctx, shard, false, predicate)
 		if strategy == schedulerStrategyGreedySoonestRecovery {
 			if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(false, predicate); errPick != nil {
 				return nil, "", errPick
@@ -572,6 +618,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
+	captureScheduledTier(ctx, candidateShards, false, bestPriority, predicate)
 	if strategy == schedulerStrategyFillFirst {
 		for providerIndex, providerKey := range normalized {
 			shard := candidateShards[providerIndex]

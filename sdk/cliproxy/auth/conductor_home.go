@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -1400,7 +1401,8 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		if ctx.Err() != nil {
 			return cliproxyexecutor.Response{}, false, nil
 		}
-		creditsCtx := WithAntigravityCredits(ctx)
+		creditsCtx := recordExceptionalRouting(ctx, routing.ModeLocal, routing.DecidedByCredits, c.auth, 0, nil)
+		creditsCtx = WithAntigravityCredits(creditsCtx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
 			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
 			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
@@ -1464,7 +1466,8 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if ctx.Err() != nil {
 			return nil, false, nil
 		}
-		creditsCtx := WithAntigravityCredits(ctx)
+		creditsCtx := recordExceptionalRouting(ctx, routing.ModeLocal, routing.DecidedByCredits, c.auth, 0, nil)
+		creditsCtx = WithAntigravityCredits(creditsCtx)
 		if rt := m.roundTripperFor(c.auth); rt != nil {
 			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
 			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)

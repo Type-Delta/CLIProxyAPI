@@ -1096,10 +1096,12 @@ weekly reset. The provider's reported weekly reset remains unchanged.
 Manual reset observations refresh on demand every three minutes even when a
 weekly reset is already cached, and survive ordinary response-header snapshots
 and cooldown transitions. Spent, expired, paused, ineligible, or not-yet-started
-credits do not contribute an expiry; failed optional reads retain normal weekly
-routing. Claude grants that require reaching a limit still count while the
-account is healthy. Independent Fable, Spark, and code-review allowances do not
-inherit an expiry from a reset of the shared allowance.
+credits do not contribute an expiry. Failed optional reads preserve the last
+successful reset observation, or use the normal weekly window when none exists.
+HTTP errors of any status, transport failures, and invalid optional responses
+cannot erase a known credit or grant expiry. Claude grants that require reaching
+a limit still count while the account is healthy. Independent Fable, Spark, and
+code-review allowances do not inherit an expiry from a reset of the shared allowance.
 Management routing reads and writes normalize the aliases to the canonical strategy.
 
 **Implementation evidence:** `internal/config/config_types.go`,
@@ -1127,7 +1129,7 @@ manager's selection path with the six-day weekly/two-day manual-reset example.
 The full repository suite, focused auth and management race tests, canonical
 panel build, and disposable server compile check pass.
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-10-28
 
 ### DL029 - CPAMC quota summary redesign
 
@@ -1335,6 +1337,13 @@ credentials removed while a refresh is in flight are not restored. The normal
 GSR weights resume as soon as every credential in the active choice pool has a
 usable recovery timestamp.
 
+Quota-fetch HTTP 429s and transport failures keep otherwise eligible credentials
+in the routing pool. A refresh operation's own cancellation or deadline error
+counts as a failed observation and uses the same fallback; selection stops only
+when the client request's context is canceled or expires. Optional reset-credit
+and grant failures preserve the last successful routing observation regardless
+of HTTP status.
+
 Quota refresh now resolves the provider from the configured `usage_probe` and
 normalized credential aliases before selecting an endpoint, parser, or persisted
 signal. This keeps z.ai and OpenCode Go credentials on their own usage services,
@@ -1349,7 +1358,19 @@ request-level quota-provider identity mapping.
 
 **Recorded validation:** full `sdk/cliproxy/auth` tests and race tests pass; focused quota-provider and GSR management tests pass; the server builds; a local HTTP fixture served six non-streaming and six streaming requests with a 3:3 round-robin split and emitted fallback warnings, while session affinity stayed on one credential across both modes. The full repository suite passes except the unrelated pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
 
-**Last updated:** 2026-10-19
+Follow-up regressions exercise real Claude and Codex HTTPS quota lookups returning
+429 or disconnecting, plus optional reset lookups returning malformed HTTP 200
+responses, 302, 400, 401, 403, 404, 408, 429, 500, or 503. They verify credential
+selection and preservation of the saved reset expiry; successful empty lookups
+still clear spent credits. Auth tests cover independent transport cancellations
+and deadlines in single-provider and mixed-provider routing, and client cancellation.
+The full Go suite, focused auth and management race tests, canonical panel build,
+server build, and production Docker build pass. The Docker image served 12 normal
+and 12 streaming chat requests with a 6:6 credential split in each mode while the
+quota endpoint returned 429, then repeated that result with quota connection
+failures. Each run made only two cached quota calls and completed all 24 requests.
+
+**Last updated:** 2026-10-28
 
 ### DL037 - Kiro static model definitions for OAuth exclusions
 
@@ -1943,6 +1964,10 @@ Live collection against real provider credentials has not been exercised.
 
 ### DL060 - ClickHouse server mode: analytics, request capture, and agent SQL
 
+Sanitized routing decisions from DL061 live in nullable String
+`analytics_events.routing_trace_json`, visible through agent SQL and column comments.
+The column is folded into the initial, undeployed ClickHouse schema.
+
 ClickHouse separates CPA as a local proxy from CPA as a server. Without `clickhouse.dsn`,
 CPA keeps upstream's file request and error logs, and analytics health reports
 `clickhouse_not_configured` while proxying is unaffected. With a DSN, CPAUK analytics and
@@ -2060,6 +2085,50 @@ SQLite store. Live checks ran in Docker, with the Compose override where ClickHo
   state.
 - Without a DSN, a real model request, file request logs, upstream cancellation after a client
   disconnect, and shutdown with an open WebSocket behave like the previous build.
+
+### DL061 - Rule-based routing, routing traces, and routing dry run
+
+`routing.rules[]` adds ordered custom rules: a condition tree (`all`, `any`, `not`) over the
+requested model, client API-key label, request header, and detected client type, plus `route-to`
+credential IDs (`Auth.ID`). Selection follows a fixed precedence stack, weakest first: custom
+rules (a lower matching rule wins), routing strategy (priority tier, then the configured picker),
+session affinity (an eligible binding wins), and the routing gate (disabled, cooldown, quota,
+unsupported model, retry round, tried in this round, weight, pins and policies). Rules narrow the
+gate-passed pool across all priority tiers after the affinity check; a rule whose targets are all
+blocked falls through to the next matching rule above it, and no applicable rule keeps the full
+pool. Requests a rule narrows take the legacy selection path, so the indexed scheduler never picks
+outside the narrowed pool. Rules never override pins, credential policies, the Antigravity
+paid-credits fallback, plugin-handled picks, or Home dispatch; in Home mode rules are ignored with
+a warning. Rules-only config changes do not recreate the selector, so affinity caches survive.
+
+When CPAUK collects analytics, every selection records a versioned routing trace (candidates with
+gate reasons, matched rules with rendered conditions and status, strategy tier, affinity state,
+pick, and decider). The trace travels on the usage record, is stored with the attempt's event in
+ClickHouse `analytics_events.routing_trace_json` as nullable String, with candidate IDs replaced
+by credential pseudonyms. `GET /v8/management/analytics/events/:attempt_id` returns the trace
+with labels resolved from loaded credentials. `GET /v8/management/routing/credentials` lists routable credentials
+without secrets, and `POST /v8/management/routing/dry-run` simulates a request (optionally with
+draft rules) without moving strategy, affinity, or cooldown state. CPAMC DL073 adds the Config →
+Routing tab and the event "Routing decision" section. Detail and exports include the stored trace;
+ordinary event lists omit it. Without ClickHouse, analytics and trace capture are unavailable,
+while routing rules and dry runs remain usable.
+
+**Implementation evidence:** `internal/config/{config_types.go,routing_rules.go}`,
+`sdk/cliproxy/routing/{contract.go,engine.go}`,
+`sdk/cliproxy/auth/{routing_selection.go,routing_trace.go,routing_dry_run.go,conductor_selection.go,selector.go}`,
+`sdk/api/handlers`, `sdk/cliproxy/usage`, `internal/runtime/executor/helps/usage_helpers.go`,
+`internal/cpauk/{collector,model,chstore}`,
+`internal/api/handlers/management/{routing.go,analytics*.go}`, and `config.example.yaml`.
+
+**Routing branch validation before the ClickHouse merge:** `go test ./...` passed (116 packages) with `go vet` and gofmt clean; targeted race runs of the auth, routing, config, CPAUK and usage packages pass. Regression tests cover cross-tier narrowing, affinity precedence, fall-through (including after a GSR refresh), plugin exemptions, unchanged no-rules behavior, executor metadata parity with tracing on, trace immutability across retries, dry-run read-only behavior, ClickHouse trace persistence, sanitization, and export/list/detail projections. A live end-to-end run with two Z.ai credentials and real upstream requests exercised credentials listing, rule hot reload, affinity kept/held/agreeing, fall-through on a blocked target, dry runs with saved and draft rules and real session bindings, and analytics disabled. Home-mode rule evaluation is intentionally out of scope.
+
+**ClickHouse merge validation:** Real ClickHouse tests cover scalar/event JSON trace persistence,
+detail/list/export projections, outcome patches, repricing, backup/restore, epoch archives,
+and interrupted late-retention publication. The targeted suite passed except the known
+`TestResponsesLateInterruptDoesNotPoisonNextCreate` flake. The full suite found an existing
+CPAMC bundle/source revision mismatch and an intermittent
+`TestXAIWebsockets_KeepalivePingDuringUpload_WithSession` failure, which passed in isolation.
+`go build ./...`, the server compile check, `go vet ./...`, and formatting checks passed.
 
 **Last updated:** 2026-10-28
 

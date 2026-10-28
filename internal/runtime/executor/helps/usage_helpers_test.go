@@ -21,6 +21,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/codex"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -772,6 +773,15 @@ func TestNewExecutorUsageReporterIncludesExecutorType(t *testing.T) {
 	}
 	if record.ExecutorType != "TestUsageExecutor" {
 		t.Fatalf("executor type = %q, want %q", record.ExecutorType, "TestUsageExecutor")
+	}
+}
+
+func TestUsageReporterCarriesSelectionTrace(t *testing.T) {
+	trace := &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeLocal, DecidedBy: routing.DecidedByStrategy, Pick: 0}
+	ctx := routing.WithTrace(context.Background(), trace)
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	if record := reporter.buildRecord(usage.Detail{}, false); record.RoutingTrace != trace {
+		t.Fatalf("routing trace = %p, want %p", record.RoutingTrace, trace)
 	}
 }
 

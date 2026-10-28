@@ -7,6 +7,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -35,6 +36,7 @@ func reportAuthUnavailable(ctx context.Context, err error, providers []string, m
 		alias = model
 	}
 	coreusage.PublishRecord(ctx, coreusage.Record{
+		RoutingTrace:    routing.HolderFromContext(ctx).Last(),
 		Provider:        provider,
 		ExecutorType:    authUnavailableExecutorType,
 		Model:           model,

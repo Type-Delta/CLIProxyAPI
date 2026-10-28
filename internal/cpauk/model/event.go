@@ -1,12 +1,17 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
+
+const MaxRoutingTraceBytes = 32 * 1024
 
 type TokenQuality string
 
@@ -75,16 +80,17 @@ type Event struct {
 	FailureHop         *string `json:"failure_hop"`
 	CancellationSource *string `json:"cancellation_source"`
 	// Succeeded includes canceled attempts for aggregate compatibility.
-	Succeeded           bool          `json:"succeeded"`
-	UpstreamStatusCode  *int          `json:"upstream_status_code"`
-	ErrorClass          *string       `json:"error_class"`
-	LatencyMS           int64         `json:"latency_ms"`
-	RoutingTimeMS       *int64        `json:"routing_time_ms,omitempty"`
-	FirstTokenLatencyMS *int64        `json:"first_token_latency_ms,omitempty"`
-	ProviderLatencyMS   *int64        `json:"provider_latency_ms,omitempty"`
-	GenerationTimeMS    *int64        `json:"generation_time_ms,omitempty"`
-	OutputTiming        *OutputTiming `json:"output_timing,omitempty"`
-	Stream              *bool         `json:"stream,omitempty"`
+	Succeeded           bool            `json:"succeeded"`
+	UpstreamStatusCode  *int            `json:"upstream_status_code"`
+	ErrorClass          *string         `json:"error_class"`
+	LatencyMS           int64           `json:"latency_ms"`
+	RoutingTimeMS       *int64          `json:"routing_time_ms,omitempty"`
+	FirstTokenLatencyMS *int64          `json:"first_token_latency_ms,omitempty"`
+	ProviderLatencyMS   *int64          `json:"provider_latency_ms,omitempty"`
+	GenerationTimeMS    *int64          `json:"generation_time_ms,omitempty"`
+	OutputTiming        *OutputTiming   `json:"output_timing,omitempty"`
+	RoutingTrace        json.RawMessage `json:"routing_trace,omitempty"`
+	Stream              *bool           `json:"stream,omitempty"`
 	// ReasoningEffort is the recorded request hint, not proof of applied upstream settings.
 	ReasoningEffort      *string    `json:"reasoning_effort,omitempty"`
 	TimeToFirstTokenMS   *int64     `json:"time_to_first_token_ms"`
@@ -154,6 +160,22 @@ func (e Event) Validate() error {
 	}
 	if err := e.OutputTiming.Validate(); err != nil {
 		return err
+	}
+	if len(e.RoutingTrace) > MaxRoutingTraceBytes || !json.Valid(e.RoutingTrace) && len(e.RoutingTrace) > 0 {
+		return fmt.Errorf("invalid routing trace")
+	}
+	if len(e.RoutingTrace) > 0 {
+		var trace routing.Trace
+		decoder := json.NewDecoder(bytes.NewReader(e.RoutingTrace))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&trace); err != nil || trace.Version != routing.TraceVersion {
+			return fmt.Errorf("invalid routing trace")
+		}
+		for _, candidate := range trace.Candidates {
+			if candidate.Label != "" || candidate.ID != "" && !IsFullKeyID(candidate.ID) {
+				return fmt.Errorf("routing trace contains an unsanitized candidate")
+			}
+		}
 	}
 	if e.SchemaVersion != EventSchemaVersion {
 		return fmt.Errorf("unsupported event schema version %d", e.SchemaVersion)

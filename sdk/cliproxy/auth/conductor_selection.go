@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -190,7 +191,6 @@ type quotaRecoveryPreparation struct {
 	refreshed    int
 	refreshTried int
 	refreshError int
-	contextError error
 }
 
 // prepareQuotaRecoveryCandidates refreshes missing observations but preserves the full
@@ -262,10 +262,6 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 			errRefresh := refresher(ctx, working, model)
 			mu.Lock()
 			defer mu.Unlock()
-			if errors.Is(errRefresh, context.Canceled) || errors.Is(errRefresh, context.DeadlineExceeded) {
-				preparation.contextError = errRefresh
-				return
-			}
 			if errRefresh != nil {
 				preparation.refreshError++
 				return
@@ -274,11 +270,10 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 		}(candidate)
 	}
 	waitGroup.Wait()
+	// A probe's transport may cancel or time out independently. Only the
+	// routing request's own cancellation should stop credential selection.
 	if err := ctx.Err(); err != nil {
 		return nil, preparation, err
-	}
-	if preparation.contextError != nil {
-		return nil, preparation, preparation.contextError
 	}
 
 	// Return the latest live snapshots so refresh side effects such as cooldown
@@ -369,6 +364,42 @@ func filterQuotaRecoveryCandidates(candidates []*Auth, allow func(*Auth) bool) [
 		}
 	}
 	return filtered
+}
+
+// prepareRuleAffinityRecovery refreshes rule targets, then re-evaluates rules against the live pool.
+func (m *Manager) prepareRuleAffinityRecovery(ctx context.Context, provider, model string, candidates, narrowed []*Auth, allow func(*Auth) bool) (context.Context, []*Auth, error) {
+	_, preparation, err := m.prepareQuotaRecoveryCandidates(ctx, narrowed, model)
+	if err != nil {
+		return ctx, nil, err
+	}
+	m.mu.RLock()
+	live := make([]*Auth, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		current := m.auths[candidate.ID]
+		captureRevalidatedGate(ctx, candidate.ID, current, model, m, allow)
+		if current != nil && allow(current) {
+			live = append(live, current)
+		}
+	}
+	available, err := m.availableAuthsForRouteModelAcrossPriorities(live, provider, model, time.Now())
+	if err == nil {
+		available = cloneAuthSlice(available)
+	}
+	m.mu.RUnlock()
+	if err != nil {
+		return ctx, nil, err
+	}
+	available = narrowRoutingPool(ctx, available)
+	info := quotaRecoveryFallbackInfoForAuths(highestPriorityAuths(available), provider, model)
+	info.refreshTried = preparation.refreshTried
+	info.refreshError = preparation.refreshError
+	if info.missing > 0 {
+		ctx = withQuotaRecoveryFallbackInfo(ctx, info)
+	}
+	return ctx, available, nil
 }
 
 func quotaRecoveryRefreshCandidates(m *Manager, selector Selector, provider, model string, opts cliproxyexecutor.Options, candidates []*Auth) []*Auth {
@@ -973,10 +1004,18 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 // unless session affinity or an across-priorities scheduler is active, in which case the selector
 // or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
-	_, sessionAffinity := selector.(*SessionAffinitySelector)
+	affinity, sessionAffinity := selector.(*SessionAffinitySelector)
+	weightSelector := selector
+	if sessionAffinity {
+		weightSelector = affinity.fallback
+	}
+	rules := m.compiledRoutingRules()
+	rulesActive := rules != nil && rules.Len() > 0
+	if _, weighted := weightSelector.(*WeightedRoundRobinSelector); weighted && rulesActive {
+		auths = positiveWeightAuths(auths)
+	}
 	schedulerAcross := m.pluginSchedulerWantsAcrossPrioritiesLocked()
-
-	if !sessionAffinity && !schedulerAcross {
+	if !sessionAffinity && !schedulerAcross && !rulesActive {
 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
 		if err != nil {
 			return nil, nil, err
@@ -999,7 +1038,7 @@ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, pr
 		priorityAuths = highestPriorityAuths(allAuths)
 	}
 
-	if sessionAffinity {
+	if sessionAffinity || rulesActive {
 		selectorAuths = allAuths
 	} else {
 		selectorAuths = highestPriorityAuths(allAuths)
@@ -1326,7 +1365,7 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	return selected, true, nil
 }
 
-func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
+func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates, ruleCandidates []*Auth) (*Auth, bool, error) {
 	if scheduler == nil || len(candidates) == 0 {
 		return nil, false, nil
 	}
@@ -1368,6 +1407,60 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	strategy, okStrategy := builtinSchedulerStrategy(resp.DelegateBuiltin)
 	if !okStrategy {
 		return nil, false, nil
+	}
+	if pool, _ := ctx.Value(routingPoolKey{}).(*routingPool); pool != nil {
+		if affinity, ok := m.Selector().(*SessionAffinitySelector); ok {
+			delegate := affinityDelegate(func(delegateCtx context.Context, eligible []*Auth) (*Auth, error) {
+				allowed := make(map[string]struct{}, len(eligible))
+				for _, auth := range eligible {
+					allowed[auth.ID] = struct{}{}
+				}
+				excluded := make(map[string]struct{}, len(tried))
+				for id := range tried {
+					excluded[id] = struct{}{}
+				}
+				m.mu.RLock()
+				for id := range m.auths {
+					if _, ok := allowed[id]; !ok {
+						excluded[id] = struct{}{}
+					}
+				}
+				m.mu.RUnlock()
+				selected, _, err := m.pickViaBuiltinScheduler(delegateCtx, strategy, providerKey, providers, model, opts, excluded)
+				return selected, err
+			})
+			selectorCtx := selectorContextForAvailableAuths(ctx, affinity, model)
+			selectorCtx = context.WithValue(selectorCtx, affinityDelegateKey{}, delegate)
+			selected, err := affinity.Pick(selectorCtx, providerKey, selectionArgForSelector(affinity, model), opts, ruleCandidates)
+			return selected, true, err
+		}
+		selector := m.Selector()
+		if affinity, ok := selector.(*SessionAffinitySelector); ok {
+			selector = affinity.fallback
+		}
+		_, weighted := selector.(*WeightedRoundRobinSelector)
+		if weighted {
+			ruleCandidates = positiveWeightAuths(ruleCandidates)
+		}
+		narrowed := narrowRoutingPool(ctx, ruleCandidates)
+		if pool.lastNarrowed || weighted {
+			allowed := make(map[string]struct{}, len(narrowed))
+			for _, auth := range narrowed {
+				allowed[auth.ID] = struct{}{}
+			}
+			excluded := make(map[string]struct{}, len(tried)+len(ruleCandidates))
+			for id := range tried {
+				excluded[id] = struct{}{}
+			}
+			m.mu.RLock()
+			for id := range m.auths {
+				if _, ok := allowed[id]; !ok {
+					excluded[id] = struct{}{}
+				}
+			}
+			m.mu.RUnlock()
+			tried = excluded
+		}
 	}
 	return m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, tried)
 }
@@ -2163,7 +2256,14 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
 }
 
-func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (selectedTrace *Auth, executorTrace ProviderExecutor, errorTrace error) {
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil && ctx.Value(routingPoolKey{}) == nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	ctx, capture := m.beginRoutingCapture(ctx, []string{provider}, model, opts, tried)
+	if capture != nil {
+		defer func() { finishRoutingCapture(ctx, capture, selectedTrace, errorTrace) }()
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -2247,7 +2347,24 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, errAvailable
 	}
 	var gsrInfo quotaRecoveryFallbackInfo
-	if isGSR {
+	_, hasAffinitySelector := selector.(*SessionAffinitySelector)
+	rulePool := m.routingPoolForRequest(ctx, model, opts)
+	deferAffinityRecovery := isGSR && hasAffinitySelector && rulePool != nil
+	var selected *Auth
+	var handled bool
+	var errPick error
+	pluginChecked := isGSR && rulePool != nil && pluginScheduler != nil
+	if pluginChecked {
+		pluginCtx := context.WithValue(ctx, routingPoolKey{}, rulePool)
+		selected, handled, errPick = m.pickViaPluginScheduler(pluginCtx, pluginScheduler, provider, []string{provider}, model, opts, tried, available, selectorAuths)
+		if errPick != nil {
+			return nil, nil, errPick
+		}
+	}
+	if isGSR && !deferAffinityRecovery && !handled {
+		if !hasAffinitySelector && rulePool != nil {
+			selectorAuths = narrowRoutingPool(context.WithValue(ctx, routingPoolKey{}, rulePool), selectorAuths)
+		}
 		refreshCandidates := quotaRecoveryRefreshCandidates(m, selector, provider, model, opts, selectorAuths)
 		preparedCandidates, preparation, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, refreshCandidates, model)
 		if errRecovery != nil {
@@ -2257,6 +2374,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		allAvailable = retainLiveQuotaRecoveryCandidates(m, allAvailable)
 		m.mu.RLock()
 		allAvailable = mergePreparedQuotaRecoveryCandidates(allAvailable, preparedCandidates, refreshCandidates)
+		captureRevalidatedUniverse(ctx, m, model)
 		allAvailable = filterQuotaRecoveryCandidates(allAvailable, func(candidate *Auth) bool {
 			if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
 				return false
@@ -2281,17 +2399,49 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(selector, affinityCandidates, model, now)
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
+	pluginCtx := ctx
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil {
+		pluginCtx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	if !pluginChecked {
+		selected, handled, errPick = m.pickViaPluginScheduler(pluginCtx, pluginScheduler, provider, []string{provider}, model, opts, tried, available, selectorAuths)
+	}
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 		return nil, nil, errPick
 	}
+	if handled {
+		markRoutingDecidedBy(ctx, routing.DecidedByPlugin)
+	}
 	if !handled {
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil {
+			selectorCtx = context.WithValue(selectorCtx, routingPoolKey{}, pool)
+		}
+		if _, affinity := selector.(*SessionAffinitySelector); !affinity {
+			if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+				selectorAuths = positiveWeightAuths(selectorAuths)
+			}
+			selectorAuths = highestPriorityAuths(narrowRoutingPool(selectorCtx, selectorAuths))
+		}
 		if isGSR && gsrInfo.missing > 0 {
 			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
 		}
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
+		if deferAffinityRecovery {
+			prepare := affinityRecoveryPrepare(func(ctx context.Context, fullPool, narrowed []*Auth) (context.Context, []*Auth, error) {
+				return m.prepareRuleAffinityRecovery(ctx, provider, model, fullPool, narrowed, func(candidate *Auth) bool {
+					if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
+						return false
+					}
+					if _, used := tried[candidate.ID]; used {
+						return false
+					}
+					return canonicalSchedulingProvider(executorKeyFromAuth(candidate)) == targetKey && (modelKey == "" || m.authSupportsRouteModel(registryRef, candidate, model))
+				})
+			})
+			selectorCtx = context.WithValue(selectorCtx, affinityRecoveryPrepareKey{}, prepare)
+		}
 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
@@ -2303,6 +2453,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	if capture != nil && pinnedAuthIDFromMetadata(opts.Metadata) != "" {
+		capture.trace.DecidedBy = routing.DecidedByPin
 	}
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
@@ -2481,11 +2634,21 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 	}
 }
 
-func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (selectedTrace *Auth, executorTrace ProviderExecutor, errorTrace error) {
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil && ctx.Value(routingPoolKey{}) == nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	ctx, capture := m.beginRoutingCapture(ctx, []string{provider}, model, opts, tried)
+	if capture != nil {
+		defer func() { finishRoutingCapture(ctx, capture, selectedTrace, errorTrace) }()
+	}
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
+	}
+	if rules := m.compiledRoutingRules(); rules != nil && rules.Len() > 0 {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if isQuotaRecoverySelector(m.Selector()) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
@@ -2533,6 +2696,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
+	if capture != nil && pinnedAuthIDFromMetadata(opts.Metadata) != "" {
+		capture.trace.DecidedBy = routing.DecidedByPin
+	}
 	authCopy := selected.Clone()
 	if !selected.indexAssigned {
 		m.mu.Lock()
@@ -2545,7 +2711,14 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	return authCopy, executor, nil
 }
 
-func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (selectedTrace *Auth, executorTrace ProviderExecutor, providerTrace string, errorTrace error) {
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil && ctx.Value(routingPoolKey{}) == nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	ctx, capture := m.beginRoutingCapture(ctx, providers, model, opts, tried)
+	if capture != nil {
+		defer func() { finishRoutingCapture(ctx, capture, selectedTrace, errorTrace) }()
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
@@ -2651,7 +2824,24 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", errAvailable
 	}
 	var gsrInfo quotaRecoveryFallbackInfo
-	if isGSR {
+	_, hasAffinitySelector := selector.(*SessionAffinitySelector)
+	rulePool := m.routingPoolForRequest(ctx, model, opts)
+	deferAffinityRecovery := isGSR && hasAffinitySelector && rulePool != nil
+	var selected *Auth
+	var handled bool
+	var errPick error
+	pluginChecked := isGSR && rulePool != nil && pluginScheduler != nil
+	if pluginChecked {
+		pluginCtx := context.WithValue(ctx, routingPoolKey{}, rulePool)
+		selected, handled, errPick = m.pickViaPluginScheduler(pluginCtx, pluginScheduler, selectionProvider, providers, model, opts, tried, available, selectorAuths)
+		if errPick != nil {
+			return nil, nil, "", errPick
+		}
+	}
+	if isGSR && !deferAffinityRecovery && !handled {
+		if !hasAffinitySelector && rulePool != nil {
+			selectorAuths = narrowRoutingPool(context.WithValue(ctx, routingPoolKey{}, rulePool), selectorAuths)
+		}
 		refreshCandidates := quotaRecoveryRefreshCandidates(m, selector, selectionProvider, model, opts, selectorAuths)
 		preparedCandidates, preparation, errRecovery := m.prepareQuotaRecoveryCandidates(ctx, refreshCandidates, model)
 		if errRecovery != nil {
@@ -2661,6 +2851,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		allAvailable = retainLiveQuotaRecoveryCandidates(m, allAvailable)
 		m.mu.RLock()
 		allAvailable = mergePreparedQuotaRecoveryCandidates(allAvailable, preparedCandidates, refreshCandidates)
+		captureRevalidatedUniverse(ctx, m, model)
 		allAvailable = filterQuotaRecoveryCandidates(allAvailable, func(candidate *Auth) bool {
 			if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
 				return false
@@ -2692,17 +2883,56 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(selector, affinityCandidates, model, now)
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, selectionProvider, providers, model, opts, tried, available)
+	pluginCtx := ctx
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil {
+		pluginCtx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	if !pluginChecked {
+		selected, handled, errPick = m.pickViaPluginScheduler(pluginCtx, pluginScheduler, selectionProvider, providers, model, opts, tried, available, selectorAuths)
+	}
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 		return nil, nil, "", errPick
 	}
+	if handled {
+		markRoutingDecidedBy(ctx, routing.DecidedByPlugin)
+	}
 	if !handled {
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+		if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil {
+			selectorCtx = context.WithValue(selectorCtx, routingPoolKey{}, pool)
+		}
+		if _, affinity := selector.(*SessionAffinitySelector); !affinity {
+			if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+				selectorAuths = positiveWeightAuths(selectorAuths)
+			}
+			selectorAuths = highestPriorityAuths(narrowRoutingPool(selectorCtx, selectorAuths))
+		}
 		if isGSR && gsrInfo.missing > 0 {
 			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
 		}
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
+		if deferAffinityRecovery {
+			prepare := affinityRecoveryPrepare(func(ctx context.Context, fullPool, narrowed []*Auth) (context.Context, []*Auth, error) {
+				return m.prepareRuleAffinityRecovery(ctx, selectionProvider, model, fullPool, narrowed, func(candidate *Auth) bool {
+					if candidate.Disabled || (pinnedAuthID != "" && candidate.ID != pinnedAuthID) || !eligibility.allows(candidate) {
+						return false
+					}
+					if _, used := tried[candidate.ID]; used {
+						return false
+					}
+					providerKey := executorKeyFromAuth(candidate)
+					if _, ok := providerSet[providerKey]; !ok {
+						return false
+					}
+					if _, ok := m.executorLocked(providerKey); !ok {
+						return false
+					}
+					return modelKey == "" || m.authSupportsRouteModel(registryRef, candidate, model)
+				})
+			})
+			selectorCtx = context.WithValue(selectorCtx, affinityRecoveryPrepareKey{}, prepare)
+		}
 		selected, errPick = selector.Pick(selectorCtx, selectionProvider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
 			if isBuiltInSelector(selector) {
@@ -2732,10 +2962,20 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	return authCopy, executor, providerKey, nil
 }
 
-func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (selectedTrace *Auth, executorTrace ProviderExecutor, providerTrace string, errorTrace error) {
+	if pool := m.routingPoolForRequest(ctx, model, opts); pool != nil && ctx.Value(routingPoolKey{}) == nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
+	ctx, capture := m.beginRoutingCapture(ctx, providers, model, opts, tried)
+	if capture != nil {
+		defer func() { finishRoutingCapture(ctx, capture, selectedTrace, errorTrace) }()
+	}
 	opts.EnsureMetadata()
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
+	}
+	if rules := m.compiledRoutingRules(); rules != nil && rules.Len() > 0 {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 	if isQuotaRecoverySelector(m.Selector()) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)

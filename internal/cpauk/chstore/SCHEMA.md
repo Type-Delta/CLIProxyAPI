@@ -75,6 +75,11 @@ resolves the ID through the bloom index, then reads its exact timestamp.
 
 The table contains the full SQLite event column set, event_json String CODEC(ZSTD),
 version and is_deleted. Timestamps remain signed Int64 UTC Unix nanoseconds.
+The nullable String column `routing_trace_json` stores sanitized `routing.Trace`
+JSON, including its version, candidates, applied rule, tier, affinity and pick.
+It is NULL when not captured or for legacy-imported events. Detail and export
+reads include the trace; ordinary event list projections omit it. Agent SQL can
+read the column and its schema comment. Traces follow raw-event retention.
 Scalar columns and JSON stay consistent. Never count physical versions; use FINAL
 before filtering tombstones. Normal replay never reprices. Late rows additionally
 carry retained_generation, retained_grain and retained_bucket_start_ns until their

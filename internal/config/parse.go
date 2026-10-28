@@ -15,6 +15,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config payload is empty")
 	}
+	if errValidate := ValidateRoutingRulesYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		return nil, errValidate
@@ -47,6 +50,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
 	if errValidate := cfg.ClickHouse.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateRoutingRules(); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {

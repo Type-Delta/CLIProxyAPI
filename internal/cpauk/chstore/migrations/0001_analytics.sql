@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS {database}.analytics_events (
     first_token_latency_ms Nullable(Int64) COMMENT 'first token latency ms in integer milliseconds. NULL means unavailable.',
     provider_latency_ms Nullable(Int64) COMMENT 'provider latency ms in integer milliseconds. NULL means unavailable.',
     routing_time_ms Nullable(Int64) COMMENT 'routing time ms in integer milliseconds. NULL means unavailable.',
+    routing_trace_json Nullable(String) COMMENT 'Sanitized routing decision JSON in routing.Trace shape: version, mode, candidates, matched and applied rules, strategy tier, affinity, pick and decider. NULL when not captured or for imported legacy events.',
     output_timing Nullable(String) COMMENT 'JSON observed token arrival windows and coverage, not a throughput prediction.',
     stream Nullable(UInt8) COMMENT 'Whether streaming was requested. NULL means historical unknown, not false.',
     reasoning_effort Nullable(String) COMMENT 'Recorded requested reasoning effort, not proof of upstream application.',

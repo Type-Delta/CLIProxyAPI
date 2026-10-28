@@ -12,6 +12,7 @@ import (
 type analyticsCredentialDisplay struct {
 	label    *string
 	filename *string
+	provider string
 }
 
 // analyticsCredentialDisplays resolves currently loaded credentials to admin-only display names.
@@ -54,6 +55,7 @@ func (h *Handler) analyticsCredentialDisplays(service cpauk.Service, provider st
 			continue
 		}
 		display := analyticsCredentialDisplay{}
+		display.provider = strings.TrimSpace(credential.Provider)
 		name := strings.TrimSpace(credential.FileName)
 		if index := strings.LastIndexAny(name, `/\`); index >= 0 {
 			name = name[index+1:]

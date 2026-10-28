@@ -642,7 +642,7 @@ func writeAnalyticsEventsCSV(ctx context.Context, writer io.Writer, reader cpauk
 			return written, modelExportTooLargeError{}
 		}
 		query.PageSize = min(remaining, model.MaxPageSize)
-		page, err := reader.Events(ctx, query)
+		page, err := readAnalyticsExportEvents(ctx, reader, query)
 		if err != nil {
 			return written, err
 		}
@@ -718,6 +718,8 @@ func analyticsExportValueString(value any) string {
 			return ""
 		}
 		return string(*typed)
+	case json.RawMessage:
+		return string(typed)
 	case *model.PricingBreakdown, *model.OutputTiming, *model.ThroughputInfo, *model.ThroughputEstimate, *float64:
 		encoded, _ := json.Marshal(typed)
 		if string(encoded) == "null" {

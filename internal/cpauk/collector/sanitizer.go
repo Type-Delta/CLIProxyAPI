@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 const unknownValue = "unknown"
@@ -80,6 +81,7 @@ type Source struct {
 	// and the provider's raw output value was retained instead.
 	RawOutputFallback bool
 	Tokens            SourceTokens
+	RoutingTrace      *routing.Trace
 }
 
 type SourceTokens struct {
@@ -202,6 +204,10 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 			credentialAlgorithm = &algorithm
 		}
 	}
+	routingTrace, traceTruncated := model.SanitizeRoutingTrace(record.RoutingTrace, s.identityKey, s.storeCredential, provider)
+	if traceTruncated {
+		truncated++
+	}
 	sessionDigest := digestSessionID(record.SessionID)
 
 	var statusCode *int
@@ -285,6 +291,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	}
 	event := model.Event{
 		ProviderCredits:       credits,
+		RoutingTrace:          routingTrace,
 		SchemaVersion:         model.EventSchemaVersion,
 		AttemptID:             attemptID,
 		ProxyRequestID:        proxyRequestID,

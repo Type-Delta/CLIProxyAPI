@@ -903,21 +903,23 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	if resetAt.IsZero() {
 		return fmt.Errorf("provider %q returned no usable recovery timestamp", provider)
 	}
-	manual := coreauth.ManualResetObservation{}
+	manual := auth.Quota.ManualReset
 	if provider == "codex" || provider == "claude" {
-		manual.Provider = provider
+		observation := coreauth.ManualResetObservation{Provider: provider}
 		targetURL := codexResetCreditsURL
 		if provider == "claude" {
 			targetURL = claudeResetGrantsQuotaURL
 		}
 		_, errManual := runUsageProbeWindows(ctx, h, auth, provider, targetURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
 			expiry, errParse := parseManualResetExpiry(provider, body, time.Now().UTC())
-			manual.ExpiresAt = expiry
+			observation.ExpiresAt = expiry
 			return nil, errParse
 		})
-		manual.ObservedAt = time.Now().UTC()
 		if errManual != nil {
-			log.WithError(errManual).WithField("auth_id", auth.ID).Debug("manual reset expiry unavailable; using quota window")
+			log.WithError(errManual).WithField("auth_id", auth.ID).Debug("manual reset expiry unavailable; preserving previous observation")
+		} else {
+			observation.ObservedAt = time.Now().UTC()
+			manual = observation
 		}
 	}
 	quota := auth.Quota.Clone()

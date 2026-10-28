@@ -232,6 +232,9 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// routingRules is published separately so rule-only reloads preserve selector state.
+	routingRules atomic.Pointer[routingSnapshot]
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 

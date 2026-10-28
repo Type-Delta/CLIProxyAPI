@@ -2,6 +2,7 @@ package cpauk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,19 @@ func TestCredentialIdentityHonorsPrivacySetting(t *testing.T) {
 	credentialID, err = service.CredentialID("provider", "index", "auth-id")
 	if err != nil || credentialID == nil || !model.IsFullKeyID(*credentialID) {
 		t.Fatalf("credential identity with privacy enabled = %v, %v", credentialID, err)
+	}
+}
+
+func TestReaderProxyUsesExportSpecificEventProjection(t *testing.T) {
+	trace := json.RawMessage(`{"version":1,"mode":"local","retry_round":0,"selection":0,"decided_by":"strategy","candidates":[],"pick":-1}`)
+	backend := &fakeExportBackend{fakeBackend: &fakeBackend{}, page: model.EventPage{Events: []model.Event{{RoutingTrace: trace}}}}
+	service := &service{config: Config{Enabled: true}, backend: backend, snapshots: newSnapshots(DefaultConfig(), StateReady, "", "")}
+	service.reader = &readerProxy{service: service}
+	page, err := service.Reader().(interface {
+		EventsForExport(context.Context, model.Query) (model.EventPage, error)
+	}).EventsForExport(context.Background(), model.Query{})
+	if err != nil || len(page.Events) != 1 || string(page.Events[0].RoutingTrace) != string(trace) || backend.exportCalls != 1 {
+		t.Fatalf("export page=%+v calls=%d err=%v", page, backend.exportCalls, err)
 	}
 }
 
@@ -380,6 +394,17 @@ type fakeBackend struct {
 	closeOnce  sync.Once
 }
 
+type fakeExportBackend struct {
+	*fakeBackend
+	page        model.EventPage
+	exportCalls int
+}
+
+func (b *fakeExportBackend) EventsForExport(context.Context, model.Query) (model.EventPage, error) {
+	b.exportCalls++
+	return b.page, nil
+}
+
 type blockingLifecycleBackend struct {
 	*fakeBackend
 	mu           sync.Mutex
@@ -540,5 +565,21 @@ func TestLegacyImportDoesNotDetachIntakeForScheduledRetention(t *testing.T) {
 	query := model.Query{SchemaVersion: 1, Operation: model.OperationSummary, Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC(), TimeZone: "UTC"}
 	if _, err := facade.Reader().Summary(context.Background(), query); err != nil {
 		t.Fatalf("read during legacy import: %v", err)
+	}
+}
+
+func TestPlainModeTraceCaptureInactive(t *testing.T) {
+	service := NewUnavailable("clickhouse_not_configured", DefaultConfig())
+	defer func() { _ = service.Close(context.Background()) }()
+	capture := service.Observer().(interface{ TraceCaptureActive() bool })
+	if capture.TraceCaptureActive() {
+		t.Fatal("plain mode enabled routing trace capture")
+	}
+	if service.Health().Category != "clickhouse_not_configured" || service.Capabilities().Available {
+		t.Fatalf("plain mode health=%+v capabilities=%+v", service.Health(), service.Capabilities())
+	}
+	service.Observer().HandleUsage(context.Background(), coreusage.Record{})
+	if capture.TraceCaptureActive() {
+		t.Fatal("usage activated capture without ClickHouse")
 	}
 }

@@ -49,6 +49,9 @@ func (s *Store) selectedEventPage(ctx context.Context, selection readSelection, 
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
 			return nil, err
 		}
+		if string(event.RoutingTrace) == "null" {
+			event.RoutingTrace = nil
+		}
 		event.ProxyStatusCode = nil
 		if status != nil {
 			v := int(*status)
@@ -85,6 +88,15 @@ func (s *Store) selectedEventPage(ctx context.Context, selection readSelection, 
 }
 
 func (s *Store) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
+	return s.events(ctx, query, false)
+}
+
+// EventsForExport includes the persisted routing trace, without resolving live labels.
+func (s *Store) EventsForExport(ctx context.Context, query model.Query) (model.EventPage, error) {
+	return s.events(ctx, query, true)
+}
+
+func (s *Store) events(ctx context.Context, query model.Query, includeTrace bool) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
 		return model.EventPage{}, err
 	}
@@ -125,7 +137,14 @@ func (s *Store) Events(ctx context.Context, query model.Query) (model.EventPage,
 	}
 	// Keep the page projection in the same foundation, without ordering-only columns.
 	pageSQL := selectionSQL
-	pageSQL.SQL = "SELECT event_json,proxy_status_code,proxy_error,responded_at_ns,session_captured,session_id FROM (" + selectionSQL.SQL + ")"
+	// Replace the trace in SQL so list pages never transfer or decode its payload.
+	eventJSON := "JSONMergePatch(event_json,?)"
+	if includeTrace {
+		eventJSON = "event_json"
+	} else {
+		pageSQL.Args = append([]any{`{"routing_trace":null}`}, pageSQL.Args...)
+	}
+	pageSQL.SQL = "SELECT " + eventJSON + ",proxy_status_code,proxy_error,responded_at_ns,session_captured,session_id FROM (" + selectionSQL.SQL + ")"
 	suffix := ""
 	var pageArgs []any
 	if cursor.RequestedAt != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
@@ -49,6 +50,7 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 	}
 	if found {
 		setAnalyticsNoStore(c)
+		resolveAnalyticsRoutingTrace(h, service, &event)
 		var filename *string
 		var credentialLabel *string
 		if event.CredentialID != nil {
@@ -64,6 +66,56 @@ func (h *Handler) GetAnalyticsEvent(c *gin.Context) {
 		return
 	}
 	writeAnalyticsEnvelope(c, http.StatusNotFound, model.ErrorAnalyticsInvalidQuery, "The analytics event was not found.")
+}
+
+func resolveAnalyticsRoutingTrace(h *Handler, service cpauk.Service, event *model.Event) {
+	if h == nil || event == nil || len(event.RoutingTrace) == 0 {
+		return
+	}
+	var trace routing.Trace
+	if err := json.Unmarshal(event.RoutingTrace, &trace); err != nil {
+		return
+	}
+	ids := make([]string, 0, len(trace.Candidates))
+	for _, candidate := range trace.Candidates {
+		if candidate.ID != "" {
+			ids = append(ids, candidate.ID)
+		}
+	}
+	displays := h.analyticsCredentialDisplays(service, "", ids)
+	for index := range trace.Candidates {
+		candidate := &trace.Candidates[index]
+		if display, ok := displays[candidate.ID]; ok {
+			if display.label != nil {
+				candidate.Label = *display.label
+			}
+			if candidate.Provider == "" {
+				candidate.Provider = display.provider
+			}
+		}
+	}
+	if trace.Candidates == nil {
+		trace.Candidates = []routing.Candidate{}
+	}
+	if trace.Rules != nil {
+		if trace.Rules.Matched == nil {
+			trace.Rules.Matched = []routing.RuleTrace{}
+		}
+		if trace.Rules.Pool == nil {
+			trace.Rules.Pool = []int{}
+		}
+		for index := range trace.Rules.Matched {
+			if trace.Rules.Matched[index].Targets == nil {
+				trace.Rules.Matched[index].Targets = []int{}
+			}
+		}
+	}
+	if trace.Tier != nil && trace.Tier.Pool == nil {
+		trace.Tier.Pool = []int{}
+	}
+	if encoded, err := json.Marshal(trace); err == nil {
+		event.RoutingTrace = encoded
+	}
 }
 
 type analyticsExportRequest struct {
@@ -142,7 +194,7 @@ func (h *Handler) CreateAnalyticsExport(c *gin.Context) {
 
 var analyticsEventExportColumns = []string{
 	"schema_version", "attempt_id", "proxy_request_id", "request_id_quality", "key_id", "requested_at", "provider", "executor_type", "model", "requested_alias", "endpoint_class", "auth_type", "credential_id", "credential_id_algorithm", "session_digest", "session_id", "session_source", "session_captured", "pricing_breakdown", "succeeded", "outcome", "failure_hop", "cancellation_source", "upstream_status_code", "error_class", "latency_ms", "time_to_first_token_ms", "generation_time_ms", "service_tier_requested", "service_tier_used", "generated", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "accounting_schema", "token_quality", "known_cost_usd", "provider_credits", "price_usd_per_credit", "unpriced_tokens", "price_rule_id", "price_source", "import_batch_id", "source",
-	"first_token_latency_ms", "provider_latency_ms", "routing_time_ms", "tokens", "output_timing", "stream", "reasoning_effort", "throughput", "throughput_estimate", "tokens_per_second", "speed_estimated", "effective_output_tokens_per_second",
+	"first_token_latency_ms", "provider_latency_ms", "routing_time_ms", "tokens", "output_timing", "routing_trace", "stream", "reasoning_effort", "throughput", "throughput_estimate", "tokens_per_second", "speed_estimated", "effective_output_tokens_per_second",
 	"client_method", "client_path", "received_at", "upstream_method", "upstream_url", "upstream_sent_at", "upstream_usage_raw", "upstream_error_body", "proxy_status_code", "proxy_error", "responded_at",
 }
 
@@ -159,7 +211,7 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 		"total_tokens": event.Tokens.Total, "accounting_schema": event.Tokens.Schema, "token_quality": event.Tokens.Quality,
 		"known_cost_usd": event.KnownCost, "provider_credits": event.ProviderCredits, "price_usd_per_credit": event.PriceUSDPerCredit, "unpriced_tokens": event.UnpricedTokens,
 		"first_token_latency_ms": event.FirstTokenLatencyMS, "provider_latency_ms": event.ProviderLatencyMS, "routing_time_ms": event.RoutingTimeMS,
-		"output_timing": event.OutputTiming, "stream": event.Stream, "reasoning_effort": event.ReasoningEffort, "throughput": event.ThroughputInfo, "throughput_estimate": event.ThroughputEstimate, "tokens_per_second": event.TokensPerSecond, "speed_estimated": event.SpeedEstimated, "effective_output_tokens_per_second": event.EffectiveOutputTokensPerSecond,
+		"output_timing": event.OutputTiming, "routing_trace": event.RoutingTrace, "stream": event.Stream, "reasoning_effort": event.ReasoningEffort, "throughput": event.ThroughputInfo, "throughput_estimate": event.ThroughputEstimate, "tokens_per_second": event.TokensPerSecond, "speed_estimated": event.SpeedEstimated, "effective_output_tokens_per_second": event.EffectiveOutputTokensPerSecond,
 		"tokens": event.Tokens, "client_method": event.ClientMethod, "client_path": event.ClientPath, "received_at": event.ReceivedAt,
 		"upstream_method": event.UpstreamMethod, "upstream_url": event.UpstreamURL, "upstream_sent_at": event.UpstreamSentAt,
 		"upstream_usage_raw": event.UpstreamUsageRaw, "upstream_error_body": event.UpstreamErrorBody,
@@ -167,6 +219,17 @@ func analyticsEventExportValues(event model.Event) map[string]any {
 	}
 	values["price_rule_id"], values["price_source"], values["import_batch_id"], values["source"] = event.PriceRuleID, event.PriceSource, event.ImportBatchID, event.Source
 	return values
+}
+
+type analyticsExportEventsReader interface {
+	EventsForExport(context.Context, model.Query) (model.EventPage, error)
+}
+
+func readAnalyticsExportEvents(ctx context.Context, reader cpauk.Reader, query model.Query) (model.EventPage, error) {
+	if exportReader, ok := reader.(analyticsExportEventsReader); ok {
+		return exportReader.EventsForExport(ctx, query)
+	}
+	return reader.Events(ctx, query)
 }
 
 func writeAnalyticsEventsJSON(ctx context.Context, writer io.Writer, reader cpauk.Reader, query model.Query, maxRows int) (int, error) {
@@ -186,7 +249,7 @@ func writeAnalyticsEventsJSON(ctx context.Context, writer io.Writer, reader cpau
 			return written, modelExportTooLargeError{}
 		}
 		query.PageSize = min(remaining, model.MaxPageSize)
-		page, err := reader.Events(ctx, query)
+		page, err := readAnalyticsExportEvents(ctx, reader, query)
 		if err != nil {
 			return written, err
 		}

@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -53,6 +54,7 @@ type UsageReporter struct {
 	streamKnown         bool
 	requestedAt         time.Time
 	requestContext      context.Context
+	routingTrace        *routing.Trace
 	routingTime         *time.Duration
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
@@ -216,6 +218,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		alias:           strings.TrimSpace(alias),
 		requestedAt:     time.Now(),
 		requestContext:  ctx,
+		routingTrace:    routing.TraceFromContext(ctx),
 		apiKey:          apiKey,
 		accessProvider:  accessProvider,
 		isNativeKey:     isNativeKey,
@@ -758,6 +761,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		outputTiming = r.outputTiming()
 	}
 	return usage.Record{
+		RoutingTrace:        r.routingTrace,
 		RequestID:           r.requestID,
 		TraceID:             r.traceID,
 		Provider:            r.provider,

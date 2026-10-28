@@ -2,6 +2,12 @@
 
 CPA uses ClickHouse when `clickhouse.dsn` is configured. Analytics and captured requests, upstream attempts and transcripts are stored in the configured database. `observability.logs.request-log` selects full request capture; forced error capture still records errors when full capture is off. With no DSN, CPA retains its original file request logs and analytics is unavailable.
 
+Sanitized routing decisions are available in `analytics_events.routing_trace_json`
+and through event detail and exports. Ordinary event lists omit traces. The
+nullable String contains versioned `routing.Trace` JSON and is NULL when not
+captured or for legacy-imported events. Traces follow raw-event retention.
+Without ClickHouse, routing rules and dry runs still work, but trace capture is inactive.
+
 ## Setup
 
 For Docker Compose, set a strong `CLICKHOUSE_PASSWORD` in your environment and start the application with both Compose files:

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -73,6 +74,42 @@ func TestGSRPartialDataFallsBackAcrossEligiblePool(t *testing.T) {
 	}
 	if counts["gsr-fallback-unknown"] != 3 {
 		t.Errorf("partial information should use RR over both eligible credentials: %v", counts)
+	}
+}
+
+func TestGSRQuotaRefreshErrorsKeepCredentialsRoutable(t *testing.T) {
+	for _, refreshErr := range []error{
+		&Error{HTTPStatus: http.StatusTooManyRequests, Message: "usage endpoint rate limited"},
+		errors.New("quota transport: connection reset by peer"),
+		fmt.Errorf("quota transport: %w", context.DeadlineExceeded),
+		fmt.Errorf("quota transport: %w", context.Canceled),
+	} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mixed=%t", refreshErr, mixed), func(t *testing.T) {
+				m := gsrFallbackTestManager(t, "gpt-audit",
+					&Auth{ID: "quota-refresh-first", Provider: "codex"},
+					&Auth{ID: "quota-refresh-second", Provider: "codex"},
+				)
+				m.SetQuotaRecoveryRefresher(func(context.Context, *Auth, string) error { return refreshErr })
+				counts := make(map[string]int)
+				for range 4 {
+					var picked *Auth
+					var errPick error
+					if mixed {
+						picked, _, _, errPick = m.pickNextMixed(context.Background(), []string{"codex"}, "gpt-audit", cliproxyexecutor.Options{}, nil)
+					} else {
+						picked, errPick = m.SelectAuth(context.Background(), "codex", "gpt-audit", cliproxyexecutor.Options{})
+					}
+					if errPick != nil {
+						t.Fatalf("quota refresh failure blocked routing: %v", errPick)
+					}
+					counts[picked.ID]++
+				}
+				if counts["quota-refresh-first"] != 2 || counts["quota-refresh-second"] != 2 {
+					t.Fatalf("routing shares = %v, want both credentials routable", counts)
+				}
+			})
+		}
 	}
 }
 
@@ -333,8 +370,13 @@ func TestGSRRefreshCancellationRemainsCancellation(t *testing.T) {
 		&Auth{ID: "gsr-cancel-a", Provider: "codex"},
 		&Auth{ID: "gsr-cancel-b", Provider: "codex"},
 	)
-	m.SetQuotaRecoveryRefresher(func(context.Context, *Auth, string) error { return context.Canceled })
-	_, errPick := m.SelectAuth(context.Background(), "codex", "gpt-cancel-gsr", cliproxyexecutor.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.SetQuotaRecoveryRefresher(func(context.Context, *Auth, string) error {
+		cancel()
+		return context.Canceled
+	})
+	_, errPick := m.SelectAuth(ctx, "codex", "gpt-cancel-gsr", cliproxyexecutor.Options{})
 	if !errors.Is(errPick, context.Canceled) {
 		t.Fatalf("selection error = %v, want context.Canceled", errPick)
 	}
