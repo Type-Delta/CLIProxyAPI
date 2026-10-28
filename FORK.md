@@ -1075,7 +1075,12 @@ same candidate pool and timestamp used by GSR, so quota recovery and sticky-sess
 decisions remain consistent.
 GSR also applies a provider-neutral allowance tier multiplier. Codex plan metadata
 and explicit `gsr_tier` overrides are supported; unknown tiers remain neutral and
-raw quota totals are never compared across providers.
+raw quota totals are never compared across providers. The credential scheduling
+weight is added after recovery decay and the allowance multiplier in both the
+selector and scheduler. Omitted weights add 1; non-positive or invalid weights
+add nothing and preserve GSR eligibility. The existing request-level round-robin
+fallback remains unweighted. CPAMC auth-file hints, card tooltips, and provider
+forms describe both strategies in all six locales.
 The recovery window is provider-specific: Claude Fable uses the Fable weekly
 window, other Claude models use the normal weekly window, Codex and GLM use the
 weekly window, and OpenCode Go uses the monthly window. A missing cached reset is
@@ -1105,6 +1110,16 @@ Management routing reads and writes normalize the aliases to the canonical strat
 including the canonical name, aliases, and session-affinity wrapping.
 Manual-reset regressions cover expiry selection, actual weighted shares, provider
 identity, refresh cadence, spent credits, and preservation across response headers.
+Scheduling-weight regressions cover exact addition after tier multiplication,
+attribute and auth-file metadata precedence, zero and invalid values, and
+streaming/non-streaming Manager execution with a 200:100 split. A local server
+with a Codex HTTP fixture served 60 non-streaming and 60 streaming Responses
+requests with the expected 40:20 split. The full Go suite, auth race tests,
+canonical Docker panel build, and server build pass. CPAMC focused tests, lint,
+TypeScript, and production build pass. An initial full CPAMC run passed 2,150
+tests; later runs hit an unchanged analytics SCSS-import error that also
+reproduces from the pinned CPAMC baseline. Desktop and mobile browser checks
+confirm readable help without horizontal overflow.
 Local HTTP fixtures exercise both provider reads, cached replay and the auth
 manager's selection path with the six-day weekly/two-day manual-reset example.
 The full repository suite, focused auth and management race tests, canonical

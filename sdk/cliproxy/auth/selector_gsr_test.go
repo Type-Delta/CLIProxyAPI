@@ -63,6 +63,53 @@ func TestGreedySoonestRecoverySelectorPrefersAllowanceTier(t *testing.T) {
 	}
 }
 
+func TestGSRAddsSchedulingWeightAfterRecoveryAndTier(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		attributes map[string]string
+		metadata   map[string]any
+		delay      time.Duration
+		want       int64
+	}{
+		{name: "default", want: 1_000_001},
+		{name: "attribute", attributes: map[string]string{AttributeWeight: "5"}, want: 1_000_005},
+		{name: "metadata", metadata: map[string]any{AttributeWeight: float64(7)}, want: 1_000_007},
+		{name: "attribute precedence", attributes: map[string]string{AttributeWeight: "3"}, metadata: map[string]any{AttributeWeight: float64(7)}, want: 1_000_003},
+		{name: "zero", attributes: map[string]string{AttributeWeight: "0"}, want: 1_000_000},
+		{name: "negative", attributes: map[string]string{AttributeWeight: "-5"}, want: 1_000_000},
+		{name: "invalid", attributes: map[string]string{AttributeWeight: "invalid"}, want: 1_000_000},
+		{name: "over maximum", attributes: map[string]string{AttributeWeight: "1000001"}, want: 1_000_000},
+		{name: "maximum and elite tier", attributes: map[string]string{AttributeWeight: "1000000", "gsr_tier": "elite"}, want: 13_000_000},
+		{name: "later recovery and standard tier", attributes: map[string]string{AttributeWeight: "5", "gsr_tier": "standard"}, delay: 72 * time.Hour, want: 270_675},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			auths := []*Auth{
+				{ID: "anchor", Provider: "zai", Quota: QuotaState{Signals: map[string]string{"weekly_reset_at": now.Add(24 * time.Hour).Format(time.RFC3339)}}},
+				{ID: "candidate", Provider: "zai", Attributes: test.attributes, Metadata: test.metadata, Quota: QuotaState{Signals: map[string]string{"weekly_reset_at": now.Add(24*time.Hour + test.delay).Format(time.RFC3339)}}},
+			}
+			_, weights, err := greedySoonestRecoveryWeights(auths, "zai", "glm-5", now, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := weights["candidate"]; got != test.want {
+				t.Errorf("selector weight = %d, want %d", got, test.want)
+			}
+			entries := make([]*scheduledAuth, 0, len(auths))
+			for _, auth := range auths {
+				entries = append(entries, &scheduledAuth{auth: auth, meta: buildScheduledAuthMeta(auth)})
+			}
+			_, scheduledWeights, errScheduled := greedySoonestRecoveryScheduledWeights(entries, nil, "glm-5", now)
+			if errScheduled != nil {
+				t.Fatal(errScheduled)
+			}
+			if got := scheduledWeights["candidate"]; got != test.want {
+				t.Errorf("scheduler weight = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAuthRecoveryTimestampUsesProviderWindowPreference(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	fable := &Auth{ID: "fable", Provider: "claude", Quota: QuotaState{Signals: map[string]string{

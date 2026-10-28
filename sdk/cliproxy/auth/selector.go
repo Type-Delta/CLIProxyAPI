@@ -47,10 +47,11 @@ type WeightedRoundRobinSelector struct {
 // recovery deadline of each eligible credential. Earlier recovery deadlines get
 // exponentially more share, while the regular availability and priority gates
 // still decide which credentials are eligible.
+// The credential's scheduling weight is added after the allowance tier multiplier.
 //
 // HalfLife controls how quickly a later deadline loses share. A zero value uses
-// the 36-hour default. Credentials without a cached recovery deadline are
-// ignored; when no eligible credential has one, Pick returns an explicit error.
+// the 36-hour default. If any eligible credential has no cached recovery deadline,
+// Pick falls back to round robin for that request.
 type GreedySoonestRecoverySelector struct {
 	mu       sync.Mutex
 	states   map[string]*smoothWeightedState
@@ -1088,7 +1089,7 @@ func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now tim
 		}
 		baseWeight := greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
 		tierProvider := QuotaRecoveryProviderForAuth(auth)
-		weights[auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(auth, tierProvider)))
+		weights[auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(auth, tierProvider))) + authWeight(auth)
 	}
 	return weighted, weights, nil
 }
