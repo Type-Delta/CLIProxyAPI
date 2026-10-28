@@ -46,7 +46,7 @@ func estimateArrivalThroughput(target Event, history []Event, evaluation bool) T
 		result.Reason = "observed_available"
 		return result
 	}
-	if !target.Succeeded {
+	if !target.Completed() {
 		result.Reason = "failed_request"
 		return result
 	}
@@ -157,7 +157,7 @@ func estimateArrivalThroughput(target Event, history []Event, evaluation bool) T
 // ArrivalEstimateObservation qualifies a raw training label. Store readers use
 // the same checks while streaming indexed candidates, before bounding history.
 func (event Event) ArrivalEstimateObservation() (float64, time.Time, bool) {
-	if !arrivalEstimateMetadata(event) || !event.Succeeded || event.ImportBatchID != "" || event.Source != "native" || event.ProxyRequestID == "" {
+	if !arrivalEstimateMetadata(event) || !event.Completed() || event.ImportBatchID != "" || event.Source != "native" || event.ProxyRequestID == "" {
 		return 0, time.Time{}, false
 	}
 	timing := event.OutputTiming

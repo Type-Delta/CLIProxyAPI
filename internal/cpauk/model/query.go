@@ -27,6 +27,7 @@ const (
 	OperationLeaderboard      Operation = "leaderboard"
 	OperationActivity         Operation = "activity"
 	OperationAnalysis         Operation = "analysis"
+	OperationModelCostSeries  Operation = "model_cost_series"
 	OperationModelLeaderboard Operation = "model_leaderboard"
 )
 
@@ -129,7 +130,7 @@ var allowedQueryFilters = map[Operation]map[string]string{
 		"provider": "strings", "model": "strings", "credential_id": "digests",
 		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
 		"success": "bool", "error_class": "strings", "status_code": "integers",
-		"token_quality": "strings", "generated": "bool", "result": "result", "source": "strings",
+		"session_id": "strings", "token_quality": "strings", "generated": "bool", "outcome": "outcome", "result": "result", "source": "strings",
 	},
 	OperationLeaderboard: {
 		"provider": "strings", "model": "strings", "endpoint_class": "strings",
@@ -147,6 +148,11 @@ var allowedQueryFilters = map[Operation]map[string]string{
 		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
 		"success": "bool", "error_class": "strings", "status_code": "integers",
 		"token_quality": "strings",
+	},
+	OperationModelCostSeries: {
+		"provider": "strings", "model": "strings", "credential_id": "digests",
+		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
+		"success": "bool", "error_class": "strings", "status_code": "integers", "token_quality": "strings",
 	},
 	OperationModelLeaderboard: {},
 }
@@ -275,6 +281,22 @@ func (q *Query) Validate() error {
 		if q.Cursor != "" || q.PageSize != 0 || q.BucketWidth != "" || q.Dimension != "" || q.SortBy != "" {
 			return fmt.Errorf("activity does not accept cursor, page_size, bucket_width, dimension, or sort_by")
 		}
+	case OperationModelCostSeries:
+		if q.SchemaVersion != QuerySchemaVersionV2 {
+			return fmt.Errorf("model_cost_series requires schema version 2")
+		}
+		var models []string
+		if err := json.Unmarshal(q.Filters["model"], &models); err != nil || len(models) != 1 {
+			return fmt.Errorf("model_cost_series requires exactly one model filter")
+		}
+		if q.Cursor != "" || q.PageSize != 0 || q.Dimension != "" || q.SortBy != "" || q.Window != "" {
+			return fmt.Errorf("model_cost_series does not accept pagination, dimension, sort_by, or window")
+		}
+		if q.BucketWidth != "" {
+			if _, ok := allowedBucketWidths[q.BucketWidth]; !ok {
+				return fmt.Errorf("unsupported bucket_width %q", q.BucketWidth)
+			}
+		}
 	case OperationAnalysis:
 		if q.SchemaVersion != QuerySchemaVersionV2 {
 			return fmt.Errorf("analysis requires query schema version %d", QuerySchemaVersionV2)
@@ -313,6 +335,25 @@ func (q *Query) Validate() error {
 			return err
 		}
 	case OperationEvents:
+		if raw, ok := q.Filters["outcome"]; ok {
+			var outcome string
+			_ = json.Unmarshal(raw, &outcome)
+			compatible := outcome != "failed"
+			if rawSuccess, ok := q.Filters["success"]; ok {
+				var success bool
+				_ = json.Unmarshal(rawSuccess, &success)
+				if success != compatible {
+					return fmt.Errorf("outcome contradicts success filter")
+				}
+			}
+			if rawResult, ok := q.Filters["result"]; ok {
+				var result string
+				_ = json.Unmarshal(rawResult, &result)
+				if (result == "success") != compatible {
+					return fmt.Errorf("outcome contradicts result filter")
+				}
+			}
+		}
 		if q.BucketWidth != "" || q.Dimension != "" || q.SortBy != "" {
 			return fmt.Errorf("events does not accept bucket_width, dimension, or sort_by")
 		}
@@ -457,6 +498,11 @@ func validateRange(start, end time.Time, zoneName string) error {
 
 func validateFilterValue(name, kind string, raw json.RawMessage) error {
 	switch kind {
+	case "outcome":
+		var value string
+		if err := decodeStrictValue(raw, &value); err != nil || value != "succeeded" && value != "failed" && value != "canceled" {
+			return fmt.Errorf("filter %s must be succeeded, failed or canceled", name)
+		}
 	case "result":
 		var value string
 		if err := decodeStrictValue(raw, &value); err != nil || value != "success" && value != "failure" {
@@ -500,7 +546,7 @@ func validateFilterValue(name, kind string, raw json.RawMessage) error {
 func normalizeFilterValue(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	var value any
 	switch kind {
-	case "result":
+	case "result", "outcome":
 		var parsed string
 		if err := decodeStrictValue(raw, &parsed); err != nil {
 			return nil, err

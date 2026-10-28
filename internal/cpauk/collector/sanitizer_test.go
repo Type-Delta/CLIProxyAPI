@@ -9,9 +9,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	executorhelps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
@@ -102,8 +104,8 @@ func TestSanitizerDigestsTrimmedSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), strings.TrimSpace(rawSession)) {
-		t.Fatalf("event leaked raw session ID: %s", encoded)
+	if !strings.Contains(string(encoded), strings.TrimSpace(rawSession)) || result.Event.SessionID == nil || *result.Event.SessionID != strings.TrimSpace(rawSession) {
+		t.Fatalf("event missing sanitized session ID: %s", encoded)
 	}
 
 	record.SessionID = "   "
@@ -542,5 +544,27 @@ func TestAdapterRetainsUnknownAndExplicitStreamModes(t *testing.T) {
 				t.Fatalf("stream=%v want=%v", got, *test.want)
 			}
 		})
+	}
+}
+
+func TestSanitizerSessionBoundsAndRejectsCredentialForms(t *testing.T) {
+	for _, value := range []string{"Bearer secret", "sk-secret", "eyJcredential", "line\nbreak", "bad\x00value"} {
+		if got := sanitizedSessionID(value); got != nil {
+			t.Errorf("unsafe session retained for %q", value)
+		}
+	}
+	got := sanitizedSessionID(strings.Repeat("界", 300))
+	if got == nil || len(*got) > model.MaxStoredStringBytes || !utf8.ValidString(*got) {
+		t.Fatalf("unbounded session: %v", got)
+	}
+}
+
+func TestAdapterCapturesSessionFromRequestMetadata(t *testing.T) {
+	intake := &fakeIntake{generation: 1}
+	adapter := NewAdapter(intake, NewSanitizer(SanitizerOptions{}))
+	ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{SessionID: "header:request-session"})
+	adapter.HandleUsage(ctx, validRecord())
+	if len(intake.events) != 1 || intake.events[0].SessionID == nil || *intake.events[0].SessionID != "header:request-session" {
+		t.Fatalf("missing request session: %+v", intake.events)
 	}
 }

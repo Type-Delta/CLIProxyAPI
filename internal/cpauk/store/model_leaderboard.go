@@ -50,7 +50,7 @@ func (s *SQLiteStore) ModelLeaderboard(ctx context.Context, query model.Query) (
 		return model.ModelLeaderboard{}, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT model,provider,succeeded,session_digest,
-output_tokens,reasoning_tokens,accounting_schema,output_timing FROM events `+where+` AND model <> ''`, arguments...)
+output_tokens,reasoning_tokens,accounting_schema,output_timing,outcome FROM events `+where+` AND model <> ''`, arguments...)
 	if err != nil {
 		return model.ModelLeaderboard{}, fmt.Errorf("query model leaderboard events: %w", err)
 	}
@@ -59,10 +59,10 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing FROM events `+whe
 	for rows.Next() {
 		var modelName, provider, accountingSchema string
 		var succeeded bool
-		var sessionDigest, outputTiming sql.NullString
+		var sessionDigest, outputTiming, outcome sql.NullString
 		var output, reasoning int64
 		if err := rows.Scan(&modelName, &provider, &succeeded, &sessionDigest, &output, &reasoning,
-			&accountingSchema, &outputTiming); err != nil {
+			&accountingSchema, &outputTiming, &outcome); err != nil {
 			return model.ModelLeaderboard{}, fmt.Errorf("scan model leaderboard event: %w", err)
 		}
 		item := stats[modelName]
@@ -78,7 +78,7 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing FROM events `+whe
 		if sessionDigest.Valid && sessionDigest.String != "" {
 			item.sessions[sessionDigest.String] = struct{}{}
 		}
-		if succeeded && outputTiming.Valid {
+		if succeeded && outcome.String != "canceled" && outputTiming.Valid {
 			var timing model.OutputTiming
 			if err := json.Unmarshal([]byte(outputTiming.String), &timing); err != nil {
 				return model.ModelLeaderboard{}, fmt.Errorf("decode leaderboard timing: %w", err)
@@ -88,7 +88,7 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing FROM events `+whe
 				item.speeds = append(item.speeds, *info.TokensPerSecond)
 			}
 		}
-		if succeeded {
+		if succeeded && outcome.String != "canceled" {
 			generated, counted := generatedTokens(accountingSchema, output, reasoning)
 			if counted && generated > 0 {
 				item.talkative = append(item.talkative, generated)

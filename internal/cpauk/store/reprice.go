@@ -151,8 +151,8 @@ WHERE requested_at_ns >= ? AND requested_at_ns < ?`
 		if priced.KnownCost != nil {
 			knownCost = int64(*priced.KnownCost)
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE events SET known_cost_nano=?,unpriced_tokens=?,price_rule_id=?,price_source=?,price_usd_per_credit_nano=?
-WHERE attempt_id=?`, knownCost, priced.UnpricedTokens, nullString(priced.RuleID), nullString(priced.Source), priced.PriceUSDPerCredit, event.AttemptID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE events SET known_cost_nano=?,unpriced_tokens=?,price_rule_id=?,price_source=?,price_usd_per_credit_nano=?,pricing_breakdown=?
+WHERE attempt_id=?`, knownCost, priced.UnpricedTokens, nullString(priced.RuleID), nullString(priced.Source), priced.PriceUSDPerCredit, nullPricingBreakdown(priced.Breakdown), event.AttemptID); err != nil {
 			_ = tx.Rollback()
 			return RepriceResult{}, fmt.Errorf("update repriced event %d: %w", index, err)
 		}

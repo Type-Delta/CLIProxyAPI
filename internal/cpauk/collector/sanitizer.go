@@ -33,33 +33,36 @@ type SanitizeResult struct {
 }
 
 type Source struct {
-	ProxyRequestID    string
-	RequestQuality    model.RequestIDQuality
-	EndpointClass     string
-	Provider          string
-	ExecutorType      string
-	Model             string
-	Alias             string
-	SessionID         string
-	APIKey            string
-	AuthID            string
-	AuthIndex         string
-	AuthType          string
-	ServiceTier       string
-	ResponseTier      string
-	Generated         *bool
-	RequestedAt       time.Time
-	Latency           time.Duration
-	TTFT              time.Duration
-	GenerationTime    *time.Duration
-	OutputTiming      *model.OutputTiming
-	Stream            *bool
-	ReasoningEffort   string
-	FirstTokenLatency *time.Duration
-	RoutingTime       *time.Duration
-	ProviderLatency   *time.Duration
-	Failed            bool
-	StatusCode        int
+	ProxyRequestID     string
+	RequestQuality     model.RequestIDQuality
+	EndpointClass      string
+	Provider           string
+	ExecutorType       string
+	Model              string
+	Alias              string
+	SessionID          string
+	APIKey             string
+	AuthID             string
+	AuthIndex          string
+	AuthType           string
+	ServiceTier        string
+	ResponseTier       string
+	Generated          *bool
+	RequestedAt        time.Time
+	Latency            time.Duration
+	TTFT               time.Duration
+	GenerationTime     *time.Duration
+	OutputTiming       *model.OutputTiming
+	Stream             *bool
+	ReasoningEffort    string
+	FirstTokenLatency  *time.Duration
+	RoutingTime        *time.Duration
+	ProviderLatency    *time.Duration
+	Outcome            string
+	FailureHop         string
+	CancellationSource string
+	Failed             bool
+	StatusCode         int
 	// UpstreamStatusCode is the observed provider status; zero when no provider request was made.
 	UpstreamStatusCode int
 	// FailureBody is the raw provider error body; it is bounded before storage.
@@ -202,8 +205,8 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 	sessionDigest := digestSessionID(record.SessionID)
 
 	var statusCode *int
-	if record.StatusCode != 0 {
-		value := record.StatusCode
+	if record.UpstreamStatusCode != 0 {
+		value := record.UpstreamStatusCode
 		statusCode = &value
 	}
 	hops, count := sanitizeHops(record)
@@ -297,6 +300,7 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 		CredentialID:          credentialID,
 		CredentialIDAlgorithm: credentialAlgorithm,
 		SessionDigest:         sessionDigest,
+		SessionID:             sanitizedSessionID(record.SessionID),
 		Succeeded:             !record.Failed,
 		UpstreamStatusCode:    statusCode,
 		ErrorClass:            errorClass,
@@ -331,11 +335,47 @@ func (s *Sanitizer) Sanitize(record Source) (SanitizeResult, error) {
 			Quality:       quality,
 		},
 	}
+	event.Outcome = record.Outcome
+	if record.FailureHop != "" {
+		event.FailureHop = &record.FailureHop
+	}
+	if record.CancellationSource != "" {
+		event.CancellationSource = &record.CancellationSource
+	}
+	if event.Outcome == "" {
+		// Direct SDK publishers have no typed outcome; preserve their boolean.
+		if event.Succeeded {
+			event.Outcome = "succeeded"
+		} else {
+			event.Outcome = "failed"
+		}
+	}
+	model.ClassifyEvent(&event)
 	return SanitizeResult{Event: event, TruncatedFields: truncated}, nil
 }
 
-// digestSessionID hashes the trimmed client session identifier. The raw value
-// never reaches an Event, storage, or logs.
+// sanitizedSessionID retains only a bounded printable client conversation ID.
+func sanitizedSessionID(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" || !utf8.ValidString(value) {
+		return nil
+	}
+	for _, char := range value {
+		if char < 32 || char == 127 {
+			return nil
+		}
+	}
+	// Reject common credential forms accidentally supplied as a session header.
+	for _, part := range strings.Split(strings.ToLower(value), ":") {
+		if strings.HasPrefix(part, "bearer ") || strings.HasPrefix(part, "sk-") || strings.HasPrefix(part, "eyj") {
+			return nil
+		}
+	}
+	value, _, _ = bounded(value, false)
+	return &value
+}
+
+// digestSessionID hashes the trimmed client session identifier for cohort metrics.
 func digestSessionID(value string) *string {
 	value = strings.TrimSpace(value)
 	if value == "" {

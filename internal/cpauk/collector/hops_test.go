@@ -71,6 +71,7 @@ func TestSanitizerStoresHopDiagnosticsAndSuccessStatus(t *testing.T) {
 func TestSanitizerBoundsFailureBodyWithMarker(t *testing.T) {
 	record := validRecord()
 	record.Failed = true
+	record.UpstreamStatusCode = 429
 	record.Fail = coreusage.Failure{StatusCode: 429, Body: strings.Repeat("e", model.MaxRawPayloadBytes+100)}
 	result, err := newHopSanitizer().Sanitize(adaptRecord(record))
 	if err != nil {

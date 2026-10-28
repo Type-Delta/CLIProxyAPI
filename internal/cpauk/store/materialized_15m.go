@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,7 +19,7 @@ const compactAggregateSelect = `WITH classified AS (
 SELECT e.requested_at_ns - ((e.requested_at_ns % ? + ?) % ?) AS bucket_start_ns,
 e.requested_at_ns,e.proxy_request_id,e.key_id,e.provider,e.model,
 e.succeeded,e.input_tokens,e.output_tokens,e.reasoning_tokens,e.cached_tokens,
-e.cache_read_tokens,e.cache_creation_tokens,e.total_tokens,e.generation_time_ms,
+e.cache_read_tokens,e.cache_creation_tokens,e.total_tokens,CASE WHEN e.outcome = 'canceled' THEN NULL ELSE e.generation_time_ms END AS generation_time_ms,
 COALESCE(e.known_cost_nano,0) AS known_cost_nano,e.unpriced_tokens,e.token_quality
 FROM events e
 ), dimensions AS (
@@ -103,7 +104,7 @@ func (s *SQLiteStore) rebuild15mLocked(ctx context.Context) error {
 		_ = tx.Rollback()
 		return fmt.Errorf("find 15-minute aggregate rebuild buckets: %w", err)
 	}
-	if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
+	if err := rebuildMaterialized15mTx(ctx, tx, true); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -117,14 +118,19 @@ func (s *SQLiteStore) rebuild15mLocked(ctx context.Context) error {
 	return nil
 }
 
-func rebuildMaterialized15mTx(ctx context.Context, tx *sql.Tx) error {
+func rebuildMaterialized15mTx(ctx context.Context, tx *sql.Tx, withOutcomes bool) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_15m_compact"); err != nil {
 		return fmt.Errorf("clear compact 15-minute aggregates: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_15m_request_ids"); err != nil {
 		return fmt.Errorf("clear compact 15-minute request identities: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, compactAggregateSelect,
+	statement := compactAggregateSelect
+	if !withOutcomes {
+		// Migration 011 builds this cache before outcome columns exist.
+		statement = strings.ReplaceAll(statement, "CASE WHEN e.outcome = 'canceled' THEN NULL ELSE e.generation_time_ms END AS generation_time_ms", "e.generation_time_ms")
+	}
+	if _, err := tx.ExecContext(ctx, statement,
 		materialized15mDurationNS, materialized15mDurationNS, materialized15mDurationNS,
 		materialized15mDurationNS); err != nil {
 		return fmt.Errorf("backfill compact 15-minute aggregates: %w", err)
@@ -170,7 +176,7 @@ func insertCompactAggregatesForBuckets(ctx context.Context, tx *sql.Tx) error {
 	statement := `WITH classified AS (
 SELECT b.bucket_start_ns,e.requested_at_ns,e.proxy_request_id,e.key_id,e.provider,e.model,
 e.succeeded,e.input_tokens,e.output_tokens,e.reasoning_tokens,e.cached_tokens,
-e.cache_read_tokens,e.cache_creation_tokens,e.total_tokens,e.generation_time_ms,
+e.cache_read_tokens,e.cache_creation_tokens,e.total_tokens,CASE WHEN e.outcome = 'canceled' THEN NULL ELSE e.generation_time_ms END AS generation_time_ms,
 COALESCE(e.known_cost_nano,0) AS known_cost_nano,e.unpriced_tokens,e.token_quality
 FROM events e JOIN materialized_15m_rebuild_buckets b
 ON e.requested_at_ns >= b.bucket_start_ns

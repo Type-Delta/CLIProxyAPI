@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -40,7 +41,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 	input <-chan cliproxyexecutor.WebsocketInput, initial *codexWebsocketPrepared,
 	initialReporter *helps.UsageReporter, headers http.Header, unlock func(),
 ) *cliproxyexecutor.StreamResult {
-	streamCtx, cancel := context.WithCancel(ctx)
+	streamCtx, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(usage.ErrInternalCancellation) }
 	out := make(chan cliproxyexecutor.StreamChunk)
 	// This first frame was successfully written by ExecuteStream before handoff.
 	log.Infof("codex websockets: request forwarded session=%s auth=%s url=%s event=response.create", sess.sessionID, auth.ID, initial.wsURL)

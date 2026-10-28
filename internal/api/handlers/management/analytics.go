@@ -108,6 +108,14 @@ func (h *Handler) readAnalyticsQuery(ctx context.Context, service cpauk.Service,
 			return nil, cpauk.ErrUnavailable
 		}
 		result, err = v2.Activity(ctx, query)
+	case model.OperationModelCostSeries:
+		v2, ok := reader.(interface {
+			ModelCostSeries(context.Context, model.Query) (model.ModelCostSeries, error)
+		})
+		if !ok {
+			return nil, cpauk.ErrUnavailable
+		}
+		result, err = v2.ModelCostSeries(ctx, query)
 	case model.OperationAnalysis:
 		v2, ok := reader.(interface {
 			Analysis(context.Context, model.Query) (model.Analysis, error)
@@ -161,6 +169,9 @@ func analyticsResultWithRange(result any, query model.Query) any {
 	case model.Activity:
 		value.Meta.Range = resolved
 		return value
+	case model.ModelCostSeries:
+		value.Meta.Range = resolved
+		return value
 	case model.Analysis:
 		value.Meta.Range = resolved
 		return value
@@ -198,7 +209,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 		"start": {}, "end": {}, "time_zone": {}, "cursor": {}, "page_size": {},
 		"bucket_width": {}, "dimension": {}, "sort_by": {}, "provider": {}, "model": {},
 		"endpoint_class": {}, "auth_type": {}, "service_tier": {}, "success": {},
-		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {}, "result": {}, "source": {},
+		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {}, "result": {}, "source": {}, "session_id": {},
 	}
 	for name := range values {
 		if name == "key_id" || name == "key_ids" {
@@ -233,7 +244,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 			return model.Query{}, fmt.Errorf("page_size must be an integer")
 		}
 	}
-	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality", "source"} {
+	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality", "source", "session_id"} {
 		if entries, ok := values[name]; ok {
 			encoded, errEncode := json.Marshal(entries)
 			if errEncode != nil {
@@ -707,7 +718,7 @@ func analyticsExportValueString(value any) string {
 			return ""
 		}
 		return string(*typed)
-	case *model.OutputTiming, *model.ThroughputInfo, *model.ThroughputEstimate, *float64:
+	case *model.PricingBreakdown, *model.OutputTiming, *model.ThroughputInfo, *model.ThroughputEstimate, *float64:
 		encoded, _ := json.Marshal(typed)
 		if string(encoded) == "null" {
 			return ""

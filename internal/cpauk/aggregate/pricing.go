@@ -52,6 +52,7 @@ func (p PriceBook) EffectiveKiroRate() model.NanoUSD {
 }
 
 type PriceResult struct {
+	Breakdown         *model.PricingBreakdown
 	KnownCost         *model.NanoUSD
 	UnpricedTokens    int64
 	RuleID            string
@@ -121,6 +122,7 @@ func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	if rule == nil {
 		return PriceResult{UnpricedTokens: event.Tokens.Total}, nil
 	}
+	baseInput, baseOutput := rule.InputPerMillion, rule.OutputPerMillion
 	// A returned default tier is authoritative even when priority was requested.
 	tier := ""
 	if event.ServiceTierUsed != nil {
@@ -154,16 +156,60 @@ func (p PriceBook) Price(event model.Event) (PriceResult, error) {
 	if uncachedInput < 0 {
 		uncachedInput = 0
 	}
+	breakdown := &model.PricingBreakdown{ServiceTier: tier}
+	ratio := func(applied, base *model.NanoUSD) *string {
+		if base == nil || *base == 0 {
+			return nil
+		}
+		value := new(big.Rat).SetFrac64(int64(*applied), int64(*base)).RatString()
+		return &value
+	}
+	breakdown.InputTierMultiplier = ratio(rule.InputPerMillion, baseInput)
+	breakdown.OutputTierMultiplier = ratio(rule.OutputPerMillion, baseOutput)
 	total := new(big.Rat)
-	addPricedTokens(total, uncachedInput, *rule.InputPerMillion, big.NewRat(1, 1))
-	addPricedTokens(total, event.Tokens.CacheRead, *rule.InputPerMillion, readMultiplier)
-	addPricedTokens(total, event.Tokens.CacheCreation, *rule.InputPerMillion, creationMultiplier)
-	addPricedTokens(total, event.Tokens.Output, *rule.OutputPerMillion, big.NewRat(1, 1))
+	var previous model.NanoUSD
+	for _, part := range []struct {
+		target     *model.PricingComponent
+		tokens     int64
+		rate       model.NanoUSD
+		multiplier *big.Rat
+	}{
+		{&breakdown.Input, uncachedInput, *rule.InputPerMillion, big.NewRat(1, 1)},
+		{&breakdown.CacheRead, event.Tokens.CacheRead, *rule.InputPerMillion, readMultiplier},
+		{&breakdown.CacheWrite, event.Tokens.CacheCreation, *rule.InputPerMillion, creationMultiplier},
+		{&breakdown.Output, event.Tokens.Output, *rule.OutputPerMillion, big.NewRat(1, 1)},
+	} {
+		addPricedTokens(total, part.tokens, part.rate, part.multiplier)
+		rounded, err := roundRat(total)
+		if err != nil {
+			return PriceResult{}, err
+		}
+		rate := new(big.Rat).Mul(new(big.Rat).SetFrac64(int64(part.rate), 1_000_000_000), part.multiplier)
+		// Emit terminating decimals exactly; retain fractions for nonterminating rates.
+		denominator := new(big.Int).Set(rate.Denom())
+		digits := 0
+		for _, factor := range []int64{2, 5} {
+			count := 0
+			for new(big.Int).Mod(denominator, big.NewInt(factor)).Sign() == 0 {
+				denominator.Quo(denominator, big.NewInt(factor))
+				count++
+			}
+			digits = max(digits, count)
+		}
+		rateText := rate.RatString()
+		if denominator.Cmp(big.NewInt(1)) == 0 {
+			rateText = rate.FloatString(digits)
+		}
+		*part.target = model.PricingComponent{Tokens: part.tokens, RatePerMillion: rateText, Cost: rounded - previous}
+		previous = rounded
+	}
+
 	cost, err := roundRat(total)
 	if err != nil {
 		return PriceResult{}, fmt.Errorf("pricing rule %s: %w", rule.ID, err)
 	}
 	return PriceResult{
+		Breakdown:      breakdown,
 		KnownCost:      &cost,
 		UnpricedTokens: event.Tokens.UnclassifiedTokens(),
 		RuleID:         rule.ID,

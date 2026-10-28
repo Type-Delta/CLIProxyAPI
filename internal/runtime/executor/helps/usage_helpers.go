@@ -627,7 +627,36 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 	}
 	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
 	r.once.Do(func() {
-		r.publishAttemptRecord(ctx, r.buildRecord(detail, failed, fail))
+		record := r.buildRecord(detail, failed, fail)
+		record.Outcome = "succeeded"
+		if failed {
+			record.Outcome = "failed"
+			record.FailureHop = "cpa_to_provider"
+			if record.UpstreamStatusCode != 0 || record.ProviderLatency != nil {
+				record.FailureHop = "provider_to_cpa"
+			}
+			// A closed HTTP/2 body is the transport symptom of a canceled read.
+			// Only the original downstream lifetime can establish client provenance.
+			terminalCtx := ctx
+			if terminalCtx == nil {
+				terminalCtx = r.requestContext
+			}
+			if fail.Canceled || strings.TrimSpace(fail.Body) == "http2: response body closed" && terminalCtx.Err() != nil {
+				if usage.ClientRequestCanceled(terminalCtx) {
+					record.Outcome, record.CancellationSource, record.FailureHop = "canceled", "client", ""
+				} else {
+					record.CancellationSource = "unknown"
+					if cause := context.Cause(terminalCtx); cause != nil && cause != context.Canceled {
+						record.CancellationSource = "internal"
+					}
+					// CPA interrupted this attempt; no upstream terminal error was observed.
+					if !record.UpstreamSentAt.IsZero() {
+						record.FailureHop = "cpa_to_client"
+					}
+				}
+			}
+		}
+		r.publishAttemptRecord(ctx, record)
 	})
 }
 
@@ -772,6 +801,13 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 }
 
 func failFromErrors(errs ...error) usage.Failure {
+	// A retained provider/CPA error takes precedence over cancellation cleanup.
+	for _, err := range errs {
+		if err != nil && !errors.Is(err, context.Canceled) && strings.TrimSpace(err.Error()) != "http2: response body closed" {
+			errs = []error{err}
+			break
+		}
+	}
 	for _, err := range errs {
 		if err == nil {
 			continue
@@ -788,6 +824,7 @@ func failFromErrors(errs ...error) usage.Failure {
 		}
 		return usage.Failure{
 			Body:       body,
+			Canceled:   errors.Is(err, context.Canceled),
 			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
 	}

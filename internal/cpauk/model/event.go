@@ -64,9 +64,17 @@ type Event struct {
 	AuthType              *string          `json:"auth_type"`
 	CredentialID          *string          `json:"credential_id"`
 	CredentialIDAlgorithm *string          `json:"credential_id_algorithm"`
-	// SessionDigest identifies one client conversation without retaining its raw
-	// identifier. Historic events recorded before this field remain nil.
-	SessionDigest       *string       `json:"session_digest"`
+	// SessionDigest groups conversations independently of the bounded display ID.
+	// Historic events recorded before these fields remain nil.
+	SessionDigest *string `json:"session_digest"`
+	SessionID     *string `json:"session_id,omitempty"`
+	SessionSource *string `json:"session_source,omitempty"`
+	// SessionCaptured is read-time evidence that an absent client ID was observed.
+	SessionCaptured    bool    `json:"session_captured,omitempty"`
+	Outcome            string  `json:"outcome"`
+	FailureHop         *string `json:"failure_hop"`
+	CancellationSource *string `json:"cancellation_source"`
+	// Succeeded includes canceled attempts for aggregate compatibility.
 	Succeeded           bool          `json:"succeeded"`
 	UpstreamStatusCode  *int          `json:"upstream_status_code"`
 	ErrorClass          *string       `json:"error_class"`
@@ -99,14 +107,15 @@ type Event struct {
 	RespondedAt       *time.Time `json:"responded_at"`
 	// Query-time pricing enrichment is omitted from sanitized intake events and
 	// populated only when an event is read from durable storage.
-	ProviderCredits   *string  `json:"provider_credits,omitempty"`
-	PriceUSDPerCredit *NanoUSD `json:"price_usd_per_credit,omitempty"`
-	KnownCost         *NanoUSD `json:"known_cost_usd,omitempty"`
-	UnpricedTokens    int64    `json:"unpriced_tokens,omitempty"`
-	PriceRuleID       string   `json:"price_rule_id,omitempty"`
-	PriceSource       string   `json:"price_source,omitempty"`
-	ImportBatchID     string   `json:"import_batch_id,omitempty"`
-	Source            string   `json:"source,omitempty"`
+	PricingBreakdown  *PricingBreakdown `json:"pricing_breakdown,omitempty"`
+	ProviderCredits   *string           `json:"provider_credits,omitempty"`
+	PriceUSDPerCredit *NanoUSD          `json:"price_usd_per_credit,omitempty"`
+	KnownCost         *NanoUSD          `json:"known_cost_usd,omitempty"`
+	UnpricedTokens    int64             `json:"unpriced_tokens,omitempty"`
+	PriceRuleID       string            `json:"price_rule_id,omitempty"`
+	PriceSource       string            `json:"price_source,omitempty"`
+	ImportBatchID     string            `json:"import_batch_id,omitempty"`
+	Source            string            `json:"source,omitempty"`
 	// Query-time arrival and whole-attempt rates are derived from this event alone.
 	ThroughputInfo                 *ThroughputInfo `json:"throughput,omitempty"`
 	EffectiveOutputTokensPerSecond *float64        `json:"effective_output_tokens_per_second,omitempty"`
@@ -119,6 +128,19 @@ type Event struct {
 }
 
 func (e Event) Validate() error {
+	if e.Outcome != "" && !oneOf(e.Outcome, "succeeded", "failed", "canceled") {
+		return fmt.Errorf("invalid outcome")
+	}
+	if e.FailureHop != nil && !oneOf(*e.FailureHop, "client_to_cpa", "cpa_to_provider", "provider_to_cpa", "cpa_to_client") {
+		return fmt.Errorf("invalid failure hop")
+	}
+	if e.CancellationSource != nil && !oneOf(*e.CancellationSource, "client", "internal", "unknown") {
+		return fmt.Errorf("invalid cancellation source")
+	}
+	if e.Outcome != "" && (e.Succeeded != (e.Outcome != "failed") || e.Outcome != "failed" && e.FailureHop != nil) {
+		return fmt.Errorf("inconsistent outcome")
+	}
+
 	if e.ProviderCredits != nil {
 		if !ValidProviderCredits(*e.ProviderCredits) {
 			return fmt.Errorf("invalid provider credits")
@@ -157,7 +179,7 @@ func (e Event) Validate() error {
 		}
 	}
 	for name, value := range map[string]*string{
-		"requested_alias": e.RequestedAlias, "auth_type": e.AuthType,
+		"session_id": e.SessionID, "requested_alias": e.RequestedAlias, "auth_type": e.AuthType,
 		"error_class": e.ErrorClass, "service_tier_requested": e.ServiceTierRequested,
 		"service_tier_used": e.ServiceTierUsed,
 	} {

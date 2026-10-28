@@ -504,6 +504,9 @@ type ViewerSummary struct {
 }
 
 type ViewerEvent struct {
+	Outcome                        string              `json:"outcome"`
+	FailureHop                     *string             `json:"failure_hop"`
+	CancellationSource             *string             `json:"cancellation_source"`
 	ThroughputEstimate             *ThroughputEstimate `json:"throughput_estimate,omitempty"`
 	ThroughputInfo                 *ThroughputInfo     `json:"throughput,omitempty"`
 	EffectiveOutputTokensPerSecond *float64            `json:"effective_output_tokens_per_second,omitempty"`

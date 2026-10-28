@@ -578,6 +578,10 @@ func runUsageProbe(ctx context.Context, h *Handler, auth *coreauth.Auth, name, t
 }
 
 func runUsageProbeWindows(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error)) ([]model.ProviderQuotaWindow, error) {
+	return runUsageProbeWindowsWithMode(ctx, h, auth, name, targetURL, parse, false)
+}
+
+func runUsageProbeWindowsWithMode(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error), background bool) ([]model.ProviderQuotaWindow, error) {
 	parsedURL, errParseURL := url.Parse(targetURL)
 	if errParseURL != nil {
 		return nil, fmt.Errorf("parse %s quota URL: %w", name, errParseURL)
@@ -602,9 +606,15 @@ func runUsageProbeWindows(ctx context.Context, h *Handler, auth *coreauth.Auth, 
 		}
 	}
 	key := buildQuotaCacheKey(h, auth, http.MethodGet, parsedURL, "", headers, "")
-	outcome := h.getQuotaCache().do(ctx, key, func(requestContext context.Context) quotaCallOutcome {
+	execute := func(requestContext context.Context) quotaCallOutcome {
 		return h.executeAPICall(requestContext, http.MethodGet, targetURL, "", auth, "", headers, "")
-	})
+	}
+	var outcome quotaCallOutcome
+	if background {
+		outcome = h.getQuotaCache().doBackground(ctx, key, execute)
+	} else {
+		outcome = h.getQuotaCache().do(ctx, key, execute)
+	}
 	if outcome.outerError != "" {
 		return nil, fmt.Errorf("%s usage request failed: %s", name, outcome.outerError)
 	}

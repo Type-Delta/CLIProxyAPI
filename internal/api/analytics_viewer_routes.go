@@ -269,6 +269,7 @@ func (s *Server) getAnalyticsViewerEvents(c *gin.Context, store *managementHandl
 		events = append(events, model.ViewerEvent{
 			AttemptID: event.AttemptID, ProxyRequestID: event.ProxyRequestID, RequestedAt: event.RequestedAt,
 			Provider: event.Provider, Model: event.Model, EndpointClass: event.EndpointClass,
+			Outcome: event.Outcome, FailureHop: event.FailureHop, CancellationSource: event.CancellationSource,
 			Succeeded: event.Succeeded, UpstreamStatusCode: event.UpstreamStatusCode, ErrorClass: event.ErrorClass,
 			LatencyMS: event.LatencyMS, Tokens: event.Tokens, KnownCost: event.KnownCost,
 			UnpricedTokens: event.UnpricedTokens, ThroughputInfo: event.ThroughputInfo, ThroughputEstimate: event.ThroughputEstimate, EffectiveOutputTokensPerSecond: event.EffectiveOutputTokensPerSecond, TokensPerSecond: event.TokensPerSecond, SpeedEstimated: event.SpeedEstimated,

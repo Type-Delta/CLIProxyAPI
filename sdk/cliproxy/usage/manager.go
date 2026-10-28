@@ -95,16 +95,21 @@ type Record struct {
 	RoutingTime *time.Duration
 	// ProviderLatency measures dispatch to response headers or a WebSocket application frame, including network time.
 	// nil means no response was observed on a measured transport.
-	ProviderLatency *time.Duration
-	Failed          bool
-	Fail            Failure
-	Detail          Detail
+	ProviderLatency    *time.Duration
+	Outcome            string
+	FailureHop         string
+	CancellationSource string
+	Failed             bool
+	Fail               Failure
+	Detail             Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
+	// Canceled preserves typed error identity before diagnostic serialization.
+	Canceled   bool
 	StatusCode int
 	Body       string
 }

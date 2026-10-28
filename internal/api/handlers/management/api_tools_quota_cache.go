@@ -38,6 +38,7 @@ const (
 // URLs never become map keys.
 type quotaCacheKey struct {
 	requestHash string
+	baseHash    string
 	authHash    string
 	backoffHash string
 }
@@ -67,12 +68,14 @@ func (o quotaCallOutcome) successfulResponse() bool {
 }
 
 type quotaCacheEntry struct {
+	baseHash  string
 	authHash  string
 	expiresAt time.Time
 	outcome   quotaCallOutcome
 }
 
 type quotaFlight struct {
+	baseHash    string
 	authHash    string
 	done        chan struct{}
 	outcome     quotaCallOutcome
@@ -121,6 +124,16 @@ func (q *apiCallQuotaCache) currentTime() time.Time {
 // cancellation so a disconnected caller cannot strand the shared flight or
 // prevent a successful result from being cached for other clients.
 func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(context.Context) quotaCallOutcome) quotaCallOutcome {
+	return q.doWithMode(ctx, key, fn, false)
+}
+
+// doBackground reuses a recent base usage response across header variants and
+// allows its own leader request to stop when the collector is canceled.
+func (q *apiCallQuotaCache) doBackground(ctx context.Context, key quotaCacheKey, fn func(context.Context) quotaCallOutcome) quotaCallOutcome {
+	return q.doWithMode(ctx, key, fn, true)
+}
+
+func (q *apiCallQuotaCache) doWithMode(ctx context.Context, key quotaCacheKey, fn func(context.Context) quotaCallOutcome, background bool) quotaCallOutcome {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -151,12 +164,37 @@ func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(c
 		return q.replayOutcome(outcome, backoff.expiresAt, now)
 	}
 
+	if background && key.baseHash != "" {
+		var latest quotaCacheEntry
+		found := false
+		for _, entry := range q.entries {
+			if entry.baseHash == key.baseHash && entry.outcome.successfulResponse() && now.Before(entry.expiresAt) && (!found || entry.outcome.cachedAt.After(latest.outcome.cachedAt)) {
+				latest = entry
+				found = true
+			}
+		}
+		if found {
+			outcome := latest.outcome.clone()
+			q.mu.Unlock()
+			return q.replayOutcome(outcome, latest.expiresAt, now)
+		}
+		for _, flight := range q.flights {
+			if flight.baseHash == key.baseHash {
+				q.mu.Unlock()
+				select {
+				case <-flight.done:
+					return q.replayOutcome(flight.outcome.clone(), flight.expiresAt, q.currentTime())
+				case <-ctx.Done():
+					return quotaCallOutcome{callerCanceled: true}
+				}
+			}
+		}
+	}
 	if entry, ok := q.entries[key.requestHash]; ok && now.Before(entry.expiresAt) {
 		outcome := entry.outcome.clone()
 		q.mu.Unlock()
 		return q.replayOutcome(outcome, entry.expiresAt, now)
 	}
-
 	if flight, ok := q.flights[key.requestHash]; ok {
 		q.mu.Unlock()
 		select {
@@ -168,6 +206,7 @@ func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(c
 	}
 
 	flight := &quotaFlight{
+		baseHash: key.baseHash,
 		authHash: key.authHash,
 		done:     make(chan struct{}),
 	}
@@ -177,6 +216,9 @@ func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(c
 	// Keep the provider operation alive after the leader's HTTP request is
 	// canceled. The existing HTTP client behavior still governs its timeout.
 	leaderCtx := context.WithoutCancel(ctx)
+	if background {
+		leaderCtx = ctx
+	}
 	outcome := quotaCallOutcome{}
 	func() {
 		defer func() {
@@ -192,6 +234,9 @@ func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(c
 		outcome = fn(leaderCtx)
 	}()
 
+	if background && ctx.Err() != nil {
+		outcome.callerCanceled = true
+	}
 	now = q.currentTime()
 	outcome.cachedAt = now
 	q.mu.Lock()
@@ -210,6 +255,7 @@ func (q *apiCallQuotaCache) do(ctx context.Context, key quotaCacheKey, fn func(c
 			ttl = retryTTL
 		}
 		entry := quotaCacheEntry{
+			baseHash:  key.baseHash,
 			authHash:  key.authHash,
 			expiresAt: now.Add(ttl),
 			outcome:   outcome.clone(),
@@ -475,6 +521,19 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	if auth != nil {
 		provider = strings.ToLower(strings.TrimSpace(auth.Provider))
 	}
+	var base strings.Builder
+	writeQuotaPart(&base, "quota-base-v1")
+	writeQuotaPart(&base, authHash)
+	writeQuotaPart(&base, strings.ToUpper(strings.TrimSpace(method)))
+	if rawURL != nil {
+		canonical := *rawURL
+		if query, err := url.ParseQuery(canonical.RawQuery); err == nil {
+			canonical.RawQuery = query.Encode()
+		}
+		writeQuotaPart(&base, canonical.String())
+	}
+	writeQuotaPart(&base, body)
+	writeQuotaPart(&base, quotaProxyFingerprint(h, auth, requestProxyURL))
 	var builder strings.Builder
 	writeQuotaPart(&builder, "quota-request-v1")
 	writeQuotaPart(&builder, authHash)
@@ -488,6 +547,7 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	writeQuotaPart(&builder, quotaProxyFingerprint(h, auth, requestProxyURL))
 	return quotaCacheKey{
 		requestHash: digestQuotaKey(builder.String()),
+		baseHash:    digestQuotaKey(base.String()),
 		authHash:    authHash,
 		backoffHash: quotaBackoffHash(authHash, provider),
 	}
@@ -591,6 +651,15 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 		}
 		if method == http.MethodPost && exactQuotaURL(rawURL, codexConsumeURL) {
 			return quotaRequestCodexConsume
+		}
+	case "kiro":
+		expected, err := url.Parse(kiroUsageLimitsURL(auth))
+		if method == http.MethodGet && err == nil && rawURL.Fragment == "" && strings.EqualFold(rawURL.Scheme, expected.Scheme) && strings.EqualFold(rawURL.Host, expected.Host) && rawURL.EscapedPath() == expected.EscapedPath() {
+			actualQuery, actualErr := url.ParseQuery(rawURL.RawQuery)
+			expectedQuery, expectedErr := url.ParseQuery(expected.RawQuery)
+			if actualErr == nil && expectedErr == nil && actualQuery.Encode() == expectedQuery.Encode() {
+				return quotaRequestCacheable
+			}
 		}
 	case "kimi":
 		if method == http.MethodGet && exactQuotaURL(rawURL, kimiUsageQuotaURL) {

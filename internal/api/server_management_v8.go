@@ -46,6 +46,8 @@ func (s *Server) registerManagementV8Routes() {
 	analytics.POST("/pricing/reprice", s.mgmt.PostAnalyticsReprice)
 	analytics.GET("/providers", s.mgmt.GetAnalyticsProviders)
 	analytics.GET("/quotas", s.mgmt.GetAnalyticsQuotas)
+	analytics.GET("/quota-history", s.mgmt.GetQuotaHistory)
+	analytics.POST("/quota-history", s.mgmt.PostQuotaHistory)
 	analytics.GET("/keys", s.mgmt.GetAnalyticsKeys)
 	analytics.GET("/leaderboard", s.mgmt.GetAnalyticsLeaderboard)
 	analytics.POST("/query", s.mgmt.PostAnalyticsQuery)

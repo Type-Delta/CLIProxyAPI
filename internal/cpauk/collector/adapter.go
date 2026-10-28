@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -51,7 +52,11 @@ func (a *Adapter) HandleUsage(ctx context.Context, record coreusage.Record) {
 		a.reject(0)
 		return
 	}
-	result, err := a.sanitizer.Sanitize(adaptRecord(record))
+	source := adaptRecord(record)
+	if source.SessionID == "" {
+		source.SessionID = internallogging.GetClientRequestMetadata(ctx).SessionID
+	}
+	result, err := a.sanitizer.Sanitize(source)
 	if err != nil {
 		a.reject(0)
 		return
@@ -154,7 +159,8 @@ func adaptRecord(record coreusage.Record) Source {
 		RoutingTime:       record.RoutingTime,
 		ProviderLatency:   record.ProviderLatency,
 		OutputTiming:      timing, GenerationTime: record.GenerationTime, TTFT: record.TTFT, Failed: record.Failed,
-		StatusCode: upstreamStatus(record), UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
+		Outcome: record.Outcome, FailureHop: record.FailureHop, CancellationSource: record.CancellationSource,
+		StatusCode: record.Fail.StatusCode, UpstreamStatusCode: record.UpstreamStatusCode, FailureBody: record.Fail.Body,
 		ClientMethod: record.ClientMethod, ClientPath: record.ClientPath, ReceivedAt: record.ReceivedAt,
 		UpstreamMethod: record.UpstreamMethod, UpstreamURL: record.UpstreamURL, UpstreamSentAt: record.UpstreamSentAt,
 		RawUsage:          detail.RawUsage,
@@ -168,15 +174,6 @@ func adaptRecord(record coreusage.Record) Source {
 			Quality: model.TokenQuality(detail.TokenQuality),
 		},
 	}
-}
-
-// upstreamStatus prefers the observed provider status so successful attempts
-// record 200 too; failures without a transport status keep the failure code.
-func upstreamStatus(record coreusage.Record) int {
-	if record.UpstreamStatusCode != 0 {
-		return record.UpstreamStatusCode
-	}
-	return record.Fail.StatusCode
 }
 
 func (a *Adapter) Dropped() int64 {

@@ -128,7 +128,7 @@ func (s *SQLiteStore) summaryData(ctx context.Context, query model.Query) (total
 	statement := `WITH raw AS MATERIALIZED (
 SELECT requested_at_ns,proxy_request_id,succeeded,input_tokens,output_tokens,reasoning_tokens,
 cached_tokens,cache_read_tokens,cache_creation_tokens,total_tokens,token_quality,known_cost_nano,
-unpriced_tokens,latency_ms,time_to_first_token_ms,generation_time_ms,first_token_latency_ms,provider_latency_ms
+unpriced_tokens,latency_ms,time_to_first_token_ms,generation_time_ms,first_token_latency_ms,provider_latency_ms,outcome
 FROM events ` + rawWhere + `
 ), retained AS MATERIALIZED (
 SELECT succeeded,upstream_attempts,input_tokens,output_tokens,reasoning_tokens,
@@ -140,7 +140,7 @@ timing AS (SELECT COUNT(latency_ms),SUM(latency_ms),MAX(latency_ms),
 COUNT(first_token_latency_ms),SUM(first_token_latency_ms),MAX(first_token_latency_ms),
 COUNT(provider_latency_ms),SUM(provider_latency_ms),MAX(provider_latency_ms),
 COUNT(time_to_first_token_ms),SUM(time_to_first_token_ms),MAX(time_to_first_token_ms),
-COUNT(generation_time_ms),SUM(generation_time_ms),MAX(generation_time_ms) FROM raw),
+COUNT(generation_time_ms),SUM(generation_time_ms),MAX(generation_time_ms) FROM raw WHERE outcome IS NULL OR outcome <> 'canceled'),
 request_count AS (SELECT COUNT(DISTINCT proxy_request_id) FROM (
 SELECT proxy_request_id FROM raw
 UNION ALL SELECT proxy_request_id FROM request_rollups ` + rollupWhere + `))
@@ -334,7 +334,7 @@ func (s *SQLiteStore) timeseriesWithOutcomes(ctx context.Context, query model.Qu
 	rows, err := s.db.QueryContext(ctx, `SELECT requested_at_ns, proxy_request_id,
 input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, token_quality, known_cost_nano, unpriced_tokens,
-generation_time_ms, succeeded
+CASE WHEN outcome = 'canceled' THEN NULL ELSE generation_time_ms END, succeeded
 FROM events `+where, arguments...)
 	if err != nil {
 		return model.Timeseries{}, nil, fmt.Errorf("query analytics timeseries: %w", err)
@@ -655,7 +655,9 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano, unpriced_tokens,
 price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest, output_timing, stream, reasoning_effort, provider_credits, price_usd_per_credit_nano`
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, session_digest, output_timing, stream, reasoning_effort, provider_credits, price_usd_per_credit_nano, pricing_breakdown, session_id, outcome, failure_hop, cancellation_source,
+(session_id IS NOT NULL OR outcome IS NOT NULL OR
+(import_batch_id IS NULL AND requested_at_ns >= (SELECT applied_at_ns FROM schema_migrations WHERE version = 18))) AS session_captured`
 
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
@@ -985,7 +987,7 @@ func buildWhere(query model.Query) (string, []any, error) {
 		"endpoint_class": "endpoint_class", "auth_type": "auth_type",
 		"service_tier": "COALESCE(service_tier_used, service_tier_requested)",
 		"error_class":  "error_class", "status_code": "upstream_status_code",
-		"token_quality": "token_quality",
+		"token_quality": "token_quality", "session_id": "session_id",
 	}
 	for _, name := range sortedFilterNames(query.Filters) {
 		raw := query.Filters[name]
@@ -997,8 +999,20 @@ func buildWhere(query model.Query) (string, []any, error) {
 			column := name
 			if name == "success" {
 				column = "succeeded"
+				if query.Operation == model.OperationEvents {
+					column = "(" + model.EventOutcomeSQL + " <> 'failed')"
+				}
 			}
 			clauses = append(clauses, column+" = ?")
+			arguments = append(arguments, value)
+			continue
+		}
+		if name == "outcome" {
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return "", nil, err
+			}
+			clauses = append(clauses, model.EventOutcomeSQL+" = ?")
 			arguments = append(arguments, value)
 			continue
 		}
@@ -1007,7 +1021,11 @@ func buildWhere(query model.Query) (string, []any, error) {
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return "", nil, fmt.Errorf("decode result filter: %w", err)
 			}
-			clauses = append(clauses, "succeeded = ?")
+			column := "succeeded"
+			if query.Operation == model.OperationEvents {
+				column = "(" + model.EventOutcomeSQL + " <> 'failed')"
+			}
+			clauses = append(clauses, column+" = ?")
 			arguments = append(arguments, value == "success")
 			continue
 		}
@@ -1060,7 +1078,16 @@ func buildWhere(query model.Query) (string, []any, error) {
 				return "", nil, fmt.Errorf("decode %s filter: %w", name, err)
 			}
 			for _, value := range parsed {
-				values = append(values, value)
+				if name != "session_id" || !model.IsDerivedSessionIdentity(value) {
+					values = append(values, value)
+				}
+				if name == "session_id" {
+					// Equalities on the indexed column avoid a substring scan. A raw ID
+					// deliberately finds matching conversations across every known source.
+					for _, source := range model.SessionSources {
+						values = append(values, source+":"+value)
+					}
+				}
 			}
 		}
 		clauses = append(clauses, inClause(column, len(values)))
@@ -1170,7 +1197,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var receivedNS, sentNS, respondedNS, proxyStatus sql.NullInt64
 	var outputTiming, reasoningEffort sql.NullString
 	var stream sql.NullBool
-	var credits sql.NullString
+	var credits, breakdown, sessionID, outcome, failureHop, cancellationSource sql.NullString
 	var creditRate sql.NullInt64
 	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
@@ -1181,9 +1208,29 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
 		&priceRuleID, &priceSource, &importBatchID, &generation,
 		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
-		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort, &credits, &creditRate)
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort, &credits, &creditRate, &breakdown, &sessionID, &outcome, &failureHop, &cancellationSource, &event.SessionCaptured)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
+	}
+	event.Outcome = outcome.String
+	event.FailureHop = scanNullableString(failureHop)
+	event.CancellationSource = scanNullableString(cancellationSource)
+	event.SessionID = scanNullableString(sessionID)
+	if event.SessionID != nil {
+		id, source := model.SplitSessionIdentity(*event.SessionID)
+		if model.IsDerivedSessionIdentity(*event.SessionID) {
+			source = "derived"
+		}
+		event.SessionID = &id
+		if source != "" {
+			event.SessionSource = &source
+		}
+	}
+	if breakdown.Valid {
+		event.PricingBreakdown = &model.PricingBreakdown{}
+		if err := json.Unmarshal([]byte(breakdown.String), event.PricingBreakdown); err != nil {
+			return model.Event{}, fmt.Errorf("decode pricing breakdown: %w", err)
+		}
 	}
 	event.ProviderCredits = scanNullableString(credits)
 	if creditRate.Valid {
@@ -1265,6 +1312,7 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		value := ttft.Int64
 		event.TimeToFirstTokenMS = &value
 	}
+	model.ClassifyEvent(&event)
 	return event, nil
 }
 

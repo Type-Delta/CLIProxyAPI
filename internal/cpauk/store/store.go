@@ -203,7 +203,7 @@ version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied
 		// legacy tables are dropped, so an interrupted migration leaves the old
 		// cache intact and retryable.
 		if item.version == 11 {
-			if err := rebuildMaterialized15mTx(ctx, tx); err != nil {
+			if err := rebuildMaterialized15mTx(ctx, tx, false); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("backfill compact 15-minute cache: %w", err)
 			}

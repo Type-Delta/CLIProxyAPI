@@ -59,7 +59,7 @@ func TestCreditPricingPersistsRefreshRepriceAndAnalysis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.Events) != 2 || rows.Events[1].KnownCost == nil || *rows.Events[1].KnownCost != 37_500_000 || rows.Events[1].PriceUSDPerCredit == nil || *rows.Events[1].PriceUSDPerCredit != rate || rows.Events[0].KnownCost == nil || *rows.Events[0].KnownCost != 0 {
+	if len(rows.Events) != 2 || rows.Events[1].PricingBreakdown != nil || rows.Events[1].KnownCost == nil || *rows.Events[1].KnownCost != 37_500_000 || rows.Events[1].PriceUSDPerCredit == nil || *rows.Events[1].PriceUSDPerCredit != rate || rows.Events[0].KnownCost == nil || *rows.Events[0].KnownCost != 0 {
 		t.Fatalf("stored events: %+v", rows.Events)
 	}
 	analysis, err := db.Analysis(ctx, v2Query(model.OperationAnalysis, start, start.Add(time.Hour)))
@@ -82,7 +82,7 @@ func TestCreditPricingPersistsRefreshRepriceAndAnalysis(t *testing.T) {
 		t.Fatalf("reprice: %+v %v", result, err)
 	}
 	rows, err = db.Events(ctx, v2Query(model.OperationEvents, start, start.Add(time.Hour)))
-	if err != nil || rows.Events[1].KnownCost == nil || *rows.Events[1].KnownCost != 0 || rows.Events[1].PriceUSDPerCredit == nil || *rows.Events[1].PriceUSDPerCredit != 0 {
+	if err != nil || rows.Events[1].PricingBreakdown != nil || rows.Events[1].KnownCost == nil || *rows.Events[1].KnownCost != 0 || rows.Events[1].PriceUSDPerCredit == nil || *rows.Events[1].PriceUSDPerCredit != 0 {
 		t.Fatalf("zero reprice: %+v %v", rows, err)
 	}
 	if err := db.Close(ctx); err != nil {
@@ -114,7 +114,7 @@ func TestCreditMigrationKeepsOldEventsUnmetered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; DELETE FROM schema_migrations WHERE version=16`)
+	_, err = raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN cancellation_source; ALTER TABLE events DROP COLUMN failure_hop; ALTER TABLE events DROP COLUMN outcome; DROP INDEX IF EXISTS events_session_id_idx; ALTER TABLE events DROP COLUMN session_id; ALTER TABLE events DROP COLUMN pricing_breakdown; ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; DELETE FROM schema_migrations WHERE version>=16`)
 	if err != nil {
 		t.Fatal(err)
 	}

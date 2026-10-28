@@ -109,7 +109,7 @@ func (e *Event) EnrichThroughput() {
 	e.TokensPerSecond = info.TokensPerSecond
 	e.SpeedEstimated = info.TokensPerSecond != nil && info.TokenQuality == TokenQualityEstimated
 	e.EffectiveOutputTokensPerSecond = nil
-	if e.LatencyMS > 0 && e.Tokens.Output > 0 && e.Tokens.Schema == AccountingSchemaNormalizedV1 && (e.Tokens.Quality == TokenQualityExact || e.Tokens.Quality == TokenQualityEstimated) && e.Tokens.Reasoning <= e.Tokens.Output && e.Tokens.Input <= e.Tokens.Total && e.Tokens.Output <= e.Tokens.Total-e.Tokens.Input {
+	if e.Outcome != "canceled" && e.LatencyMS > 0 && e.Tokens.Output > 0 && e.Tokens.Schema == AccountingSchemaNormalizedV1 && (e.Tokens.Quality == TokenQualityExact || e.Tokens.Quality == TokenQualityEstimated) && e.Tokens.Reasoning <= e.Tokens.Output && e.Tokens.Input <= e.Tokens.Total && e.Tokens.Output <= e.Tokens.Total-e.Tokens.Input {
 		value := float64(e.Tokens.Output) * 1000 / float64(e.LatencyMS)
 		e.EffectiveOutputTokensPerSecond = &value
 	}

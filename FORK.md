@@ -1801,6 +1801,120 @@ and rejects unauthenticated requests.
 
 **Last updated:** 2026-10-27
 
+### DL056 - Per-model cost series by service tier
+
+The v2 analytics query accepts a `model_cost_series` operation for one model under the current
+range, time zone, key, and provider selection. It returns zero-padded buckets grouped by
+provider and effective service tier. Each tier carries token components, USD cost components,
+effective per-1M rates, and input/output multipliers. Recorded pricing snapshots (DL057) take
+precedence; legacy events without a snapshot are reconstructed from one pricing result per
+event, and unavailable breakdowns mark the response partial. The scan honors query
+cancellation. CPAMC loads this series on demand for its model cost modal.
+
+**Implementation evidence:** `internal/cpauk/model/model_cost_series.go`,
+`internal/cpauk/model_cost_series.go`, `internal/cpauk/store/model_cost_series.go`, the
+operation validation in `internal/cpauk/model/query.go`, and v8 dispatch in
+`internal/api/handlers/management/analytics.go`.
+
+**Validation:** store and v8 handler tests cover tier grouping, components, filters, time zones,
+recorded versus reconstructed pricing, canceled rows, and cancellation during a long scan.
+Reconstructing 100,001 legacy rows dropped from 7.06 s to 2.20 s after removing repeated
+pricing work.
+
+**Last updated:** 2026-10-28
+
+### DL057 - Recorded event pricing and client session IDs
+
+Migration 018 adds a `pricing_breakdown` snapshot and `session_id` to events. The pricing
+engine records the selected input, output, cache read, and cache write rates, token counts,
+component costs, the service tier, and the tier's input/output ratios to base rates. Component
+costs use cumulative nano-USD rounding, so they sum exactly to the stored total. Kiro events keep
+their provider-reported credits and applied USD-per-credit rate without token-rate components.
+Maintenance repricing updates snapshot and total together. Native imports keep a recorded
+snapshot after validating its arithmetic, rule, and source; ordinary intake ignores supplied
+pricing evidence, and missing or invalid snapshots are repriced. Historical rows keep a null
+snapshot.
+
+Session IDs are captured from the usage record or the client request metadata, bounded, and
+stored with a source prefix so namespaces cannot collide. Reads return the raw ID and its source
+separately, and identities derived by CPA (`derived`, `ctx`, `lcp`) are reported as not sent by
+the client. The events query accepts an exact Session ID filter on raw client IDs through
+`events_session_id_idx`. Public viewer responses do not include session or pricing fields.
+
+**Implementation evidence:** `internal/cpauk/store/migrations/018_event_pricing_session.sql`,
+`internal/cpauk/aggregate/{pricing.go,pricing_snapshot.go}`,
+`internal/cpauk/model/{pricing_breakdown.go,session_identity.go}`,
+`internal/cpauk/collector/adapter.go`, `internal/cpauk/store/{write.go,reprice.go,query.go}`,
+and `internal/api/handlers/management/analytics_events.go`.
+
+**Validation:** regression tests cover token and Kiro snapshots, repricing consistency, native
+import after a pricebook change, invalid snapshots, session capture, and raw-ID filtering across
+sources. A copy of an existing database downgraded to v16 migrated through 019 with rows and cost
+totals intact.
+
+**Last updated:** 2026-10-28
+
+### DL058 - Event outcomes, failure hops, and client cancellation
+
+Migration 019 adds `outcome` (`succeeded`, `failed`, `canceled`), `failure_hop`, and
+`cancellation_source` to events, exposed on list, detail, and export responses with an exact
+outcome filter. Provider errors delivered inside HTTP-200 streams, incomplete upstream streams,
+and peer HTTP/2 errors fail on the provider-to-CPA hop. A local rejection without upstream
+dispatch fails on the CPA-to-provider hop and no longer records a synthetic upstream status.
+Observed transport status is stored separately from the terminal failure.
+
+A request is canceled by the client only when its own request context closes first. The request
+bridge and reporter keep the first cancellation cause: internal cleanup, Home release and drain,
+retry siblings, and WebSocket cleanup carry an internal cause and fail on a CPA hop, and an
+observed provider error outranks a later disconnect. Stream executors retain usage observed
+before a read error, send interruption, or cancellation. Canceled events keep legacy
+`succeeded=true` and count as successes in aggregates, but are excluded from latency, generation
+time, throughput, and model speed cohorts.
+
+Historical rows are classified at read time by one shared classifier: failure hops are repaired,
+and attempts whose own error is `context canceled` read as canceled with an unknown source.
+Stored aggregates are not rebuilt. A read-only audit of 10,507 failed production attempts found
+9,324 wrong hops; replaying them through the classifier leaves none and reads 207 as canceled.
+
+**Implementation evidence:** `internal/cpauk/store/migrations/019_event_outcomes.sql`,
+`internal/cpauk/model/event_outcome.go`, `internal/cpauk/collector/{adapter.go,sanitizer.go}`,
+`sdk/cliproxy/usage/{manager.go,client_context.go}`, `sdk/api/handlers/handlers.go`,
+`internal/runtime/executor/helps/usage_helpers.go`, and the Claude, Codex, and
+OpenAI-compatible stream executors.
+
+**Validation:** regression tests cover each misclassified category, client disconnect, internal
+cancellation followed by request closure, a provider error followed by disconnect, Codex
+blocked-read cancellation, and retained partial usage. A real client abort through a local CPA
+recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa`.
+
+**Last updated:** 2026-10-28
+
+### DL059 - Quota window history and hourly collection
+
+Migration 017 stores per-credential quota window samples: provider, CPAUK identity HMAC, window,
+remaining percent, reset time, plan, capacity, source, and a server-stamped observation time.
+`POST /v8/management/analytics/quota-history` accepts samples from CPAMC, resolves each auth
+index to its HMAC, and rejects credentials whose quota provider differs from the submitted one.
+`GET` returns samples for a provider and range. Writes keep one sample per credential and window
+every five minutes, prune samples older than 90 days, and cap each provider at 100,000 rows.
+
+An hourly collector reads quota for Claude, Codex, OpenCode Go, Z.ai, and Kiro credentials
+through their base usage endpoints only, without manual-reset or grant reads. It skips disabled
+credentials, spaces reads one second apart, reuses the shared management quota cache (with
+order-independent query parameters), does nothing when analytics is disabled, and stops with
+the server. Other providers are recorded only from CPAMC refreshes.
+
+**Implementation evidence:** `internal/cpauk/store/migrations/017_quota_history.sql`,
+`internal/cpauk/{quota_history.go,store/quota_history.go}`,
+`internal/api/handlers/management/{quota_history.go,quota_history_collector.go,api_tools_quota_cache.go,usage_probe.go}`,
+and `internal/api/quota_history_collector.go`.
+
+**Validation:** tests cover validation, provider mismatch, throttling, retention, cache reuse with
+a single provider call, Kiro query-order reuse, disabled analytics and credentials, and shutdown.
+Live collection against real provider credentials has not been exercised.
+
+**Last updated:** 2026-10-28
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

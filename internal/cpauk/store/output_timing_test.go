@@ -34,7 +34,7 @@ func TestOutputTimingMigrationRetainsLegacyAndImportBackupRoundTrip(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; DELETE FROM schema_migrations WHERE version>=13`); err != nil {
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN cancellation_source; ALTER TABLE events DROP COLUMN failure_hop; ALTER TABLE events DROP COLUMN outcome; DROP INDEX IF EXISTS events_session_id_idx; ALTER TABLE events DROP COLUMN session_id; ALTER TABLE events DROP COLUMN pricing_breakdown; ALTER TABLE events DROP COLUMN provider_credits; ALTER TABLE events DROP COLUMN price_usd_per_credit_nano; ALTER TABLE pricing_manual_rules DROP COLUMN service_tier_prices; ALTER TABLE pricing_catalog_rules DROP COLUMN service_tier_prices; DROP INDEX IF EXISTS events_arrival_estimate_idx; ALTER TABLE events DROP COLUMN stream; ALTER TABLE events DROP COLUMN reasoning_effort; ALTER TABLE events DROP COLUMN output_timing; DELETE FROM schema_migrations WHERE version>=13`); err != nil {
 		t.Fatal(err)
 	}
 	if err := raw.Close(); err != nil {

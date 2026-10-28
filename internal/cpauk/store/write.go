@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
@@ -19,9 +20,9 @@ input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
 cache_creation_tokens, total_tokens, accounting_schema, token_quality, known_cost_nano,
 unpriced_tokens, price_rule_id, price_source, import_batch_id, generation_time_ms,
 client_method, client_path, received_at_ns, upstream_method, upstream_url, upstream_sent_at_ns,
-upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, output_timing, stream, reasoning_effort, provider_credits, price_usd_per_credit_nano)
+upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, responded_at_ns, first_token_latency_ms, provider_latency_ms, routing_time_ms, output_timing, stream, reasoning_effort, provider_credits, price_usd_per_credit_nano, pricing_breakdown, session_id, outcome, failure_hop, cancellation_source)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // patchProxyResponseSQL records what the proxy returned to the client for every
 // attempt of one request. The first patch wins so retries cannot rewrite history.
@@ -77,16 +78,23 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 	var inserted int64
 	bucketStarts := make(map[int64]struct{}, len(events))
 	for index := range events {
-		price, err := s.price(events[index])
-		if err != nil {
-			_ = tx.Rollback()
-			return 0, fmt.Errorf("price event %d: %w", index, err)
+		var price aggregate.PriceResult
+		var recorded bool
+		if batchID != "" {
+			price, recorded = aggregate.RecordedPrice(events[index])
+		}
+		if !recorded {
+			price, err = s.price(events[index])
+			if err != nil {
+				_ = tx.Rollback()
+				return 0, fmt.Errorf("price event %d: %w", index, err)
+			}
 		}
 		var knownCost any
 		if price.KnownCost != nil {
 			knownCost = int64(*price.KnownCost)
 		}
-		result, err := statement.ExecContext(ctx, eventArguments(events[index], knownCost, price.UnpricedTokens, price.RuleID, price.Source, nullString(batchID), price.PriceUSDPerCredit)...)
+		result, err := statement.ExecContext(ctx, eventArguments(events[index], knownCost, price.UnpricedTokens, price.RuleID, price.Source, nullString(batchID), price.PriceUSDPerCredit, price.Breakdown)...)
 		if err != nil {
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("insert analytics event %d: %w", index, err)
@@ -125,7 +133,17 @@ func (s *SQLiteStore) writeBatch(ctx context.Context, events []model.Event, batc
 	return inserted, nil
 }
 
-func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, source string, batchID any, rate *model.NanoUSD) []any {
+func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, source string, batchID any, rate *model.NanoUSD, breakdown *model.PricingBreakdown) []any {
+	sessionID := event.SessionID
+	if sessionID != nil && event.SessionSource != nil {
+		for _, source := range model.SessionSources {
+			if source == *event.SessionSource {
+				value := source + ":" + *sessionID
+				sessionID = &value
+				break
+			}
+		}
+	}
 	var stream any
 	if event.Stream != nil {
 		stream = *event.Stream
@@ -143,7 +161,7 @@ func eventArguments(event model.Event, knownCost any, unpriced int64, ruleID, so
 		nullStringPointer(event.ClientMethod), nullStringPointer(event.ClientPath), nullTimePointer(event.ReceivedAt),
 		nullStringPointer(event.UpstreamMethod), nullStringPointer(event.UpstreamURL), nullTimePointer(event.UpstreamSentAt),
 		nullRawJSONPointer(event.UpstreamUsageRaw), nullStringPointer(event.UpstreamErrorBody),
-		nullIntPointer(event.ProxyStatusCode), nullStringPointer(event.ProxyError), nullTimePointer(event.RespondedAt), nullInt64Pointer(event.FirstTokenLatencyMS), nullInt64Pointer(event.ProviderLatencyMS), nullInt64Pointer(event.RoutingTimeMS), nullOutputTiming(event.OutputTiming), stream, nullStringPointer(event.ReasoningEffort), nullStringPointer(event.ProviderCredits), rate,
+		nullIntPointer(event.ProxyStatusCode), nullStringPointer(event.ProxyError), nullTimePointer(event.RespondedAt), nullInt64Pointer(event.FirstTokenLatencyMS), nullInt64Pointer(event.ProviderLatencyMS), nullInt64Pointer(event.RoutingTimeMS), nullOutputTiming(event.OutputTiming), stream, nullStringPointer(event.ReasoningEffort), nullStringPointer(event.ProviderCredits), rate, nullPricingBreakdown(breakdown), nullStringPointer(sessionID), nullString(event.Outcome), nullStringPointer(event.FailureHop), nullStringPointer(event.CancellationSource),
 	}
 }
 
@@ -243,6 +261,14 @@ func scanNullableString(value sql.NullString) *string {
 }
 
 func nullOutputTiming(value *model.OutputTiming) any {
+	if value == nil {
+		return nil
+	}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func nullPricingBreakdown(value *model.PricingBreakdown) any {
 	if value == nil {
 		return nil
 	}

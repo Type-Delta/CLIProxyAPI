@@ -14,7 +14,7 @@ import (
 const arrivalEstimateCompletionSQL = `max(requested_at_ns + latency_ms * 1000000,
         coalesce(responded_at_ns, requested_at_ns + latency_ms * 1000000))`
 
-const arrivalEstimatePredicateSQL = `succeeded = 1 AND import_batch_id IS NULL
+const arrivalEstimatePredicateSQL = `succeeded = 1 AND (outcome IS NULL OR outcome = 'succeeded') AND import_batch_id IS NULL
     AND accounting_schema = 'normalized-v1' AND token_quality IN ('exact', 'estimated')
     AND output_tokens > 0 AND input_tokens <= total_tokens
     AND output_tokens <= total_tokens - input_tokens AND reasoning_tokens <= output_tokens

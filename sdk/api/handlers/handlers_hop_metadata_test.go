@@ -94,3 +94,37 @@ func TestGetContextWithCancelPublishesProxyResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutionCleanupDoesNotCancelOriginalClientContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	client, cancelClient := context.WithCancel(context.Background())
+	defer cancelClient()
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(client)
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	execution, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
+	cancel()
+	if coreusage.ClientRequestCanceled(execution) {
+		t.Fatal("execution cleanup reported a client disconnect")
+	}
+	cancelClient()
+	if coreusage.ClientRequestCanceled(execution) {
+		t.Fatal("later request closure replaced the internal cleanup cause")
+	}
+}
+
+func TestRequestContextParentKeepsClientCancellationCause(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	client, closeClient := context.WithCancel(context.Background())
+	defer closeClient()
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(client)
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+	execution, cancel := handler.GetContextWithCancel(nil, ginCtx, client)
+	defer cancel()
+	closeClient()
+	<-execution.Done()
+	if !coreusage.ClientRequestCanceled(execution) {
+		t.Fatalf("client cancellation was lost: %v", execution.Err())
+	}
+}

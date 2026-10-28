@@ -101,6 +101,8 @@ type Server struct {
 	usageLimitDetach   coreusage.UnregisterFunc
 	analytics          cpauk.Service
 	analyticsDetach    coreusage.UnregisterFunc
+	quotaHistoryCancel context.CancelFunc
+	quotaHistoryDone   chan struct{}
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -390,6 +392,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
 	s.startUsageLimitPersistence()
+	s.startQuotaHistoryCollector()
+	defer s.stopQuotaHistoryCollector(context.Background())
 	defer func() {
 		s.stopUsageLimitPersistence()
 		s.flushUsageLimits()
@@ -507,6 +511,7 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	s.stopQuotaHistoryCollector(ctx)
 	s.stopUsageLimitPersistence()
 	defer s.flushUsageLimits()
 

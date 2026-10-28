@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 type executionResources struct {
@@ -203,7 +204,8 @@ func (s *HomeDispatchSelection) AttemptContext(ctx context.Context) (context.Con
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	attemptCtx, cancelCause := context.WithCancelCause(ctx)
+	cancelAttempt := func() { cancelCause(usage.ErrInternalCancellation) }
 	if s == nil || s.attemptCancels == nil {
 		cancelAttempt()
 		return nil, func() {}, fmt.Errorf("Home dispatch selection has no attempt cancels")

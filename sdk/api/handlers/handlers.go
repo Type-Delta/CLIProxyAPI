@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,7 +30,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/tidwall/gjson"
-	"golang.org/x/net/context"
 )
 
 // ErrorResponse represents a standard error response format for the API.
@@ -604,6 +604,9 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 
 	if requestCtx != nil {
+		if parentCtx == requestCtx {
+			parentCtx = context.WithoutCancel(parentCtx)
+		}
 		parentCtx = httptransport.InheritDecorator(parentCtx, requestCtx)
 	}
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
@@ -615,8 +618,10 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	if requestCtx != nil {
 		parentCtx = inheritUsageCorrelation(parentCtx, requestCtx)
+		parentCtx = coreusage.WithClientRequestContext(parentCtx, requestCtx)
 	}
-	newCtx, cancel := context.WithCancel(parentCtx)
+	newCtx, cancelCause := context.WithCancelCause(parentCtx)
+	cancel := func() { cancelCause(coreusage.ErrInternalCancellation) }
 
 	endpoint := ""
 	if c != nil && c.Request != nil {
@@ -651,15 +656,6 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	newCtx = logging.WithResponseHeadersHolder(newCtx)
 
 	cancelCtx := newCtx
-	if requestCtx != nil && requestCtx != parentCtx {
-		go func() {
-			select {
-			case <-requestCtx.Done():
-				cancel()
-			case <-cancelCtx.Done():
-			}
-		}()
-	}
 	newCtx = context.WithValue(newCtx, "gin", c)
 	newCtx = context.WithValue(newCtx, "handler", handler)
 	return newCtx, func(params ...interface{}) {

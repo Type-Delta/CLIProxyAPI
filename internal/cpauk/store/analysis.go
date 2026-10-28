@@ -347,7 +347,7 @@ func (s *SQLiteStore) analysisLatency(ctx context.Context, query model.Query) (m
 SELECT requested_at_ns,time_to_first_token_ms,latency_ms,model,succeeded,
 ROW_NUMBER() OVER (ORDER BY requested_at_ns,attempt_id)-1 AS sample_index,
 COUNT(*) OVER () AS sample_count
-FROM events `+where+`)
+FROM events `+where+` AND (outcome IS NULL OR outcome <> 'canceled'))
 SELECT requested_at_ns,time_to_first_token_ms,latency_ms,model,succeeded FROM ranked
 WHERE sample_count <= ? OR ((sample_index+1)*?/sample_count) > (sample_index*?/sample_count)
 ORDER BY requested_at_ns`, append(arguments, analysisLatencySampleLimit, analysisLatencySampleLimit, analysisLatencySampleLimit)...)
@@ -383,7 +383,7 @@ ORDER BY requested_at_ns`, append(arguments, analysisLatencySampleLimit, analysi
 func (s *SQLiteStore) analysisTimingMetrics(ctx context.Context, where string, arguments []any) (map[string]model.TimingMetric, error) {
 	const queryTemplate = `WITH source AS MATERIALIZED (
 SELECT latency_ms,first_token_latency_ms,provider_latency_ms,time_to_first_token_ms,generation_time_ms
-FROM events ` + "PLACEHOLDER" + `
+FROM events ` + "PLACEHOLDER" + ` AND (outcome IS NULL OR outcome <> 'canceled')
 ), samples(name,value) AS (
 SELECT 'e2e',latency_ms FROM source WHERE latency_ms IS NOT NULL
 UNION ALL SELECT 'latency',first_token_latency_ms FROM source WHERE first_token_latency_ms IS NOT NULL
