@@ -56,7 +56,7 @@ func TestSessionDigestMigrationUpgradesV11Database(t *testing.T) {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version>=12`); err != nil {
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN routing_trace_json; DELETE FROM schema_migrations WHERE version>=12`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}

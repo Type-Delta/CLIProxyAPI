@@ -2,6 +2,7 @@ package cpauk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,19 @@ func TestCredentialIdentityHonorsPrivacySetting(t *testing.T) {
 	credentialID, err = service.CredentialID("provider", "index", "auth-id")
 	if err != nil || credentialID == nil || !model.IsFullKeyID(*credentialID) {
 		t.Fatalf("credential identity with privacy enabled = %v, %v", credentialID, err)
+	}
+}
+
+func TestReaderProxyUsesExportSpecificEventProjection(t *testing.T) {
+	trace := json.RawMessage(`{"version":1,"mode":"local","retry_round":0,"selection":0,"decided_by":"strategy","candidates":[],"pick":-1}`)
+	backend := &fakeExportBackend{fakeBackend: &fakeBackend{}, page: model.EventPage{Events: []model.Event{{RoutingTrace: trace}}}}
+	service := &service{config: Config{Enabled: true}, backend: backend, snapshots: newSnapshots(DefaultConfig(), StateReady, "", "")}
+	service.reader = &readerProxy{service: service}
+	page, err := service.Reader().(interface {
+		EventsForExport(context.Context, model.Query) (model.EventPage, error)
+	}).EventsForExport(context.Background(), model.Query{})
+	if err != nil || len(page.Events) != 1 || string(page.Events[0].RoutingTrace) != string(trace) || backend.exportCalls != 1 {
+		t.Fatalf("export page=%+v calls=%d err=%v", page, backend.exportCalls, err)
 	}
 }
 
@@ -374,6 +388,17 @@ type fakeBackend struct {
 	stallClose bool
 	closed     chan struct{}
 	closeOnce  sync.Once
+}
+
+type fakeExportBackend struct {
+	*fakeBackend
+	page        model.EventPage
+	exportCalls int
+}
+
+func (b *fakeExportBackend) EventsForExport(context.Context, model.Query) (model.EventPage, error) {
+	b.exportCalls++
+	return b.page, nil
 }
 
 type blockingLifecycleBackend struct {

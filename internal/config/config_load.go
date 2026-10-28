@@ -177,6 +177,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.NormalizeClaudeConfig()
 		return cfg, nil
 	}
+	if errValidate := ValidateRoutingRulesYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		if optional {
@@ -219,6 +222,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	if errValidate := cfg.ValidateRoutingRules(); errValidate != nil {
+		return nil, errValidate
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
 		return nil, errValidate

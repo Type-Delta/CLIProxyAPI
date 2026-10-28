@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -122,6 +123,9 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -182,6 +186,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
@@ -235,6 +242,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
+	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {
+		ctx = context.WithValue(ctx, routingPoolKey{}, pool)
+	}
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()
@@ -484,6 +494,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if routing.HolderFromContext(ctx) != nil {
+		ctx = context.WithValue(ctx, routingRetryDefaultKey{}, defaultRequestRetry)
+		ctx = context.WithValue(ctx, routingRetryRoundKey{}, retryRound)
+	}
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
@@ -525,6 +539,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
+		if holder := routing.HolderFromContext(ctx); holder != nil {
+			execCtx = routing.WithTrace(execCtx, holder.Last())
+		}
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -698,6 +715,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if routing.HolderFromContext(ctx) != nil {
+		ctx = context.WithValue(ctx, routingRetryDefaultKey{}, defaultRequestRetry)
+		ctx = context.WithValue(ctx, routingRetryRoundKey{}, retryRound)
+	}
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
@@ -739,6 +760,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
+		if holder := routing.HolderFromContext(ctx); holder != nil {
+			execCtx = routing.WithTrace(execCtx, holder.Last())
+		}
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
@@ -916,6 +940,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if routing.HolderFromContext(ctx) != nil {
+		ctx = context.WithValue(ctx, routingRetryDefaultKey{}, defaultRequestRetry)
+		ctx = context.WithValue(ctx, routingRetryRoundKey{}, retryRound)
+	}
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	responseAlias := requestedModelAliasFromOptions(opts, routeModel)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
@@ -967,6 +995,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				executor = selection.Executor
 				provider = selection.Provider
 			}
+			recordExceptionalRouting(ctx, routing.ModeHome, routing.DecidedByHome, auth, retryRound, errPick)
 		} else {
 			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		}
@@ -1056,6 +1085,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				selection.End("attempt_bind_failed")
 				return nil, errBind
 			}
+		}
+		if holder := routing.HolderFromContext(ctx); holder != nil {
+			execCtx = routing.WithTrace(execCtx, holder.Last())
 		}
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)

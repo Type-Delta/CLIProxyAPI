@@ -102,7 +102,7 @@ func TestEventSnapshotMigrationKeepsHistoricEvidenceMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN cancellation_source; ALTER TABLE events DROP COLUMN failure_hop; ALTER TABLE events DROP COLUMN outcome; DROP INDEX events_session_id_idx; ALTER TABLE events DROP COLUMN session_id; ALTER TABLE events DROP COLUMN pricing_breakdown; DELETE FROM schema_migrations WHERE version>=18`)
+	_, err = raw.ExecContext(ctx, `ALTER TABLE events DROP COLUMN cancellation_source; ALTER TABLE events DROP COLUMN failure_hop; ALTER TABLE events DROP COLUMN outcome; DROP INDEX events_session_id_idx; ALTER TABLE events DROP COLUMN session_id; ALTER TABLE events DROP COLUMN pricing_breakdown; ALTER TABLE events DROP COLUMN routing_trace_json; DELETE FROM schema_migrations WHERE version>=18`)
 	if err != nil {
 		t.Fatal(err)
 	}

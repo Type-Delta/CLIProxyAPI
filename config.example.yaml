@@ -201,6 +201,17 @@ routing:
   # GSR falls back to round-robin for that request and logs a warning. The normal
   # model, priority, cooldown, credential-policy, and session-affinity filters
   # still apply; GSR resumes when the pool has complete recovery data.
+  # Routing rules only narrow eligible credentials; the last eligible match wins.
+  # Precedence: rules < strategy/priority < eligible session affinity < routing gate.
+  # In Home mode, local routing rules are ignored.
+  # rules:
+  #   - name: "Claude Opus to preferred credentials"
+  #     enabled: true
+  #     when:
+  #       all:
+  #         - model: {match: "claude-opus-*"}
+  #         - api-key: {in: [research-team, personal]}
+  #     route-to: ["<Auth.ID>"]
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
   # followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,

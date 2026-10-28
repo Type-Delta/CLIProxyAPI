@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	executorhelps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -333,6 +334,63 @@ func TestSanitizerPreservesAuthoritativeTotalWithUnclassifiedRemainder(t *testin
 	}
 	if result.Event.Tokens.Total != 15 || result.Event.Tokens.UnclassifiedTokens() != 5 {
 		t.Fatalf("sanitized tokens = %+v, want total=15 unclassified=5", result.Event.Tokens)
+	}
+}
+
+func TestSanitizerPseudonymizesRoutingTraceAndBoundsIt(t *testing.T) {
+	sanitizer := NewSanitizer(SanitizerOptions{IdentityKey: [32]byte{1, 2, 3}, StoreCredential: true})
+	record := validRecord()
+	record.RoutingTrace = &routing.Trace{
+		Version: routing.TraceVersion, Mode: routing.ModeLocal, DecidedBy: routing.DecidedByStrategy,
+		Candidates: []routing.Candidate{{ID: record.AuthID, AuthIndex: record.AuthIndex, Provider: record.Provider, Label: "private label"}}, Pick: 0,
+	}
+	result, err := sanitizer.Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted routing.Trace
+	if err := json.Unmarshal(result.Event.RoutingTrace, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.CredentialID == nil || len(persisted.Candidates) != 1 || persisted.Candidates[0].ID != *result.Event.CredentialID || persisted.Candidates[0].Label != "" {
+		t.Fatalf("stored trace = %s, event credential = %v", result.Event.RoutingTrace, result.Event.CredentialID)
+	}
+	encoded, err := json.Marshal(result.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{record.AuthID, record.AuthIndex, "private label"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("stored event leaks %q: %s", forbidden, encoded)
+		}
+	}
+
+	oversized := *record.RoutingTrace
+	oversized.Candidates = make([]routing.Candidate, 2000)
+	for index := range oversized.Candidates {
+		oversized.Candidates[index] = routing.Candidate{ID: "credential", Provider: "provider", Priority: index, Gate: routing.GateCooldown, UntilMs: int64(index + 1)}
+	}
+	record.RoutingTrace = &oversized
+	result, err = sanitizer.Sanitize(adaptRecord(record))
+	if err != nil || len(result.Event.RoutingTrace) != 0 {
+		t.Fatalf("oversized trace length=%d err=%v", len(result.Event.RoutingTrace), err)
+	}
+}
+
+func TestSanitizerClearsTraceIdentityWhenCredentialStorageIsDisabled(t *testing.T) {
+	record := validRecord()
+	record.RoutingTrace = &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeLocal, DecidedBy: routing.DecidedByStrategy,
+		Candidates: []routing.Candidate{{ID: record.AuthID, AuthIndex: record.AuthIndex, Provider: record.Provider}}, Pick: 0}
+	result, err := NewSanitizer(SanitizerOptions{}).Sanitize(adaptRecord(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted routing.Trace
+	if err := json.Unmarshal(result.Event.RoutingTrace, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.CredentialID != nil || persisted.Candidates[0].ID != "" {
+		t.Fatalf("credential identity persisted inconsistently: event=%v trace=%q", result.Event.CredentialID, persisted.Candidates[0].ID)
 	}
 }
 

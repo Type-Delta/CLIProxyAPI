@@ -659,7 +659,19 @@ upstream_usage_raw, upstream_error_body, proxy_status_code, proxy_error, respond
 (session_id IS NOT NULL OR outcome IS NOT NULL OR
 (import_batch_id IS NULL AND requested_at_ns >= (SELECT applied_at_ns FROM schema_migrations WHERE version = 18))) AS session_captured`
 
+const eventDetailSelect = eventSelect + ", routing_trace_json"
+
 func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.EventPage, error) {
+	return s.events(ctx, query, false)
+}
+
+// EventsForExport includes the sanitized routing trace while ordinary list
+// queries continue to leave it out of their projection.
+func (s *SQLiteStore) EventsForExport(ctx context.Context, query model.Query) (model.EventPage, error) {
+	return s.events(ctx, query, true)
+}
+
+func (s *SQLiteStore) events(ctx context.Context, query model.Query, includeRoutingTrace bool) (model.EventPage, error) {
 	if err := s.validateQuery(&query, model.OperationEvents); err != nil {
 		return model.EventPage{}, err
 	}
@@ -696,14 +708,18 @@ func (s *SQLiteStore) Events(ctx context.Context, query model.Query) (model.Even
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+countWhere, countArguments...).Scan(&totalCount); err != nil {
 		return model.EventPage{}, fmt.Errorf("count analytics events: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" ORDER BY requested_at_ns DESC, attempt_id ASC LIMIT ?", arguments...)
+	selectFields := eventSelect
+	if includeRoutingTrace {
+		selectFields = eventDetailSelect
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+selectFields+" FROM events "+where+" ORDER BY requested_at_ns DESC, attempt_id ASC LIMIT ?", arguments...)
 	if err != nil {
 		return model.EventPage{}, fmt.Errorf("query analytics events: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	result := model.EventPage{Meta: responseMeta(query), TotalCount: totalCount}
 	for rows.Next() {
-		event, err := scanEvent(rows)
+		event, err := scanEvent(rows, includeRoutingTrace)
 		if err != nil {
 			return model.EventPage{}, err
 		}
@@ -750,7 +766,7 @@ func (s *SQLiteStore) EventByAttemptID(ctx context.Context, attemptID string, qu
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return model.Event{}, false, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
-	event, err := scanEvent(s.db.QueryRowContext(ctx, "SELECT "+eventSelect+" FROM events "+where+" LIMIT 1", arguments...))
+	event, err := scanEvent(s.db.QueryRowContext(ctx, "SELECT "+eventDetailSelect+" FROM events "+where+" LIMIT 1", arguments...), true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Event{}, false, nil
 	}
@@ -1184,7 +1200,7 @@ type eventScanner interface {
 	Scan(...any) error
 }
 
-func scanEvent(rows eventScanner) (model.Event, error) {
+func scanEvent(rows eventScanner, includeRoutingTrace ...bool) (model.Event, error) {
 	var event model.Event
 	var requestedNS int64
 	var requestQuality, tokenQuality string
@@ -1199,7 +1215,8 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 	var stream sql.NullBool
 	var credits, breakdown, sessionID, outcome, failureHop, cancellationSource sql.NullString
 	var creditRate sql.NullInt64
-	err := rows.Scan(&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
+	var routingTrace sql.NullString
+	scanArgs := []any{&event.SchemaVersion, &event.AttemptID, &event.ProxyRequestID, &requestQuality,
 		&event.KeyID, &requestedNS, &event.Provider, &event.ExecutorType, &event.Model, &requestedAlias,
 		&event.EndpointClass, &authType, &credentialID, &credentialAlgorithm, &event.Succeeded,
 		&status, &errorClass, &event.LatencyMS, &ttft, &tierRequested, &tierUsed, &event.Generated,
@@ -1208,7 +1225,11 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 		&event.Tokens.Schema, &tokenQuality, &knownCost, &event.UnpricedTokens,
 		&priceRuleID, &priceSource, &importBatchID, &generation,
 		&clientMethod, &clientPath, &receivedNS, &upstreamMethod, &upstreamURL, &sentNS,
-		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort, &credits, &creditRate, &breakdown, &sessionID, &outcome, &failureHop, &cancellationSource, &event.SessionCaptured)
+		&usageRaw, &errorBody, &proxyStatus, &proxyError, &respondedNS, &firstTokenLatency, &providerLatency, &routingTime, &sessionDigest, &outputTiming, &stream, &reasoningEffort, &credits, &creditRate, &breakdown, &sessionID, &outcome, &failureHop, &cancellationSource, &event.SessionCaptured}
+	if len(includeRoutingTrace) > 0 && includeRoutingTrace[0] {
+		scanArgs = append(scanArgs, &routingTrace)
+	}
+	err := rows.Scan(scanArgs...)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("scan analytics event: %w", err)
 	}
@@ -1247,6 +1268,9 @@ func scanEvent(rows eventScanner) (model.Event, error) {
 			// Optional telemetry must not hide the request's accounting record.
 			event.OutputTiming = nil
 		}
+	}
+	if routingTrace.Valid {
+		event.RoutingTrace = json.RawMessage(routingTrace.String)
 	}
 	if routingTime.Valid {
 		event.RoutingTimeMS = &routingTime.Int64

@@ -21,6 +21,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -178,12 +180,24 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 	} else {
 		cfg = cfg.CloneForRuntime()
 	}
+	rules, warnings, errCompile := routing.Compile(cfg)
+	if errCompile != nil {
+		log.WithError(errCompile).Warn("routing rules could not be compiled; retaining previous config")
+		return false
+	}
 	m.mu.RLock()
 	oldCooldownStore := m.cooldownStore
 	m.mu.RUnlock()
 	previousCfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if homeSessionAliasTTL(previousCfg) != homeSessionAliasTTL(cfg) {
 		m.homeSessionAliases.clear()
+	}
+	m.routingRules.Store(&routingSnapshot{rules: rules, needsClient: routingRulesNeedClient(cfg.Routing.Rules)})
+	for _, warning := range warnings {
+		log.WithField("warning", warning).Warn("routing rule warning")
+	}
+	if cfg.Home.Enabled && rules.Len() > 0 {
+		log.Warn("routing rules are ignored while Home mode is enabled")
 	}
 	m.runtimeConfig.Store(cfg)
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
@@ -217,6 +231,10 @@ func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *in
 
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
+	if _, _, errCompile := routing.Compile(cfg); errCompile != nil {
+		log.WithError(errCompile).Warn("routing rules could not be compiled; retaining previous config")
+		return false
+	}
 	m.mu.RLock()
 	oldStore := m.cooldownStore
 	m.mu.RUnlock()

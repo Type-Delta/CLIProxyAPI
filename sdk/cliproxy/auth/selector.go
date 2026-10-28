@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 )
 
@@ -1517,6 +1518,31 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 	return cliproxysession.NewInMemorySessionTreeStore(0, time.Hour)
 }
 
+type affinityRecoveryPrepareKey struct{}
+type affinityDelegateKey struct{}
+type affinityDelegate func(context.Context, []*Auth) (*Auth, error)
+
+type affinityRecoveryPrepare func(context.Context, []*Auth, []*Auth) (context.Context, []*Auth, error)
+
+// pickFallback prepares a rule-selected pool only after affinity cannot use a binding.
+func (s *SessionAffinitySelector) pickFallback(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, available []*Auth) (*Auth, error) {
+	fullPool := available
+	available = narrowRoutingPool(ctx, available)
+	if prepare, ok := ctx.Value(affinityRecoveryPrepareKey{}).(affinityRecoveryPrepare); ok {
+		var err error
+		ctx, available, err = prepare(ctx, fullPool, available)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if delegate, ok := ctx.Value(affinityDelegateKey{}).(affinityDelegate); ok {
+		return delegate(ctx, available)
+	}
+	available = highestPriorityAuths(available)
+	captureRoutingTier(ctx, available)
+	return s.fallback.Pick(ctx, provider, model, opts, available)
+}
+
 // Pick selects an auth with session affinity when possible.
 // Explicit Claude Code, Codex, OpenCode, pi, and request-body session signals
 // are absolute authority. Requests without those signals use the Merkle LCP
@@ -1579,12 +1605,12 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
 	if primaryID == "" {
-		fallbackAuths, errAvailable := getSelectorAvailableAuths(ctx, availabilityCandidates, provider, model, now)
+		fallbackAuths, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
 		if errAvailable != nil {
 			return nil, errAvailable
 		}
 		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
-		return s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		return s.pickFallback(ctx, provider, model, opts, fallbackAuths)
 	}
 
 	// A single availability pass serves both lookups: the bound credential is validated against
@@ -1593,7 +1619,6 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
-	fallbackAuths := highestPriorityAuths(available)
 
 	modelKey := canonicalModelKey(model)
 	cacheKey := provider + "::" + primaryID + "::" + modelKey
@@ -1617,15 +1642,18 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
+		captureAffinity(ctx, routing.AffinityBroken, cachedAuthID)
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID)
+				captureAffinity(ctx, routing.AffinityKept, cachedAuthID)
+				captureAffinityRules(ctx, available)
 				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 				return auth, nil
 			}
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		auth, err := s.pickFallback(ctx, provider, model, opts, available)
 		if err != nil {
 			return nil, err
 		}
@@ -1634,6 +1662,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 		if s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
 			bind(cachedAuthID)
+			captureAffinity(ctx, routing.AffinityHeld, cachedAuthID)
 			entry.Infof("session-affinity: cache hit but auth transiently unavailable, failover without rebinding | session=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, auth.ID, provider, model)
 			return auth, nil
 		}
@@ -1648,6 +1677,8 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				if auth.ID == cachedAuthID {
 					if !isSubagent || s.subagentAffinity {
 						bind(auth.ID)
+						captureAffinity(ctx, routing.AffinityKept, cachedAuthID)
+						captureAffinityRules(ctx, available)
 						if isFork {
 							entry.Infof("session-affinity: fork cache hit | session=%s parent=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 						} else {
@@ -1658,7 +1689,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				}
 			}
 			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
-				auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+				auth, err := s.pickFallback(ctx, provider, model, opts, available)
 				if err != nil {
 					return nil, err
 				}
@@ -1666,13 +1697,15 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 					return nil, nil
 				}
 				bind(cachedAuthID)
+				captureAffinity(ctx, routing.AffinityHeld, cachedAuthID)
 				entry.Infof("session-affinity: fallback cache hit but auth transiently unavailable, failover without rebinding | session=%s fallback=%s bound_auth=%s failover_auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, auth.ID, provider, model)
 				return auth, nil
 			}
 		}
 	}
 
-	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	captureAffinity(ctx, routing.AffinityNew, "")
+	auth, err := s.pickFallback(ctx, provider, model, opts, available)
 	if err != nil {
 		return nil, err
 	}
@@ -1761,15 +1794,17 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 				}
 				entry.Infof("session-affinity: LCP cache hit | session=%s prefix=%d auth=%s provider=%s model=%s", truncateSessionID(match.SessionID), match.PrefixLength, auth.ID, provider, model)
 			}
+			captureAffinity(ctx, routing.AffinityKept, match.AuthID)
+			captureAffinityRules(ctx, available)
 			return auth, true, nil
 		}
+		captureAffinity(ctx, routing.AffinityBroken, match.AuthID)
 		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, match.AuthID, now) {
 			preservedAuthID = match.AuthID
 		}
 	}
 
-	fallbackAuths := highestPriorityAuths(available)
-	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	auth, errPick := s.pickFallback(ctx, provider, model, opts, available)
 	if errPick != nil {
 		return nil, true, errPick
 	}
@@ -1779,6 +1814,9 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	bindAuthID := auth.ID
 	if preservedAuthID != "" {
 		bindAuthID = preservedAuthID
+		captureAffinity(ctx, routing.AffinityHeld, preservedAuthID)
+	} else if capture, ok := ctx.Value(routingCaptureKey{}).(*routingCapture); ok && capture.trace.Affinity.State == routing.AffinityNone {
+		captureAffinity(ctx, routing.AffinityNew, "")
 	}
 	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID

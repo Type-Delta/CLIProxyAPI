@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 // DefaultServiceTier is retained for direct SDK and non-OpenAI usage callers.
@@ -18,6 +20,8 @@ const AutoServiceTier = "auto"
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
+	// RoutingTrace is the immutable credential-selection snapshot for this attempt.
+	RoutingTrace *routing.Trace
 	// ProxyRequestID correlates all upstream attempts made for one proxy request.
 	ProxyRequestID string
 	// RequestIDQuality reports whether ProxyRequestID came from proxy middleware

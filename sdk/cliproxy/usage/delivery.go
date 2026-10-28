@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -532,6 +533,25 @@ func (m *Manager) RegisterSanitizerTapNamed(name string, plugin Plugin) (Unregis
 	return m.registerInline(name, plugin, true)
 }
 
+// TraceCaptureEnabled reports whether the named analytics tap is live and accepts
+// usage records. Plugins may implement TraceCaptureActive to report a disabled
+// internal collector without unregistering the stable tap.
+func (m *Manager) TraceCaptureEnabled(name string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	registration, ok := m.taps[strings.TrimSpace(name)]
+	if !ok || registration.plugin == nil {
+		return false
+	}
+	if active, ok := registration.plugin.(interface{ TraceCaptureActive() bool }); ok {
+		return active.TraceCaptureActive()
+	}
+	return true
+}
+
 func (m *Manager) registerInline(name string, plugin Plugin, tap bool) (UnregisterFunc, error) {
 	if m == nil || plugin == nil {
 		return nil, fmt.Errorf("%w: nil manager or plugin", ErrInvalidRegistration)
@@ -898,6 +918,14 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		generate := *record.Generate
 		record.Generate = &generate
 	}
+	if record.RoutingTrace != nil {
+		encoded, err := json.Marshal(record.RoutingTrace)
+		if err != nil || len(encoded) > 32*1024 || len(encoded) > remaining {
+			record.RoutingTrace = nil
+		} else {
+			remaining -= len(encoded)
+		}
+	}
 
 	stream, streamKnown := LookupStreamFromContext(ctx)
 	snapshot := contextSnapshot{
@@ -1075,6 +1103,11 @@ func RegisterAccountingNamedPlugin(name string, plugin Plugin) (UnregisterFunc, 
 // RegisterSanitizerTapNamedPlugin registers a trusted synchronous sanitizer tap.
 func RegisterSanitizerTapNamedPlugin(name string, plugin Plugin) (UnregisterFunc, error) {
 	return DefaultManager().RegisterSanitizerTapNamed(name, plugin)
+}
+
+// TraceCaptureEnabled reports whether the named analytics tap is active.
+func TraceCaptureEnabled(name string) bool {
+	return DefaultManager().TraceCaptureEnabled(name)
 }
 
 // PublishRecord publishes a record using the default manager.

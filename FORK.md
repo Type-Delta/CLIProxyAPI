@@ -1951,6 +1951,43 @@ Live collection against real provider credentials has not been exercised.
 
 **Last updated:** 2026-10-28
 
+### DL060 - Rule-based routing, routing traces, and routing dry run
+
+`routing.rules[]` adds ordered custom rules: a condition tree (`all`, `any`, `not`) over the
+requested model, client API-key label, request header, and detected client type, plus `route-to`
+credential IDs (`Auth.ID`). Selection follows a fixed precedence stack, weakest first: custom
+rules (a lower matching rule wins), routing strategy (priority tier, then the configured picker),
+session affinity (an eligible binding wins), and the routing gate (disabled, cooldown, quota,
+unsupported model, retry round, tried in this round, weight, pins and policies). Rules narrow the
+gate-passed pool across all priority tiers after the affinity check; a rule whose targets are all
+blocked falls through to the next matching rule above it, and no applicable rule keeps the full
+pool. Requests a rule narrows take the legacy selection path, so the indexed scheduler never picks
+outside the narrowed pool. Rules never override pins, credential policies, the Antigravity
+paid-credits fallback, plugin-handled picks, or Home dispatch; in Home mode rules are ignored with
+a warning. Rules-only config changes do not recreate the selector, so affinity caches survive.
+
+When CPAUK collects analytics, every selection records a versioned routing trace (candidates with
+gate reasons, matched rules with rendered conditions and status, strategy tier, affinity state,
+pick, and decider). The trace travels on the usage record, is stored with the attempt's event in
+nullable `routing_trace_json` (migration 020) with candidate IDs replaced by credential pseudonyms,
+and is returned only by `GET /v8/management/analytics/events/:attempt_id`, with labels resolved
+from loaded credentials. `GET /v8/management/routing/credentials` lists routable credentials
+without secrets, and `POST /v8/management/routing/dry-run` simulates a request (optionally with
+draft rules) without moving strategy, affinity, or cooldown state. CPAMC DL072 adds the Config →
+Routing tab and the event "Routing decision" section. The planned ClickHouse analytics backend must
+round-trip `model.Event.RoutingTrace`.
+
+**Implementation evidence:** `internal/config/{config_types.go,routing_rules.go}`,
+`sdk/cliproxy/routing/{contract.go,engine.go}`,
+`sdk/cliproxy/auth/{routing_selection.go,routing_trace.go,routing_dry_run.go,conductor_selection.go,selector.go}`,
+`sdk/api/handlers`, `sdk/cliproxy/usage`, `internal/runtime/executor/helps/usage_helpers.go`,
+`internal/cpauk/{collector,model,store}` with `store/migrations/020_*`,
+`internal/api/handlers/management/{routing.go,analytics*.go}`, and `config.example.yaml`.
+
+**Validation:** `go test ./...` passes (116 packages) with `go vet` and gofmt clean; targeted race runs of the auth, routing, config, CPAUK and usage packages pass. Regression tests cover cross-tier narrowing, affinity precedence, fall-through (including after a GSR refresh), plugin exemptions, unchanged no-rules behavior, executor metadata parity with tracing on, trace immutability across retries, dry-run read-only behavior, migration 020, sanitization, and export/list/detail projections. A live end-to-end run with two Z.ai credentials and real upstream requests exercised credentials listing, rule hot reload, affinity kept/held/agreeing, fall-through on a blocked target, dry runs with saved and draft rules and real session bindings, and analytics disabled. Home-mode rule evaluation is intentionally out of scope.
+
+**Last updated:** 2026-10-28
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.
