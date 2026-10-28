@@ -187,6 +187,46 @@ func TestGSRValidSingleProviderExecutes(t *testing.T) {
 	}
 }
 
+func TestGSRExecuteAddsSchedulingWeight(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "non-streaming"
+		if stream {
+			name = "streaming"
+		}
+		t.Run(name, func(t *testing.T) {
+			quota := gsrFallbackQuota("monthly_reset_at")
+			a := &Auth{ID: "gsr-weight-a", Provider: "kiro", Attributes: map[string]string{AttributeWeight: "1000000"}, Quota: quota}
+			b := &Auth{ID: "gsr-weight-b", Provider: "kiro", Quota: quota}
+			m := gsrFallbackTestManager(t, "glm-audit", a, b)
+			counts := map[string]int{}
+			for i := 0; i < 300; i++ {
+				req := cliproxyexecutor.Request{Model: "glm-audit"}
+				if stream {
+					result, errStream := m.ExecuteStream(context.Background(), []string{"kiro"}, req, cliproxyexecutor.Options{Stream: true})
+					if errStream != nil {
+						t.Fatal(errStream)
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							t.Fatal(chunk.Err)
+						}
+						counts[string(chunk.Payload)]++
+					}
+				} else {
+					response, err := m.Execute(context.Background(), []string{"kiro"}, req, cliproxyexecutor.Options{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					counts[string(response.Payload)]++
+				}
+			}
+			if counts[a.ID] != 200 || counts[b.ID] != 100 {
+				t.Fatalf("routing shares = %v, want 200:100 for GSR weights 2000000:1000001", counts)
+			}
+		})
+	}
+}
+
 func TestGSRCodexExecuteWithValidSignals(t *testing.T) {
 	m := gsrFallbackTestManager(t, "gpt-audit", &Auth{ID: "gsr-fallback-codex-execute", Provider: "codex", Quota: gsrFallbackQuota("X-Codex-Primary-Reset-At")})
 	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-audit"}, cliproxyexecutor.Options{}); err != nil {

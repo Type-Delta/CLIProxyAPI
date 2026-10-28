@@ -21,8 +21,9 @@ type VertexCompatKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
-	// Weight controls proportional selection under weighted-round-robin.
-	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
+	// Weight controls proportional selection under weighted-round-robin and is added to GSR weights.
+	// An omitted value defaults to 1; maximum 1,000,000. Non-positive values exclude
+	// this credential from weighted-round-robin and add nothing to GSR.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").

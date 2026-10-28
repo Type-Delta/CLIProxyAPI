@@ -17,7 +17,8 @@ const (
 )
 
 // Normalize validates and normalizes an explicit weight. Non-positive values are
-// valid and normalize to zero, which excludes the credential from weighted routing.
+// valid and normalize to zero, which excludes the credential from weighted round
+// robin and adds nothing to GSR.
 func Normalize(weight int64) (int64, error) {
 	if weight <= 0 {
 		return 0, nil

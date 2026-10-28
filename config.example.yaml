@@ -195,6 +195,8 @@ routing:
   # provider quota recovery is sooner; the default decay half-life is 36 hours.
   # An explicit gsr_tier credential attribute can override the allowance class
   # (standard, pro, premium, max, or elite); unknown tiers remain neutral.
+  # The credential weight is added after recovery decay and the allowance multiplier.
+  # Omitted weights add 1; non-positive weights add nothing to GSR.
   # If a credential in the active eligible pool has no usable recovery timestamp,
   # GSR falls back to round-robin for that request and logs a warning. The normal
   # model, priority, cooldown, credential-policy, and session-affinity filters
@@ -598,7 +600,7 @@ upstream:
 #         - "*flash*"            # wildcard matching substring (e.g. gemini-2.5-flash-lite)
 #       keys:
 #         - api-key: "AIzaSy...01"
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #         # A second key shares this group's endpoint, headers, and models.
 #         - api-key: "replace-with-second-gemini-key"
 #           weight: 2
@@ -648,7 +650,7 @@ upstream:
 #         - "gemini-2.5-pro"
 #       keys:
 #         - api-key: "AIzaSy...03"
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #
 #   # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 #
@@ -679,7 +681,7 @@ upstream:
 #         - "imagen-*"
 #       keys:
 #         - api-key: "vk-123..."                        # x-goog-api-key header
-#           weight: 5                                    # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5                                    # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #
 #   # Codex API keys
 #
@@ -721,7 +723,7 @@ upstream:
 #         - "*codex*"         # wildcard matching substring (e.g. gpt-5-codex-low)
 #       keys:
 #         - api-key: "sk-atSM..."
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
 #           alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
 #           websockets: false # optional: use the Codex upstream WebSocket transport
@@ -765,7 +767,7 @@ upstream:
 #         - "*haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
 #       keys:
 #         - api-key: "sk-atSM..."
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #           rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
 #           native-tool-search: false # optional: default is false; when true, trust this key's custom base-url with Anthropic native tool search (defer_loading + tool_reference) for Codex tool_search; requires upstream.claude.tool-search: true
 #           cloak:                         # optional: explicitly enable request cloaking for non-Claude-Code clients
@@ -879,7 +881,7 @@ upstream:
 #         - "grok-3-*"             # wildcard matching prefix
 #       keys:
 #         - api-key: "xai-..."
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #           websockets: true # optional: use the xAI upstream websocket transport for downstream websocket requests
 #
 #   # Meta API keys (Muse Code)
@@ -899,7 +901,7 @@ upstream:
 #         - "muse-spark-1.1"
 #       keys:
 #         - api-key: "..."
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #
 #   # OpenAI compatibility providers
 #
@@ -927,7 +929,7 @@ upstream:
 #         # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #       keys:
 #         - api-key: "sk-or-v1-...b780"
-#           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           weight: 5 # optional: weighted-round-robin share / GSR additive weight; default 1; maximum 1,000,000
 #           proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #           # proxy-url: "direct" # optional: explicit direct connect for this credential
 #         - api-key: "sk-or-v1-...b781" # without proxy-url
