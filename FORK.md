@@ -1094,10 +1094,12 @@ weekly reset. The provider's reported weekly reset remains unchanged.
 Manual reset observations refresh on demand every three minutes even when a
 weekly reset is already cached, and survive ordinary response-header snapshots
 and cooldown transitions. Spent, expired, paused, ineligible, or not-yet-started
-credits do not contribute an expiry; failed optional reads retain normal weekly
-routing. Claude grants that require reaching a limit still count while the
-account is healthy. Independent Fable, Spark, and code-review allowances do not
-inherit an expiry from a reset of the shared allowance.
+credits do not contribute an expiry. Failed optional reads preserve the last
+successful reset observation, or use the normal weekly window when none exists.
+HTTP errors of any status, transport failures, and invalid optional responses
+cannot erase a known credit or grant expiry. Claude grants that require reaching
+a limit still count while the account is healthy. Independent Fable, Spark, and
+code-review allowances do not inherit an expiry from a reset of the shared allowance.
 Management routing reads and writes normalize the aliases to the canonical strategy.
 
 **Implementation evidence:** `internal/config/config_types.go`,
@@ -1125,7 +1127,7 @@ manager's selection path with the six-day weekly/two-day manual-reset example.
 The full repository suite, focused auth and management race tests, canonical
 panel build, and disposable server compile check pass.
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-10-28
 
 ### DL029 - CPAMC quota summary redesign
 
@@ -1333,6 +1335,13 @@ credentials removed while a refresh is in flight are not restored. The normal
 GSR weights resume as soon as every credential in the active choice pool has a
 usable recovery timestamp.
 
+Quota-fetch HTTP 429s and transport failures keep otherwise eligible credentials
+in the routing pool. A refresh operation's own cancellation or deadline error
+counts as a failed observation and uses the same fallback; selection stops only
+when the client request's context is canceled or expires. Optional reset-credit
+and grant failures preserve the last successful routing observation regardless
+of HTTP status.
+
 Quota refresh now resolves the provider from the configured `usage_probe` and
 normalized credential aliases before selecting an endpoint, parser, or persisted
 signal. This keeps z.ai and OpenCode Go credentials on their own usage services,
@@ -1347,7 +1356,19 @@ request-level quota-provider identity mapping.
 
 **Recorded validation:** full `sdk/cliproxy/auth` tests and race tests pass; focused quota-provider and GSR management tests pass; the server builds; a local HTTP fixture served six non-streaming and six streaming requests with a 3:3 round-robin split and emitted fallback warnings, while session affinity stayed on one credential across both modes. The full repository suite passes except the unrelated pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
 
-**Last updated:** 2026-10-19
+Follow-up regressions exercise real Claude and Codex HTTPS quota lookups returning
+429 or disconnecting, plus optional reset lookups returning malformed HTTP 200
+responses, 302, 400, 401, 403, 404, 408, 429, 500, or 503. They verify credential
+selection and preservation of the saved reset expiry; successful empty lookups
+still clear spent credits. Auth tests cover independent transport cancellations
+and deadlines in single-provider and mixed-provider routing, and client cancellation.
+The full Go suite, focused auth and management race tests, canonical panel build,
+server build, and production Docker build pass. The Docker image served 12 normal
+and 12 streaming chat requests with a 6:6 credential split in each mode while the
+quota endpoint returned 429, then repeated that result with quota connection
+failures. Each run made only two cached quota calls and completed all 24 requests.
+
+**Last updated:** 2026-10-28
 
 ### DL037 - Kiro static model definitions for OAuth exclusions
 

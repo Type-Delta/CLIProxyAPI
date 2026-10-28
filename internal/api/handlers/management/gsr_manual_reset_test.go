@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +147,134 @@ func TestGSRManualResetProbeAndRouting(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGSRAuxiliaryFailuresPreserveRoutingObservation(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		for _, status := range []int{0, 200, 302, 400, 401, 403, 404, 408, 429, 500, 503} {
+			t.Run(fmt.Sprintf("%s/status=%d", provider, status), func(t *testing.T) {
+				now := time.Now().UTC().Truncate(time.Second)
+				weekly, expiry := now.Add(6*24*time.Hour), now.Add(48*time.Hour)
+				body := fmt.Sprintf(`{"rate_limit":{"secondary_window":{"window_minutes":10080,"reset_at":%d}},"seven_day":{"resets_at":%q}}`, weekly.Unix(), weekly.Format(time.RFC3339))
+				fixture := newGSRProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.Contains(r.URL.Path, "reset-credits") || r.URL.Query().Get("cedar_ember") == "1" {
+						if status == 0 {
+							conn, _, errHijack := w.(http.Hijacker).Hijack()
+							if errHijack != nil {
+								t.Error(errHijack)
+								return
+							}
+							_ = conn.Close()
+							return
+						}
+						w.WriteHeader(status)
+						return
+					}
+					_, _ = w.Write([]byte(body))
+				}))
+				h, auth := gsrProbeHandler(t, provider, map[string]string{"api_key": "fixture-key"})
+				manual := coreauth.ManualResetObservation{Provider: provider, ObservedAt: now.Add(-4 * time.Minute), ExpiresAt: expiry}
+				auth.Quota.ManualReset = manual
+				if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+					t.Fatal(errUpdate)
+				}
+				modelName := "gpt-5"
+				if provider == "claude" {
+					modelName = "claude-sonnet-4-5"
+				}
+				if errRefresh := h.RefreshQuotaForRouting(context.Background(), auth, modelName); errRefresh != nil {
+					t.Fatal(errRefresh)
+				}
+				updated, _ := h.authManager.GetByID(auth.ID)
+				if updated.Quota.ManualReset != manual {
+					t.Fatalf("auxiliary failure changed reset observation: got %+v, want %+v", updated.Quota.ManualReset, manual)
+				}
+				if got := coreauth.RecoveryTimestampForAuth(updated, modelName); !got.Equal(expiry) {
+					t.Fatalf("auxiliary failure changed routing recovery to %v, want %v", got, expiry)
+				}
+				if updated.Unavailable || updated.Quota.Exceeded || updated.LastError != nil {
+					t.Fatalf("auxiliary failure blocked credential: %+v", updated)
+				}
+				if requests := fixture.requests(); len(requests) != 2 {
+					t.Fatalf("provider requests = %v, want usage and auxiliary lookup", requests)
+				}
+			})
+		}
+	}
+}
+
+func TestGSRSuccessfulResetLookupClearsSpentCredits(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		t.Run(provider, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			weekly := now.Add(6 * 24 * time.Hour)
+			fixture := newGSRProbeFixture(t)
+			fixture.setResponse(http.StatusOK, fmt.Sprintf(`{"rate_limit":{"secondary_window":{"window_minutes":10080,"reset_at":%d}},"seven_day":{"resets_at":%q},"credits":[],"cedar_ember":{"eligible":false}}`, weekly.Unix(), weekly.Format(time.RFC3339)))
+			h, auth := gsrProbeHandler(t, provider, map[string]string{"api_key": "fixture-key"})
+			auth.Quota.ManualReset = coreauth.ManualResetObservation{Provider: provider, ObservedAt: now.Add(-4 * time.Minute), ExpiresAt: now.Add(48 * time.Hour)}
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+			if errRefresh := h.RefreshQuotaForRouting(context.Background(), auth, "model-test"); errRefresh != nil {
+				t.Fatal(errRefresh)
+			}
+			updated, _ := h.authManager.GetByID(auth.ID)
+			if !updated.Quota.ManualReset.ExpiresAt.IsZero() || !updated.Quota.ManualReset.ObservedAt.After(auth.Quota.ManualReset.ObservedAt) {
+				t.Fatalf("successful lookup did not clear spent credit: %+v", updated.Quota.ManualReset)
+			}
+			if got := coreauth.RecoveryTimestampForAuth(updated, "model-test"); !got.Equal(weekly) {
+				t.Fatalf("recovery = %v, want weekly reset %v", got, weekly)
+			}
+		})
+	}
+}
+
+func TestGSRQuotaLookupFailuresKeepCredentialsRoutable(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		for _, status := range []int{0, http.StatusTooManyRequests} {
+			t.Run(fmt.Sprintf("%s/status=%d", provider, status), func(t *testing.T) {
+				fixture := newGSRProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if status == 0 {
+						conn, _, errHijack := w.(http.Hijacker).Hijack()
+						if errHijack != nil {
+							t.Error(errHijack)
+							return
+						}
+						_ = conn.Close()
+						return
+					}
+					w.WriteHeader(status)
+				}))
+				h, auth := gsrProbeHandler(t, provider, map[string]string{"api_key": "fixture-key"})
+				control := auth.Clone()
+				control.ID += "-control"
+				if _, errRegister := h.authManager.Register(context.Background(), control); errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				h.authManager.SetSelector(&coreauth.GreedySoonestRecoverySelector{})
+				h.authManager.SetQuotaRecoveryRefresher(h.RefreshQuotaForRouting)
+				h.authManager.RegisterExecutor(&refreshRecordExecutor{provider: provider})
+				const modelName = "quota-failure-routing-test"
+				for _, id := range []string{auth.ID, control.ID} {
+					registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{ID: modelName}})
+					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+				}
+				counts := make(map[string]int)
+				for range 4 {
+					picked, errPick := h.authManager.SelectAuth(context.Background(), provider, modelName, cliproxyexecutor.Options{})
+					if errPick != nil {
+						t.Fatalf("quota lookup failure blocked routing: %v", errPick)
+					}
+					counts[picked.ID]++
+				}
+				if counts[auth.ID] != 2 || counts[control.ID] != 2 {
+					t.Fatalf("routing shares = %v, want both credentials routable", counts)
+				}
+				if requests := fixture.requests(); len(requests) != 2 {
+					t.Fatalf("provider requests = %v, want one cached quota lookup per credential", requests)
+				}
+			})
+		}
 	}
 }

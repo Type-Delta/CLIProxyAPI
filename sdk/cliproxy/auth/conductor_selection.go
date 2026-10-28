@@ -190,7 +190,6 @@ type quotaRecoveryPreparation struct {
 	refreshed    int
 	refreshTried int
 	refreshError int
-	contextError error
 }
 
 // prepareQuotaRecoveryCandidates refreshes missing observations but preserves the full
@@ -262,10 +261,6 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 			errRefresh := refresher(ctx, working, model)
 			mu.Lock()
 			defer mu.Unlock()
-			if errors.Is(errRefresh, context.Canceled) || errors.Is(errRefresh, context.DeadlineExceeded) {
-				preparation.contextError = errRefresh
-				return
-			}
 			if errRefresh != nil {
 				preparation.refreshError++
 				return
@@ -274,11 +269,10 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 		}(candidate)
 	}
 	waitGroup.Wait()
+	// A probe's transport may cancel or time out independently. Only the
+	// routing request's own cancellation should stop credential selection.
 	if err := ctx.Err(); err != nil {
 		return nil, preparation, err
-	}
-	if preparation.contextError != nil {
-		return nil, preparation, preparation.contextError
 	}
 
 	// Return the latest live snapshots so refresh side effects such as cooldown
