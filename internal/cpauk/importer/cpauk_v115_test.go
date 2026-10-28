@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -38,7 +39,7 @@ func TestCPAUKV115AdapterDedupeSanitizeAndVerifiedImport(t *testing.T) {
 		t.Fatal("read-only source accepted a write")
 	}
 
-	destination, err := store.Open(ctx, store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
+	destination, err := store.Open(ctx, chtest.Handle(t), store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestCPAUKV115AdapterDedupeSanitizeAndVerifiedImport(t *testing.T) {
 	if result.RowsRead != 2 || result.Inserted != 2 || !result.Reconciled {
 		t.Fatalf("import result = %+v", result)
 	}
-	if _, err := store.VerifyBackup(ctx, backupPath, backupPath+".manifest.json"); err != nil {
+	if _, err := destination.VerifyBackup(ctx, backupPath, backupPath+".manifest.json"); err != nil {
 		t.Fatal(err)
 	}
 	query := model.Query{SchemaVersion: 1, Operation: model.OperationEvents,
@@ -70,7 +71,11 @@ func TestCPAUKV115AdapterDedupeSanitizeAndVerifiedImport(t *testing.T) {
 			t.Fatalf("raw key escaped sanitizer: %q", event.KeyID)
 		}
 	}
-	databaseBytes, err := os.ReadFile(filepath.Join(directory, "analytics.db"))
+	sanitizedPath := filepath.Join(directory, "sanitized-archive.json")
+	if _, err := destination.Backup(ctx, sanitizedPath); err != nil {
+		t.Fatal(err)
+	}
+	databaseBytes, err := os.ReadFile(sanitizedPath)
 	if err != nil {
 		t.Fatal(err)
 	}

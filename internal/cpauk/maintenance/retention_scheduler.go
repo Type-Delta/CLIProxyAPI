@@ -6,16 +6,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	backenddto "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 )
 
 const DefaultHourlyRetentionDays = 400
 
 type retentionStore interface {
-	ApplyRetentionPolicy(context.Context, time.Time, time.Time, int) (store.RetentionResult, error)
+	ApplyRetentionPolicy(context.Context, time.Time, time.Time, int) (backenddto.RetentionResult, error)
 }
 
-type RetentionRunner func(context.Context, time.Time, time.Time, int) (store.RetentionResult, error)
+type RetentionRunner func(context.Context, time.Time, time.Time, int) (backenddto.RetentionResult, error)
 
 type RetentionScheduler struct {
 	mu         sync.RWMutex
@@ -87,13 +87,13 @@ func (s *RetentionScheduler) Reconfigure(hotDays int) error {
 	return nil
 }
 
-func (s *RetentionScheduler) RunOnce(ctx context.Context) (store.RetentionResult, error) {
+func (s *RetentionScheduler) RunOnce(ctx context.Context) (backenddto.RetentionResult, error) {
 	s.mu.RLock()
 	hotDays, hourlyDays, batchSize, now, runner := s.hotDays, s.hourlyDays, s.batchSize, s.now, s.runner
 	s.mu.RUnlock()
 	midnight := now().UTC().Truncate(24 * time.Hour)
 	rawCutoff, hourlyCutoff := midnight.AddDate(0, 0, -hotDays), midnight.AddDate(0, 0, -hourlyDays)
-	var result store.RetentionResult
+	var result backenddto.RetentionResult
 	var err error
 	if runner != nil {
 		result, err = runner(ctx, rawCutoff, hourlyCutoff, batchSize)

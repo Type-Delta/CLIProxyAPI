@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,7 @@ type serverOptionConfig struct {
 	extraMiddleware       []gin.HandlerFunc
 	engineConfigurator    func(*gin.Engine)
 	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	customRequestLogger   bool
 	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
 	localPassword         string
 	keepAliveEnabled      bool
@@ -33,8 +35,13 @@ type serverOptionConfig struct {
 type ServerOption func(*serverOptionConfig)
 
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
-	configDir := filepath.Dir(configPath)
-	logsDir := logging.ResolveLogDirectory(cfg)
+	logsDir, _ := logging.ConfiguredLogDirectory(cfg)
+	return requestLoggerForDirectory(cfg, logsDir, filepath.Dir(configPath))
+}
+func requestLoggerForDirectory(cfg *config.Config, logsDir, configDir string) logging.RequestLogger {
+	if cfg != nil && !cfg.Home.Enabled && strings.TrimSpace(cfg.ClickHouse.DSN) != "" {
+		return logging.NewTelemetryRequestLogger(cfg.RequestLog, logsDir, configDir)
+	}
 	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
 	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
 	return logger
@@ -97,6 +104,7 @@ func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption
 func WithRequestLoggerFactory(factory func(*config.Config, string) logging.RequestLogger) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.requestLoggerFactory = factory
+		cfg.customRequestLogger = true
 	}
 }
 

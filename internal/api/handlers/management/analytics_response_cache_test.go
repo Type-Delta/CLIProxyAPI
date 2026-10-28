@@ -17,10 +17,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 type analyticsResponseReader struct {
@@ -207,14 +208,14 @@ func TestAnalyticsResponseCacheQuantizesRanges(t *testing.T) {
 
 type analyticsCacheStoreService struct {
 	*analyticsHandlerService
-	database *store.SQLiteStore
+	database *store.Store
 }
 
 func (service *analyticsCacheStoreService) Reader() cpauk.Reader { return service.database }
 
 func TestAnalyticsResponseCacheMinuteSnapshotKeepsExactCursorBounds(t *testing.T) {
 	ctx := context.Background()
-	database, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
+	database, err := store.Open(ctx, chtest.Handle(t), store.Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}

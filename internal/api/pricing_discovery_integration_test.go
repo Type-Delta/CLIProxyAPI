@@ -14,11 +14,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -204,11 +205,15 @@ func newPricingManagementServer(t *testing.T, fetcher *integrationPricingFetcher
 	serviceConfig.MaxStorageBytes = 64 << 20
 	serviceConfig.MinFreeBytes = 0
 	serviceConfig.ShutdownDrain = time.Second
+	handle := chtest.Handle(t)
 	service := cpauk.New(context.Background(), serviceConfig, func(factoryContext context.Context, _ cpauk.Config) (cpauk.Backend, [32]byte, error) {
-		database, err := store.Open(factoryContext, store.Config{
+		database, err := store.Open(factoryContext, handle, store.Config{
 			Path: path, MaxStorageBytes: 64 << 20, PricingFetcher: fetcher,
 		})
 		if err != nil {
+			return nil, [32]byte{}, err
+		}
+		if err := store.RunLegacyImport(factoryContext, database, path); err != nil {
 			return nil, [32]byte{}, err
 		}
 		return database, database.IdentityKeyArray(), nil
@@ -232,7 +237,7 @@ func newPricingManagementServer(t *testing.T, fetcher *integrationPricingFetcher
 
 func waitForPricingServiceReady(t *testing.T, service cpauk.Service) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if service.Capabilities().State == cpauk.StateReady {
 			return

@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	backenddto "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 type SourceRow struct {
@@ -44,7 +44,7 @@ type Importer struct {
 }
 
 type backupDestination interface {
-	Backup(context.Context, string) (store.BackupManifest, error)
+	Backup(context.Context, string) (backenddto.BackupManifest, error)
 }
 
 func (i *Importer) RunWithBackup(ctx context.Context, source Source, options Options, backupPath string) (model.ImportResult, error) {

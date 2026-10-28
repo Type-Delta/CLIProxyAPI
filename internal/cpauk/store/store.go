@@ -57,7 +57,7 @@ type pricingRefreshFlight struct {
 }
 
 func Open(ctx context.Context, config Config) (*SQLiteStore, error) {
-	if err := config.normalize(); err != nil {
+	if err := config.Normalize(); err != nil {
 		return nil, err
 	}
 	if config.CursorCodec == nil {

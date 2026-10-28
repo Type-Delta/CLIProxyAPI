@@ -13,8 +13,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -57,7 +57,7 @@ type analyticsPricingProvider interface {
 }
 
 type analyticsPricingSnapshotProvider interface {
-	PricingSnapshot(context.Context) (store.PricingSnapshot, error)
+	PricingSnapshot(context.Context) (backend.PricingSnapshot, error)
 }
 
 type analyticsPricingRefreshRequester interface {
@@ -221,7 +221,7 @@ func pricingSnapshot(book aggregate.PriceBook, syncState string) analyticsPricin
 	return snapshot
 }
 
-func pricingSnapshotFromDurable(durable store.PricingSnapshot, now time.Time) analyticsPricingSnapshot {
+func pricingSnapshotFromDurable(durable backend.PricingSnapshot, now time.Time) analyticsPricingSnapshot {
 	state := "stale"
 	if durable.Provenance.CatalogSyncedAt.IsZero() {
 		state = "not_configured"
@@ -347,7 +347,7 @@ type analyticsQuotaStatus struct {
 	CredentialRows    []model.ProviderCredential `json:"credential_rows,omitempty"`
 }
 
-func providerCredentialFromSnapshot(snapshot store.ProviderQuotaSnapshot) model.ProviderCredential {
+func providerCredentialFromSnapshot(snapshot backend.ProviderQuotaSnapshot) model.ProviderCredential {
 	status := "unavailable"
 	if snapshot.Available {
 		status = "available"
@@ -498,11 +498,11 @@ func observedProviderQuota(signals map[string]string, nextRecoverAt time.Time, e
 
 type analyticsProviderQuotaStore interface {
 	CredentialID(provider, authIndex, authID string) (*string, error)
-	ReplaceProviderQuotaSnapshots(context.Context, []store.ProviderQuotaSnapshot) error
-	ProviderQuotaSnapshots(context.Context) ([]store.ProviderQuotaSnapshot, error)
+	ReplaceProviderQuotaSnapshots(context.Context, []backend.ProviderQuotaSnapshot) error
+	ProviderQuotaSnapshots(context.Context) ([]backend.ProviderQuotaSnapshot, error)
 }
 
-func (h *Handler) providerQuotaSnapshots(ctx context.Context, service cpauk.Service) ([]store.ProviderQuotaSnapshot, bool, error) {
+func (h *Handler) providerQuotaSnapshots(ctx context.Context, service cpauk.Service) ([]backend.ProviderQuotaSnapshot, bool, error) {
 	provider, ok := service.(analyticsProviderQuotaStore)
 	if !ok {
 		return nil, false, nil
@@ -512,7 +512,7 @@ func (h *Handler) providerQuotaSnapshots(ctx context.Context, service cpauk.Serv
 	h.mu.Unlock()
 	if manager != nil {
 		now := time.Now().UTC()
-		byIdentity := make(map[string]store.ProviderQuotaSnapshot)
+		byIdentity := make(map[string]backend.ProviderQuotaSnapshot)
 		for _, credential := range manager.List() {
 			if credential == nil {
 				continue
@@ -537,7 +537,7 @@ func (h *Handler) providerQuotaSnapshots(ctx context.Context, service cpauk.Serv
 			if observedAt.IsZero() {
 				observedAt = now
 			}
-			snapshot := store.ProviderQuotaSnapshot{
+			snapshot := backend.ProviderQuotaSnapshot{
 				Provider: providerName, CredentialID: *credentialID,
 				Available: !credential.Disabled && !credential.Unavailable && !credential.Quota.Exceeded,
 				Disabled:  credential.Disabled, QuotaExceeded: credential.Quota.Exceeded,
@@ -557,7 +557,7 @@ func (h *Handler) providerQuotaSnapshots(ctx context.Context, service cpauk.Serv
 			}
 			byIdentity[identity] = snapshot
 		}
-		snapshots := make([]store.ProviderQuotaSnapshot, 0, len(byIdentity))
+		snapshots := make([]backend.ProviderQuotaSnapshot, 0, len(byIdentity))
 		for _, snapshot := range byIdentity {
 			snapshots = append(snapshots, snapshot)
 		}
@@ -824,7 +824,7 @@ func (h *Handler) GetAnalyticsKeys(c *gin.Context) {
 		return
 	}
 	provider, ok := service.(interface {
-		KeyCatalog(context.Context, model.Query) (store.KeyCatalogPage, error)
+		KeyCatalog(context.Context, model.Query) (backend.KeyCatalogPage, error)
 	})
 	if !ok {
 		writeAnalyticsError(c, cpauk.ErrUnavailable)

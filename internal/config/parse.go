@@ -28,6 +28,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
 	cfg.Analytics = DefaultAnalyticsConfig()
+	cfg.ClickHouse = DefaultClickHouseConfig()
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.SaveCooldownStatus = false
@@ -44,6 +45,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
+	}
+	if errValidate := cfg.ClickHouse.Validate(); errValidate != nil {
+		return nil, errValidate
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
 		return nil, errValidate

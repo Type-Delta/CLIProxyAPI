@@ -17,9 +17,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/maintenance"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
@@ -548,16 +548,16 @@ func classifyAnalyticsReadError(err error) error {
 	if errors.Is(err, cpauk.ErrDisabled) || errors.Is(err, cpauk.ErrUnavailable) || errors.Is(err, cpauk.ErrInternal) || errors.Is(err, cpauk.ErrClosed) || errors.Is(err, cpauk.ErrMaintenance) {
 		return err
 	}
-	if errors.Is(err, store.ErrRetainedTimeZonePartial) {
+	if errors.Is(err, backend.ErrRetainedTimeZonePartial) {
 		detail := ""
-		var zoneErr store.RetainedTimeZoneError
+		var zoneErr backend.RetainedTimeZoneError
 		if errors.As(err, &zoneErr) {
 			detail = zoneErr.Detail()
 		}
 		return retainedTimeZoneReadError{detail: detail}
 	}
-	if errors.Is(err, store.ErrRetainedRangePartial) {
-		var rangeErr store.RetainedRangeError
+	if errors.Is(err, backend.ErrRetainedRangePartial) {
+		var rangeErr backend.RetainedRangeError
 		if errors.As(err, &rangeErr) && !rangeErr.Cutoff.IsZero() {
 			return retainedRangeReadError{cutoff: rangeErr.Cutoff}
 		}

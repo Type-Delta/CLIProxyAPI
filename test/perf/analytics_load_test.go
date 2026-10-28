@@ -76,6 +76,7 @@ type upstreamEndpoints struct {
 }
 
 type analyticsAdapterConfig struct {
+	Test                   testing.TB
 	Mode                   loadMode
 	Upstream               upstreamEndpoints
 	StateDirectory         string
@@ -461,7 +462,7 @@ type phaseResult struct {
 func runLoadMode(t *testing.T, profile loadProfile, mode loadMode, runner runnerMetadata) modeResult {
 	t.Helper()
 	upstream := newDeterministicUpstream(t)
-	adapter, errFactory := analyticsLoadAdapterFactory(analyticsAdapterConfig{
+	adapter, errFactory := analyticsLoadAdapterFactory(analyticsAdapterConfig{Test: t,
 		Mode:           mode,
 		Upstream:       upstream.endpoints(),
 		StateDirectory: t.TempDir(),

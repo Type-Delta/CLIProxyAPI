@@ -49,7 +49,13 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		loggerEnabled := logger.IsEnabled()
+		if telemetry, ok := logger.(*logging.TelemetryRequestLogger); ok {
+			c.Set(logging.TelemetryCaptureContextKey, telemetry.NewCapture())
+		}
 		captureBody := shouldCaptureRequestBody(loggerEnabled, c.Request)
+		if _, ok := logger.(*logging.TelemetryRequestLogger); ok {
+			captureBody = true
+		}
 
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, captureBody)

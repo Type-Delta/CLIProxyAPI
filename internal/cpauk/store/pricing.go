@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"maps"
 	"slices"
 	"time"
@@ -16,69 +17,29 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
-const MaxPricingRules = 10_000
+const MaxPricingRules = backend.MaxPricingRules
 
 const (
-	ModelsDevSource         = "models.dev"
-	PricingCatalogTTL       = 6 * time.Hour
-	PricingRetrySuppression = 15 * time.Minute
+	ModelsDevSource         = backend.ModelsDevSource
+	PricingCatalogTTL       = backend.PricingCatalogTTL
+	PricingRetrySuppression = backend.PricingRetrySuppression
 )
 
-type PricingProvenance struct {
-	Source                string
-	SourceDigest          string
-	SyncedAt              time.Time
-	CatalogSource         string
-	CatalogDigest         string
-	CatalogSyncedAt       time.Time
-	CatalogExpiresAt      time.Time
-	CatalogRetryAt        time.Time
-	CatalogLastError      string
-	CatalogBindingsDigest string
-}
+type PricingProvenance = backend.PricingProvenance
 
-type PricingSnapshot struct {
-	KiroUSDPerCredit *model.NanoUSD
-	Rules            []aggregate.PricingRule
-	Overrides        []aggregate.PricingRule
-	Catalog          []aggregate.PricingRule
-	Provenance       PricingProvenance
-}
+type PricingSnapshot = backend.PricingSnapshot
 
-type PricingRefreshResult struct {
-	Snapshot  PricingSnapshot
-	State     string
-	Attempted bool
-	Err       error
-}
+type PricingRefreshResult = backend.PricingRefreshResult
 
-type PricingFetcher interface {
-	Fetch(context.Context) (PricingCatalog, error)
-}
+type PricingFetcher = backend.PricingFetcher
 
-type PricingCatalog struct {
-	Rules     []aggregate.PricingRule
-	Digest    string
-	Providers []CatalogProvider
-	// BindingsDigest identifies the catalog bindings the rules were built
-	// from so a reconfigure during an in-flight fetch still triggers a refetch.
-	BindingsDigest string
-}
+type PricingCatalog = backend.PricingCatalog
 
-type CatalogProvider struct {
-	ID   string
-	Name string
-}
+type CatalogProvider = backend.CatalogProvider
 
 // PricingCatalogStore is the persistence contract used by the service layer.
 // Replacing a catalog updates pricing for subsequent writes immediately.
-type PricingCatalogStore interface {
-	PriceBook(context.Context) (aggregate.PriceBook, error)
-	UpdatePriceBook(context.Context, aggregate.PriceBook) (aggregate.PriceBook, error)
-	PricingRules(context.Context) (aggregate.PriceBook, PricingProvenance, error)
-	PricingSnapshot(context.Context) (PricingSnapshot, error)
-	ReplacePricingRules(context.Context, []aggregate.PricingRule, PricingProvenance) error
-}
+type PricingCatalogStore = backend.PricingCatalogStore
 
 func (s *SQLiteStore) PriceBook(ctx context.Context) (aggregate.PriceBook, error) {
 	book, _, err := s.PricingRules(ctx)

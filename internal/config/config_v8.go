@@ -554,7 +554,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 	sections := v8AllowedRoots()
 	// Shared roots exist in both layouts, so they never mark a document as v8. analytics is a
 	// fork root that legacy saves also write, so it must not flip the next v0 save to v8.
-	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client", "analytics"} {
+	for _, shared := range []string{"api-keys", "plugins", "quota-exceeded", "routing", "client", "analytics", "clickhouse"} {
 		delete(sections, shared)
 	}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -584,7 +584,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 }
 
 func v8AllowedRoots() map[string]bool {
-	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true, "analytics": true}
+	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true, "analytics": true, "clickhouse": true}
 	for _, path := range v8Paths {
 		section, _, _ := strings.Cut(path.current, ".")
 		allowed[section] = true

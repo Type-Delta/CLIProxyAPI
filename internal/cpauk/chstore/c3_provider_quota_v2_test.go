@@ -1,0 +1,148 @@
+package chstore
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
+)
+
+func TestProviderCredentialsAggregatesSanitizedUsageErrorsAndDurableStatus(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := openTestStore(t)
+	start := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	credentialID := strings.Repeat("c", 64)
+	rawAuthID := "raw-auth-secret-must-not-escape"
+	authType := "oauth"
+	firstError, latestError := "upstream", "rate_limit"
+	events := []model.Event{
+		c3V2Event("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "11111111111111111111111111111111", strings.Repeat("d", 64), start.Add(time.Minute), false, &firstError, 0, 0, 10, 20),
+		c3V2Event("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "22222222222222222222222222222222", strings.Repeat("d", 64), start.Add(2*time.Minute), false, &latestError, 0, 0, 10, 20),
+		c3V2Event("cccccccccccccccccccccccccccccccc", "33333333333333333333333333333333", strings.Repeat("d", 64), start.Add(3*time.Minute), true, nil, 0, 0, 10, 20),
+	}
+	for index := range events {
+		events[index].CredentialID = &credentialID
+		algorithm := model.CredentialIDAlgorithm
+		events[index].CredentialIDAlgorithm = &algorithm
+		events[index].AuthType = &authType
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	reset := start.Add(time.Hour)
+	observed := start.Add(4 * time.Minute)
+	if err := database.ReplaceProviderQuotaSnapshots(ctx, []ProviderQuotaSnapshot{{
+		Provider: "provider-v2", CredentialID: credentialID, Available: false, QuotaExceeded: true,
+		NextResetAt: &reset, ObservedAt: observed,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, err := database.ProviderCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(credentials) != 1 {
+		t.Fatalf("provider credentials = %+v", credentials)
+	}
+	credential := credentials[0]
+	if credential.CredentialID != credentialID || credential.Provider != "provider-v2" || credential.AuthType != authType || credential.Requests != 3 || credential.Failed != 2 {
+		t.Fatalf("provider credential totals = %+v", credential)
+	}
+	if credential.Status != "quota_exceeded" || credential.LastErrorClass == nil || *credential.LastErrorClass != latestError || credential.LastErrorAt == nil || !credential.LastErrorAt.Equal(events[1].RequestedAt) {
+		t.Fatalf("provider credential state = %+v", credential)
+	}
+	if credential.Quota == nil || credential.Quota.ResetsAt == nil || !credential.Quota.ResetsAt.Equal(reset) || !credential.ObservedAt.Equal(observed) {
+		t.Fatalf("provider credential quota = %+v", credential)
+	}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), rawAuthID) || strings.Contains(string(encoded), `"auth_index"`) {
+		t.Fatalf("provider credentials exposed raw identity: %s", encoded)
+	}
+}
+
+func TestProviderCredentialsCountsDistinctRequestsAcrossRawRetainedAndAuthGroups(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := openTestStore(t)
+	start := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	credentialID := strings.Repeat("c", 64)
+	requestID := strings.Repeat("1", 32)
+	authTypes := []string{"api-key", "oauth"}
+	events := []model.Event{
+		c3V2Event(strings.Repeat("a", 32), requestID, strings.Repeat("d", 64), start.Add(time.Minute), false, c3PointerString("upstream"), 0, 0, 10, 20),
+		c3V2Event(strings.Repeat("b", 32), requestID, strings.Repeat("d", 64), start.Add(time.Hour+time.Minute), true, nil, 0, 0, 10, 20),
+	}
+	for index := range events {
+		events[index].CredentialID = &credentialID
+		algorithm := model.CredentialIDAlgorithm
+		events[index].CredentialIDAlgorithm = &algorithm
+		events[index].AuthType = &authTypes[index]
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplyRetention(ctx, start.Add(time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, err := database.ProviderCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(credentials) != 1 || credentials[0].Requests != 1 || credentials[0].Failed != 1 || credentials[0].AuthType != "oauth" {
+		t.Fatalf("provider credentials = %+v, want one distinct request and latest auth type", credentials)
+	}
+}
+
+func TestProviderCredentialsRetainedKeepsAuthTypeAndActualObservationTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := openTestStore(t)
+	start := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	keyID := strings.Repeat("d", 64)
+	credentialIDs := []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
+	events := []model.Event{
+		c3V2Event(strings.Repeat("a", 32), strings.Repeat("1", 32), keyID, start.Add(6*time.Minute), true, nil, 0, 0, 10, 20),
+		c3V2Event(strings.Repeat("b", 32), strings.Repeat("2", 32), keyID, start.Add(11*time.Minute), true, nil, 0, 0, 10, 20),
+	}
+	authType := "oauth"
+	for index := range events {
+		events[index].CredentialID = &credentialIDs[index]
+		algorithm := model.CredentialIDAlgorithm
+		events[index].CredentialIDAlgorithm = &algorithm
+		events[index].AuthType = &authType
+	}
+	if err := database.WriteBatch(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ApplyRetention(ctx, start.AddDate(0, 0, 1), 100); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := database.ProviderCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(credentials) != len(events) {
+		t.Fatalf("retained provider credentials = %+v", credentials)
+	}
+	byID := make(map[string]model.ProviderCredential, len(credentials))
+	for _, credential := range credentials {
+		byID[credential.CredentialID] = credential
+	}
+	for index, event := range events {
+		credential := byID[credentialIDs[index]]
+		if credential.AuthType != authType || !credential.ObservedAt.Equal(event.RequestedAt) {
+			t.Fatalf("retained credential %s = %+v, want auth=%q observed=%s", credentialIDs[index], credential, authType, event.RequestedAt)
+		}
+	}
+}
+
+func c3PointerString(value string) *string { return &value }

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -68,7 +68,7 @@ func (h *Handler) collectQuotaHistory(ctx context.Context) {
 	}
 }
 
-func (h *Handler) collectQuotaHistoryCredential(ctx context.Context, auth *coreauth.Auth, provider string, service quotaHistoryService) ([]store.QuotaHistorySample, error) {
+func (h *Handler) collectQuotaHistoryCredential(ctx context.Context, auth *coreauth.Auth, provider string, service quotaHistoryService) ([]backend.QuotaHistorySample, error) {
 	auth.EnsureIndex()
 	id, err := service.CredentialID(provider, auth.Index, auth.ID)
 	if err != nil || id == nil {
@@ -78,7 +78,7 @@ func (h *Handler) collectQuotaHistoryCredential(ctx context.Context, auth *corea
 	if plan == "" {
 		plan, _ = auth.Metadata["plan_type"].(string)
 	}
-	var samples []store.QuotaHistorySample
+	var samples []backend.QuotaHistorySample
 	appendWindow := func(window string, remaining float64, reset *time.Time, hours, capacity *float64) {
 		if math.IsNaN(remaining) || math.IsInf(remaining, 0) || remaining < 0 || remaining > 100 {
 			return
@@ -86,7 +86,7 @@ func (h *Handler) collectQuotaHistoryCredential(ctx context.Context, auth *corea
 		if plan != "" && !quotaHistoryIdentifier.MatchString(plan) {
 			plan = ""
 		}
-		samples = append(samples, store.QuotaHistorySample{Provider: provider, CredentialID: *id, WindowID: window, RemainingPercent: remaining, ResetAt: reset, PeriodHours: hours, Capacity: capacity, PlanID: plan, Source: "cpa_auto"})
+		samples = append(samples, backend.QuotaHistorySample{Provider: provider, CredentialID: *id, WindowID: window, RemainingPercent: remaining, ResetAt: reset, PeriodHours: hours, Capacity: capacity, PlanID: plan, Source: "cpa_auto"})
 	}
 	var endpoint, name string
 	switch provider {

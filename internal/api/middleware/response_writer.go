@@ -13,9 +13,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/record"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -84,6 +88,10 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	// CRITICAL: Write to client first (zero latency)
 	n, err := w.ResponseWriter.Write(data)
 
+	if n > 0 && w.firstChunkTimestamp.IsZero() {
+		w.firstChunkTimestamp = time.Now()
+	}
+
 	// THEN: Handle logging based on response type
 	if w.isStreaming && w.chunkChannel != nil {
 		// Capture TTFB on first chunk (synchronous, before async channel send)
@@ -94,6 +102,9 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 		select {
 		case w.chunkChannel <- append([]byte(nil), data...): // Non-blocking send with copy
 		default: // Channel full, skip logging to avoid blocking
+			if writer, ok := w.streamWriter.(interface{ DroppedChunk() }); ok {
+				writer.DroppedChunk()
+			}
 		}
 		return n, err
 	}
@@ -137,6 +148,10 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 	// CRITICAL: Write to client first (zero latency)
 	n, err := w.ResponseWriter.WriteString(data)
 
+	if n > 0 && w.firstChunkTimestamp.IsZero() {
+		w.firstChunkTimestamp = time.Now()
+	}
+
 	// THEN: Capture for logging
 	if w.isStreaming && w.chunkChannel != nil {
 		// Capture TTFB on first chunk (synchronous, before async channel send)
@@ -146,6 +161,9 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 		select {
 		case w.chunkChannel <- []byte(data):
 		default:
+			if writer, ok := w.streamWriter.(interface{ DroppedChunk() }); ok {
+				writer.DroppedChunk()
+			}
 		}
 		return n, err
 	}
@@ -170,7 +188,11 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 	w.isStreaming = w.detectStreaming(contentType)
 
 	// If streaming, initialize streaming log writer
-	if w.isStreaming && w.logger.IsEnabled() {
+	streamLoggingEnabled := w.logger.IsEnabled()
+	if _, ok := w.logger.(*logging.TelemetryRequestLogger); ok {
+		streamLoggingEnabled = !w.logOnErrorOnly
+	}
+	if w.isStreaming && streamLoggingEnabled {
 		streamWriter, err := w.logger.LogStreamingRequest(
 			w.requestInfo.URL,
 			w.requestInfo.Method,
@@ -185,7 +207,7 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 			w.streamDone = doneChan
 
 			// Start async chunk processor
-			go w.processStreamingChunks(doneChan)
+			go processStreamingChunks(doneChan, w.chunkChannel, streamWriter)
 
 			// Write status immediately
 			_ = streamWriter.WriteStatus(statusCode, w.headers)
@@ -247,19 +269,10 @@ func (w *ResponseWriterWrapper) detectStreaming(contentType string) bool {
 
 // processStreamingChunks runs in a separate goroutine to process response chunks from the chunkChannel.
 // It asynchronously writes each chunk to the streaming log writer.
-func (w *ResponseWriterWrapper) processStreamingChunks(done chan struct{}) {
-	if done == nil {
-		return
-	}
-
+func processStreamingChunks(done chan struct{}, chunks <-chan []byte, writer logging.StreamingLogWriter) {
 	defer close(done)
-
-	if w.streamWriter == nil || w.chunkChannel == nil {
-		return
-	}
-
-	for chunk := range w.chunkChannel {
-		w.streamWriter.WriteChunkAsync(chunk)
+	for chunk := range chunks {
+		writer.WriteChunkAsync(chunk)
 	}
 }
 
@@ -298,6 +311,74 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	apiRequestSource := w.extractAPIRequestSource(c)
 	apiResponseSource := w.extractAPIResponseSource(c)
 	apiWebsocketTimelineSource := w.extractAPIWebsocketTimelineSource(c)
+	if telemetry, ok := w.logger.(*logging.TelemetryRequestLogger); ok {
+		defer cleanupFileBodySources(websocketTimelineSource, apiRequestSource, apiResponseSource, apiWebsocketTimelineSource)
+		captureValue, _ := c.Get(logging.TelemetryCaptureContextKey)
+		capture, _ := captureValue.(*logging.TelemetryCapture)
+		var attempts []record.Attempt
+		if capture != nil {
+			capture.AddSecret(c.GetString("userApiKey"))
+			attempts = capture.Finish()
+		}
+		telemetryForceLog := w.logOnErrorOnly && hasAPIError
+		if w.logOnErrorOnly && !telemetryForceLog {
+			return nil
+		}
+		var response = w.extractResponseBody(c)
+		var truncated bool
+		if stream, ok := w.streamWriter.(*logging.TelemetryStreamingWriter); ok {
+			if w.chunkChannel != nil {
+				close(w.chunkChannel)
+			}
+			if w.streamDone != nil {
+				<-w.streamDone
+				w.streamDone = nil
+			}
+			w.chunkChannel = nil
+			var errStream error
+			response, truncated, errStream = stream.Finish()
+			if errStream != nil {
+				log.WithError(errStream).Warn("failed to read telemetry stream")
+			}
+			w.streamWriter = nil
+		}
+		response = logging.DecompressTelemetryResponse(w.cloneHeaders(), response)
+		timeline, errTimeline := mergeFileBodySource(w.extractWebsocketTimeline(c), websocketTimelineSource)
+		if errTimeline != nil {
+			return errTimeline
+		}
+		detail := record.DetailFull
+		if telemetryForceLog {
+			detail = record.DetailError
+		}
+		req := &record.Request{RequestID: w.requestInfo.RequestID, StartedAt: w.requestInfo.Timestamp, FirstChunkAt: w.firstChunkTimestamp, FinishedAt: time.Now(), Method: w.requestInfo.Method, URL: w.requestInfo.URL, Headers: logging.MaskHeaders(w.requestInfo.Headers), Body: w.extractRequestBody(c), Status: finalStatusCode, ResponseHeaders: logging.MaskHeaders(w.cloneHeaders()), Response: response, Streaming: w.isStreaming, ResponseTruncated: truncated, WebsocketTimeline: timeline, Attempts: attempts, Detail: detail, Source: record.SourceLive, Transport: record.TransportHTTP}
+		if isResponsesWebsocketUpgrade(c.Request) {
+			req.Transport = record.TransportWebsocket
+		}
+		if c.Request != nil {
+			req.ProxyRequestID = coreusage.ProxyRequestIDFromContext(c.Request.Context())
+		}
+		if key := c.GetString("userApiKey"); key != "" {
+			req.ActorKeyID = config.APIKeyID(key)
+		}
+		if info, ok := session.ExtractSessionInfo(http.Header(w.requestInfo.Headers), req.Body, nil); ok {
+			req.SessionID = info.SessionID
+		}
+		for _, apiErr := range slicesAPIResponseError {
+			if apiErr != nil && apiErr.Error != nil {
+				message := apiErr.Error.Error()
+				if capture != nil {
+					message = capture.Redact(message)
+				}
+				req.Errors = append(req.Errors, message)
+			}
+		}
+		if errWrite := telemetry.WriteRecord(req); errWrite != nil {
+			log.WithError(errWrite).Warn("failed to publish telemetry request")
+			return errWrite
+		}
+		return nil
+	}
 	if !w.logger.IsEnabled() && !forceLog {
 		cleanupFileBodySources(websocketTimelineSource, apiRequestSource, apiResponseSource, apiWebsocketTimelineSource)
 		return nil

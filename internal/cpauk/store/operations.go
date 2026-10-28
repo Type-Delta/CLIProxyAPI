@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"io"
 	"net/url"
 	"os"
@@ -25,35 +26,11 @@ type backupDriver interface {
 	NewRestore(string) (*sqlite.Backup, error)
 }
 
-type BackupManifest struct {
-	SchemaVersion          int    `json:"schema_version"`
-	IdentityEpoch          string `json:"identity_epoch"`
-	DatabaseFile           string `json:"database_file"`
-	DatabaseSHA256         string `json:"database_sha256"`
-	IdentityKeyFile        string `json:"identity_key_file"`
-	IdentityKeySHA256      string `json:"identity_key_sha256"`
-	IdentityKeyFingerprint string `json:"identity_key_fingerprint"`
-	CreatedAt              string `json:"created_at"`
-}
+type BackupManifest = backend.BackupManifest
 
-type RetentionResult struct {
-	Cutoff            time.Time
-	HourlyCutoff      time.Time
-	RolledUpRows      int64
-	DeletedRows       int64
-	DailyRolledUpRows int64
-	DeletedHourlyRows int64
-	RawCheckpoint     *time.Time
-	HourlyCheckpoint  *time.Time
-}
+type RetentionResult = backend.RetentionResult
 
-func BackupID(manifest BackupManifest) (string, error) {
-	digest, err := hex.DecodeString(manifest.DatabaseSHA256)
-	if err != nil || len(digest) != sha256.Size {
-		return "", fmt.Errorf("backup manifest database digest is invalid")
-	}
-	return "backup-" + manifest.DatabaseSHA256, nil
-}
+func BackupID(manifest BackupManifest) (string, error) { return backend.BackupID(manifest) }
 
 func (s *SQLiteStore) IntegrityCheck(ctx context.Context) error {
 	s.mu.RLock()
@@ -1009,4 +986,8 @@ func modelIdentityFingerprint(identity []byte) (string, error) {
 	}
 	digest := sha256.Sum256(identity)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *SQLiteStore) VerifyBackup(ctx context.Context, path, manifest string) (BackupManifest, error) {
+	return VerifyBackup(ctx, path, manifest)
 }

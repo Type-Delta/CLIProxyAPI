@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 func TestControllerExcludesJobsAndCancelsAtOperationBoundary(t *testing.T) {
@@ -106,7 +108,7 @@ func TestControllerAwaitShutdownAndPrune(t *testing.T) {
 
 func TestStoreOperationsExposeImportRepairAndIdentityRecovery(t *testing.T) {
 	ctx := context.Background()
-	database, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
+	database, err := openMaintenanceStore(ctx, chtest.Handle(t), store.Config{Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,7 @@ func TestStoreOperationsExposeImportRepairAndIdentityRecovery(t *testing.T) {
 func TestBackupAndRestoreBindVerifiedBackupID(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()
-	database, err := store.Open(ctx, store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
+	database, err := openMaintenanceStore(ctx, chtest.Handle(t), store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +182,7 @@ func TestBackupAndRestoreBindVerifiedBackupID(t *testing.T) {
 func TestPurgeRequiresBoundPreviewConfirmationAndBackup(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()
-	database, err := store.Open(ctx, store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
+	database, err := openMaintenanceStore(ctx, chtest.Handle(t), store.Config{Path: filepath.Join(directory, "analytics.db"), MaxStorageBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,4 +266,15 @@ func TestControllerCloseCancelsActiveJobBeforeReturning(t *testing.T) {
 	default:
 		t.Fatal("controller close returned before operation cancellation boundary")
 	}
+}
+
+func openMaintenanceStore(ctx context.Context, handle *clickhouse.Handle, cfg store.Config) (*store.Store, error) {
+	database, err := store.Open(ctx, handle, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err = store.RunLegacyImport(ctx, database, cfg.Path); err != nil {
+		return nil, err
+	}
+	return database, nil
 }

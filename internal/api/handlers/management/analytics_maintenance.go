@@ -103,6 +103,7 @@ func validPurgeBatchID(value string) bool {
 func (h *Handler) RepairAnalytics(c *gin.Context) {
 	var request struct {
 		Kind        string `json:"kind"`
+		Reason      string `json:"reason,omitempty"`
 		ArchivePath string `json:"archive_path,omitempty"`
 		Confirmed   bool   `json:"confirmed,omitempty"`
 	}
@@ -111,6 +112,13 @@ func (h *Handler) RepairAnalytics(c *gin.Context) {
 		return
 	}
 	switch request.Kind {
+	case "abandon_legacy_import":
+		reason := strings.TrimSpace(request.Reason)
+		if reason == "" {
+			writeAnalyticsInvalid(c, fmt.Errorf("legacy import abandonment requires a reason"))
+			return
+		}
+		h.startAnalyticsJob(c, request.Kind, map[string]any{"reason": reason})
 	case "integrity_check", "checkpoint", "reindex":
 		h.startAnalyticsJob(c, request.Kind, nil)
 	case "start_new_identity_epoch":

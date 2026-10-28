@@ -205,6 +205,26 @@ func ResolveLogDirectory(cfg *config.Config) string {
 	return logDir
 }
 
+// ConfiguredLogDirectory returns the absolute directory bound by ConfigureLogOutput.
+// The runtime-only binding survives config clones; independent configs without a
+// binding resolve their own directory without inheriting process-global state.
+func ConfiguredLogDirectory(cfg *config.Config) (string, error) {
+	writerMu.RLock()
+	defer writerMu.RUnlock()
+	return configuredLogDirectoryLocked(cfg)
+}
+
+func configuredLogDirectoryLocked(cfg *config.Config) (string, error) {
+	if cfg != nil && cfg.RuntimeLogDirectory != "" {
+		return filepath.Abs(cfg.RuntimeLogDirectory)
+	}
+	dir, err := filepath.Abs(ResolveLogDirectory(cfg))
+	if err != nil {
+		return "", fmt.Errorf("logging: resolve absolute log directory: %w", err)
+	}
+	return dir, nil
+}
+
 // ConfigureLogOutput switches the global log destination between rotating files and stdout.
 // When logsMaxTotalSizeMB > 0, a background cleaner removes the oldest log files in the logs directory
 // until the total size is within the limit.
@@ -214,7 +234,10 @@ func ConfigureLogOutput(cfg *config.Config) error {
 	writerMu.Lock()
 	defer writerMu.Unlock()
 
-	logDir := ResolveLogDirectory(cfg)
+	logDir, err := configuredLogDirectoryLocked(cfg)
+	if err != nil {
+		return err
+	}
 
 	protectedPath := ""
 	if cfg.LoggingToFile {
@@ -241,6 +264,9 @@ func ConfigureLogOutput(cfg *config.Config) error {
 		log.SetOutput(os.Stdout)
 	}
 
+	if cfg.RuntimeLogDirectory == "" {
+		cfg.RuntimeLogDirectory = logDir
+	}
 	configureLogDirCleanerLocked(logDir, cfg.LogsMaxTotalSizeMB, protectedPath)
 	return nil
 }

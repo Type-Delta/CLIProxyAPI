@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	backenddto "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/importer"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 var ErrBackupInvalid = errors.New("analytics backup is invalid")
@@ -21,23 +22,45 @@ type Store interface {
 	IntegrityCheck(context.Context) error
 	Checkpoint(context.Context) error
 	Reindex(context.Context) error
-	Backup(context.Context, string) (store.BackupManifest, error)
+	Backup(context.Context, string) (backenddto.BackupManifest, error)
+	VerifyBackup(context.Context, string, string) (backenddto.BackupManifest, error)
 	Restore(context.Context, string, string) error
 	PreviewPurgeByKeyID(context.Context, string) (int64, error)
 	PurgeByKeyID(context.Context, string) (int64, error)
 	RollbackImport(context.Context, string) (int64, error)
-	ApplyRetention(context.Context, time.Time, int) (store.RetentionResult, error)
-	ApplyRetentionPolicy(context.Context, time.Time, time.Time, int) (store.RetentionResult, error)
-	Reprice(context.Context, store.RepriceOptions, func(int, string)) (store.RepriceResult, error)
+	ApplyRetention(context.Context, time.Time, int) (backenddto.RetentionResult, error)
+	ApplyRetentionPolicy(context.Context, time.Time, time.Time, int) (backenddto.RetentionResult, error)
+	Reprice(context.Context, backenddto.RepriceOptions, func(int, string)) (backenddto.RepriceResult, error)
 	IdentityKeyArray() [32]byte
 	WriteImportBatch(context.Context, []model.Event, string) (int64, error)
 	LoadImportCheckpoint(context.Context, string) ([]byte, bool, error)
 	SaveImportCheckpoint(context.Context, string, string, string, int64, int, []byte, bool, [5]int64) error
-	StartNewIdentityEpoch(context.Context) (store.EpochResult, error)
+	StartNewIdentityEpoch(context.Context) (backenddto.EpochResult, error)
 }
 
 func StoreOperations(database Store) map[string]Operation {
 	return map[string]Operation{
+		"abandon_legacy_import": func(ctx context.Context, options map[string]any, progress ProgressFunc) (map[string]any, error) {
+			reason, err := stringOption(options, "reason")
+			if err != nil {
+				return nil, err
+			}
+			reason = strings.TrimSpace(reason)
+			if reason == "" {
+				return nil, fmt.Errorf("legacy import abandonment requires a reason")
+			}
+			abandoner, ok := database.(interface {
+				AbandonLegacyImport(context.Context, string) error
+			})
+			if !ok {
+				return nil, fmt.Errorf("legacy import abandonment is unsupported by this backend")
+			}
+			progress(50, "abandon_legacy_import")
+			if err = abandoner.AbandonLegacyImport(ctx, reason); err != nil {
+				return nil, err
+			}
+			return map[string]any{"state": "abandoned", "reason": reason}, nil
+		},
 		"reprice": func(ctx context.Context, options map[string]any, progress ProgressFunc) (map[string]any, error) {
 			selected, ok := options["range"].(model.Range)
 			if !ok {
@@ -64,7 +87,7 @@ func StoreOperations(database Store) map[string]Operation {
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				result, errReprice := database.Reprice(ctx, store.RepriceOptions{
+				result, errReprice := database.Reprice(ctx, backenddto.RepriceOptions{
 					Range: selected, DryRun: dryRun, Resume: resume,
 					ChunkSize: chunkSize, ResumeCheckpoint: checkpoint,
 				}, nil)
@@ -117,7 +140,7 @@ func StoreOperations(database Store) map[string]Operation {
 			if err != nil {
 				return nil, err
 			}
-			backupID, err := store.BackupID(manifest)
+			backupID, err := backenddto.BackupID(manifest)
 			if err != nil {
 				return nil, err
 			}
@@ -138,11 +161,11 @@ func StoreOperations(database Store) map[string]Operation {
 				return nil, err
 			}
 			progress(20, "verify_backup")
-			verified, err := store.VerifyBackup(ctx, path, manifest)
+			verified, err := database.VerifyBackup(ctx, path, manifest)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrBackupInvalid, err)
 			}
-			expectedID, err := store.BackupID(verified)
+			expectedID, err := backenddto.BackupID(verified)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrBackupInvalid, err)
 			}
@@ -182,7 +205,7 @@ func StoreOperations(database Store) map[string]Operation {
 			if err != nil {
 				return nil, err
 			}
-			backupID, err := store.BackupID(manifest)
+			backupID, err := backenddto.BackupID(manifest)
 			if err != nil {
 				return nil, err
 			}

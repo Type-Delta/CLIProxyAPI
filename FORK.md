@@ -1,6 +1,6 @@
 # CLIProxyAPI Fork
 
-This fork keeps per-API-key request and token usage limits, failure-isolated CPAUK analytics, a pinned CPAMC client, and reproducible web-console packaging that are not supplied by upstream.
+This fork keeps per-API-key request and token usage limits, failure-isolated CPAUK analytics, an optional ClickHouse server mode with searchable request transcripts and agent SQL, a pinned CPAMC client, and reproducible web-console packaging that are not supplied by upstream.
 
 ## Divergence Log
 
@@ -133,7 +133,9 @@ check pass for the updated client.
 
 CPA carries optional CPAUK analytics behind the `internal/cpauk` package boundary. The port adapts observable behavior from upstream CPA Usage Keeper v1.15.0 at commit `696a4659ce1d5d6f2d2d0530e3205eb51fbce889` without importing its GORM, CGO SQLite, HTTP server, authentication, or process-lifecycle architecture. Analytics are disabled by default and have independent startup, health, circuit, maintenance, and shutdown states. Bounded, lossy observer delivery runs only after synchronous per-key accounting; storage errors, panics, queue saturation, and invalid analytics configuration cannot change proxy readiness or request success. The SDK usage manager keeps trusted accounting separate from generic observer delivery, with independent bounded lanes, taps, drain behavior, and access-provider/native-key metadata in each record.
 
-The module sanitizes usage records before enqueue, persists full SHA-256 key identities in a separate pure-Go SQLite database, and retains a separate random identity key for credential pseudonyms and encrypted cursors. Checksummed migrations, quota reserves, verified backup and restore, corruption guards, hourly and daily rollups, monotonic retention checkpoints, resumable import and rollback, resumable raw-history repricing with an explicit retained-history cutoff, confirmed purge batches, repair jobs, and identity-epoch recovery are isolated from CPA's auth and limit state. Event detail is indexed; event APIs reject retained-away ranges rather than returning partial history. API schema v2 adds outcome and rate summaries, zero-filled activity and analysis series, full-range latency statistics with capped distributed scatter samples, once-per-event cost-component reconciliation, named range resolution, complete sanitized CSV/JSON exports, missing-price provenance, and credential-level provider/quota rows with request identity deduplication while retaining schema-v1 requests and fields. Current-period named ranges end at request time instead of including future buckets. Summary, time series, dimensions, event pages, pricing, provider quotas, key catalog, and token- or known-cost leaderboards share bounded multi-key query contracts and explicitly report unpriced tokens.
+Runtime analytics require ClickHouse server mode (DL060). The original pure-Go SQLite store described below is frozen as the one-time import source and the differential test oracle for the ClickHouse store, which preserves the same contracts. Its migration numbers in this and later entries describe the legacy import format.
+
+The module sanitizes usage records before enqueue, persists full SHA-256 key identities in its analytics database, and retains a separate random identity key for credential pseudonyms and encrypted cursors. Checksummed migrations, quota reserves, verified backup and restore, corruption guards, hourly and daily rollups, monotonic retention checkpoints, resumable import and rollback, resumable raw-history repricing with an explicit retained-history cutoff, confirmed purge batches, repair jobs, and identity-epoch recovery are isolated from CPA's auth and limit state. Event detail is indexed; event APIs reject retained-away ranges rather than returning partial history. API schema v2 adds outcome and rate summaries, zero-filled activity and analysis series, full-range latency statistics with capped distributed scatter samples, once-per-event cost-component reconciliation, named range resolution, complete sanitized CSV/JSON exports, missing-price provenance, and credential-level provider/quota rows with request identity deduplication while retaining schema-v1 requests and fields. Current-period named ranges end at request time instead of including future buckets. Summary, time series, dimensions, event pages, pricing, provider quotas, key catalog, and token- or known-cost leaderboards share bounded multi-key query contracts and explicitly report unpriced tokens.
 
 Pricing discovery uses models.dev with a durable six-hour cache. Usage activity and pricing-page reads request refreshes on demand; startup and idle time do not schedule catalog downloads. Concurrent demand shares a refresh, and failures retain the last successful catalog with a 15-minute retry delay. Manual model and alias overrides are stored separately and take precedence over discovered prices. Catalog matching uses explicit provider mappings and exact model IDs. CPAMC presents these as API-equivalent cost estimates, including for subscription-backed OAuth accounts; context-dependent rates and non-token charges remain outside these estimates. Historical events retain their stored cost until an explicit repricing job runs. Tests cover TTL expiry, concurrent refreshes, persistence, stale fallback, decimal parsing, and prices applied to newly ingested events. Live models.dev and browser checks cover catalog loading and override creation/removal.
 
@@ -151,7 +153,7 @@ A 2026-09-08 metric audit produced eleven corrections. The intake adapter now pe
 
 **Recorded validation:** the canonical Anthropic adapter regression and OpenAI compatibility tests pass, along with the existing CPAUK, schema-v2 contract, usage-delivery, API integration, deterministic load-adapter, retention/reopen, migration, backup/restore, import/rollback, repricing, DST and fractional-zone bucketing, latency, cost reconciliation, provider-quota, and failure-containment tests. The seeded UTC fixture resolves to 5,250 requests, 68,083,696 tokens, $295.62446097 known cost, 5,070 successes, and 180 failures. The required disposable server compile and ordinary full repository suite pass. The dedicated approximately 110-minute load certification remains an environment-specific release result and is not claimed by this checkout.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-28
 
 ### DL006 - Reproducible embedded CPAMC artifact
 
@@ -1796,11 +1798,17 @@ entire parent directory. Its active path is measured when a new configured path 
 Missing directories still expose the capacity of their existing filesystem. Scans are coalesced
 and cached for 15 seconds, with invalidation when measured locations change.
 
+In ClickHouse server mode (DL060) the response adds a `clickhouse` object with reachability,
+the database, and one breakdown per ClickHouse disk: CPA analytics, request logs and transcripts,
+other CPA tables, other databases' active parts, and remaining disk usage. Only the configured
+CPA database is attributed to CPA. Racing disk and part readings are capped and marked partial.
+Local volumes remain reported when ClickHouse is unreachable.
+
 CPAMC adds a theme-aware stacked bar and a numeric legend to Collection and storage, with
 one breakdown per filesystem, refresh, a measurement timestamp, and expandable measured
 locations. All six locales include loading, unavailable, unsupported, and partial-result copy.
 
-**Implementation evidence:** `internal/storageusage/`,
+**Implementation evidence:** `internal/storageusage/` (including `clickhouse.go`),
 `internal/api/handlers/management/{storage.go,storage_test.go,handler.go}`,
 `internal/api/{server_management_v8.go,server_management_v8_test.go}`,
 `internal/cpauk/service.go`, and the CPAMC storage API and Config Panel components.
@@ -1814,7 +1822,7 @@ statistics, and a real analytics backup is included under CPA data. The reposito
 image builds and serves the panel; its storage endpoint reports the bind-mounted filesystem
 and rejects unauthenticated requests.
 
-**Last updated:** 2026-10-27
+**Last updated:** 2026-10-28
 
 ### DL056 - Per-model cost series by service tier
 
@@ -1906,8 +1914,10 @@ recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa
 
 ### DL059 - Quota window history and hourly collection
 
-Migration 017 stores per-credential quota window samples: provider, CPAUK identity HMAC, window,
-remaining percent, reset time, plan, capacity, source, and a server-stamped observation time.
+Per-credential quota window samples record the provider, CPAUK identity HMAC, window, remaining
+percent, reset time, plan, capacity, source, and a server-stamped observation time. ClickHouse
+stores them in the append-only `analytics_quota_history` table (DL060). Legacy SQLite migration
+017 is imported once.
 `POST /v8/management/analytics/quota-history` accepts samples from CPAMC, resolves each auth
 index to its HMAC, and rejects credentials whose quota provider differs from the submitted one.
 `GET` returns samples for a provider and range. Writes keep one sample per credential and window
@@ -1919,7 +1929,8 @@ credentials, spaces reads one second apart, reuses the shared management quota c
 order-independent query parameters), does nothing when analytics is disabled, and stops with
 the server. Other providers are recorded only from CPAMC refreshes.
 
-**Implementation evidence:** `internal/cpauk/store/migrations/017_quota_history.sql`,
+**Implementation evidence:** `internal/cpauk/chstore/{migrations/0001_analytics.sql,quota_history.go}`,
+`internal/cpauk/store/migrations/017_quota_history.sql`,
 `internal/cpauk/{quota_history.go,store/quota_history.go}`,
 `internal/api/handlers/management/{quota_history.go,quota_history_collector.go,api_tools_quota_cache.go,usage_probe.go}`,
 and `internal/api/quota_history_collector.go`.
@@ -1927,6 +1938,128 @@ and `internal/api/quota_history_collector.go`.
 **Validation:** tests cover validation, provider mismatch, throttling, retention, cache reuse with
 a single provider call, Kiro query-order reuse, disabled analytics and credentials, and shutdown.
 Live collection against real provider credentials has not been exercised.
+
+**Last updated:** 2026-10-28
+
+### DL060 - ClickHouse server mode: analytics, request capture, and agent SQL
+
+ClickHouse separates CPA as a local proxy from CPA as a server. Without `clickhouse.dsn`,
+CPA keeps upstream's file request and error logs, and analytics health reports
+`clickhouse_not_configured` while proxying is unaffected. With a DSN, CPAUK analytics and
+request capture use the configured database (`clickhouse.database`, default `cpa`) through
+one shared, lazily connected pool, and request logs are no longer written as files. Home mode
+keeps upstream file request logging even with a DSN. DSN and database changes take effect after
+restart. The log directory is resolved once to an absolute path at startup, in plain mode too, so
+a later working-directory change no longer moves it.
+
+Schema comes from checksummed, embedded migrations per component (`core`, `analytics`,
+`telemetry`), each a single `0001` file. Databases created by earlier pre-release migration
+sequences must be recreated. A `cpa_jobs` journal records one-time jobs. A job row is written
+before the first schema statement, so an interrupted creation still runs its import.
+
+**Request capture.** Each captured request, with every upstream attempt, is written as an
+fsynced, zstd-compressed JSON record under `<logs>/telemetry-outbox/` and atomically renamed. A
+batching ingester loads it into `requests`, `attempts`, `request_contexts`, `transcript_entries`
+and `transcript_content`. `observability.logs.request-log` selects full capture; failed requests
+are force-captured when it is off. `server.commercial-mode` suppresses upstream attempt capture,
+as it does for file logs. Outbox records count toward
+`observability.logs.logs-max-total-size-mb`. During a long outage the oldest are evicted with a
+warning that gives the files and bytes lost. Ingestion is replay-idempotent and pauses during
+ClickHouse outages or low disk. It quarantines a record to `telemetry-outbox/failed/` only for
+decode failures, or for classified deterministic data errors after three attempts.
+
+Transcripts are parsed from client and upstream bodies and stored once. Content is addressed by
+hash and entries chain by semantic ID. Elements whose provider tool-call IDs pass a uniqueness
+guard are anchored independently of earlier history. Resent history and retries therefore add no
+rows. Each request context keeps its ordered entry and content IDs, so request logs are rebuilt
+byte-exact. The existing request-log and error-log management endpoints serve these rebuilds in
+the legacy text format. `clickhouse.telemetry-retention-days` (default 30) bounds request
+retention. Transcript rows are garbage-collected once no retained request references them.
+
+**Agent SQL.** `POST /v8/management/telemetry/query` and `GET /v8/management/telemetry/schema`
+let management-key holders run parameterized read-only SQL over telemetry and analytics. The
+schema response carries table and column comments and example queries, such as a session's
+failing request types and monthly skill-usage counts. Queries run under a separately provisioned
+ClickHouse account with:
+
+- a password HMAC-derived from the DSN password; with no DSN password it is random and held in
+  memory, so sharing the database across CPA processes is unsupported;
+- a read-only settings profile;
+- configurable execution, row, byte and memory limits;
+- privilege-denied external table functions.
+
+Disconnecting cancels the query, and CPA never falls back to its write-capable account.
+`GET /v8/management/telemetry/health` reports the outbox backlog, ingestion errors, and the
+request-log import. `clickhouse.agent-query.enabled: false` disables both query endpoints.
+
+**Analytics on ClickHouse.** `internal/cpauk/chstore` serves the existing v2 analytics contract
+and maintenance API, verified against the frozen SQLite store by differential reader suites:
+
+- versioned ReplacingMergeTree tables read with `FINAL`, events partitioned by UTC month;
+- first-write-wins outcomes, atomic control-generation snapshots, and append-only quota history;
+- retention through persisted bucket bounds and whole-partition drops;
+- signed Int64 nano-USD with overflow-checked sums;
+- logical backup and restore with a crash journal.
+
+`analytics.max-storage-bytes` and `min-free-bytes` apply to the ClickHouse database and its disk.
+Only one CPA process may own an analytics database for writes.
+
+**One-time migration.** On the first creation of each component, CPA imports existing data in the
+background:
+
+- **Analytics:** copies the SQLite database at `analytics.path` with `VACUUM INTO`, migrates only
+  the copy, and adopts the `identity.key` beside it.
+- **Request logs:** parses legacy request and error log files on a best-effort basis, with
+  compression-independent checkpoints.
+
+Both imports resume after interruption, leave source files unchanged, and report state and counts
+through health and CPAMC. Neither reruns after completion. Retention and destructive maintenance
+wait while the analytics import is unfinished. An unreadable source fails the job with its reason.
+The `abandon_legacy_import` repair can then give up the remaining rows explicitly, with a stored
+reason.
+
+`docker-compose.clickhouse.yml` layers a private ClickHouse 26.8 LTS service over the base
+Compose file without publishing its ports. Server shutdown closes CPA-owned WebSocket connections
+before finalizing request capture, so open sockets no longer hold shutdown until its deadline.
+Setup, the API, limits and troubleshooting are in `docs/clickhouse.md`.
+
+**Known limits:**
+
+- Read performance was benchmarked with `internal/cpauk/chstore/c5_bench_test.go` on a
+  5-million-event fixture. Unfiltered 365-day Analysis is the slowest reader, and every read
+  scans the outcomes table. Results depend on hardware.
+- Transcript identity has documented merge and split edge cases.
+- Legacy text-log parsing is best effort.
+- Readable reasoning persistence was not observed live, because the test models returned no
+  reasoning text.
+- Power loss was not fault-injected.
+
+**Implementation evidence:** `internal/clickhouse/`, `internal/config/clickhouse.go`,
+`internal/telemetry/{record,outbox,ingest,transcript,store,legacylog}`,
+`internal/logging/{telemetry_*.go,global_logger.go,log_dir_cleaner.go}`,
+`internal/runtime/executor/helps/logging_helpers.go`,
+`internal/api/{clickhouse.go,telemetry.go,hijacked_connections.go,analytics_options.go,server_options.go}`,
+`internal/api/handlers/management/{telemetry_query.go,telemetry_query_examples.json,logs.go,clickhouse.go}`,
+`internal/cpauk/{backend,chstore}`, `internal/cpauk/service.go`, `docker-compose.clickhouse.yml`,
+`config.example.yaml`, and `docs/clickhouse.md`.
+
+**Validation:** `go test ./... -count=1` passes except
+`TestResponsesLateInterruptDoesNotPoisonNextCreate`, an intermittent Codex WebSocket test that
+fails at the same rate without these changes. `go vet ./...` and the server build pass. Tests
+against a real ClickHouse server cover migrations, ingestion and replay, outages, retention,
+backup and restore, both legacy imports, lifecycle ownership, and differential reads against the
+SQLite store. Live checks ran in Docker, with the Compose override where ClickHouse was needed:
+
+- Claude Code and Codex CLI sessions through CPA produce one transcript entry per executed tool
+  call and result. The shipped monthly skill query counts exactly the real content loads.
+- An upgrade from the previous fork build imports SQLite analytics and request logs once and
+  leaves the sources unchanged.
+- CPA recovers from a ClickHouse restart without its own restart, with no lost or duplicated
+  rows.
+- An unreadable legacy source fails with its reason and can be abandoned. CPAMC shows each
+  state.
+- Without a DSN, a real model request, file request logs, upstream cancellation after a client
+  disconnect, and shutdown with an open WebSocket behave like the previous build.
 
 **Last updated:** 2026-10-28
 

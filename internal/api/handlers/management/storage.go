@@ -1,10 +1,12 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -22,6 +24,7 @@ func (h *Handler) GetStorageUsage(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
 		return
 	}
+	clickHouseDatabase := h.cfg.ClickHouse.Database
 	authDir, errAuth := util.ResolveAuthDir(h.cfg.AuthDir)
 	pluginDir, errPlugins := config.ResolvePluginsDir(h.cfg.Plugins.Dir)
 	logDir := h.logDir
@@ -73,6 +76,22 @@ func (h *Handler) GetStorageUsage(c *gin.Context) {
 	h.mu.Unlock()
 	snapshot := h.storageUsage.Measure(c.Request.Context(), locations)
 	snapshot.Partial = snapshot.Partial || errAuth != nil || errPlugins != nil || (errEntries != nil && !os.IsNotExist(errEntries))
+	if handle := h.ClickHouse(); handle != nil && handle.Configured() {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+		if db, errClickHouse := handle.Get(ctx); errClickHouse == nil {
+			usage := h.storageUsage.MeasureClickHouse(c.Request.Context(), db)
+			snapshot.ClickHouse = &usage
+		} else {
+			snapshot.ClickHouse = &storageusage.ClickHouseStorage{
+				Database:   clickHouseDatabase,
+				Reachable:  false,
+				Message:    "could not connect to ClickHouse",
+				MeasuredAt: time.Now().UTC(),
+				Disks:      []storageusage.ClickHouseDisk{},
+			}
+		}
+	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, snapshot)
 }

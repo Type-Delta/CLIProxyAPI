@@ -161,7 +161,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
-				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig()}
+				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig(), ClickHouse: DefaultClickHouseConfig()}
 				cfg.NormalizePluginsConfig()
 				cfg.NormalizeClaudeConfig()
 				return cfg, nil
@@ -172,7 +172,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(bytes.TrimSpace(data)) == 0 {
-		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig()}
+		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig(), ClickHouse: DefaultClickHouseConfig()}
 		cfg.NormalizePluginsConfig()
 		cfg.NormalizeClaudeConfig()
 		return cfg, nil
@@ -180,7 +180,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		if optional {
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig()}
+			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig(), ClickHouse: DefaultClickHouseConfig()}
 			cfgOptional.NormalizePluginsConfig()
 			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
@@ -197,6 +197,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
 	cfg.Analytics = DefaultAnalyticsConfig()
+	cfg.ClickHouse = DefaultClickHouseConfig()
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.SaveCooldownStatus = false
@@ -213,12 +214,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig()}
+			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig(), ClickHouse: DefaultClickHouseConfig()}
 			cfgOptional.NormalizePluginsConfig()
 			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	if errValidate := cfg.ClickHouse.Validate(); errValidate != nil {
+		return nil, errValidate
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
 		return nil, errValidate

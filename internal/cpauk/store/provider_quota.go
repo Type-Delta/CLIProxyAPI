@@ -5,33 +5,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"slices"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
-const MaxProviderQuotaSnapshots = 10_000
+const MaxProviderQuotaSnapshots = backend.MaxProviderQuotaSnapshots
 
 // ProviderQuotaSnapshot intentionally contains only sanitized identifiers and
 // bounded state. CredentialID must be the CPAUK identity-key HMAC, never an
 // auth ID, file name, token, or other source credential value.
-type ProviderQuotaSnapshot struct {
-	Provider      string
-	CredentialID  string
-	Model         string
-	Available     bool
-	Disabled      bool
-	QuotaExceeded bool
-	NextResetAt   *time.Time
-	ObservedAt    time.Time
-}
+type ProviderQuotaSnapshot = backend.ProviderQuotaSnapshot
 
-type ProviderQuotaStore interface {
-	ReplaceProviderQuotaSnapshots(context.Context, []ProviderQuotaSnapshot) error
-	ProviderQuotaSnapshots(context.Context) ([]ProviderQuotaSnapshot, error)
-	ProviderCredentials(context.Context) ([]model.ProviderCredential, error)
-}
+type ProviderQuotaStore = backend.ProviderQuotaStore
 
 func (s *SQLiteStore) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots []ProviderQuotaSnapshot) error {
 	if len(snapshots) > MaxProviderQuotaSnapshots {

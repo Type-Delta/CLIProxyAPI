@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -30,7 +32,7 @@ func (fn usagePluginFunc) HandleUsage(ctx context.Context, record coreusage.Reco
 }
 
 type blockedSQLiteStore struct {
-	*store.SQLiteStore
+	*store.Store
 	release       <-chan struct{}
 	blockDuration time.Duration
 }
@@ -107,9 +109,13 @@ func newCPAAnalyticsLoadAdapter(config analyticsAdapterConfig) (analyticsLoadAda
 	moduleConfig.MaxStorageBytes = 512 << 20
 	moduleConfig.MinFreeBytes = 64 << 20
 
+	var handle *clickhouse.Handle
+	if moduleConfig.Enabled {
+		handle = chtest.Handle(config.Test)
+	}
 	sqliteRelease := make(chan struct{})
 	factory := func(ctx context.Context, moduleConfig cpauk.Config) (cpauk.Backend, [32]byte, error) {
-		database, errOpen := store.Open(ctx, store.Config{
+		database, errOpen := store.Open(ctx, handle, store.Config{
 			Path:            moduleConfig.Path,
 			IdentityKeyPath: filepath.Join(filepath.Dir(moduleConfig.Path), "identity.key"),
 			MaxStorageBytes: moduleConfig.MaxStorageBytes,
@@ -120,7 +126,7 @@ func newCPAAnalyticsLoadAdapter(config analyticsAdapterConfig) (analyticsLoadAda
 		}
 		backend := cpauk.Backend(database)
 		if config.Mode == modeSQLiteBlocked || config.Mode == modeBothQueuesSaturated {
-			backend = &blockedSQLiteStore{SQLiteStore: database, release: sqliteRelease, blockDuration: blockDuration}
+			backend = &blockedSQLiteStore{Store: database, release: sqliteRelease, blockDuration: blockDuration}
 		}
 		return backend, database.IdentityKeyArray(), nil
 	}
@@ -192,15 +198,16 @@ func waitForAnalyticsState(service cpauk.Service, enabled bool, timeout time.Dur
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		capabilities := service.Capabilities()
-		switch capabilities.State {
-		case model.StateReady:
-			return nil
-		case model.StateCircuitOpen:
+		if capabilities.State == model.StateCircuitOpen {
 			return fmt.Errorf("analytics startup entered circuit_open: category=%s", service.Health().Category)
+		}
+		// Collection is available before legacy import/retention completes.
+		if capabilities.Available {
+			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return fmt.Errorf("analytics startup did not reach ready within %s", timeout)
+	return fmt.Errorf("analytics startup did not reach ready within %s: state=%s category=%s", timeout, service.Capabilities().State, service.Health().Category)
 }
 
 func (a *cpaAnalyticsLoadAdapter) Do(ctx context.Context, request loadRequest) (loadResponse, error) {
@@ -331,7 +338,7 @@ func (a *cpaAnalyticsLoadAdapter) Metrics() adapterMetrics {
 	managerStats := a.usageManager.Stats()
 	capabilities := a.analytics.Capabilities()
 	return adapterMetrics{
-		AnalyticsReady:         capabilities.State == model.StateReady,
+		AnalyticsReady:         capabilities.Available && capabilities.State != model.StateCircuitOpen,
 		AnalyticsState:         string(capabilities.State),
 		SQLiteBlocked:          a.mode == modeSQLiteBlocked || a.mode == modeBothQueuesSaturated,
 		GenericLaneWorkers:     len(managerStats.Lanes),
@@ -374,7 +381,7 @@ func TestCPAAnalyticsLoadAdapterModes(t *testing.T) {
 	for _, mode := range modes {
 		t.Run(string(mode), func(t *testing.T) {
 			upstream := newDeterministicUpstream(t)
-			adapter, errFactory := newCPAAnalyticsLoadAdapter(analyticsAdapterConfig{
+			adapter, errFactory := newCPAAnalyticsLoadAdapter(analyticsAdapterConfig{Test: t,
 				Mode:                   mode,
 				Upstream:               upstream.endpoints(),
 				StateDirectory:         t.TempDir(),

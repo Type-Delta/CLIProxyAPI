@@ -4,15 +4,15 @@ import (
 	"context"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	backenddto "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 )
 
 type quotaHistoryBackend interface {
-	RecordQuotaHistory(context.Context, []store.QuotaHistorySample, time.Time) error
-	QuotaHistory(context.Context, string, time.Time, time.Time) ([]store.QuotaHistorySample, error)
+	RecordQuotaHistory(context.Context, []backenddto.QuotaHistorySample, time.Time) error
+	QuotaHistory(context.Context, string, time.Time, time.Time) ([]backenddto.QuotaHistorySample, error)
 }
 
-func (s *service) RecordQuotaHistory(ctx context.Context, sample []store.QuotaHistorySample) (err error) {
+func (s *service) RecordQuotaHistory(ctx context.Context, sample []backenddto.QuotaHistorySample) (err error) {
 	s.mu.RLock()
 	enabled := s.config.Privacy.StoreCredentialID
 	s.mu.RUnlock()
@@ -30,7 +30,7 @@ func (s *service) RecordQuotaHistory(ctx context.Context, sample []store.QuotaHi
 	return recoverQuery(func() error { return history.RecordQuotaHistory(ctx, sample, time.Now().UTC()) })
 }
 
-func (s *service) QuotaHistory(ctx context.Context, provider string, start, end time.Time) (result []store.QuotaHistorySample, err error) {
+func (s *service) QuotaHistory(ctx context.Context, provider string, start, end time.Time) (result []backenddto.QuotaHistorySample, err error) {
 	s.mu.RLock()
 	enabled := s.config.Privacy.StoreCredentialID
 	s.mu.RUnlock()

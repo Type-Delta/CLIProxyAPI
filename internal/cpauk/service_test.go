@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
@@ -229,14 +230,17 @@ func TestWriteCircuitKeepsReadableBackendAvailable(t *testing.T) {
 
 func TestScheduledRetentionUsesMaintenanceReadGate(t *testing.T) {
 	ctx := context.Background()
-	database, err := store.Open(ctx, store.Config{
+	database, err := store.Open(ctx, chtest.Handle(t), store.Config{
 		Path: filepath.Join(t.TempDir(), "analytics.db"), MaxStorageBytes: 64 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RunLegacyImport(ctx, database, filepath.Join(t.TempDir(), "missing-legacy.db")); err != nil {
+		t.Fatal(err)
+	}
 	backend := &blockingRetentionBackend{
-		SQLiteStore: database, entered: make(chan struct{}), release: make(chan struct{}),
+		Store: database, entered: make(chan struct{}), release: make(chan struct{}),
 	}
 	serviceFacade := New(ctx, smallConfig(), func(context.Context, Config) (Backend, [32]byte, error) {
 		return backend, database.IdentityKeyArray(), nil
@@ -385,7 +389,7 @@ type blockingLifecycleBackend struct {
 }
 
 type blockingRetentionBackend struct {
-	*store.SQLiteStore
+	*store.Store
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -395,7 +399,7 @@ func (b *blockingRetentionBackend) ApplyRetentionPolicy(ctx context.Context, raw
 	b.once.Do(func() { close(b.entered) })
 	select {
 	case <-b.release:
-		return b.SQLiteStore.ApplyRetentionPolicy(ctx, raw, hourly, batchSize)
+		return b.Store.ApplyRetentionPolicy(ctx, raw, hourly, batchSize)
 	case <-ctx.Done():
 		return store.RetentionResult{}, ctx.Err()
 	}
@@ -462,7 +466,7 @@ func waitServiceState(t *testing.T, service Service, state State) {
 
 func waitForService(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatal("condition did not become true")
@@ -493,5 +497,48 @@ func TestStorageZoneMismatchSurfacesBothZonesInHealth(t *testing.T) {
 		if !strings.Contains(health.Message, want) {
 			t.Fatalf("health message %q does not name %q", health.Message, want)
 		}
+	}
+}
+
+type waitingLegacyBackend struct {
+	*store.Store
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (b *waitingLegacyBackend) WaitLegacyImport(ctx context.Context) error {
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestLegacyImportDoesNotDetachIntakeForScheduledRetention(t *testing.T) {
+	cfg := smallConfig()
+	cfg.Path = filepath.Join(t.TempDir(), "analytics.db")
+	database, err := store.Open(context.Background(), chtest.Handle(t), store.Config{Path: cfg.Path, MaxStorageBytes: 64 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &waitingLegacyBackend{Store: database, entered: make(chan struct{}), release: make(chan struct{})}
+	facade := New(context.Background(), cfg, func(context.Context, Config) (Backend, [32]byte, error) {
+		return backend, database.IdentityKeyArray(), nil
+	})
+	defer func() { close(backend.release); _ = facade.Close(context.Background()) }()
+	waitServiceState(t, facade, StateReady)
+	select {
+	case <-backend.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scheduled retention did not wait for legacy import")
+	}
+	if !facade.Capabilities().Available {
+		t.Fatalf("import detached intake: %+v", facade.Health())
+	}
+	query := model.Query{SchemaVersion: 1, Operation: model.OperationSummary, Start: time.Now().UTC().Add(-time.Hour), End: time.Now().UTC(), TimeZone: "UTC"}
+	if _, err := facade.Reader().Summary(context.Background(), query); err != nil {
+		t.Fatalf("read during legacy import: %v", err)
 	}
 }

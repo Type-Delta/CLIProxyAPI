@@ -73,19 +73,23 @@ type Collector struct {
 	stop   chan struct{}
 	done   chan struct{}
 	retry  chan struct{}
+	drain  chan chan struct{}
 
 	workerCtx    context.Context
 	cancelWorker context.CancelFunc
 
-	generation    atomic.Uint64
-	accepting     atomic.Bool
-	closed        atomic.Bool
-	closeTimedOut atomic.Bool
-	dropped       atomic.Int64
-	rejected      atomic.Int64
-	truncated     atomic.Int64
-	inFlight      atomic.Int64
-	retryable     atomic.Bool
+	intakeMu          sync.RWMutex
+	maintenancePaused bool
+	generation        atomic.Uint64
+	accepting         atomic.Bool
+	closed            atomic.Bool
+	closeTimedOut     atomic.Bool
+	dropped           atomic.Int64
+	rejected          atomic.Int64
+	truncated         atomic.Int64
+	inFlight          atomic.Int64
+	retryable         atomic.Bool
+	writeFailed       atomic.Bool
 
 	settingsMu       sync.RWMutex
 	batchSize        int
@@ -96,6 +100,8 @@ type Collector struct {
 	now           func() time.Time
 	callbacks     Callbacks
 	closeOnce     sync.Once
+	lifecycleMu   sync.Mutex
+	started       bool
 	restartMu     sync.Mutex
 	restarts      []time.Time
 	logMu         sync.Mutex
@@ -124,6 +130,7 @@ func New(writer Writer, options Options) (*Collector, error) {
 		stop:             make(chan struct{}),
 		done:             make(chan struct{}),
 		retry:            make(chan struct{}, 1),
+		drain:            make(chan chan struct{}),
 		batchSize:        options.BatchSize,
 		flushInterval:    options.FlushInterval,
 		failureThreshold: options.FailureThreshold,
@@ -138,9 +145,16 @@ func New(writer Writer, options Options) (*Collector, error) {
 }
 
 func (c *Collector) Start() {
-	if c == nil || c.closed.Load() || c.accepting.Swap(true) {
+	if c == nil {
 		return
 	}
+	c.lifecycleMu.Lock()
+	if c.closed.Load() || c.accepting.Swap(true) {
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.started = true
+	c.lifecycleMu.Unlock()
 	c.safeGeneration(c.generation.Load())
 	go c.supervise()
 }
@@ -153,7 +167,15 @@ func (c *Collector) Generation() uint64 {
 }
 
 func (c *Collector) Enqueue(generation uint64, event Event) bool {
-	if c == nil || c.closed.Load() || !c.accepting.Load() || generation != c.generation.Load() {
+	if c == nil {
+		return false
+	}
+	if !c.intakeMu.TryRLock() {
+		c.drop()
+		return false
+	}
+	defer c.intakeMu.RUnlock()
+	if c.closed.Load() || !c.accepting.Load() || generation != c.generation.Load() {
 		c.drop()
 		return false
 	}
@@ -169,7 +191,15 @@ func (c *Collector) Enqueue(generation uint64, event Event) bool {
 // EnqueueProxyResponse queues the downstream outcome of one proxy request. It
 // is lossy under the same rules as Enqueue.
 func (c *Collector) EnqueueProxyResponse(generation uint64, patch ProxyResponsePatch) bool {
-	if c == nil || c.closed.Load() || !c.accepting.Load() || generation != c.generation.Load() {
+	if c == nil {
+		return false
+	}
+	if !c.intakeMu.TryRLock() {
+		c.drop()
+		return false
+	}
+	defer c.intakeMu.RUnlock()
+	if c.closed.Load() || !c.accepting.Load() || generation != c.generation.Load() {
 		c.drop()
 		return false
 	}
@@ -237,9 +267,16 @@ func (c *Collector) Retry() bool {
 	}
 }
 
-func (c *Collector) Detach() {
+func (c *Collector) Detach() { c.detach(true) }
+
+func (c *Collector) detach(maintenance bool) {
 	if c == nil {
 		return
+	}
+	c.intakeMu.Lock()
+	defer c.intakeMu.Unlock()
+	if maintenance {
+		c.maintenancePaused = true
 	}
 	c.accepting.Store(false)
 	c.generation.Add(1)
@@ -254,28 +291,39 @@ func (c *Collector) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		stats := c.Stats()
-		if stats.Depth == 0 && stats.InFlight == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
+	drained := make(chan struct{})
+	select {
+	case c.drain <- drained:
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-drained:
+		return nil
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
 // Resume installs a fresh intake generation after an exclusive maintenance
 // operation. Events tied to the detached generation remain unable to enqueue.
 func (c *Collector) Resume() bool {
-	if c == nil || c.closed.Load() || c.accepting.Swap(true) {
+	if c == nil {
 		return false
 	}
+	c.intakeMu.Lock()
+	if c.closed.Load() || c.accepting.Load() {
+		c.intakeMu.Unlock()
+		return false
+	}
+	c.maintenancePaused = false
+	c.accepting.Store(true)
 	generation := c.generation.Add(1)
+	c.intakeMu.Unlock()
 	c.safeGeneration(generation)
 	return true
 }
@@ -289,9 +337,14 @@ func (c *Collector) Close(ctx context.Context) error {
 		return nil
 	}
 	c.closeOnce.Do(func() {
+		c.lifecycleMu.Lock()
+		defer c.lifecycleMu.Unlock()
 		c.closed.Store(true)
 		c.Detach()
 		close(c.stop)
+		if !c.started {
+			close(c.done)
+		}
 	})
 	if ctx == nil {
 		ctx = context.Background()
@@ -320,7 +373,8 @@ func (c *Collector) supervise() {
 		if !panicked || c.closed.Load() {
 			return
 		}
-		c.Detach()
+		c.writeFailed.Store(true)
+		c.detach(false)
 		now := c.now().UTC()
 		count := c.recordRestart(now)
 		c.safeCall(func() {
@@ -368,6 +422,20 @@ func (c *Collector) runWorker() {
 	timer := time.NewTimer(c.currentFlushInterval())
 	defer timer.Stop()
 	circuitState := newCircuit(c.currentThreshold())
+	flushQueue := func() {
+		for {
+			select {
+			case item := <-c.queue:
+				pending.add(item)
+				if pending.size() >= c.currentBatchSize() {
+					c.write(pending, &circuitState)
+				}
+			default:
+				c.write(pending, &circuitState)
+				return
+			}
+		}
+	}
 
 	for {
 		select {
@@ -380,19 +448,12 @@ func (c *Collector) runWorker() {
 		case <-timer.C:
 			c.write(pending, &circuitState)
 			timer.Reset(c.currentFlushInterval())
+		case drained := <-c.drain:
+			flushQueue()
+			close(drained)
 		case <-c.stop:
-			for {
-				select {
-				case item := <-c.queue:
-					pending.add(item)
-					if pending.size() >= c.currentBatchSize() {
-						c.write(pending, &circuitState)
-					}
-				default:
-					c.write(pending, &circuitState)
-					return
-				}
-			}
+			flushQueue()
+			return
 		}
 	}
 }
@@ -427,6 +488,7 @@ func (c *Collector) write(pending *batch, state *circuit) {
 		err := c.writeBatch(pending)
 		if err == nil {
 			state.succeeded()
+			c.writeFailed.Store(false)
 			now := c.now().UTC()
 			c.safeCall(func() {
 				if c.callbacks.Wrote != nil {
@@ -440,11 +502,14 @@ func (c *Collector) write(pending *batch, state *circuit) {
 			pending.reset()
 			return
 		}
+		c.writeFailed.Store(true)
 		permanent, category := classifyWriteError(err)
 		opened := state.failed(permanent)
 		c.safeState(model.StateDegraded, category)
 		if opened {
-			c.Detach()
+			if permanent {
+				c.detach(false)
+			}
 			c.safeState(model.StateCircuitOpen, category)
 		}
 		if permanent {
@@ -478,12 +543,15 @@ func (c *Collector) writeBatch(pending *batch) error {
 }
 
 func (c *Collector) attach() {
-	if c.closed.Load() {
+	c.intakeMu.Lock()
+	if c.closed.Load() || c.maintenancePaused {
+		c.intakeMu.Unlock()
 		return
 	}
 	generation := c.generation.Add(1)
 	c.retryable.Store(false)
 	c.accepting.Store(true)
+	c.intakeMu.Unlock()
 	c.safeGeneration(generation)
 }
 
@@ -599,4 +667,8 @@ func (c *Collector) currentThreshold() int {
 	c.settingsMu.RLock()
 	defer c.settingsMu.RUnlock()
 	return c.failureThreshold
+}
+
+func (c *Collector) Ready() bool {
+	return c != nil && c.accepting.Load() && !c.closed.Load() && !c.writeFailed.Load()
 }

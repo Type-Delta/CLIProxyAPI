@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"slices"
 	"strconv"
 	"time"
@@ -12,17 +13,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
-const MaxKeyLifecycleRows = 10_000
+const MaxKeyLifecycleRows = backend.MaxKeyLifecycleRows
 
-type KeyCatalogPage struct {
-	Meta model.ResponseMeta  `json:"meta"`
-	Keys []model.KeyIdentity `json:"keys"`
-}
+type KeyCatalogPage = backend.KeyCatalogPage
 
-type KeyCatalogStore interface {
-	KeyCatalog(context.Context, model.Query) (KeyCatalogPage, error)
-	UpdateKeyLifecycle(context.Context, []string, []string) error
-}
+type KeyCatalogStore = backend.KeyCatalogStore
 
 func (s *SQLiteStore) UpdateKeyLifecycle(ctx context.Context, configuredIDs, rotatedIDs []string) error {
 	if len(configuredIDs)+len(rotatedIDs) > MaxKeyLifecycleRows {

@@ -11,13 +11,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type quotaHistoryService interface {
-	RecordQuotaHistory(context.Context, []store.QuotaHistorySample) error
-	QuotaHistory(context.Context, string, time.Time, time.Time) ([]store.QuotaHistorySample, error)
+	RecordQuotaHistory(context.Context, []backend.QuotaHistorySample) error
+	QuotaHistory(context.Context, string, time.Time, time.Time) ([]backend.QuotaHistorySample, error)
 	CredentialID(string, string, string) (*string, error)
 }
 
@@ -76,7 +76,7 @@ func (h *Handler) PostQuotaHistory(c *gin.Context) {
 		writeAnalyticsError(c, err)
 		return
 	}
-	samples := make([]store.QuotaHistorySample, 0, len(body.Samples))
+	samples := make([]backend.QuotaHistorySample, 0, len(body.Samples))
 	for _, input := range body.Samples {
 		if len(input.WindowID) > 64 || len(input.PlanID) > 64 || !quotaHistoryIdentifier.MatchString(input.WindowID) || input.PlanID != "" && !quotaHistoryIdentifier.MatchString(input.PlanID) || input.Remaining == nil || !validQuotaHistoryNumber(input.Remaining, 100) || !validQuotaHistoryNumber(input.Capacity, 1e12) || !validQuotaHistoryNumber(input.PeriodHours, 24*366) {
 			writeAnalyticsInvalid(c, nil)
@@ -96,7 +96,7 @@ func (h *Handler) PostQuotaHistory(c *gin.Context) {
 			writeAnalyticsError(c, cpauk.ErrUnavailable)
 			return
 		}
-		samples = append(samples, store.QuotaHistorySample{Provider: body.Provider, CredentialID: *id, WindowID: input.WindowID, RemainingPercent: *input.Remaining, ResetAt: input.ResetAt, PeriodHours: input.PeriodHours, PlanID: input.PlanID, Capacity: input.Capacity, Source: "cpamc"})
+		samples = append(samples, backend.QuotaHistorySample{Provider: body.Provider, CredentialID: *id, WindowID: input.WindowID, RemainingPercent: *input.Remaining, ResetAt: input.ResetAt, PeriodHours: input.PeriodHours, PlanID: input.PlanID, Capacity: input.Capacity, Source: "cpamc"})
 	}
 	if err = service.RecordQuotaHistory(c.Request.Context(), samples); err != nil {
 		writeAnalyticsError(c, err)

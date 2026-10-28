@@ -85,22 +85,29 @@ type Capabilities struct {
 	LastSuccessfulWrite *time.Time     `json:"last_successful_write_at"`
 }
 
+type LegacyImportStatus struct {
+	State  string           `json:"state"`
+	Counts map[string]int64 `json:"counts,omitempty"`
+	Reason string           `json:"reason,omitempty"`
+}
+
 type Health struct {
-	State                AnalyticsState `json:"state"`
-	Category             string         `json:"category,omitempty"`
-	Field                string         `json:"field,omitempty"`
-	Message              string         `json:"message,omitempty"`
-	Queue                QueueSnapshot  `json:"queue"`
-	LastSuccessfulWrite  *time.Time     `json:"last_successful_write_at"`
-	LastPanicCategory    string         `json:"last_panic_category,omitempty"`
-	LastPanicAt          *time.Time     `json:"last_panic_at,omitempty"`
-	RestartCount         int            `json:"restart_count"`
-	RestartWindowSeconds int            `json:"restart_window_seconds"`
-	RejectedEvents       int64          `json:"rejected_events"`
-	TruncatedFields      int64          `json:"truncated_fields"`
-	AbandonedEvents      int64          `json:"abandoned_events"`
-	RetentionCutoff      *time.Time     `json:"retention_cutoff,omitempty"`
-	ZoneMismatch         *ZoneMismatch  `json:"zone_mismatch,omitempty"`
+	LegacyImport         *LegacyImportStatus `json:"legacy_import,omitempty"`
+	State                AnalyticsState      `json:"state"`
+	Category             string              `json:"category,omitempty"`
+	Field                string              `json:"field,omitempty"`
+	Message              string              `json:"message,omitempty"`
+	Queue                QueueSnapshot       `json:"queue"`
+	LastSuccessfulWrite  *time.Time          `json:"last_successful_write_at"`
+	LastPanicCategory    string              `json:"last_panic_category,omitempty"`
+	LastPanicAt          *time.Time          `json:"last_panic_at,omitempty"`
+	RestartCount         int                 `json:"restart_count"`
+	RestartWindowSeconds int                 `json:"restart_window_seconds"`
+	RejectedEvents       int64               `json:"rejected_events"`
+	TruncatedFields      int64               `json:"truncated_fields"`
+	AbandonedEvents      int64               `json:"abandoned_events"`
+	RetentionCutoff      *time.Time          `json:"retention_cutoff,omitempty"`
+	ZoneMismatch         *ZoneMismatch       `json:"zone_mismatch,omitempty"`
 }
 
 // ZoneMismatch names both storage time zones when a store refuses to open

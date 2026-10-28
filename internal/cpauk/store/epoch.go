@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 )
 
 type EpochResult struct {
@@ -18,18 +20,18 @@ type EpochResult struct {
 // StartNewIdentityEpoch detaches this store from its current files, archives
 // them through the standalone recovery path, and adopts the new empty store.
 // Callers must stop intake and drain in-flight writes before invoking it.
-func (s *SQLiteStore) StartNewIdentityEpoch(ctx context.Context) (EpochResult, error) {
+func (s *SQLiteStore) StartNewIdentityEpoch(ctx context.Context) (backend.EpochResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db == nil {
-		return EpochResult{}, ErrClosed
+		return backend.EpochResult{}, ErrClosed
 	}
 	config := s.config
 	oldDatabase := s.db
 	s.db = nil
 	if err := oldDatabase.Close(); err != nil {
 		s.db = oldDatabase
-		return EpochResult{}, fmt.Errorf("close analytics database before identity recovery: %w", err)
+		return backend.EpochResult{}, fmt.Errorf("close analytics database before identity recovery: %w", err)
 	}
 	result, err := StartNewIdentityEpoch(ctx, config)
 	if err != nil {
@@ -37,11 +39,10 @@ func (s *SQLiteStore) StartNewIdentityEpoch(ctx context.Context) (EpochResult, e
 		if reopenErr == nil {
 			s.adopt(candidate)
 		}
-		return EpochResult{}, err
+		return backend.EpochResult{}, err
 	}
 	s.adopt(result.Store)
-	result.Store = s
-	return result, nil
+	return backend.EpochResult{IdentityEpoch: result.IdentityEpoch, ArchivedDB: result.ArchivedDB, ArchivedKey: result.ArchivedKey}, nil
 }
 
 func (s *SQLiteStore) adopt(candidate *SQLiteStore) {
@@ -62,7 +63,7 @@ func (s *SQLiteStore) adopt(candidate *SQLiteStore) {
 // to config.Path before calling it. It archives source files and creates an
 // empty database; it never writes into the old database.
 func StartNewIdentityEpoch(ctx context.Context, config Config) (EpochResult, error) {
-	if err := config.normalize(); err != nil {
+	if err := config.Normalize(); err != nil {
 		return EpochResult{}, err
 	}
 	if _, err := os.Stat(config.Path); err != nil {

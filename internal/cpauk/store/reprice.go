@@ -6,8 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,25 +17,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
-var ErrRepriceCatalogChanged = errors.New("pricing catalog changed since the reprice checkpoint")
+var ErrRepriceCatalogChanged = backend.ErrRepriceCatalogChanged
 
-type RepriceOptions struct {
-	Range            model.Range
-	DryRun           bool
-	ChunkSize        int
-	Resume           bool
-	ResumeCheckpoint string
-}
+type RepriceOptions = backend.RepriceOptions
 
-type RepriceResult struct {
-	Matched         int64
-	Updated         int64
-	Checkpoint      string
-	Completed       bool
-	EffectiveStart  time.Time
-	RetainedCutoff  *time.Time
-	HistoryComplete bool
-}
+type RepriceResult = backend.RepriceResult
 
 func (s *SQLiteStore) Reprice(ctx context.Context, options RepriceOptions, progress func(int, string)) (RepriceResult, error) {
 	if options.Range.Start.IsZero() || options.Range.End.IsZero() || !options.Range.Start.Before(options.Range.End) {

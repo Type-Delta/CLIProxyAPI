@@ -3,28 +3,36 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	log "github.com/sirupsen/logrus"
 )
 
-func newAnalyticsService(ctx context.Context, cfg *config.Config) cpauk.Service {
+func newAnalyticsService(ctx context.Context, cfg *config.Config, handle *clickhouse.Handle) cpauk.Service {
 	if cfg == nil {
 		return cpauk.NewDisabled()
 	}
 	moduleConfig := analyticsModuleConfig(cfg)
-	if problem := cfg.Analytics.Problem(); problem != nil {
-		return cpauk.NewInvalid(problem.Category, problem.Field, moduleConfig, openAnalyticsBackend)
+	factory := func(ctx context.Context, cfg cpauk.Config) (cpauk.Backend, [32]byte, error) {
+		return openAnalyticsBackend(ctx, handle, cfg)
 	}
-	return cpauk.New(ctx, moduleConfig, openAnalyticsBackend)
+	if problem := cfg.Analytics.Problem(); problem != nil {
+		return cpauk.NewInvalid(problem.Category, problem.Field, moduleConfig, factory)
+	}
+	return cpauk.New(ctx, moduleConfig, factory)
 }
 
 type analyticsKeyLifecycle interface {
@@ -162,7 +170,10 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 	}
 }
 
-func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend, [32]byte, error) {
+func openAnalyticsBackend(ctx context.Context, handle *clickhouse.Handle, cfg cpauk.Config) (cpauk.Backend, [32]byte, error) {
+	if handle == nil || !handle.Configured() {
+		return nil, [32]byte{}, backend.ErrClickHouseNotConfigured
+	}
 	var cursorKey [32]byte
 	if _, err := rand.Read(cursorKey[:]); err != nil {
 		return nil, [32]byte{}, fmt.Errorf("generate analytics cursor key: %w", err)
@@ -171,11 +182,8 @@ func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend,
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("create analytics cursor codec: %w", err)
 	}
-	bindings := make([]store.CatalogBinding, 0, len(cfg.CatalogBindings))
-	for _, binding := range cfg.CatalogBindings {
-		bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
-	}
-	database, err := store.Open(ctx, store.Config{
+
+	database, err := chstore.Open(ctx, handle, backend.Config{
 		Path:              cfg.Path,
 		IdentityKeyPath:   filepath.Join(filepath.Dir(cfg.Path), "identity.key"),
 		MaxStorageBytes:   cfg.MaxStorageBytes,
@@ -183,10 +191,166 @@ func openAnalyticsBackend(ctx context.Context, cfg cpauk.Config) (cpauk.Backend,
 		RetentionTimeZone: cfg.StorageTimeZone,
 		PriceBook:         aggregate.PriceBook{},
 		CursorCodec:       cursorCodec,
-		CatalogBindings:   bindings,
+		CatalogBindings:   cfg.CatalogBindings,
 	})
 	if err != nil {
 		return nil, [32]byte{}, err
 	}
-	return database, database.IdentityKeyArray(), nil
+	identityKey := database.IdentityKeyArray()
+	jobCtx, cancel := context.WithCancel(context.Background())
+	wrapped := &analyticsBackend{Store: database, handle: handle, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(wrapped.done)
+		if err := chstore.RunLegacyImport(jobCtx, database, cfg.Path); err != nil {
+			wrapped.importErr = err
+			log.WithError(err).Warn("legacy analytics import failed")
+		}
+		// Import restores historical lifecycle state; current configuration wins.
+		wrapped.lifecycleMu.Lock()
+		defer wrapped.lifecycleMu.Unlock()
+		if wrapped.lifecycleSet && jobCtx.Err() == nil {
+			if err := database.UpdateKeyLifecycle(jobCtx, wrapped.configuredKeys, wrapped.rotatedKeys); err != nil {
+				log.WithError(err).Warn("failed to synchronize keys after legacy analytics import")
+			}
+		}
+	}()
+	return wrapped, identityKey, nil
+}
+
+// analyticsBackend owns its background import, while borrowing the server pool.
+type analyticsBackend struct {
+	*chstore.Store
+	handle                      *clickhouse.Handle
+	cancel                      context.CancelFunc
+	done                        chan struct{}
+	importErr                   error
+	closeOnce                   sync.Once
+	lifecycleMu                 sync.Mutex
+	lifecycleSet                bool
+	configuredKeys, rotatedKeys []string
+}
+
+func (b *analyticsBackend) Close(ctx context.Context) error {
+	b.StopBackground()
+	// The server closes the shared pool next, so the worker must have exited.
+	select {
+	case <-b.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return b.Store.Close(ctx)
+}
+func (b *analyticsBackend) LegacyImportStatus() *model.LegacyImportStatus {
+	return legacyImportJobStatus(context.Background(), b.handle, "legacy-import:analytics")
+}
+
+// legacyImportJobStatus projects the shared journal into the management health shape.
+func legacyImportJobStatus(ctx context.Context, handle *clickhouse.Handle, name string) *model.LegacyImportStatus {
+	if handle == nil || !handle.Configured() {
+		return nil
+	}
+	db, err := handle.Get(ctx)
+	if err != nil {
+		return &model.LegacyImportStatus{State: "failed", Reason: err.Error()}
+	}
+	job, found, err := db.Job(ctx, name)
+	if err != nil {
+		return &model.LegacyImportStatus{State: "failed", Reason: err.Error()}
+	}
+	if !found {
+		return nil
+	}
+	result := &model.LegacyImportStatus{State: job.State}
+	var detail map[string]json.RawMessage
+	if json.Unmarshal([]byte(job.Detail), &detail) == nil {
+		for key, raw := range detail {
+			var count int64
+			if json.Unmarshal(raw, &count) == nil && string(raw) != "null" {
+				if result.Counts == nil {
+					result.Counts = map[string]int64{}
+				}
+				result.Counts[key] = count
+			}
+		}
+		if job.State == "failed" {
+			_ = json.Unmarshal(detail["error"], &result.Reason)
+		}
+		if job.State == "abandoned" {
+			_ = json.Unmarshal(detail["reason"], &result.Reason)
+		}
+	}
+	if job.State == "failed" && result.Reason == "" {
+		result.Reason = job.Detail
+	}
+	return result
+}
+
+func (b *analyticsBackend) WaitLegacyImport(ctx context.Context) error {
+	select {
+	case <-b.done:
+		if b.importErr != nil && b.handle != nil {
+			db, err := b.handle.Get(ctx)
+			if err != nil {
+				return err
+			}
+			job, found, err := db.Job(ctx, "legacy-import:analytics")
+			if err != nil {
+				return err
+			}
+			if found && job.State == "abandoned" {
+				return nil
+			}
+		}
+		return b.importErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *analyticsBackend) UpdateKeyLifecycle(ctx context.Context, configured, rotated []string) error {
+	b.lifecycleMu.Lock()
+	defer b.lifecycleMu.Unlock()
+	b.lifecycleSet = true
+	b.configuredKeys = append([]string(nil), configured...)
+	b.rotatedKeys = append([]string(nil), rotated...)
+	return b.Store.UpdateKeyLifecycle(ctx, configured, rotated)
+}
+
+func (b *analyticsBackend) Restore(ctx context.Context, path, manifest string) error {
+	err := b.Store.Restore(ctx, path, manifest)
+	if err != nil {
+		log.WithError(err).Warn("analytics restore failed")
+	}
+	return err
+}
+
+func (b *analyticsBackend) StopBackground() { b.closeOnce.Do(b.cancel) }
+
+// CheckReady uses cached shared-pool health without taking the analytics lock.
+func (b *analyticsBackend) CheckReady(ctx context.Context) error { return b.handle.CheckHealth(ctx) }
+
+func (b *analyticsBackend) AbandonLegacyImport(ctx context.Context, reason string) error {
+	db, err := b.handle.Get(ctx)
+	if err != nil {
+		return err
+	}
+	job, _, err := db.Job(ctx, "legacy-import:analytics")
+	if err != nil {
+		return err
+	}
+	if job.State == "running" {
+		return fmt.Errorf("cannot abandon a running legacy analytics import")
+	}
+	select {
+	case <-b.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	abandoner, ok := any(b.Store).(interface {
+		AbandonLegacyImport(context.Context, string) error
+	})
+	if !ok {
+		return fmt.Errorf("legacy import abandonment is unsupported by this backend")
+	}
+	return abandoner.AbandonLegacyImport(ctx, reason)
 }

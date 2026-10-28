@@ -3,6 +3,7 @@ package helps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/record"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -61,8 +63,30 @@ func requestLogCaptureEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
 }
 
+func telemetryCapture(ctx context.Context) *logging.TelemetryCapture {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx := ginContextFrom(ctx)
+	if ginCtx == nil {
+		return nil
+	}
+	value, _ := ginCtx.Get(logging.TelemetryCaptureContextKey)
+	capture, _ := value.(*logging.TelemetryCapture)
+	return capture
+}
+
+func telemetryAttempt(info UpstreamRequestLog, transport string) record.Attempt {
+	return record.Attempt{Method: info.Method, URL: info.URL, Headers: info.Headers, Body: info.Body, Provider: info.Provider, AuthID: info.AuthID, AuthLabel: info.AuthLabel, AuthType: info.AuthType, Transport: transport}
+}
+
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.AddSecret(info.AuthValue)
+		capture.StartAttempt(telemetryAttempt(info, record.TransportHTTP))
+		return
+	}
 	if cfg == nil || cfg.CommercialMode {
 		return
 	}
@@ -190,6 +214,10 @@ func newAPIRequestLogBuilder(index int, info UpstreamRequestLog, timestamp time.
 // RecordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
 func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Metadata(status, headers)
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -218,6 +246,10 @@ func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 
 // RecordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
 func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Error(err)
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) || err == nil {
 		return
 	}
@@ -243,6 +275,10 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 
 // AppendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
 func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Chunk(chunk)
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -287,6 +323,12 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
 func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.AddSecret(info.AuthValue)
+		capture.StartAttempt(telemetryAttempt(info, record.TransportWebsocket))
+		capture.Timeline(websocketTelemetryEvent("request", "", info.Body))
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -320,6 +362,11 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 // RecordAPIWebsocketHandshake stores the upstream websocket handshake response metadata.
 func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Metadata(status, headers)
+		capture.Timeline(websocketTelemetryEvent("handshake", fmt.Sprint(status), nil))
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -343,6 +390,13 @@ func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status
 
 // RecordAPIWebsocketUpgradeRejection stores a rejected websocket upgrade as an HTTP attempt.
 func RecordAPIWebsocketUpgradeRejection(ctx context.Context, cfg *config.Config, info UpstreamRequestLog, status int, headers http.Header, body []byte) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.AddSecret(info.AuthValue)
+		capture.StartAttempt(telemetryAttempt(info, record.TransportHTTP))
+		capture.Metadata(status, headers)
+		capture.Chunk(body)
+		return
+	}
 	logging.SetResponseHeaders(ctx, headers)
 	if !requestLogCaptureEnabled(cfg) {
 		return
@@ -378,6 +432,11 @@ func WebsocketUpgradeRequestURL(rawURL string) string {
 
 // AppendAPIWebsocketResponse stores an upstream websocket response frame in Gin context.
 func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload []byte) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Chunk(payload)
+		capture.Timeline(websocketTelemetryEvent("response", "", payload))
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -409,6 +468,13 @@ func AppendCodexAPIWebsocketResponse(ctx context.Context, cfg *config.Config, pa
 
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
+	if capture := telemetryCapture(ctx); capture != nil && (cfg == nil || !cfg.CommercialMode) {
+		capture.Error(err)
+		if err != nil {
+			capture.Timeline(websocketTelemetryEvent("error", stage, []byte(capture.Redact(err.Error()))))
+		}
+		return
+	}
 	if !requestLogCaptureEnabled(cfg) || err == nil {
 		return
 	}
@@ -427,6 +493,19 @@ func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage stri
 	builder.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
 
 	appendAPIWebsocketTimeline(ginCtx, []byte(builder.String()))
+}
+
+func websocketTelemetryEvent(event, detail string, payload []byte) []byte {
+	data, err := json.Marshal(struct {
+		Timestamp time.Time `json:"timestamp"`
+		Event     string    `json:"event"`
+		Detail    string    `json:"detail,omitempty"`
+		Payload   string    `json:"payload,omitempty"`
+	}{time.Now(), event, detail, string(payload)})
+	if err != nil {
+		return nil
+	}
+	return append(data, '\n')
 }
 
 func ginContextFrom(ctx context.Context) *gin.Context {

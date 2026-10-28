@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
@@ -26,10 +27,7 @@ type PrivacyConfig struct {
 	StoreCredentialID bool `yaml:"store-credential-id" json:"store_credential_id"`
 }
 
-type CatalogBinding struct {
-	Provider string
-	Catalog  string
-}
+type CatalogBinding = backend.CatalogBinding
 
 // Config is the validated analytics configuration passed by CPA. The module
 // does not read or decode CPA configuration files itself.

@@ -78,6 +78,12 @@ type Config struct {
 	// analytics values are isolated from the rest of CPA configuration.
 	Analytics AnalyticsConfig `yaml:"analytics" json:"analytics"`
 
+	ClickHouse ClickHouseConfig `yaml:"clickhouse,omitempty" json:"clickhouse"`
+
+	// RuntimeLogDirectory binds runtime snapshots to the configured process log directory.
+	// It is carried through clones and never serialized as configuration.
+	RuntimeLogDirectory string `yaml:"-" json:"-"`
+
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
 	// Default: 60. Max: 3600.

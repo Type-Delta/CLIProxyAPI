@@ -7,14 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 func TestStoreOperationsRepriceSupportsDryRunAndResume(t *testing.T) {
 	ctx := context.Background()
-	database, err := store.Open(ctx, store.Config{
+	database, err := openMaintenanceStore(ctx, chtest.Handle(t), store.Config{
 		Path:            filepath.Join(t.TempDir(), "analytics.db"),
 		MaxStorageBytes: 64 << 20,
 	})

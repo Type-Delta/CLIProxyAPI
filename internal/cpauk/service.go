@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	backenddto "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/collector"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/maintenance"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 type Reader interface {
@@ -60,7 +61,7 @@ type Backend interface {
 type BackendFactory func(context.Context, Config) (Backend, [32]byte, error)
 
 type BackendReconfigurer interface {
-	Reconfigure(context.Context, Config) error
+	Reconfigure(context.Context, backenddto.Config) error
 }
 
 type StorageBudgetReconfigurer interface {
@@ -73,21 +74,21 @@ type PriceBookBackend interface {
 }
 
 type PricingSnapshotBackend interface {
-	PricingSnapshot(context.Context) (store.PricingSnapshot, error)
+	PricingSnapshot(context.Context) (backenddto.PricingSnapshot, error)
 }
 
 type PricingRefreshBackend interface {
-	RefreshPricing(context.Context) (store.PricingRefreshResult, error)
+	RefreshPricing(context.Context) (backenddto.PricingRefreshResult, error)
 }
 
-type CatalogProvider = store.CatalogProvider
+type CatalogProvider = backenddto.CatalogProvider
 
 type CatalogProvidersBackend interface {
 	CatalogProviders(context.Context) ([]CatalogProvider, time.Time, error)
 }
 
 type CatalogBindingsReconfigurer interface {
-	SetCatalogBindings([]store.CatalogBinding)
+	SetCatalogBindings([]backenddto.CatalogBinding)
 }
 
 // PricingRefreshRequester is additive so discovery remains outside the core
@@ -121,6 +122,10 @@ type ReconfigureResult struct {
 	Error           error    `json:"-"`
 }
 
+// ErrTeardownUnresolved means shutdown stopped cleanup without proving that its
+// storage ownership was released. A canceled finalizer never opens its barrier.
+var ErrTeardownUnresolved = errors.New("analytics teardown ownership remains unresolved")
+
 type service struct {
 	factory BackendFactory
 
@@ -135,6 +140,18 @@ type service struct {
 	validConfig       bool
 	startCancel       context.CancelFunc
 	startWG           sync.WaitGroup
+	startupMu         sync.Mutex
+	teardownDone      chan struct{}
+	teardownWake      chan struct{}
+	teardownFailure   error
+	teardownCtx       context.Context
+	teardownCancel    context.CancelFunc
+	teardownExited    chan struct{}
+	teardownPending   int
+	closeDone         chan struct{}
+	closeErr          error
+	startupDone       chan struct{}
+	restartRequired   atomic.Bool
 
 	snapshots          *snapshots
 	observer           *observerProxy
@@ -275,6 +292,11 @@ func (s *service) Capabilities() Capabilities {
 	} else if value.State == StateCircuitOpen {
 		value.Available = s.backend != nil && !s.closed && s.config.Enabled && !s.maintenanceActive
 	}
+	if s.teardownFailure != nil && s.config.Enabled && !s.closed {
+		value.State = StateCircuitOpen
+		value.Available = false
+		value.Degraded = true
+	}
 	s.mu.RUnlock()
 	if stats, ok := s.collectorStats(); ok {
 		value.Queue.Capacity = stats.Capacity
@@ -286,12 +308,38 @@ func (s *service) Capabilities() Capabilities {
 
 func (s *service) Health() Health {
 	value := s.snapshots.load().health
+	s.mu.RLock()
+	backend := s.backend
+	teardownFailure, enabled, closed := s.teardownFailure, s.config.Enabled, s.closed
+	s.mu.RUnlock()
+	if status, ok := backend.(interface {
+		LegacyImportStatus() *model.LegacyImportStatus
+	}); ok {
+		value.LegacyImport = status.LegacyImportStatus()
+	}
+	if value.Category == "clickhouse_not_configured" {
+		value.Message = "Analytics requires clickhouse.dsn to be configured."
+	}
 	if stats, ok := s.collectorStats(); ok {
 		value.Queue.Capacity = stats.Capacity
 		value.Queue.Depth = stats.Depth
 		value.Queue.Dropped = stats.Dropped
 		value.RejectedEvents = stats.Rejected
 		value.TruncatedFields = stats.TruncatedFields
+	}
+	if s.restartRequired.Load() {
+		value.Category = "restart_required"
+		value.Message = "The analytics update requires a CPA restart."
+	}
+	if teardownFailure != nil {
+		value.Category = "teardown_failure"
+		value.Message = fmt.Sprintf("Analytics cleanup failed: %v. Storage ownership is retained while cleanup retries.", teardownFailure)
+		if closed {
+			value.Message = fmt.Sprintf("Analytics cleanup stopped: %v. Storage ownership remains unresolved after shutdown.", teardownFailure)
+		}
+		if enabled && !closed {
+			value.State = StateCircuitOpen
+		}
 	}
 	return value
 }
@@ -363,6 +411,7 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 		}
 		s.starting = false
 		s.observer.clear()
+		s.retireGenerationLocked(oldMaintenance, oldRetention, oldCollector, oldBackend, config.ShutdownDrain)
 		s.mu.Unlock()
 		s.snapshots.setConfig(config)
 		s.snapshots.mutate(func(health *model.Health) {
@@ -371,7 +420,6 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 			health.Field = ""
 			health.Message = ""
 		})
-		go closeServiceGeneration(oldMaintenance, oldRetention, oldCollector, oldBackend, config.ShutdownDrain)
 		return ReconfigureResult{Applied: true}
 	}
 
@@ -394,6 +442,12 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	currentCollector := s.collector
 	currentRetention := s.retention
 	if config.Enabled && backend == nil && currentCollector == nil {
+		if s.startCancel != nil {
+			s.startCancel()
+			s.startCancel = nil
+		}
+		s.startSeq.Add(1)
+		s.starting = false
 		s.config = config
 		s.invalidatePricingDemandLocked()
 		s.mu.Unlock()
@@ -442,11 +496,8 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	}
 	if !catalogBindingsEqual(previous.CatalogBindings, config.CatalogBindings) {
 		if reconfigurer, ok := backend.(CatalogBindingsReconfigurer); ok {
-			bindings := make([]store.CatalogBinding, 0, len(config.CatalogBindings))
-			for _, binding := range config.CatalogBindings {
-				bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
-			}
-			reconfigurer.SetCatalogBindings(bindings)
+
+			reconfigurer.SetCatalogBindings(config.CatalogBindings)
 		}
 	}
 	s.mu.Lock()
@@ -457,12 +508,20 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	return ReconfigureResult{Applied: true}
 }
 
-func (s *service) Retry(_ context.Context) error {
+func (s *service) Retry(ctx context.Context) error {
 	s.mu.Lock()
 	s.invalidatePricingDemandLocked()
 	currentCollector := s.collector
+	currentRetention := s.retention
+	maintenanceActive := s.maintenanceActive
 	config := s.config
 	closed := s.closed
+	if s.teardownWake != nil {
+		select {
+		case s.teardownWake <- struct{}{}:
+		default:
+		}
+	}
 	s.mu.Unlock()
 	if closed {
 		return ErrClosed
@@ -474,10 +533,16 @@ func (s *service) Retry(_ context.Context) error {
 		}
 		return ErrDisabled
 	}
-	if !currentCollector.Retry() {
-		return ErrUnavailable
+	if currentCollector.Retry() {
+		return nil
 	}
-	return nil
+	if currentCollector.Ready() || maintenanceActive {
+		if currentRetention != nil {
+			return currentRetention.Reconfigure(config.HotRetentionDays)
+		}
+		return nil
+	}
+	return ErrUnavailable
 }
 
 // PriceBook exposes durable pricing through an optional service facade without
@@ -526,7 +591,7 @@ func (s *service) UpdatePriceBook(ctx context.Context, book aggregate.PriceBook)
 	return updated, err
 }
 
-func (s *service) PricingSnapshot(ctx context.Context) (snapshot store.PricingSnapshot, err error) {
+func (s *service) PricingSnapshot(ctx context.Context) (snapshot backenddto.PricingSnapshot, err error) {
 	backend, err := s.backendForRead()
 	if err != nil {
 		return snapshot, err
@@ -537,14 +602,14 @@ func (s *service) PricingSnapshot(ctx context.Context) (snapshot store.PricingSn
 	}
 	defer func() {
 		if recover() != nil {
-			snapshot = store.PricingSnapshot{}
+			snapshot = backenddto.PricingSnapshot{}
 			err = ErrInternal
 		}
 	}()
 	return pricing.PricingSnapshot(ctx)
 }
 
-func (s *service) CatalogProviders(ctx context.Context) (providers []store.CatalogProvider, updatedAt time.Time, err error) {
+func (s *service) CatalogProviders(ctx context.Context) (providers []backenddto.CatalogProvider, updatedAt time.Time, err error) {
 	backend, err := s.backendForRead()
 	if err != nil {
 		return nil, time.Time{}, err
@@ -565,7 +630,7 @@ func (s *service) CatalogProviders(ctx context.Context) (providers []store.Catal
 
 // RefreshPricing performs one demand-driven refresh for callers that can wait
 // for a result, such as tests or an explicit administrative action.
-func (s *service) RefreshPricing(ctx context.Context) (result store.PricingRefreshResult, err error) {
+func (s *service) RefreshPricing(ctx context.Context) (result backenddto.PricingRefreshResult, err error) {
 	backend, err := s.backendForRead()
 	if err != nil {
 		return result, err
@@ -619,10 +684,10 @@ func (s *service) requestPricingRefresh() {
 	s.RequestPricingRefresh()
 }
 
-func safePricingRefresh(pricing PricingRefreshBackend, ctx context.Context) (result store.PricingRefreshResult, err error) {
+func safePricingRefresh(pricing PricingRefreshBackend, ctx context.Context) (result backenddto.PricingRefreshResult, err error) {
 	defer func() {
 		if recover() != nil {
-			result = store.PricingRefreshResult{Err: ErrInternal}
+			result = backenddto.PricingRefreshResult{Err: ErrInternal}
 			err = ErrInternal
 		}
 	}()
@@ -634,7 +699,7 @@ func (s *service) pricingDemandDue(now time.Time) bool {
 	return next == 0 || now.UnixNano() >= next
 }
 
-func (s *service) recordPricingRefresh(generation uint64, result store.PricingRefreshResult, err error, clearPending bool) {
+func (s *service) recordPricingRefresh(generation uint64, result backenddto.PricingRefreshResult, err error, clearPending bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.pricingGeneration.Load() != generation {
@@ -654,7 +719,7 @@ func (s *service) recordPricingRefresh(generation uint64, result store.PricingRe
 	}
 }
 
-func pricingRefreshNextCheck(result store.PricingRefreshResult, err error, now time.Time) time.Time {
+func pricingRefreshNextCheck(result backenddto.PricingRefreshResult, err error, now time.Time) time.Time {
 	if retryAt := result.Snapshot.Provenance.CatalogRetryAt; retryAt.After(now) {
 		return retryAt
 	}
@@ -664,7 +729,7 @@ func pricingRefreshNextCheck(result store.PricingRefreshResult, err error, now t
 		}
 		return time.Time{}
 	}
-	return now.Add(store.PricingRetrySuppression)
+	return now.Add(backenddto.PricingRetrySuppression)
 }
 
 func (s *service) invalidatePricingDemandLocked() {
@@ -676,6 +741,7 @@ func (s *service) invalidatePricingDemandLocked() {
 // MarkRestartRequired lets the CPA integration surface restart-only settings
 // that intentionally remain outside the CPAUK configuration boundary.
 func (s *service) MarkRestartRequired(_ []string) {
+	s.restartRequired.Store(true)
 	if s == nil || s.snapshots == nil {
 		return
 	}
@@ -712,7 +778,7 @@ func (s *service) CredentialID(provider, authIndex, authID string) (*string, err
 	return model.CredentialID(identityKey[:], provider, authIndex, authID)
 }
 
-func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots []store.ProviderQuotaSnapshot) (err error) {
+func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots []backenddto.ProviderQuotaSnapshot) (err error) {
 	s.mu.RLock()
 	storeCredentialID := s.config.Privacy.StoreCredentialID
 	s.mu.RUnlock()
@@ -723,7 +789,7 @@ func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots [
 	if err != nil {
 		return err
 	}
-	provider, ok := backend.(store.ProviderQuotaStore)
+	provider, ok := backend.(backenddto.ProviderQuotaStore)
 	if !ok {
 		return ErrUnavailable
 	}
@@ -735,18 +801,18 @@ func (s *service) ReplaceProviderQuotaSnapshots(ctx context.Context, snapshots [
 	return provider.ReplaceProviderQuotaSnapshots(ctx, snapshots)
 }
 
-func (s *service) ProviderQuotaSnapshots(ctx context.Context) (snapshots []store.ProviderQuotaSnapshot, err error) {
+func (s *service) ProviderQuotaSnapshots(ctx context.Context) (snapshots []backenddto.ProviderQuotaSnapshot, err error) {
 	s.mu.RLock()
 	storeCredentialID := s.config.Privacy.StoreCredentialID
 	s.mu.RUnlock()
 	if !storeCredentialID {
-		return []store.ProviderQuotaSnapshot{}, nil
+		return []backenddto.ProviderQuotaSnapshot{}, nil
 	}
 	backend, err := s.backendForRead()
 	if err != nil {
 		return nil, err
 	}
-	provider, ok := backend.(store.ProviderQuotaStore)
+	provider, ok := backend.(backenddto.ProviderQuotaStore)
 	if !ok {
 		return nil, ErrUnavailable
 	}
@@ -793,20 +859,20 @@ func (s *service) ProviderCredentials(ctx context.Context) (result []model.Provi
 	return result, err
 }
 
-func (s *service) KeyCatalog(ctx context.Context, query model.Query) (page store.KeyCatalogPage, err error) {
+func (s *service) KeyCatalog(ctx context.Context, query model.Query) (page backenddto.KeyCatalogPage, err error) {
 	backend, err := s.backendForRead()
 	if err != nil {
 		return page, err
 	}
 	provider, ok := backend.(interface {
-		KeyCatalog(context.Context, model.Query) (store.KeyCatalogPage, error)
+		KeyCatalog(context.Context, model.Query) (backenddto.KeyCatalogPage, error)
 	})
 	if !ok {
 		return page, ErrUnavailable
 	}
 	defer func() {
 		if recover() != nil {
-			page = store.KeyCatalogPage{}
+			page = backenddto.KeyCatalogPage{}
 			err = ErrInternal
 		}
 	}()
@@ -841,11 +907,40 @@ func (s *service) UpdateKeyLifecycle(ctx context.Context, configuredIDs, rotated
 }
 
 func (s *service) Close(ctx context.Context) error {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	s.mu.Lock()
+	drain := s.config.ShutdownDrain
+	if drain <= 0 || drain > time.Minute {
+		drain = DefaultShutdownDrain
+	}
+	drainCtx, cancel := context.WithTimeout(ctx, drain)
+	defer cancel()
+	if s.closed {
+		done := s.closeDone
+		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-drainCtx.Done():
+				return errors.Join(ErrTeardownUnresolved, drainCtx.Err())
+			}
+		}
+		s.mu.RLock()
+		resourceErr := s.closeErr
+		s.mu.RUnlock()
+		return errors.Join(resourceErr, s.joinTeardowns(drainCtx))
+	}
+	s.closeDone = make(chan struct{})
+	closeDone := s.closeDone
+	defer close(closeDone)
+	s.startupDone = make(chan struct{})
+	startupDone := s.startupDone
+	if s.teardownCancel != nil {
+		s.teardownCancel()
+	}
+
 	s.closed = true
 	s.invalidatePricingDemandLocked()
 	s.startSeq.Add(1)
@@ -863,21 +958,16 @@ func (s *service) Close(ctx context.Context) error {
 	s.maintenanceActive = false
 	s.maint = unavailableMaintenance{err: ErrClosed}
 	s.retention = nil
-	drain := s.config.ShutdownDrain
-	if drain <= 0 || drain > time.Minute {
-		drain = DefaultShutdownDrain
-	}
 	s.observer.clear()
 	s.mu.Unlock()
+	go func() { s.startWG.Wait(); close(startupDone) }()
+	if worker, ok := backend.(interface{ StopBackground() }); ok {
+		worker.StopBackground()
+	}
 	// Stop demand refreshes before closing the backend they may be reading.
 	s.pricingWG.Wait()
 	s.snapshots.mutate(func(health *model.Health) { health.State = StateStopping })
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	drainCtx, cancel := context.WithTimeout(ctx, drain)
-	defer cancel()
 	var errs []error
 	if currentRetention != nil {
 		if err := currentRetention.Close(drainCtx); err != nil {
@@ -899,17 +989,50 @@ func (s *service) Close(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("close analytics backend: %w", err))
 		}
 	}
-	startDone := make(chan struct{})
-	go func() {
-		s.startWG.Wait()
-		close(startDone)
-	}()
-	select {
-	case <-startDone:
-	case <-drainCtx.Done():
-		errs = append(errs, fmt.Errorf("wait for analytics startup: %w", drainCtx.Err()))
+
+	resourceErr := errors.Join(errs...)
+	s.mu.Lock()
+	s.closeErr = resourceErr
+	s.mu.Unlock()
+	return errors.Join(resourceErr, s.joinTeardowns(drainCtx))
+}
+
+// Joining finalizer goroutines is distinct from certifying ownership release.
+func (s *service) joinTeardowns(ctx context.Context) error {
+	s.mu.RLock()
+	startupDone := s.startupDone
+	s.mu.RUnlock()
+	if startupDone != nil {
+		select {
+		case <-startupDone:
+		case <-ctx.Done():
+			return errors.Join(ErrTeardownUnresolved, ctx.Err())
+		}
 	}
-	return errors.Join(errs...)
+	s.mu.RLock()
+	exited := s.teardownExited
+	s.mu.RUnlock()
+	if exited != nil {
+		select {
+		case <-exited:
+		case <-ctx.Done():
+			return errors.Join(ErrTeardownUnresolved, ctx.Err())
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.teardownDone == nil {
+		return nil
+	}
+	select {
+	case <-s.teardownDone:
+		return nil
+	default:
+	}
+	if s.teardownFailure == nil {
+		s.teardownFailure = ErrTeardownUnresolved
+	}
+	return errors.Join(ErrTeardownUnresolved, s.teardownFailure)
 }
 
 func (s *service) beginStart(ctx context.Context) {
@@ -917,7 +1040,7 @@ func (s *service) beginStart(ctx context.Context) {
 		ctx = context.Background()
 	}
 	s.mu.Lock()
-	if s.closed || s.starting || !s.config.Enabled {
+	if s.closed || s.starting || s.backend != nil || s.collector != nil || !s.config.Enabled {
 		s.mu.Unlock()
 		return
 	}
@@ -930,14 +1053,58 @@ func (s *service) beginStart(ctx context.Context) {
 	s.mu.Unlock()
 	go func() {
 		defer s.startWG.Done()
-		s.start(startCtx, sequence, config)
+		s.startupMu.Lock()
+		defer s.startupMu.Unlock()
+		s.mu.RLock()
+		previousTeardown := s.teardownDone
+		s.mu.RUnlock()
+		if previousTeardown != nil {
+			select {
+			case <-previousTeardown:
+			case <-startCtx.Done():
+				return
+			}
+		}
+		if startCtx.Err() == nil {
+			s.start(startCtx, sequence, config)
+		}
 	}()
 }
 
 func (s *service) start(ctx context.Context, sequence uint64, config Config) {
-	backend, identityKey, err := callFactory(ctx, s.factory, config)
+	var backend Backend
+	var identityKey [32]byte
+	var err error
+	delay := 100 * time.Millisecond
+	for {
+		backend, identityKey, err = callFactory(ctx, s.factory, config)
+		if err == nil {
+			break
+		}
+		var mismatch backenddto.ZoneMismatchError
+		if errors.As(err, &mismatch) || errors.Is(err, backenddto.ErrClickHouseNotConfigured) || errors.Is(err, ErrInternal) {
+			break
+		}
+		var permanent interface{ Permanent() bool }
+		if errors.As(err, &permanent) && permanent.Permanent() {
+			break
+		}
+		s.snapshots.mutate(func(h *model.Health) {
+			h.State = StateCircuitOpen
+			h.Category = startupErrorCategory(err)
+			h.Message = "Analytics is unavailable."
+		})
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = min(delay*2, 30*time.Second)
+	}
 	if err != nil {
-		var mismatch store.ZoneMismatchError
+		var mismatch backenddto.ZoneMismatchError
 		if errors.As(err, &mismatch) {
 			s.finishStartZoneMismatch(sequence, mismatch)
 			return
@@ -958,7 +1125,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 		Callbacks:        callbacks,
 	})
 	if err != nil {
-		_ = safeBackendClose(context.Background(), backend)
+		s.retireGeneration(nil, backend, config.ShutdownDrain)
 		s.finishStartFailure(sequence, "collector_start")
 		return
 	}
@@ -966,7 +1133,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 	s.mu.Lock()
 	if s.closed || sequence != s.startSeq.Load() || !s.config.Enabled {
 		s.mu.Unlock()
-		closeGeneration(currentCollector, backend, config.ShutdownDrain)
+		s.retireGeneration(currentCollector, backend, config.ShutdownDrain)
 		return
 	}
 	if lifecycle, ok := backend.(interface {
@@ -976,7 +1143,7 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 		rotatedKeyIDs := append([]string(nil), s.rotatedKeyIDs...)
 		if err = safeKeyLifecycleUpdate(ctx, lifecycle, configuredKeyIDs, rotatedKeyIDs); err != nil {
 			s.mu.Unlock()
-			closeGeneration(currentCollector, backend, config.ShutdownDrain)
+			s.retireGeneration(currentCollector, backend, config.ShutdownDrain)
 			s.finishStartFailure(sequence, "key_lifecycle")
 			return
 		}
@@ -991,7 +1158,10 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 	if database, ok := backend.(maintenance.Store); ok {
 		var stateBeforeMaintenance model.Health
 		controller := maintenance.New(maintenance.Hooks{
-			Detach: func(context.Context) error {
+			Detach: func(ctx context.Context) error {
+				if err := s.maintenanceReady(ctx); err != nil {
+					return err
+				}
 				s.mu.Lock()
 				s.maintenanceActive = true
 				s.responseCacheEpoch++
@@ -1006,7 +1176,12 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 				currentCollector.Detach()
 				return nil
 			},
-			Drain: currentCollector.Drain,
+			Drain: func(ctx context.Context) error {
+				if err := currentCollector.Drain(ctx); err != nil {
+					return err
+				}
+				return nil
+			},
 			Attach: func(context.Context) error {
 				identityProvider, okIdentity := backend.(interface{ IdentityKeyArray() [32]byte })
 				if !okIdentity {
@@ -1047,14 +1222,20 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 		if err != nil {
 			s.mu.Unlock()
 			_ = controller.Close(context.Background())
-			closeGeneration(currentCollector, backend, config.ShutdownDrain)
+			s.retireGeneration(currentCollector, backend, config.ShutdownDrain)
 			s.finishStartFailure(sequence, "retention_start")
 			return
 		}
-		if err = retention.SetRunner(func(runContext context.Context, rawCutoff, hourlyCutoff time.Time, _ int) (store.RetentionResult, error) {
+		if err = retention.SetRunner(func(runContext context.Context, rawCutoff, hourlyCutoff time.Time, _ int) (backenddto.RetentionResult, error) {
+			// Wait before scheduling maintenance so startup import never detaches intake.
+			if importer, ok := backend.(interface{ WaitLegacyImport(context.Context) error }); ok {
+				if err := importer.WaitLegacyImport(runContext); err != nil {
+					return backenddto.RetentionResult{}, err
+				}
+			}
 			result, runErr := runScheduledRetention(runContext, controller, rawCutoff, hourlyCutoff)
 			if errors.Is(runErr, maintenance.ErrJobRunning) {
-				return store.RetentionResult{}, nil
+				return backenddto.RetentionResult{}, nil
 			}
 			if runErr != nil {
 				s.snapshots.mutate(func(health *model.Health) {
@@ -1065,13 +1246,18 @@ func (s *service) start(ctx context.Context, sequence uint64, config Config) {
 				return result, runErr
 			}
 			s.snapshots.mutate(func(health *model.Health) {
+				if health.Category == "retention" || health.Category == "retention_start" {
+					health.State = StateReady
+					health.Category = ""
+					health.Message = ""
+				}
 				health.RetentionCutoff = cloneTime(&rawCutoff)
 			})
 			return result, nil
 		}); err != nil {
 			s.mu.Unlock()
 			_ = controller.Close(context.Background())
-			closeGeneration(currentCollector, backend, config.ShutdownDrain)
+			s.retireGeneration(currentCollector, backend, config.ShutdownDrain)
 			s.finishStartFailure(sequence, "retention_start")
 			return
 		}
@@ -1124,7 +1310,7 @@ func (s *service) finishStartFailure(sequence uint64, category string) {
 // finishStartZoneMismatch names both storage time zones in health so the
 // operator can see why the store refused to open instead of a bare
 // "analytics unavailable".
-func (s *service) finishStartZoneMismatch(sequence uint64, mismatch store.ZoneMismatchError) {
+func (s *service) finishStartZoneMismatch(sequence uint64, mismatch backenddto.ZoneMismatchError) {
 	s.mu.Lock()
 	if sequence != s.startSeq.Load() || s.closed {
 		s.mu.Unlock()
@@ -1267,32 +1453,147 @@ func callFactory(ctx context.Context, factory BackendFactory, config Config) (ba
 	return factory(ctx, config)
 }
 
-func closeGeneration(currentCollector *collector.Collector, backend Backend, timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if currentCollector != nil {
-		_ = currentCollector.Close(ctx)
-	}
-	if backend != nil {
-		_ = safeBackendClose(ctx, backend)
-	}
+func (s *service) retireGeneration(current *collector.Collector, backend Backend, timeout time.Duration) {
+	s.mu.Lock()
+	s.retireGenerationLocked(nil, nil, current, backend, timeout)
+	s.mu.Unlock()
 }
 
-func closeServiceGeneration(currentMaintenance Maintenance, retention *maintenance.RetentionScheduler, currentCollector *collector.Collector, backend Backend, timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+// Reload retirement and unpublished startup owners enter the same queue.
+func (s *service) retireGenerationLocked(currentMaintenance Maintenance, retention *maintenance.RetentionScheduler, current *collector.Collector, backend Backend, timeout time.Duration) {
+	previous := s.teardownDone
+	done := make(chan struct{})
+	s.teardownDone = done
+	if s.teardownWake == nil {
+		s.teardownWake = make(chan struct{}, 1)
+	}
+	wake := s.teardownWake
+	if s.teardownCtx == nil {
+		s.teardownCtx, s.teardownCancel = context.WithCancel(context.Background())
+		if s.closed {
+			s.teardownCancel()
+		}
+	}
+	ctx := s.teardownCtx
+	if s.teardownPending == 0 {
+		s.teardownExited = make(chan struct{})
+	}
+	s.teardownPending++
+	go func() {
+		released := false
+		defer func() {
+			// A factory may return its owner after terminal shutdown has already begun.
+			// Cancel its workers even if this finalizer never reached its predecessor.
+			// The Closes get the canceled terminal context, so they stop without draining.
+			if !released && ctx.Err() != nil {
+				if worker, ok := backend.(interface{ StopBackground() }); ok {
+					worker.StopBackground()
+				}
+				if retention != nil {
+					_ = retention.Close(ctx)
+				}
+				if closer, ok := currentMaintenance.(interface{ Close(context.Context) error }); ok {
+					_ = closer.Close(ctx)
+				}
+				if current != nil {
+					_ = current.Close(ctx)
+				}
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if !released && s.teardownFailure == nil {
+				s.teardownFailure = ErrTeardownUnresolved
+			}
+			s.teardownPending--
+			if s.teardownPending == 0 {
+				close(s.teardownExited)
+			}
+		}()
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-ctx.Done():
+				return
+			}
+		}
+		delay := 100 * time.Millisecond
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			err := closeServiceGeneration(ctx, currentMaintenance, retention, current, backend, timeout)
+			s.mu.Lock()
+			if err == nil {
+				if !s.closed || s.teardownDone == done {
+					s.teardownFailure = nil
+				}
+			} else if ctx.Err() == nil || s.teardownFailure == nil {
+				s.teardownFailure = err
+			}
+			s.mu.Unlock()
+			if err == nil {
+				released = true
+				close(done)
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			log.WithError(err).Warn("analytics teardown failed; retaining storage ownership and retrying cleanup")
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-wake:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+			timer.Stop()
+			delay = min(delay*2, 30*time.Second)
+		}
+	}()
+}
+
+// The drain deadline bounds queued work, never ownership. Joining the canceled
+// workers and closing the backend run to completion before a successor may open.
+func closeServiceGeneration(lifetime context.Context, currentMaintenance Maintenance, retention *maintenance.RetentionScheduler, currentCollector *collector.Collector, backend Backend, timeout time.Duration) error {
+	if worker, ok := backend.(interface{ StopBackground() }); ok {
+		worker.StopBackground()
+	}
+	ctx, cancel := context.WithTimeout(lifetime, timeout)
 	defer cancel()
+	var errs []error
 	if retention != nil {
-		_ = retention.Close(ctx)
+		if err := retention.Close(lifetime); err != nil {
+			if lifetime.Err() == nil {
+				return err
+			}
+			errs = append(errs, err)
+		}
 	}
 	if closer, ok := currentMaintenance.(interface{ Close(context.Context) error }); ok {
-		_ = closer.Close(ctx)
+		if err := closer.Close(lifetime); err != nil {
+			if lifetime.Err() == nil {
+				return err
+			}
+			errs = append(errs, err)
+		}
 	}
 	if currentCollector != nil {
 		_ = currentCollector.Close(ctx)
+		if err := currentCollector.Close(lifetime); err != nil {
+			if lifetime.Err() == nil {
+				return err
+			}
+			errs = append(errs, err)
+		}
 	}
 	if backend != nil {
-		_ = safeBackendClose(ctx, backend)
+		if err := safeBackendClose(lifetime, backend); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }
 
 func safeBackendClose(ctx context.Context, backend Backend) (err error) {
@@ -1310,7 +1611,10 @@ func safeBackendReconfigure(backend BackendReconfigurer, config Config) (err err
 			err = ErrInternal
 		}
 	}()
-	return backend.Reconfigure(context.Background(), config)
+	return backend.Reconfigure(context.Background(), backenddto.Config{
+		Path: config.Path, MaxStorageBytes: config.MaxStorageBytes, MinFreeBytes: config.MinFreeBytes,
+		RetentionTimeZone: config.StorageTimeZone, CatalogBindings: config.CatalogBindings,
+	})
 }
 
 func safeStorageBudgetReconfigure(backend StorageBudgetReconfigurer, config Config) (err error) {
@@ -1333,21 +1637,21 @@ func safeKeyLifecycleUpdate(ctx context.Context, backend interface {
 	return backend.UpdateKeyLifecycle(ctx, configuredKeyIDs, rotatedKeyIDs)
 }
 
-func runScheduledRetention(ctx context.Context, controller *maintenance.Controller, rawCutoff, hourlyCutoff time.Time) (store.RetentionResult, error) {
+func runScheduledRetention(ctx context.Context, controller *maintenance.Controller, rawCutoff, hourlyCutoff time.Time) (backenddto.RetentionResult, error) {
 	job, err := controller.Start(ctx, maintenance.Request{Kind: "retention", Options: map[string]any{
 		"raw_cutoff": rawCutoff.Format(time.RFC3339Nano), "hourly_cutoff": hourlyCutoff.Format(time.RFC3339Nano),
 	}})
 	if err != nil {
-		return store.RetentionResult{}, err
+		return backenddto.RetentionResult{}, err
 	}
 	status, err := controller.Await(ctx, job.JobID)
 	if err != nil {
-		return store.RetentionResult{}, err
+		return backenddto.RetentionResult{}, err
 	}
 	if status.State != model.JobSucceeded {
-		return store.RetentionResult{}, fmt.Errorf("scheduled analytics retention failed")
+		return backenddto.RetentionResult{}, fmt.Errorf("scheduled analytics retention failed")
 	}
-	return store.RetentionResult{
+	return backenddto.RetentionResult{
 		Cutoff: rawCutoff, HourlyCutoff: hourlyCutoff,
 		RolledUpRows:      maintenanceResultInt64(status.Result, "rolled_up_rows"),
 		DeletedRows:       maintenanceResultInt64(status.Result, "deleted_rows"),
@@ -1450,7 +1754,48 @@ func (p *maintenanceProxy) target() Maintenance {
 }
 
 func (p *maintenanceProxy) Start(ctx context.Context, request MaintenanceRequest) (model.JobStatus, error) {
+	if p != nil && p.service != nil {
+		if err := p.service.maintenanceReady(ctx); err != nil {
+			return model.JobStatus{}, err
+		}
+	}
 	return p.target().Start(ctx, request)
+}
+
+// Maintenance requires a live intake owner and reachable storage. Health may be
+// degraded by the maintenance failure that this operation is intended to repair.
+func (s *service) maintenanceReady(ctx context.Context) error {
+	s.mu.RLock()
+	backend, current, active, closed, enabled := s.backend, s.collector, s.maintenanceActive, s.closed, s.config.Enabled
+	s.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
+	if !enabled {
+		return ErrDisabled
+	}
+	if backend == nil || current == nil {
+		return ErrUnavailable
+	}
+	if active {
+		return nil
+	}
+	if !current.Ready() {
+		return ErrUnavailable
+	}
+	if ready, ok := backend.(interface{ CheckReady(context.Context) error }); ok {
+		if err := ready.CheckReady(ctx); err != nil {
+			return &UnavailableError{Category: "storage_unavailable"}
+		}
+		return nil
+	}
+	if database, ok := backend.(maintenance.Store); ok {
+		if err := database.Checkpoint(ctx); err != nil {
+			return &UnavailableError{Category: "storage_unavailable"}
+		}
+		return nil
+	}
+	return nil
 }
 
 func (p *maintenanceProxy) Status(ctx context.Context, jobID string) (model.JobStatus, error) {

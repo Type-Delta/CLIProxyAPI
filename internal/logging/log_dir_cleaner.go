@@ -129,6 +129,24 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 		total += info.Size()
 	}
 
+	// Only published outbox records are eligible; temporary writes must not be removed.
+	outboxDir := filepath.Join(dir, "telemetry-outbox")
+	outboxEntries, errOutbox := os.ReadDir(outboxDir)
+	if errOutbox != nil && !os.IsNotExist(errOutbox) {
+		return 0, errOutbox
+	}
+	for _, entry := range outboxEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json.zst") {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		files = append(files, logFile{path: filepath.Join(outboxDir, entry.Name()), size: info.Size(), modTime: info.ModTime()})
+		total += info.Size()
+	}
+
 	if total <= maxBytes {
 		return 0, nil
 	}
@@ -138,6 +156,8 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 	})
 
 	deleted := 0
+	outboxDeleted := 0
+	var outboxBytes int64
 	for _, file := range files {
 		if total <= maxBytes {
 			break
@@ -151,8 +171,15 @@ func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string)
 		}
 		total -= file.size
 		deleted++
+		if filepath.Dir(file.path) == outboxDir {
+			outboxDeleted++
+			outboxBytes += file.size
+		}
 	}
 
+	if outboxDeleted > 0 {
+		log.WithFields(log.Fields{"files": outboxDeleted, "bytes": outboxBytes}).Warnf("telemetry: evicted %d file(s), %d bytes of un-ingested outbox records to enforce log directory size limit", outboxDeleted, outboxBytes)
+	}
 	return deleted, nil
 }
 

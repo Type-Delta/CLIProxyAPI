@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/store"
 )
 
 const (
@@ -208,6 +209,22 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 		return
 	}
 
+	if h.clickHouse.handle != nil && h.clickHouse.handle.Configured() {
+		db, err := h.clickHouse.handle.Get(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telemetry unavailable"})
+			return
+		}
+		files, err := store.ErrorLogs(c.Request.Context(), db)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telemetry unavailable"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"files": files})
+		return
+	}
+
 	dir := h.logDirectory()
 	if strings.TrimSpace(dir) == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
@@ -265,6 +282,19 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 	}
 	if h.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		return
+	}
+
+	if h.clickHouse.handle != nil && h.clickHouse.handle.Configured() {
+		id := strings.TrimSpace(c.Param("id"))
+		if id == "" {
+			id = strings.TrimSpace(c.Query("id"))
+		}
+		if id == "" || strings.ContainsAny(id, `/\`) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request ID"})
+			return
+		}
+		h.serveTelemetryLog(c, id, false)
 		return
 	}
 
@@ -434,6 +464,16 @@ func (h *Handler) DownloadRequestErrorLog(c *gin.Context) {
 	}
 	if h.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		return
+	}
+
+	if h.clickHouse.handle != nil && h.clickHouse.handle.Configured() {
+		name := strings.TrimSpace(c.Param("name"))
+		if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") || strings.ContainsAny(name, `/\`) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+			return
+		}
+		h.serveTelemetryLog(c, strings.TrimSuffix(strings.TrimPrefix(name, "error-"), ".log"), true)
 		return
 	}
 
@@ -1389,4 +1429,23 @@ func timestampRotationOrder(name string) (int64, bool) {
 		return 0, false
 	}
 	return math.MaxInt64 - parsed.Unix(), true
+}
+
+func (h *Handler) serveTelemetryLog(c *gin.Context, id string, errorOnly bool) {
+	db, err := h.clickHouse.handle.Get(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telemetry unavailable"})
+		return
+	}
+	r, err := store.Request(c.Request.Context(), db, id)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && errorOnly && r.Detail != "error") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telemetry unavailable"})
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "error-"+r.RequestID+".log"))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", logging.RenderRequestLog(r))
 }

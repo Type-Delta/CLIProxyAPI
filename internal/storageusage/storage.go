@@ -29,17 +29,19 @@ type Volume struct {
 }
 
 type Snapshot struct {
-	MeasuredAt time.Time `json:"measured_at"`
-	Partial    bool      `json:"partial"`
-	Volumes    []Volume  `json:"volumes"`
+	MeasuredAt time.Time          `json:"measured_at"`
+	Partial    bool               `json:"partial"`
+	Volumes    []Volume           `json:"volumes"`
+	ClickHouse *ClickHouseStorage `json:"clickhouse,omitempty"`
 }
 
 // Meter coalesces scans and caches a snapshot briefly to bound directory walks.
 // Changing the configured locations invalidates the cached snapshot.
 type Meter struct {
-	mu        sync.Mutex
-	locations []Location
-	snapshot  Snapshot
+	mu         sync.Mutex
+	locations  []Location
+	snapshot   Snapshot
+	clickHouse clickHouseCacheEntry
 }
 
 func (m *Meter) Measure(ctx context.Context, locations []Location) Snapshot {

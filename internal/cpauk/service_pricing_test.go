@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	store "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/chstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
 )
 
 type serviceBindingFetcher struct {
@@ -153,13 +154,17 @@ func TestPricingReconfigureCatalogBindingsTriggersRefresh(t *testing.T) {
 	config := smallConfig()
 	config.Path = filepath.Join(t.TempDir(), "analytics.db")
 	config.CatalogBindings = []CatalogBinding{{Provider: "openai-compatible-zai", Catalog: "zai"}}
+	handle := chtest.Handle(t)
 	serviceFacade := New(context.Background(), config, func(ctx context.Context, cfg Config) (Backend, [32]byte, error) {
 		bindings := make([]store.CatalogBinding, 0, len(cfg.CatalogBindings))
 		for _, binding := range cfg.CatalogBindings {
 			bindings = append(bindings, store.CatalogBinding{Provider: binding.Provider, Catalog: binding.Catalog})
 		}
-		backend, err := store.Open(ctx, store.Config{Path: cfg.Path, MaxStorageBytes: cfg.MaxStorageBytes,
+		backend, err := store.Open(ctx, handle, store.Config{Path: cfg.Path, MaxStorageBytes: cfg.MaxStorageBytes,
 			PricingFetcher: fetcher, PricingNow: func() time.Time { return now }, CatalogBindings: bindings})
+		if err == nil {
+			err = store.RunLegacyImport(ctx, backend, cfg.Path)
+		}
 		return backend, [32]byte{1}, err
 	})
 	t.Cleanup(func() { _ = serviceFacade.Close(context.Background()) })

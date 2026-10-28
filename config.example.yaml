@@ -118,16 +118,31 @@ access:
     #     max-tokens-m: 20
     #     resets: "weekly"
 
+# ClickHouse enables CPA server mode. With a DSN, analytics and request logs go
+# to ClickHouse. With an empty DSN, file request logs remain and analytics is unavailable.
+clickhouse:
+  dsn: ""
+  database: cpa
+  telemetry-retention-days: 30
+  agent-query:
+    enabled: true
+    max-execution-time: 30s
+    max-result-rows: 10000
+    max-result-bytes: 67108864
+    max-memory-bytes: 2147483648
+
 # Durable CPAUK analytics are independent from usage-statistics-enabled and are opt-in.
 # Invalid values disable only analytics; CPA proxying and key limits continue.
 analytics:
   enabled: false
+  # Legacy SQLite import source and location of identity.key.
   path: ""
   queue-capacity: 8192
   batch-size: 256
   flush-interval: 250ms
   hot-retention-days: 90
   circuit-failure-threshold: 5
+  # Storage limits apply to ClickHouse usage and available disk space.
   max-storage-bytes: 5368709120
   min-free-bytes: 536870912
   # Retained rollups use this IANA zone. Cross-zone retained reads are rejected.

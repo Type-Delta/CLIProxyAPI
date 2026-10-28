@@ -20,7 +20,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
@@ -43,6 +42,9 @@ import (
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
+	clickHouse clickHouseHandle
+	telemetry  *telemetryRuntime
+
 	// engine is the Gin web framework engine instance.
 	engine *gin.Engine
 
@@ -72,8 +74,16 @@ type Server struct {
 	accessManager *sdkaccess.Manager
 
 	// requestLogger is the request logger instance for dynamic configuration updates.
-	requestLogger logging.RequestLogger
-	loggerToggle  func(bool)
+	requestLogger         logging.RequestLogger
+	requestLoggerMu       sync.RWMutex
+	requestLoggerWG       sync.WaitGroup
+	hijackedMu            sync.Mutex
+	hijacked              map[net.Conn]struct{}
+	hijacksStopping       bool
+	requestLoggingStopped bool
+	requestLoggerDSN      string
+	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
+	loggerToggle          func(bool)
 
 	// configFilePath is the absolute path to the YAML config file for persistence.
 	configFilePath string
@@ -138,8 +148,16 @@ type Server struct {
 // Returns:
 //   - *Server: A new server instance
 func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
+	// Resolve before cloning so the process logger's configured directory is shared.
+	logDir, errLogDir := logging.ConfiguredLogDirectory(cfg)
+	if errLogDir != nil {
+		log.WithError(errLogDir).Warn("failed to resolve configured log directory")
+		logDir = logging.ResolveLogDirectory(cfg)
+	}
+
 	if cfg != nil {
 		cfg = cfg.CloneForRuntime()
+		cfg.RuntimeLogDirectory = logDir
 	}
 	optionState := &serverOptionConfig{
 		requestLoggerFactory: defaultRequestLoggerFactory,
@@ -187,6 +205,16 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 
+	s.initClickHouse(cfg)
+	engine.Use(s.ownedHijacksMiddleware())
+	if !optionState.customRequestLogger {
+		optionState.requestLoggerFactory = func(cfg *config.Config, configPath string) logging.RequestLogger {
+			return requestLoggerForDirectory(cfg, logDir, filepath.Dir(configPath))
+		}
+	}
+	s.requestLoggerFactory = optionState.requestLoggerFactory
+	s.requestLoggerDSN = cfg.ClickHouse.DSN
+
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
@@ -206,7 +234,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 			requestLogger = optionState.requestLoggerFactory(cfg, configFilePath)
 		}
 		if requestLogger != nil {
-			engine.Use(middleware.RequestLoggingMiddleware(requestLogger))
+			engine.Use(s.requestLoggingMiddleware())
 			if setter, ok := requestLogger.(interface{ SetEnabled(bool) }); ok {
 				toggle = setter.SetEnabled
 			}
@@ -237,7 +265,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.loggerToggle = toggle
 	s.usageLimitTracker = usagelimit.NewTracker()
 	s.usageLimitPath = usageLimitPath
-	s.analytics = newAnalyticsService(context.Background(), cfg)
+	s.analytics = newAnalyticsService(context.Background(), cfg, s.ClickHouse())
 	go func() {
 		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(context.Background(), s.analytics, nil, cfg.APIKeys); errAnalyticsKeys != nil && !errors.Is(errAnalyticsKeys, cpauk.ErrClosed) {
 			log.WithError(errAnalyticsKeys).Warn("failed to initialize analytics key lifecycle")
@@ -291,6 +319,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		authManager.SetQuotaReserveProber(s.mgmt.QuotaReserveBars)
 	}
 	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
+	s.mgmt.SetClickHouse(s.clickHouse.handle)
 	s.mgmt.SetAnalyticsService(s.analytics)
 	viewerPath := filepath.Join(filepath.Dir(analyticsModuleConfig(cfg).Path), "viewers.json")
 	if viewerStore, errViewerStore := managementHandlers.NewAnalyticsViewerStore(viewerPath); errViewerStore != nil {
@@ -312,8 +341,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
-	logDir := logging.ResolveLogDirectory(cfg)
 	s.mgmt.SetLogDirectory(logDir)
+	s.startTelemetry(logDir)
 	if optionState.postAuthHook != nil {
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
 	}
@@ -510,6 +539,9 @@ func (s *Server) Start() error {
 // Returns:
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	log.Debug("Stopping API server...")
 	s.stopQuotaHistoryCollector(ctx)
 	s.stopUsageLimitPersistence()
@@ -546,6 +578,11 @@ func (s *Server) Stop(ctx context.Context) error {
 			errCloseServer = nil
 		}
 	}
+	s.closeOwnedHijacks()
+	s.requestLoggerMu.Lock()
+	s.requestLoggingStopped = true
+	s.requestLoggerMu.Unlock()
+	s.waitRequestLoggers(ctx)
 	coreusage.SetProxyResponseObserver(nil)
 	if s.analyticsDetach != nil {
 		if errDetach := s.analyticsDetach(ctx); errDetach != nil {
@@ -564,6 +601,10 @@ func (s *Server) Stop(ctx context.Context) error {
 			}
 		}
 	}
+	s.stopTelemetry(ctx)
+	if errCloseClickHouse := s.closeClickHouse(); errCloseClickHouse != nil {
+		log.WithError(errCloseClickHouse).Warn("failed to close clickhouse")
+	}
 	if s.usageLimitDetach != nil {
 		if errDetach := s.usageLimitDetach(ctx); errDetach != nil {
 			log.WithError(errDetach).Warn("failed to detach API key usage accounting")
@@ -577,7 +618,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.codexLiveHandler.Close()
 	}
 	if errCloseServer != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)
+		return fmt.Errorf("failed to stop API server: %v", errCloseServer)
 	}
 
 	log.Debug("API server stopped")

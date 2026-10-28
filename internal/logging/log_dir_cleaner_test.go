@@ -68,3 +68,36 @@ func writeLogFile(t *testing.T, path string, size int, modTime time.Time) {
 		t.Fatalf("set times: %v", err)
 	}
 }
+
+func TestLogDirCleanerIncludesOutbox(t *testing.T) {
+	dir := t.TempDir()
+	outboxDir := filepath.Join(dir, "telemetry-outbox")
+	if err := os.Mkdir(outboxDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(outboxDir, "1-id.json.zst")
+	if err := os.WriteFile(old, []byte("123456"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(old, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	newer := filepath.Join(dir, "request.log")
+	if err := os.WriteFile(newer, []byte("123456"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(outboxDir, "writing.tmp")
+	if err := os.WriteFile(tmp, []byte("in progress"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := enforceLogDirSizeLimit(dir, 6, "")
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("outbox record remains: %v", err)
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Fatalf("temporary record removed: %v", err)
+	}
+}

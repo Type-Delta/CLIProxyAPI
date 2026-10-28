@@ -41,6 +41,8 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
+	clickHouse clickHouseHandle
+
 	cfg                      *config.Config
 	configFilePath           string
 	mu                       sync.Mutex

@@ -60,6 +60,13 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
 	s.cfgMu.RLock()
+	previousHomeEnabled := false
+	if s.cfg != nil {
+		previousHomeEnabled = s.cfg.Home.Enabled
+		if s.cfg.RuntimeLogDirectory != "" {
+			cfg.RuntimeLogDirectory = s.cfg.RuntimeLogDirectory
+		}
+	}
 	oldConfigYaml := append([]byte(nil), s.oldConfigYaml...)
 	s.cfgMu.RUnlock()
 	if len(oldConfigYaml) > 0 {
@@ -72,24 +79,25 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		}
 	}
 
-	// Update request logger enabled state if it has changed
-	previousRequestLog := false
-	if oldCfg != nil {
-		previousRequestLog = oldCfg.RequestLog
+	s.requestLoggerMu.Lock()
+	if previousHomeEnabled != cfg.Home.Enabled && s.requestLoggerFactory != nil && s.requestLogger != nil {
+		// Keep storage selection bound to the active handle until restart.
+		loggerCfg := cfg.CloneForRuntime()
+		loggerCfg.ClickHouse.DSN = s.requestLoggerDSN
+		s.requestLogger = s.requestLoggerFactory(loggerCfg, s.configFilePath)
+		s.loggerToggle = nil
 	}
-	if s.requestLogger != nil && (oldCfg == nil || previousRequestLog != cfg.RequestLog) {
-		if s.loggerToggle != nil {
-			s.loggerToggle(cfg.RequestLog)
-		} else if toggler, ok := s.requestLogger.(interface{ SetEnabled(bool) }); ok {
-			toggler.SetEnabled(cfg.RequestLog)
-		}
+	if s.loggerToggle != nil {
+		s.loggerToggle(cfg.RequestLog)
+	} else if setter, ok := s.requestLogger.(interface{ SetEnabled(bool) }); ok {
+		setter.SetEnabled(cfg.RequestLog)
 	}
-
-	if oldCfg == nil || oldCfg.Home.Enabled != cfg.Home.Enabled {
+	if previousHomeEnabled != cfg.Home.Enabled {
 		if setter, ok := s.requestLogger.(interface{ SetHomeEnabled(bool) }); ok {
 			setter.SetHomeEnabled(cfg.Home.Enabled)
 		}
 	}
+	s.requestLoggerMu.Unlock()
 
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {
 		if err := logging.ConfigureLogOutput(cfg); err != nil {
@@ -125,6 +133,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		log.Infof("disable-image-generation updated: %v -> %v", oldCfg.DisableImageGeneration, cfg.DisableImageGeneration)
 	}
 
+	if fields := markClickHouseRestartRequired(s.analytics, oldCfg, cfg); len(fields) != 0 {
+		log.WithField("fields", fields).Warn("clickhouse configuration update requires a restart")
+	}
 	applySignatureCacheConfig(oldCfg, cfg)
 	if s.analytics != nil {
 		analyticsConfig := analyticsModuleConfig(cfg)

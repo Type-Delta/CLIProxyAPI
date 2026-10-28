@@ -14,5 +14,18 @@ configuration produces a non-nil disabled service. Analytics state does not
 participate in CPA readiness.
 
 Storage implementations satisfy `Backend` and return their database-bound
-32-byte identity key from `BackendFactory`. The collector is the only writer.
+32-byte identity key from `BackendFactory`. The collector owns request-event
+writes; import and maintenance own their batch operations.
 HTTP handlers depend on `Reader` and `Maintenance`, not SQLite types.
+
+Runtime analytics requires both `analytics.enabled` and `clickhouse.dsn`. It uses
+`chstore` and the server's shared ClickHouse pool. Without a DSN the health
+category is `clickhouse_not_configured`; proxying remains available. Disabled
+analytics stays disabled.
+
+`analytics.path` is the legacy SQLite import source and locates the unchanged
+`identity.key` beside it. The resumable one-time import runs in the background;
+health includes its state, counts or failure reason. Analytics remains available
+while importing. The `backend` package owns shared configuration and DTOs.
+The frozen `store` package implements the legacy SQLite format for one-time
+import and differential test oracles. Do not add features to it.

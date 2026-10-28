@@ -1,148 +1,22 @@
 package store
 
-import (
-	"errors"
-	"fmt"
-	"path/filepath"
-	"strings"
-	"time"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-)
+type RetainedTimeZoneError = backend.RetainedTimeZoneError
+type RetainedRangeError = backend.RetainedRangeError
+type ZoneMismatchError = backend.ZoneMismatchError
+type Config = backend.Config
+type CatalogBinding = backend.CatalogBinding
 
 var (
-	ErrIdentityKeyMissing      error = classifiedError{message: "analytics identity key is missing", category: "identity_key", permanent: true}
-	ErrIdentityKeyMismatch     error = classifiedError{message: "analytics identity key fingerprint mismatch", category: "identity_key", permanent: true}
-	ErrMigrationChecksum       error = classifiedError{message: "analytics migration checksum mismatch", category: "migration", permanent: true}
-	ErrUnsupportedSchema       error = classifiedError{message: "analytics schema version is newer than this binary", category: "migration", permanent: true}
-	ErrCorruptDatabase         error = classifiedError{message: "analytics database failed integrity check", category: "storage_corrupt", permanent: true}
-	ErrStorageQuota            error = classifiedError{message: "analytics storage quota would be exceeded", category: "storage_quota", permanent: true}
-	ErrInsufficientFreeSpace   error = classifiedError{message: "analytics storage reserve would be crossed", category: "storage_quota", permanent: true}
-	ErrClosed                        = errors.New("analytics store is closed")
-	ErrRetainedRangePartial          = errors.New("query range cuts through a retained rollup bucket")
-	ErrRetainedTimeZonePartial       = errors.New("retained analytics cannot be rebucketed exactly in a different time zone")
+	ErrIdentityKeyMissing      = backend.ErrIdentityKeyMissing
+	ErrIdentityKeyMismatch     = backend.ErrIdentityKeyMismatch
+	ErrMigrationChecksum       = backend.ErrMigrationChecksum
+	ErrUnsupportedSchema       = backend.ErrUnsupportedSchema
+	ErrCorruptDatabase         = backend.ErrCorruptDatabase
+	ErrStorageQuota            = backend.ErrStorageQuota
+	ErrInsufficientFreeSpace   = backend.ErrInsufficientFreeSpace
+	ErrClosed                  = backend.ErrClosed
+	ErrRetainedRangePartial    = backend.ErrRetainedRangePartial
+	ErrRetainedTimeZonePartial = backend.ErrRetainedTimeZonePartial
 )
-
-// RetainedTimeZoneError reports a retained read whose stored rollup zone cannot
-// be rebucketed into the requested zone. It keeps both partial sentinels
-// matchable with errors.Is while carrying the zone pair and bucket grain so
-// callers can surface a concrete reason instead of a static string.
-type RetainedTimeZoneError struct {
-	StorageTimeZone string
-	QueryTimeZone   string
-	BucketWidth     string
-}
-
-func (e RetainedTimeZoneError) Error() string {
-	detail := fmt.Sprintf("storage zone %q, query zone %q", e.StorageTimeZone, e.QueryTimeZone)
-	if e.BucketWidth != "" {
-		detail += fmt.Sprintf(", bucket width %q", e.BucketWidth)
-	}
-	return fmt.Sprintf("%s: %s (%s)", ErrRetainedRangePartial.Error(), ErrRetainedTimeZonePartial.Error(), detail)
-}
-
-// Detail renders the human-readable reason without the sentinel prefixes.
-func (e RetainedTimeZoneError) Detail() string {
-	detail := fmt.Sprintf("Retained rollups are stored in %s and the query requested %s", e.StorageTimeZone, e.QueryTimeZone)
-	if e.BucketWidth != "" {
-		detail += fmt.Sprintf(" at %s buckets", e.BucketWidth)
-	}
-	return detail + "."
-}
-
-func (e RetainedTimeZoneError) Unwrap() []error {
-	return []error{ErrRetainedRangePartial, ErrRetainedTimeZonePartial}
-}
-
-// RetainedRangeError reports a raw-event read whose range starts before the
-// retention cutoff. It stays matchable as ErrRetainedRangePartial while
-// carrying the cutoff so callers can name it instead of a static string.
-type RetainedRangeError struct {
-	Cutoff time.Time
-}
-
-func (e RetainedRangeError) Error() string {
-	return fmt.Sprintf("%s: retention cutoff %s", ErrRetainedRangePartial.Error(), e.Cutoff.UTC().Format(time.RFC3339))
-}
-
-func (e RetainedRangeError) Unwrap() error { return ErrRetainedRangePartial }
-
-// ZoneMismatchError reports a store that refuses to open because its retained
-// rollups were bucketed in a different time zone than the configured one. Both
-// zone names travel with the error so the operator sees them in health.
-type ZoneMismatchError struct {
-	Stored     string
-	Configured string
-}
-
-func (e ZoneMismatchError) Error() string {
-	return fmt.Sprintf("configured analytics storage time zone %q does not match retained data time zone %q", e.Configured, e.Stored)
-}
-
-func (e ZoneMismatchError) Permanent() bool { return true }
-
-func (e ZoneMismatchError) Category() string { return "storage_time_zone" }
-
-type classifiedError struct {
-	message   string
-	category  string
-	permanent bool
-}
-
-func (e classifiedError) Error() string    { return e.message }
-func (e classifiedError) Category() string { return e.category }
-func (e classifiedError) Permanent() bool  { return e.permanent }
-
-type Config struct {
-	Path              string
-	IdentityKeyPath   string
-	MaxStorageBytes   int64
-	MinFreeBytes      int64
-	RetentionTimeZone string
-	PriceBook         aggregate.PriceBook
-	CursorCodec       *model.CursorCodec
-	CatalogBindings   []CatalogBinding
-	// PricingFetcher and PricingNow are internal seams used by the lazy
-	// catalog refresher and its deterministic tests. They are not user config.
-	PricingFetcher PricingFetcher
-	PricingNow     func() time.Time
-}
-
-type CatalogBinding struct {
-	Provider string
-	Catalog  string
-}
-
-func (c *Config) normalize() error {
-	if c.Path == "" {
-		return fmt.Errorf("analytics database path is required")
-	}
-	absolute, err := filepath.Abs(c.Path)
-	if err != nil {
-		return fmt.Errorf("resolve analytics database path: %w", err)
-	}
-	c.Path = filepath.Clean(absolute)
-	if c.IdentityKeyPath == "" {
-		c.IdentityKeyPath = filepath.Join(filepath.Dir(c.Path), "identity.key")
-	} else {
-		identityAbsolute, err := filepath.Abs(c.IdentityKeyPath)
-		if err != nil {
-			return fmt.Errorf("resolve analytics identity key path: %w", err)
-		}
-		c.IdentityKeyPath = filepath.Clean(identityAbsolute)
-	}
-	if c.MaxStorageBytes < 0 || c.MinFreeBytes < 0 || c.MaxStorageBytes == 0 && c.MinFreeBytes == 0 {
-		return fmt.Errorf("analytics storage limits cannot both be disabled")
-	}
-	if c.RetentionTimeZone == "" {
-		c.RetentionTimeZone = "UTC"
-	}
-	if strings.TrimSpace(c.RetentionTimeZone) != c.RetentionTimeZone {
-		return fmt.Errorf("analytics retention time zone must not have surrounding whitespace")
-	}
-	if _, err := time.LoadLocation(c.RetentionTimeZone); err != nil {
-		return fmt.Errorf("load analytics retention time zone %q: %w", c.RetentionTimeZone, err)
-	}
-	return nil
-}

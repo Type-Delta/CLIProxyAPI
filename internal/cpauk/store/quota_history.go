@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"math"
 	"time"
 
@@ -11,18 +12,7 @@ import (
 )
 
 // QuotaHistorySample holds sanitized identity and quota values, never raw credentials.
-type QuotaHistorySample struct {
-	Provider         string     `json:"provider"`
-	CredentialID     string     `json:"credential_id"`
-	WindowID         string     `json:"window_id"`
-	ObservedAt       time.Time  `json:"observed_at"`
-	RemainingPercent float64    `json:"remaining_percent"`
-	ResetAt          *time.Time `json:"reset_at"`
-	PeriodHours      *float64   `json:"period_hours"`
-	PlanID           string     `json:"plan_id"`
-	Capacity         *float64   `json:"capacity"`
-	Source           string     `json:"source"`
-}
+type QuotaHistorySample = backend.QuotaHistorySample
 
 // RecordQuotaHistory limits each credential/window to one observation per five minutes.
 // It prunes after 90 days and caps each provider at 100,000 rows on each write.

@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 )
 
 type catalogProvidersResponse struct {
@@ -21,7 +21,7 @@ type catalogProviderResponse struct {
 }
 
 type analyticsCatalogProviders interface {
-	CatalogProviders(context.Context) ([]store.CatalogProvider, time.Time, error)
+	CatalogProviders(context.Context) ([]backend.CatalogProvider, time.Time, error)
 }
 
 func (h *Handler) GetAnalyticsPricingCatalogProviders(c *gin.Context) {
