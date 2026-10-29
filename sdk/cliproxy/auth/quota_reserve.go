@@ -335,25 +335,32 @@ func (m *Manager) QuotaReserveState(authID string) (QuotaReserveState, bool) {
 // quotaReserveHolds reports whether the credential is held for a request from
 // the given client key ID.
 func (m *Manager) quotaReserveHolds(auth *Auth, keyID string) bool {
+	_, held := m.quotaReserveHeldUntil(auth, keyID)
+	return held
+}
+
+// quotaReserveHeldUntil is quotaReserveHolds plus when the hold releases
+// (see quotaReserveUntil); the time is zero when a blocking reset is unknown.
+func (m *Manager) quotaReserveHeldUntil(auth *Auth, keyID string) (time.Time, bool) {
 	if m == nil || auth == nil || m.quotaReserveTracker == nil {
-		return false
+		return time.Time{}, false
 	}
 	t := m.quotaReserveTracker
 	t.mu.Lock()
-	_, held := t.stateLocked(auth)
+	state, held := t.stateLocked(auth)
 	t.mu.Unlock()
 	if !held {
-		return false
+		return time.Time{}, false
 	}
 	if keyID == "" {
-		return true
+		return state.Until, true
 	}
 	for _, bypass := range QuotaReserveBypassKeysForAuth(auth) {
 		if bypass == keyID {
-			return false
+			return time.Time{}, false
 		}
 	}
-	return true
+	return state.Until, true
 }
 
 // hasHeldQuotaReserve reports whether any credential is currently held, so the

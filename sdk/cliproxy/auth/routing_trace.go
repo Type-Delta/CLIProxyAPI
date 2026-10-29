@@ -15,8 +15,9 @@ type routingCaptureKey struct{}
 type routingRetryDefaultKey struct{}
 type routingRetryRoundKey struct{}
 type routingCapture struct {
-	trace   *routing.Trace
-	indexes map[string]int
+	trace       *routing.Trace
+	indexes     map[string]int
+	eligibility authSelectionEligibility
 }
 
 func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (context.Context, *routingCapture) {
@@ -73,6 +74,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 		trace.Strategy = "custom"
 	}
 	eligibility := m.eligibilityForRequest(ctx, opts)
+	capture.eligibility = eligibility
 	defaultRetry := m.retrySettingsDefault()
 	if snapshot, ok := ctx.Value(routingRetryDefaultKey{}).(int); ok {
 		defaultRetry = snapshot
@@ -99,7 +101,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 		case pin != "" && a.ID != pin:
 			c.Gate = routing.GatePinned
 		case !eligibility.allows(a):
-			c.Gate = routing.GatePolicy
+			eligibility.setRejectedGate(&c, a)
 		case strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(reg, a, model):
 			c.Gate = routing.GateUnsupported
 		case hasUnauthorizedAuthFailure(a) || expired:
@@ -243,7 +245,7 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 	case strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(registry.GetGlobalRegistry(), auth, model):
 		candidate.Gate = routing.GateUnsupported
 	case !allow(auth):
-		candidate.Gate = routing.GatePolicy
+		c.eligibility.setRejectedGate(candidate, auth)
 	case hasUnauthorizedAuthFailure(auth) || expired:
 		candidate.Gate = routing.GateUnauthorized
 	case blocked && (reason == blockReasonCooldown || !until.IsZero()):
@@ -256,6 +258,23 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 		}
 	case blocked:
 		candidate.Gate = routing.GatePolicy
+	}
+}
+
+// setRejectedGate records why eligibility rejects a candidate. The quota reserve is
+// named only when it is the sole reason, because a policy outlasts the reserve's reset.
+func (e authSelectionEligibility) setRejectedGate(candidate *routing.Candidate, auth *Auth) {
+	candidate.Gate = routing.GatePolicy
+	withoutReserve := e
+	withoutReserve.quotaReserve = nil
+	if e.quotaReserve == nil || !withoutReserve.allows(auth) {
+		return
+	}
+	if until, held := e.quotaReserve.quotaReserveHeldUntil(auth, e.clientKeyID); held {
+		candidate.Gate = routing.GateReserve
+		if !until.IsZero() {
+			candidate.UntilMs = until.UnixMilli()
+		}
 	}
 }
 

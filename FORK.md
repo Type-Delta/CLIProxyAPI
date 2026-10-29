@@ -2109,7 +2109,7 @@ requested model, client API-key label, request header, and detected client type,
 credential IDs (`Auth.ID`). Selection follows a fixed precedence stack, weakest first: custom
 rules (a lower matching rule wins), routing strategy (priority tier, then the configured picker),
 session affinity (an eligible binding wins), and the routing gate (disabled, cooldown, quota,
-unsupported model, retry round, tried in this round, weight, pins and policies). Rules narrow the
+quota reserve, unsupported model, retry round, tried in this round, weight, pins and policies). Rules narrow the
 gate-passed pool across all priority tiers after the affinity check; a rule whose targets are all
 blocked falls through to the next matching rule above it, and no applicable rule keeps the full
 pool. Requests a rule narrows take the legacy selection path, so the indexed scheduler never picks
@@ -2119,7 +2119,8 @@ a warning. Rules-only config changes do not recreate the selector, so affinity c
 
 When CPAUK collects analytics, every selection records a versioned routing trace (candidates with
 gate reasons, matched rules with rendered conditions and status, strategy tier, affinity state,
-pick, and decider). The trace travels on the usage record, is stored with the attempt's event in
+pick, and decider). A credential withheld only by its quota reserve reports gate `reserve` with
+the reserve's reset time instead of the generic `policy`. The trace travels on the usage record, is stored with the attempt's event in
 ClickHouse `analytics_events.routing_trace_json` as nullable String, with candidate IDs replaced
 by credential pseudonyms. `GET /v8/management/analytics/events/:attempt_id` returns the trace
 with labels resolved from loaded credentials. `GET /v8/management/routing/credentials` lists routable credentials
@@ -2131,7 +2132,7 @@ while routing rules and dry runs remain usable.
 
 **Implementation evidence:** `internal/config/{config_types.go,routing_rules.go}`,
 `sdk/cliproxy/routing/{contract.go,engine.go}`,
-`sdk/cliproxy/auth/{routing_selection.go,routing_trace.go,routing_dry_run.go,conductor_selection.go,selector.go}`,
+`sdk/cliproxy/auth/{routing_selection.go,routing_trace.go,routing_dry_run.go,conductor_selection.go,selector.go,quota_reserve.go}`,
 `sdk/api/handlers`, `sdk/cliproxy/usage`, `internal/runtime/executor/helps/usage_helpers.go`,
 `internal/cpauk/{collector,model,chstore}`,
 `internal/api/handlers/management/{routing.go,analytics*.go}`, and `config.example.yaml`.

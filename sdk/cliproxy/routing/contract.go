@@ -40,7 +40,8 @@ const (
 	GateRetryLimit   = "retry_limit"  // credential request-retry limit below the current retry round
 	GateTried        = "tried"        // already selected in the current retry round
 	GateWeight       = "weight"       // non-positive weight under weighted round-robin
-	GatePolicy       = "policy"       // credential policy, auth kind, free-plan, or quota-reserve restriction
+	GateReserve      = "reserve"      // withheld by its quota reserve until Candidate.UntilMs (0 when unknown)
+	GatePolicy       = "policy"       // credential policy, auth kind, or free-plan restriction
 	GatePinned       = "pinned"       // request is pinned to a different credential
 	GateGone         = "gone"         // referenced (e.g. bound) credential no longer exists
 )
@@ -110,7 +111,7 @@ type Candidate struct {
 	Provider string `json:"provider,omitempty"`
 	Priority int    `json:"priority,omitempty"`
 	Gate     string `json:"gate,omitempty"`
-	// UntilMs is the Unix time in milliseconds when a cooldown/quota gate is expected to clear.
+	// UntilMs is the Unix time in milliseconds when a cooldown, quota, or reserve gate is expected to clear.
 	UntilMs int64 `json:"until_ms,omitempty"`
 	// Label is resolved from currently loaded credentials when serving API responses. Never persisted.
 	Label string `json:"label,omitempty"`

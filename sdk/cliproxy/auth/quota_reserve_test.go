@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 var quotaReserveBypassID = strings.Repeat("ab", 32)
@@ -203,5 +204,53 @@ func TestQuotaReserveEditAppliesToLastObservation(t *testing.T) {
 	}
 	if _, held := manager.QuotaReserveState(auth.ID); held {
 		t.Fatal("still held after lowering the reserve below observed usage")
+	}
+}
+
+func TestRoutingTraceNamesQuotaReserveGate(t *testing.T) {
+	const model = "quota-reserve-trace-model"
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&refreshMockExecutor{id: "claude"})
+	held := &Auth{
+		ID:         "quota-reserve-trace-held",
+		Provider:   "claude",
+		Status:     StatusActive,
+		Attributes: map[string]string{AttributeQuotaReserve: `{"weekly":30}`},
+	}
+	other := &Auth{ID: "quota-reserve-trace-other", Provider: "claude", Status: StatusActive}
+	for _, auth := range []*Auth{held, other} {
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, err)
+		}
+	}
+	resetAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	live, _ := manager.GetByID(held.ID)
+	manager.ApplyQuotaReserveBars(live, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: resetAt}})
+
+	heldGate := func(ctx context.Context) routing.Candidate {
+		t.Helper()
+		ctx, holder := routing.WithTraceHolder(ctx)
+		_, _, _ = manager.pickNext(ctx, "claude", model, cliproxyexecutor.Options{Metadata: map[string]any{}}, nil)
+		trace := holder.Last()
+		if trace == nil {
+			t.Fatal("no routing trace captured")
+		}
+		for _, candidate := range trace.Candidates {
+			if candidate.ID == held.ID {
+				return candidate
+			}
+		}
+		t.Fatalf("held credential missing from trace: %+v", trace.Candidates)
+		return routing.Candidate{}
+	}
+
+	if got := heldGate(context.Background()); got.Gate != routing.GateReserve || got.UntilMs != resetAt.UnixMilli() {
+		t.Fatalf("held candidate = %+v, want gate %q until %d", got, routing.GateReserve, resetAt.UnixMilli())
+	}
+	// A policy that also rejects the credential outlasts the reserve, so it is named instead.
+	if got := heldGate(withRequiredAuthKind(context.Background(), "oauth")); got.Gate != routing.GatePolicy || got.UntilMs != 0 {
+		t.Fatalf("policy and reserve candidate = %+v, want gate %q", got, routing.GatePolicy)
 	}
 }
