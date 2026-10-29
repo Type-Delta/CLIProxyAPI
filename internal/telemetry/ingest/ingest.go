@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/store"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/transcript"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 var ErrPaused = record.ErrIngestPaused
@@ -417,14 +419,18 @@ func (i *Ingester) process(ctx context.Context, r *record.Request) error {
 	}
 	at := actual(r.StartedAt, time.Now().UTC())
 	path := r.URL
+	// Response framing remains separate from the client's requested delivery mode.
+	requestedStream := r.Transport == record.TransportWebsocket || len(r.WebsocketTimeline) > 0
 	if u, e := url.Parse(r.URL); e == nil {
 		path = u.Path
+		requestedStream = requestedStream || strings.HasSuffix(path, ":streamGenerateContent") || u.Query().Get("alt") == "sse"
 	}
 	f := transcript.Format(r.ClientFormat)
 	if f == "" {
 		f = transcript.DetectFormat(path, r.Body)
 	}
 	clientBody, clientResponse, clientStream := timelinePayload(r.Body, r.Response, r.Streaming, r.WebsocketTimeline)
+	requestedStream = requestedStream || gjson.GetBytes(clientBody, "stream").Bool()
 	if f == "" {
 		f = transcript.DetectFormat(path, clientBody)
 	}
@@ -459,7 +465,7 @@ func (i *Ingester) process(ctx context.Context, r *record.Request) error {
 			return e
 		}
 	}
-	return i.insert(ctx, "requests", "request_id,proxy_request_id,started_at,first_chunk_at,finished_at,method,url,path,client_format,model,stream,status,actor_key_id,session_id,detail,source,transport,request_headers,response_headers,envelope_content_id,response_id,response_body,response_truncated,websocket_timeline,errors,request_body_raw,ingested_at", r.RequestID, r.ProxyRequestID, at, nullable(r.FirstChunkAt), nullable(r.FinishedAt), r.Method, r.URL, path, string(f), view.model, r.Streaming, uint16(r.Status), r.ActorKeyID, r.SessionID, r.Detail, r.Source, r.Transport, jsonString(r.Headers), jsonString(r.ResponseHeaders), view.envelope, view.responseID, string(r.Response), r.ResponseTruncated, string(r.WebsocketTimeline), r.Errors, string(view.raw), time.Now().UTC())
+	return i.insert(ctx, "requests", "request_id,proxy_request_id,started_at,first_chunk_at,finished_at,method,url,path,client_format,model,stream,status,actor_key_id,session_id,detail,source,transport,request_headers,response_headers,envelope_content_id,response_id,response_body,response_truncated,websocket_timeline,errors,request_body_raw,ingested_at", r.RequestID, r.ProxyRequestID, at, nullable(r.FirstChunkAt), nullable(r.FinishedAt), r.Method, r.URL, path, string(f), view.model, requestedStream, uint16(r.Status), r.ActorKeyID, r.SessionID, r.Detail, r.Source, r.Transport, jsonString(r.Headers), jsonString(r.ResponseHeaders), view.envelope, view.responseID, string(r.Response), r.ResponseTruncated, string(r.WebsocketTimeline), r.Errors, string(view.raw), time.Now().UTC())
 }
 
 // timelinePayload extracts complete JSON websocket frames when bodies were not captured.

@@ -59,16 +59,37 @@ func TestTelemetryQueryAndSchema(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("schema: %d %s", w.Code, w.Body)
 	}
-	var schema struct{ Examples []struct{ Name, SQL string } }
+	var schema struct {
+		Examples []struct{ Name, SQL string }
+		Tables   []struct {
+			Name, Comment string
+			Columns       []struct{ Name, Comment string }
+		}
+	}
 	if err = json.Unmarshal(w.Body.Bytes(), &schema); err != nil {
 		t.Fatal(err)
+	}
+	for _, table := range schema.Tables {
+		if table.Name != "transcript_entries" && table.Name != "transcript_content" {
+			continue
+		}
+		if !strings.Contains(table.Comment, "request_contexts") {
+			t.Errorf("table %s missing per-session guidance: %s", table.Name, table.Comment)
+		}
+		for _, column := range table.Columns {
+			if table.Name == "transcript_entries" && column.Name == "entry_id" || table.Name == "transcript_content" && column.Name == "text" {
+				if !strings.Contains(column.Comment, "request_contexts") || strings.Contains(column.Comment, "Count distinct entry_id") {
+					t.Errorf("column %s.%s has stale counting guidance: %s", table.Name, column.Name, column.Comment)
+				}
+			}
+		}
 	}
 	if len(schema.Examples) < 5 {
 		t.Fatal(w.Body)
 	}
 	for _, example := range schema.Examples {
 		t.Run(example.Name, func(t *testing.T) {
-			b, _ := json.Marshal(map[string]any{"sql": example.SQL, "params": map[string]string{"session": "xb12345", "skill": "AAA"}})
+			b, _ := json.Marshal(map[string]any{"sql": example.SQL, "params": map[string]string{"session": "xb12345", "skill": "AAA", "zone": "UTC"}})
 			w = run("POST", "/", string(b))
 			if w.Code != 200 {
 				t.Fatalf("%d %s", w.Code, w.Body)

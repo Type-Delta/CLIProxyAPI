@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -18,17 +19,19 @@ import (
 var routingClientTypes = []string{"claude", "codex", "opencode", "pi", "agy", "gemini", "generic"}
 
 type routingCredential struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Provider string `json:"provider"`
-	Kind     string `json:"kind"`
-	Priority int    `json:"priority"`
-	Weight   int64  `json:"weight"`
-	Disabled bool   `json:"disabled"`
-	Prefix   string `json:"prefix"`
+	ID        string                  `json:"id"`
+	Label     string                  `json:"label"`
+	Provider  string                  `json:"provider"`
+	Kind      string                  `json:"kind"`
+	Priority  int                     `json:"priority"`
+	Weight    int64                   `json:"weight"`
+	Disabled  bool                    `json:"disabled"`
+	Prefix    string                  `json:"prefix"`
+	Cooldowns []coreauth.CooldownView `json:"cooldowns"`
 }
 
 type routingCredentialsResponse struct {
+	ObservedAt  time.Time           `json:"observed_at"`
 	HomeMode    bool                `json:"home_mode"`
 	Credentials []routingCredential `json:"credentials"`
 	ClientTypes []string            `json:"client_types"`
@@ -40,6 +43,8 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	observedAt := time.Now().UTC()
+	homeMode := h.authManager.HomeEnabled()
 	auths := h.authManager.List()
 	credentials := make([]routingCredential, 0, len(auths))
 	for _, auth := range auths {
@@ -54,15 +59,20 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 		if !hasWeight {
 			weight = credentialweight.Default
 		}
+		var cooldowns []coreauth.CooldownView
+		if !homeMode {
+			cooldowns = coreauth.CooldownSnapshotForAuth(auth, observedAt)
+		}
 		credentials = append(credentials, routingCredential{
-			ID:       auth.ID,
-			Label:    routingCredentialLabel(auth),
-			Provider: auth.Provider,
-			Kind:     kind,
-			Priority: routingCredentialPriority(auth),
-			Weight:   weight,
-			Disabled: auth.Disabled || auth.Status == coreauth.StatusDisabled,
-			Prefix:   auth.Prefix,
+			ID:        auth.ID,
+			Label:     routingCredentialLabel(auth),
+			Provider:  auth.Provider,
+			Kind:      kind,
+			Priority:  routingCredentialPriority(auth),
+			Weight:    weight,
+			Disabled:  auth.Disabled || auth.Status == coreauth.StatusDisabled,
+			Prefix:    auth.Prefix,
+			Cooldowns: cooldowns,
 		})
 	}
 	sort.Slice(credentials, func(i, j int) bool {
@@ -72,7 +82,8 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 		return credentials[i].ID < credentials[j].ID
 	})
 	c.JSON(http.StatusOK, routingCredentialsResponse{
-		HomeMode:    h.authManager.HomeEnabled(),
+		HomeMode:    homeMode,
+		ObservedAt:  observedAt,
 		Credentials: credentials,
 		ClientTypes: append([]string(nil), routingClientTypes...),
 	})
@@ -101,6 +112,11 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 	var input routingDryRunInput
 	if err = json.Unmarshal(data, &input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(input.Model) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required", "path": "model"})
 		return
 	}
 

@@ -18,7 +18,7 @@ func capabilitiesFor(state State, cfg Config, queue model.QueueSnapshot, lastWri
 		Available:           available,
 		Degraded:            state == StateDegraded || state == StateCircuitOpen,
 		State:               state,
-		StorageDriver:       "sqlite",
+		StorageDriver:       "clickhouse",
 		StorageScope:        "instance",
 		KeyIDAlgorithm:      model.KeyIDAlgorithm,
 		StructuredKeys:      true,

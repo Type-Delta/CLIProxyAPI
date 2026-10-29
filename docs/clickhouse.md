@@ -1,5 +1,7 @@
 # ClickHouse storage and agent queries
 
+Agent documentation is served by CPA at `/llms.txt`.
+
 CPA uses ClickHouse when `clickhouse.dsn` is configured. Analytics and captured requests, upstream attempts and transcripts are stored in the configured database. `observability.logs.request-log` selects full request capture; forced error capture still records errors when full capture is off. With no DSN, CPA retains its original file request logs and analytics is unavailable.
 
 Sanitized routing decisions are available in `analytics_events.routing_trace_json`
@@ -42,23 +44,12 @@ Both endpoints require the normal management key. Send it as `Authorization: Bea
 For example:
 
 ```json
-{"sql":"SELECT request_id, started_at, status FROM requests WHERE session_id = {session:String} ORDER BY started_at DESC", "params":{"session":"example-session"}, "max_rows":100}
+{"sql":"SELECT request_id, started_at, status FROM requests WHERE session_id = {session:String} ORDER BY started_at DESC", "params":{"session":"claude:example-session"}, "max_rows":100}
 ```
 
 Parameters use ClickHouse's `{name:Type}` syntax. The response contains `query_id`, `columns`, `rows`, `row_count`, `truncated`, `elapsed_ms`, `rows_read` and `bytes_read`. Integers outside JavaScript's safe integer range are strings; timestamps use RFC3339. Arrays and maps are JSON values. A `truncated` result may have more matching rows; narrow the query to inspect them. Disconnecting the HTTP client cancels the query.
 
-Count skill occurrences rather than repeated conversation history:
-
-```sql
-SELECT uniqExact(e.entry_id) AS occurrences
-FROM transcript_entries AS e
-INNER JOIN transcript_content AS c ON e.content_id = c.content_id
-WHERE e.occurred_at >= toStartOfMonth(now())
-  AND e.first_attempt_index = 0
-  AND positionCaseInsensitive(c.text, {skill:String}) > 0
-```
-
-The `first_attempt_index = 0` filter counts the client view. Translated upstream attempts may have a separate transcript tree and must not be counted again.
+For monthly skill counts, use the [per-session client-context recipe](../internal/agentdocs/sql.md#how-many-times-did-i-use-aaa-this-month), also served at `/llms/sql.md`. Identical prompts in different sessions can share an entry ID, so counting distinct entries alone undercounts. The recipe deduplicates repeated history within each session, excludes upstream contexts, and uses the user's time zone. Narrow text matches to the client's actual skill invocation shape before claiming an executed-skill count.
 
 Transcript occurrence IDs use the v2 scheme. Elements carrying sufficiently unique provider tool-call IDs anchor to the actor, protocol, role, use/result kind and sorted call IDs, independently of earlier history. Parent and depth describe their first observation. Text-only elements retain parent-chain identity, which resynchronizes after a call anchor. Short or predictable IDs such as `call_0`, `functions.Read:0` and numeric counters stay chain-scoped. The guard requires at least 20 alphanumeric suffix characters, at least eight distinct characters, letters and digits, and at least 64 bits of estimated character entropy after known prefixes. Unknown ID schemes can conservatively remain chain-scoped.
 

@@ -54,6 +54,7 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/healthz", healthzHandler)
 	s.engine.HEAD("/healthz", healthzHandler)
 
+	s.registerAgentDocsRoutes()
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/management-assets/*filepath", s.serveManagementAsset)
 	s.engine.HEAD("/management-assets/*filepath", s.serveManagementAsset)
@@ -145,14 +146,18 @@ func (s *Server) setupRoutes() {
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
+		response := gin.H{
 			"message": "CLI Proxy API Server",
 			"endpoints": []string{
 				"POST /v1/chat/completions",
 				"POST /v1/completions",
 				"GET /v1/models",
 			},
-		})
+		}
+		if s.managementEnabled() {
+			response["agent_docs"] = "/llms.txt"
+		}
+		c.JSON(http.StatusOK, response)
 	})
 
 	// OAuth callback endpoints (reuse main server port)

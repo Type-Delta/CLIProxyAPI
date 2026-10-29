@@ -1,0 +1,21 @@
+# CLIProxyAPI (CPA)
+
+> CPA proxies OpenAI, Gemini, Claude and Codex compatible client APIs with OAuth credentials, API keys and routing. Its v8 management API manages configuration, credentials, routing and analytics. Optional ClickHouse server mode adds captured requests, transcripts and read-only agent SQL.
+
+Paths are relative to the base URL you were given. Management and telemetry calls need the management key via `Authorization: Bearer <key>` or `X-Management-Key: <key>`. Ask the user for the key; never guess it. These documentation pages need no key. `/v0/management` is deprecated; use `/v8/management`. Home mode disables local management and these docs.
+
+## Management
+
+- [Management API](/llms/management.md): Complete route inventory, access rules, config edits, cooldowns and routing investigations.
+- [Agent SQL](/llms/sql.md): Query workflow, data relationships, session 403 investigation and monthly skill occurrence recipes.
+
+## Live discovery
+
+- [Telemetry health](/v8/management/telemetry/health): Capture, ingestion and import state; registered only with ClickHouse configured.
+- [Telemetry schema](/v8/management/telemetry/schema): Full table and column comments, types and executable query examples; requires agent SQL enabled.
+
+## Optional
+
+- [Client models](/v1/models): GET; uses a client API key, separately from the management key.
+- [Client chat completions](/v1/chat/completions): POST; OpenAI compatible inference with a client API key.
+- [Human documentation](https://github.com/Type-Delta/CLIProxyAPI): Fork source, configuration and operational documentation.

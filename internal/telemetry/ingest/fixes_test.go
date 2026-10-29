@@ -86,9 +86,19 @@ func TestSkillOccurrencesClientViewOnTranslatedAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &record.Request{RequestID: "translated", StartedAt: time.Now(), URL: "/v1/messages", Body: []byte(`{"messages":[{"role":"user","content":"skill AAA content"}]}`), Attempts: []record.Attempt{{Index: 1, URL: "/v1/responses", Body: []byte(`{"input":[{"role":"user","content":"skill AAA content"}]}`)}}}
-	if err = New(s, t.TempDir(), 0, 30).Process(ctx, r); err != nil {
+	r := &record.Request{SessionID: "claude:first", RequestID: "translated", StartedAt: time.Now(), URL: "/v1/messages", Body: []byte(`{"messages":[{"role":"user","content":"skill AAA content"}]}`), Attempts: []record.Attempt{{Index: 1, URL: "/v1/responses", Body: []byte(`{"input":[{"role":"user","content":"skill AAA content"}]}`)}}}
+	ing := New(s, t.TempDir(), 0, 30)
+	if err = ing.Process(ctx, r); err != nil {
 		t.Fatal(err)
+	}
+	// Both sessions have identical opening prompts and share the client entry.
+	for _, sessionID := range []string{"claude:second", "claude:first"} {
+		replay := *r
+		replay.RequestID = "replay-" + sessionID
+		replay.SessionID = sessionID
+		if err := ing.Process(ctx, &replay); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Execute the shipped yardstick example, with database and skill parameters bound.
 	data, err := os.ReadFile("../../api/handlers/management/telemetry_query_examples.json")
@@ -108,13 +118,32 @@ func TestSkillOccurrencesClientViewOnTranslatedAttempt(t *testing.T) {
 			query = e.SQL
 		}
 	}
+	query = strings.ReplaceAll(query, "request_contexts", "`"+db.Database()+"`.request_contexts")
+	query = strings.ReplaceAll(query, "{zone:String}", "'UTC'")
 	query = strings.ReplaceAll(query, "transcript_entries", "`"+db.Database()+"`.transcript_entries")
 	query = strings.ReplaceAll(query, "transcript_content", "`"+db.Database()+"`.transcript_content")
 	query = strings.ReplaceAll(query, "{skill:String}", "'skill AAA content'")
-	var n uint64
-	if err = db.Conn().QueryRow(ctx, query).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("skill counted client and translated views: %d %v", n, err)
+	rows, err := db.Conn().Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer rows.Close()
+	got := map[string]uint64{}
+	for rows.Next() {
+		var sessionID string
+		var n uint64
+		if err := rows.Scan(&sessionID, &n); err != nil {
+			t.Fatal(err)
+		}
+		got[sessionID] = n
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["claude:first"] != 1 || got["claude:second"] != 1 {
+		t.Fatalf("skill must count each client session once, excluding history and translated attempts: %v", got)
+	}
+
 }
 
 func TestRunCollectsGarbageAtStartup(t *testing.T) {

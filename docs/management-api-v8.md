@@ -1,5 +1,7 @@
 # v8 Management API
 
+Agent documentation is served by CPA at `/llms.txt`.
+
 The base path is `/v8/management`. Configuration endpoints follow the structure in
 [config.example.yaml](../config.example.yaml); operational endpoints are grouped
 by function. The existing `/v0/management` API remains supported. Its reference is

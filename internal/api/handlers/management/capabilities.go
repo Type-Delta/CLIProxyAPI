@@ -23,7 +23,7 @@ type apiKeyCapabilities struct {
 func (h *Handler) GetCapabilities(c *gin.Context) {
 	capabilities := model.Capabilities{
 		APISchemaVersions: []int{model.APISchemaVersion}, EventSchemaVersion: model.EventSchemaVersion,
-		Supported: true, State: model.StateDisabled, StorageDriver: "sqlite", StorageScope: "instance",
+		Supported: true, State: model.StateDisabled, StorageDriver: "clickhouse", StorageScope: "instance",
 		KeyIDAlgorithm: model.KeyIDAlgorithm, StructuredKeys: true, SharedEnforcement: false,
 		ManagementQueryV1: true, ViewerV1: true,
 	}

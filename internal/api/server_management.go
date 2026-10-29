@@ -261,17 +261,17 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) managementAvailable(c *gin.Context) bool {
+// managementEnabled is the shared availability gate for management and agent docs.
+func (s *Server) managementEnabled() bool {
+	if s == nil {
+		return false
+	}
 	cfg := s.getConfig()
-	if s == nil || cfg == nil {
-		c.AbortWithStatus(http.StatusNotFound)
-		return false
-	}
-	if cfg.Home.Enabled {
-		c.AbortWithStatus(http.StatusNotFound)
-		return false
-	}
-	if !s.managementRoutesEnabled.Load() {
+	return cfg != nil && !cfg.Home.Enabled && s.managementRoutesEnabled.Load()
+}
+
+func (s *Server) managementAvailable(c *gin.Context) bool {
+	if !s.managementEnabled() {
 		c.AbortWithStatus(http.StatusNotFound)
 		return false
 	}
@@ -315,7 +315,8 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		s.pluginResourceNoRoute(c)
 		return
 	}
-	if path != "/v0/management" && !strings.HasPrefix(path, "/v0/management/") {
+	isV8 := path == "/v8/management" || strings.HasPrefix(path, "/v8/management/")
+	if !isV8 && path != "/v0/management" && !strings.HasPrefix(path, "/v0/management/") {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -324,6 +325,10 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		return
 	}
 	if !s.managementAvailable(c) {
+		return
+	}
+	if isV8 {
+		c.AbortWithStatusJSON(http.StatusNotFound, unknownManagementRouteBody)
 		return
 	}
 	s.mgmt.Middleware()(c)
@@ -338,7 +343,7 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		c.Abort()
 		return
 	}
-	c.AbortWithStatus(http.StatusNotFound)
+	c.AbortWithStatusJSON(http.StatusNotFound, unknownManagementRouteBody)
 }
 
 func (s *Server) pluginResourceNoRoute(c *gin.Context) {

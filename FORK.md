@@ -1978,9 +1978,23 @@ restart. The log directory is resolved once to an absolute path at startup, in p
 a later working-directory change no longer moves it.
 
 Schema comes from checksummed, embedded migrations per component (`core`, `analytics`,
-`telemetry`), each a single `0001` file. Databases created by earlier pre-release migration
-sequences must be recreated. A `cpa_jobs` journal records one-time jobs. A job row is written
+`telemetry`), each starting from a single `0001` file; telemetry adds `0002`, which only
+updates comments. Databases created by earlier pre-release migration sequences must be recreated. A `cpa_jobs` journal records one-time jobs. A job row is written
 before the first schema statement, so an interrupted creation still runs its import.
+
+**Requested streaming correction, 2026-10-29.** `requests.stream` now derives from
+client body `stream`, Gemini streaming action/`alt=sse`, or downstream WebSocket
+transport/timeline. A streaming request rejected with a JSON 403 remains marked
+as requested streaming. The ingester keeps response framing separate for
+transcript parsing, leaving ordinary file-log behavior unchanged. Legacy text-log
+imports use the same intent detection when their request data is available.
+Existing ingested rows are not rewritten. Real ClickHouse regression tests are
+`TestRequestsStreamUsesClientIntent` and
+`TestCapturedRequestStreamSurvivesJSON403`, covering failed, non-streaming and
+successful streaming capture, protocol variants and legacy file import. Evidence
+is in `internal/telemetry/ingest/{ingest.go,request_stream_test.go}`,
+`internal/telemetry/record/record.go` and
+`internal/api/middleware/request_stream_telemetry_test.go`.
 
 **Request capture.** Each captured request, with every upstream attempt, is written as an
 fsynced, zstd-compressed JSON record under `<logs>/telemetry-outbox/` and atomically renamed. A
@@ -2086,6 +2100,8 @@ SQLite store. Live checks ran in Docker, with the Compose override where ClickHo
 - Without a DSN, a real model request, file request logs, upstream cancellation after a client
   disconnect, and shutdown with an open WebSocket behave like the previous build.
 
+**Last updated:** 2026-10-29
+
 ### DL061 - Rule-based routing, routing traces, and routing dry run
 
 `routing.rules[]` adds ordered custom rules: a condition tree (`all`, `any`, `not`) over the
@@ -2131,6 +2147,85 @@ CPAMC bundle/source revision mismatch and an intermittent
 `go build ./...`, the server compile check, `go vet ./...`, and formatting checks passed.
 
 **Last updated:** 2026-10-28
+
+### DL062 - Embedded agent documentation and API discovery
+
+CPA serves public `/llms.txt`, `/llms/management.md` and `/llms/sql.md` from the
+binary whenever the existing local-management availability gate permits v8.
+Home mode and disabled management return 404. Disabling the panel does not
+disable API documentation. GET and HEAD work without a management key, including
+in template-key safe mode. Root JSON adds `agent_docs`; root and v8 responses,
+including authentication failures, advertise the covering llms.txt with a Link
+header. No legacy management endpoints change.
+
+The index follows the llms.txt convention. Companion pages describe every v8
+route, configuration writes, current cooldown and historical routing checks,
+and restricted SQL with session-error and monthly skill-occurrence recipes.
+The SQL guide explains capture coverage, retention, replacing merges, client
+versus upstream transcript views, occurrence limits, time zones and cost units.
+Live schema comments remain the source for full column lists. Session recipes
+resolve bare IDs to canonical source/agent-qualified IDs before exact queries,
+using seeded near-match and literal-wildcard regression cases. The guide maps
+session columns and digests and shows envelope inspection for tools and model
+parameters. The local-calendar month boundary uses explicit time-zone conversion.
+
+**Cold-agent follow-up, 2026-10-29.** Unknown management paths now return a JSON
+404 with `agent_docs` when local management is available. Legacy unknown paths
+retain authentication and plugin dispatch before the hint; v8 hints can be
+public. Availability failures retain empty 404s. No existing legacy endpoint is
+changed. Routing credentials add local `cooldowns` for every credential,
+including config API keys, and a shared `observed_at`; Home mode reports null.
+The panel's field-selecting routing decoder tolerates the additive fields.
+
+Monthly skill SQL now counts distinct client-context entry membership per
+session, since identical prompts in different sessions share entry hashes.
+Both embedded docs and live schema examples use the same text-prefiltered
+query with an explicit time-zone month boundary. Tests include shared entries,
+repeated history, old memberships and translated attempts. The guide distinguishes
+text matches from executed skill calls, documents event-detail range parameters,
+and lists the accepted static model channels.
+
+**Final QA corrections, 2026-10-29.** Management docs distinguish scalar outcome/result
+enums from list filters, mark required analytics selectors and values, document
+file-logging prerequisites, and identify summary request/attempt counters. The
+session comparison recipe includes successful and failed requests together, and
+AAA guidance requires invocation-shape narrowing before reporting usage.
+Capabilities report ClickHouse in both the service and unavailable-handler
+fallback; the panel accepts the driver as a string without driver-specific logic.
+Routing dry runs reject missing or blank models with 400 and `path: "model"`.
+Telemetry schema comments direct per-session counts through client request
+contexts. Migration `0002` updates those comments with `ALTER TABLE`, leaving the
+checksummed `0001` unchanged so existing server-mode databases keep starting.
+
+**Implementation evidence:** `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md}`,
+`internal/api/server_agentdocs.go`, the shared availability predicate in
+`internal/api/server_management.go`, and discovery/route wiring in
+`internal/api/{server.go,server_routes.go,server_middleware.go}`,
+`internal/api/handlers/management/{routing.go,capabilities.go,telemetry_query_examples.json}`,
+`internal/cpauk/capabilities.go`, `internal/telemetry/store/migrations/0002_transcript_count_comments.sql`,
+and `internal/telemetry/ingest/fixes_test.go`.
+
+**Validation:** `TestAgentDocsRouteParity` compares the embedded inventory in
+both directions against registered routes, including telemetry health.
+`TestSQLExamplesThroughAgentQuery` executes every SQL fence through the real
+restricted SQL handler against an isolated, migrated ClickHouse database with
+seeded incident, subagent, skill and routing rows; all five fences return rows.
+`TestAgentDocsServing` covers GET/HEAD, embedded bytes and content types,
+availability, safe mode, disabled panel, root JSON and Link headers on 401/403.
+`TestUnknownManagementRoutesDiscoverAgentDocs` covers the hint and access gate;
+`TestGetRoutingCredentialsIncludesAPIKeyCooldowns` covers API-key timers, empty
+arrays and Home nulls. `TestSkillOccurrencesClientViewOnTranslatedAttempt`
+checks two sessions sharing entries while replay and upstream views count once.
+Build, vet and targeted API/docs tests pass. A local no-ClickHouse smoke run
+verified discovery, docs, v8 authentication and retry-setting persistence. The
+initial docs full-suite run found `TestResponsesInterruptStopsHTTPUpstream`
+failing its cancellation assertion; it passed in isolation. After the requested
+streaming and canonical-session corrections, the Round 2 full suite passes.
+Round 3 passes targeted tests and live SQL reference parity; its full run finds
+`TestWebsocketRetryBindFailureClearsActiveSessionState/Codex_nonstream` with four
+connections instead of three. That test passes in isolation.
+
+**Last updated:** 2026-10-29
 
 ## Merge History
 

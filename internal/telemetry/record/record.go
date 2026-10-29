@@ -74,8 +74,9 @@ type Request struct {
 	ResponseHeaders map[string][]string `json:"response_headers,omitempty"`
 	// Response is the client-facing response body (decompressed). Streaming
 	// responses keep their wire framing, e.g. SSE.
-	Response  []byte `json:"response,omitempty"`
-	Streaming bool   `json:"streaming,omitempty"`
+	Response []byte `json:"response,omitempty"`
+	// Streaming describes response framing for transcript parsing, not client intent.
+	Streaming bool `json:"streaming,omitempty"`
 	// ResponseTruncated reports that capture dropped part of the response.
 	ResponseTruncated bool `json:"response_truncated,omitempty"`
 

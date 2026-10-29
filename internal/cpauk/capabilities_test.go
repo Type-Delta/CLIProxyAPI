@@ -7,6 +7,17 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
+func TestCapabilitiesReportClickHouseStorage(t *testing.T) {
+	for _, state := range []State{StateDisabled, StateReady, StateDegraded} {
+		t.Run(string(state), func(t *testing.T) {
+			got := capabilitiesFor(state, Config{}, model.QueueSnapshot{}, nil)
+			if got.StorageDriver != "clickhouse" {
+				t.Fatalf("storage_driver=%q, want clickhouse", got.StorageDriver)
+			}
+		})
+	}
+}
+
 func TestCapabilitiesAdvertiseCompatibleAPISchemaVersions(t *testing.T) {
 	if model.APISchemaVersion != 1 {
 		t.Fatalf("default API schema version = %d, want 1 for viewer compatibility", model.APISchemaVersion)

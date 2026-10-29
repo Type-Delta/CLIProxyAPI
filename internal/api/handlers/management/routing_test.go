@@ -3,10 +3,12 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -202,5 +204,78 @@ func TestPostRoutingDryRunReturnsTraceAndCandidateLabels(t *testing.T) {
 	}
 	if result.Trace.Rules == nil || result.Trace.Rules.Applied != 0 || result.Trace.Pick < 0 || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], `unknown API-key label "missing"`) {
 		t.Fatalf("trace=%+v warnings=%v", result.Trace, result.Warnings)
+	}
+}
+
+func TestGetRoutingCredentialsIncludesAPIKeyCooldowns(t *testing.T) {
+	for _, home := range []bool{false, true} {
+		t.Run(fmt.Sprint("home=", home), func(t *testing.T) {
+			manager := coreauth.NewManager(nil, nil, nil)
+			manager.SetConfigSnapshot(&config.Config{Home: config.HomeConfig{Enabled: home}})
+			retryAt := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
+			for _, auth := range []*coreauth.Auth{
+				{ID: "config-api-key", Provider: "openai-compatibility", Attributes: map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindAPIKey}, ModelStates: map[string]*coreauth.ModelState{"m": {Unavailable: true, NextRetryAfter: retryAt, LastError: &coreauth.Error{HTTPStatus: 403}}}},
+				{ID: "disabled-api-key", Provider: "openai-compatibility", Disabled: true, Status: coreauth.StatusDisabled},
+			} {
+				if _, err := manager.Register(context.Background(), auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := &Handler{authManager: manager, cfg: &config.Config{}}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v8/management/routing/credentials", nil)
+			h.GetRoutingCredentials(c)
+			var result struct {
+				ObservedAt  time.Time `json:"observed_at"`
+				Credentials []struct {
+					ID        string          `json:"id"`
+					Cooldowns json.RawMessage `json:"cooldowns"`
+				} `json:"credentials"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ObservedAt.IsZero() || len(result.Credentials) != 2 {
+				t.Fatalf("missing observation or credentials: %s", w.Body)
+			}
+			for _, credential := range result.Credentials {
+				if len(credential.Cooldowns) == 0 {
+					t.Fatalf("missing cooldowns field: %s", w.Body)
+				}
+				if home {
+					if string(credential.Cooldowns) != "null" {
+						t.Fatalf("Home cooldowns must be unknown: %s", credential.Cooldowns)
+					}
+					continue
+				}
+				var cooldowns []coreauth.CooldownView
+				if err := json.Unmarshal(credential.Cooldowns, &cooldowns); err != nil {
+					t.Fatal(err)
+				}
+				if credential.ID == "config-api-key" {
+					if len(cooldowns) != 1 || cooldowns[0].ModelKey != "m" || !cooldowns[0].RetryAt.Equal(retryAt) || cooldowns[0].HTTPStatus != 403 || cooldowns[0].RemainingSeconds <= 0 {
+						t.Fatalf("API-key cooldown missing: %s", w.Body)
+					}
+				} else if string(credential.Cooldowns) != "[]" {
+					t.Fatalf("disabled credential without timer must have []: %s", credential.Cooldowns)
+				}
+			}
+		})
+	}
+}
+
+func TestPostRoutingDryRunRequiresModel(t *testing.T) {
+	for _, body := range []string{`{}`, `{"model":""}`, `{"model":"  \t\n"}`} {
+		t.Run(body, func(t *testing.T) {
+			h := &Handler{authManager: coreauth.NewManager(nil, nil, nil), cfg: &config.Config{}}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v8/management/routing/dry-run", strings.NewReader(body))
+			h.PostRoutingDryRun(c)
+			if w.Code != http.StatusBadRequest || w.Body.String() != `{"error":"model is required","path":"model"}` {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+		})
 	}
 }

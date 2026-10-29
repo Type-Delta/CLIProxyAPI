@@ -220,6 +220,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
 	engine.Use(ProxyRequestIDMiddleware())
+	engine.Use(s.agentDocsDiscoveryMiddleware())
 	engine.Use(s.maxRequestBodyBytesMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
