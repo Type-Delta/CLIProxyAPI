@@ -47,6 +47,7 @@ func (s *Store) ModelCostSeries(ctx context.Context, query model.Query) (model.M
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return result, ErrClosed
 	}

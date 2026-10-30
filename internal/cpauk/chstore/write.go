@@ -270,15 +270,56 @@ func (s *Store) WriteBatchWithPatches(ctx context.Context, events []model.Event,
 	}
 	// Read each existing outcome before choosing the eligible attempts. The write
 	// lock also serializes patches arriving in separate collector batches.
-	current, err := s.loadEvents(ctx, "proxy_request_id IN (?)", ids)
+	rows, err := s.db.Conn().Query(ctx, "SELECT attempt_id,proxy_request_id FROM "+s.table("analytics_events")+" FINAL PREWHERE proxy_request_id IN (?) WHERE is_deleted=0 AND proxy_status_code IS NULL AND responded_at_ns IS NULL SETTINGS use_skip_indexes_if_final=1", ids)
 	if err != nil {
 		return err
 	}
 	eligible := make(map[string][]string)
-	for _, event := range current {
-		if event.ProxyStatusCode == nil && event.RespondedAt == nil {
-			eligible[event.ProxyRequestID] = append(eligible[event.ProxyRequestID], event.AttemptID)
+	for rows.Next() {
+		var attempt, request string
+		if err := rows.Scan(&attempt, &request); err != nil {
+			_ = rows.Close()
+			return err
 		}
+		eligible[request] = append(eligible[request], attempt)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	// An existing outcome makes its attempts ineligible regardless of which
+	// sequence won. Fetch only references; the event payload is unnecessary.
+	patched := make(map[string]bool)
+	for start := 0; start < len(ids); start += 1000 {
+		rows, err := s.db.Conn().Query(ctx, "SELECT attempt_ids FROM "+s.table("analytics_outcomes")+" WHERE proxy_request_id IN (?)", ids[start:min(start+1000, len(ids))])
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var attempts []string
+			if err := rows.Scan(&attempts); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			for _, attempt := range attempts {
+				patched[attempt] = true
+			}
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	for request, attempts := range eligible {
+		remaining := attempts[:0]
+		for _, attempt := range attempts {
+			if !patched[attempt] {
+				remaining = append(remaining, attempt)
+			}
+		}
+		eligible[request] = remaining
 	}
 	var args [][]any
 	var estimated int64

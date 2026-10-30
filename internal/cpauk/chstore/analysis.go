@@ -5,10 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
+
 	"slices"
 	"strings"
 	"time"
 
+	ch "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/ext"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
@@ -75,6 +79,7 @@ func (s *Store) analysisLatency(ctx context.Context, query model.Query) (model.A
 	result := model.AnalysisLatency{Samples: []model.AnalysisLatencySample{}}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return result, ErrClosed
 	}
@@ -157,6 +162,7 @@ type analysisPriceCacheValue struct {
 func (s *Store) analysisCosts(ctx context.Context, query model.Query) (model.AnalysisCostComponents, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.AnalysisCostComponents{}, ErrClosed
 	}
@@ -164,13 +170,21 @@ func (s *Store) analysisCosts(ctx context.Context, query model.Query) (model.Ana
 	if err != nil {
 		return model.AnalysisCostComponents{}, err
 	}
+	ctx, selection, modelTotals, pricedTokens, pricingIncomplete, err := s.analysisSQLCosts(ctx, selection)
+	if err != nil {
+		return model.AnalysisCostComponents{}, fmt.Errorf("aggregate analysis costs: %w", err)
+	}
 	rows, err := s.db.Conn().Query(ctx, "SELECT "+analysisCostEventSelect+",toInt64(count()) FROM ("+selection.SQL+") GROUP BY "+analysisCostEventSelect, selection.Args...)
 	if err != nil {
 		return model.AnalysisCostComponents{}, fmt.Errorf("query analysis costs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	totals := make([]model.NanoUSD, 5)
-	modelTotals := map[string][]model.NanoUSD{}
+	for _, costs := range modelTotals {
+		for i, cost := range costs {
+			totals[i] += cost
+		}
+	}
 	priceCache := make(map[analysisPriceKey]analysisPriceCacheValue)
 	priceCached := func(event model.Event) (aggregate.PriceResult, error) {
 		key := analysisPriceKey{provider: event.Provider, model: event.Model, input: event.Tokens.Input,
@@ -192,8 +206,6 @@ func (s *Store) analysisCosts(ctx context.Context, query model.Query) (model.Ana
 		priceCache[key] = analysisPriceCacheValue{result: priced, err: priceErr}
 		return priced, priceErr
 	}
-	pricingIncomplete := false
-	var pricedTokens int64
 	for rows.Next() {
 		var event model.Event
 		var multiplicity int64
@@ -336,6 +348,7 @@ func reconcileCostComponents(components []model.NanoUSD, tokens []model.TokenUsa
 func (s *Store) analysisMatrix(ctx context.Context, query model.Query) (model.AnalysisKeyModelMatrix, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.AnalysisKeyModelMatrix{}, ErrClosed
 	}
@@ -416,4 +429,129 @@ func analysisBucketWidth(query model.Query) string {
 	default:
 		return "1d"
 	}
+}
+
+// analysisSQLCosts resolves pricing once per dimension tuple, then performs the
+// existing per-event rounding and reconciliation before aggregation. Recorded
+// breakdowns use cumulative rounding and cannot replace Analysis's independently
+// rounded components. Historical totals must still match the current PriceBook.
+func (s *Store) analysisSQLCosts(ctx context.Context, raw readSelection) (context.Context, readSelection, map[string][]model.NanoUSD, int64, bool, error) {
+	const dimensions = "provider,model,requested_alias,service_tier_requested,service_tier_used"
+	key := "toJSONString(tuple(" + dimensions + "))"
+	table, err := ext.NewTable("analysis_rates", ext.Column("rate_key", "String"), ext.Column("rate_rule", "String"), ext.Column("rate_source", "String"), ext.Column("denominator", "String"), ext.Column("numerators", "Array(String)"))
+	if err != nil {
+		return ctx, raw, nil, 0, false, err
+	}
+	rows, err := s.db.Conn().Query(ctx, "SELECT DISTINCT "+key+","+dimensions+" FROM ("+raw.SQL+") WHERE NOT (coalesce(price_source,'')='kiro-credits' AND price_usd_per_credit_nano IS NOT NULL AND known_cost_nano IS NOT NULL)", raw.Args...)
+	if err != nil {
+		return ctx, raw, nil, 0, false, err
+	}
+	for rows.Next() {
+		var lookup string
+		var event model.Event
+		if err = rows.Scan(&lookup, &event.Provider, &event.Model, &event.RequestedAlias, &event.ServiceTierRequested, &event.ServiceTierUsed); err != nil {
+			break
+		}
+		price, priceErr := s.config.PriceBook.Price(event)
+		// Unusual arbitrary-precision rates and invalid books keep the Go path,
+		// including its original errors. Zero tokens avoid synthetic cost overflow.
+		if priceErr != nil || price.Breakdown == nil {
+			continue
+		}
+		components := []model.PricingComponent{price.Breakdown.Input, price.Breakdown.CacheRead, price.Breakdown.CacheWrite, price.Breakdown.Output}
+		rates := make([]*big.Rat, 4)
+		denominator := big.NewInt(1)
+		usable := true
+		for i, part := range components {
+			rate, ok := new(big.Rat).SetString(part.RatePerMillion)
+			if !ok || rate.Sign() < 0 {
+				usable = false
+				break
+			}
+			rates[i] = rate.Mul(rate, big.NewRat(1000, 1))
+			gcd := new(big.Int).GCD(nil, nil, denominator, rate.Denom())
+			denominator.Mul(denominator, new(big.Int).Quo(rate.Denom(), gcd))
+		}
+		if !usable || denominator.BitLen() > 100 {
+			continue
+		}
+		numerators := make([]string, 4)
+		for i, rate := range rates {
+			numerator := new(big.Int).Mul(rate.Num(), new(big.Int).Quo(new(big.Int).Set(denominator), rate.Denom()))
+			if numerator.BitLen() > 100 {
+				usable = false
+				break
+			}
+			numerators[i] = numerator.String()
+		}
+		if usable {
+			err = table.Append(lookup, price.RuleID, price.Source, denominator.String(), numerators)
+			if err != nil {
+				break
+			}
+		}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return ctx, raw, nil, 0, false, err
+	}
+	ctx = ch.Context(ctx, ch.WithExternalTable(table))
+	// Bound the SQL arithmetic well inside Int256. Values outside this bound
+	// retain the original big.Rat evaluation, including cost_overflow errors.
+	// Joined rate columns are read through ifNull so join_use_nulls=1 sessions
+	// see unmatched rows the same way as the default empty-string join.
+	base := `WITH selected AS (` + raw.SQL + `), rated AS (SELECT *,
+ coalesce(price_source,'')='kiro-credits' AND price_usd_per_credit_nano IS NOT NULL AND known_cost_nano IS NOT NULL AS credit,
+ toInt256OrZero(ifNull(denominator,'')) AS d,
+ greatest(toInt64(0),input_tokens-cache_read_tokens-cache_creation_tokens) AS uncached,
+ [uncached,cache_read_tokens,cache_creation_tokens,output_tokens] AS tokens,
+ arrayMap((t,n)->toInt256(t)*toInt256OrZero(n),tokens,if(empty(numerators),['0','0','0','0'],numerators)) AS amounts
+ FROM selected LEFT JOIN analysis_rates ON ` + key + `=rate_key), rounded AS (SELECT *,
+ arraySum(amounts) AS amount,
+ intDiv(2*amount+d,2*greatest(d,toInt256(1))) AS expected,
+ arrayMap(a->intDiv(2*a+d,2*greatest(d,toInt256(1))),amounts) AS parts,
+ credit OR (d>0 AND arrayAll(t->t>=0 AND t<=1000000000000000,[input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,total_tokens]) AND expected<=9223372036854775807) AS fast
+ FROM rated), checked AS (SELECT *,
+ known_cost_nano IS NOT NULL AND expected=known_cost_nano AND unpriced_tokens=greatest(toInt64(0),total_tokens-input_tokens-output_tokens)
+ AND coalesce(price_rule_id,'')=ifNull(rate_rule,'') AND coalesce(price_source,'')=ifNull(rate_source,'') AS valid,
+ expected-arraySum(parts) AS residual FROM rounded), reconciled AS (SELECT *,
+ arrayMap(i->parts[i]+if(residual>=0,if(i=indexOf(arrayMap(t->t>0,tokens),true),residual,toInt256(0)),
+ -least(parts[i],greatest(toInt256(0),-residual-arraySum(arraySlice(parts,1,i-1))))),range(1,5)) AS costs
+ FROM checked) `
+	fallback := readSelection{SQL: base + "SELECT " + analysisCostEventSelect + " FROM reconciled WHERE NOT fast", Args: raw.Args}
+	rows, err = s.db.Conn().Query(ctx, base+`SELECT model,
+ sum(toInt64(if(NOT credit AND valid,costs[1],0))),sum(toInt64(if(NOT credit AND valid,costs[2],0))),
+ sum(toInt64(if(NOT credit AND valid,costs[3],0))),sum(toInt64(if(NOT credit AND valid,costs[4],0))),
+ sum(if(credit,coalesce(known_cost_nano,0),0)),
+ sum(if(credit OR valid,greatest(toInt64(0),total_tokens-unpriced_tokens),0)),
+ toUInt8(max(NOT credit AND (NOT valid OR unpriced_tokens>0))),toUInt8(max(credit OR valid))
+ FROM reconciled WHERE fast GROUP BY model`, raw.Args...)
+	if err != nil {
+		return ctx, raw, nil, 0, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	totals := map[string][]model.NanoUSD{}
+	var priced int64
+	incomplete := false
+	for rows.Next() {
+		var name string
+		var costs [5]int64
+		var tokens int64
+		var partial, included uint8
+		if err := rows.Scan(&name, &costs[0], &costs[1], &costs[2], &costs[3], &costs[4], &tokens, &partial, &included); err != nil {
+			return ctx, raw, nil, 0, false, err
+		}
+		if included != 0 {
+			totals[name] = make([]model.NanoUSD, 5)
+			for i, cost := range costs {
+				totals[name][i] = model.NanoUSD(cost)
+			}
+		}
+		priced += tokens
+		incomplete = incomplete || partial != 0
+	}
+	return ctx, fallback, totals, priced, incomplete, rows.Err()
 }

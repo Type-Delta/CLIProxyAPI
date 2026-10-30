@@ -113,6 +113,7 @@ func (s *Store) events(ctx context.Context, query model.Query, includeTrace bool
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.EventPage{}, ErrClosed
 	}
@@ -123,7 +124,14 @@ func (s *Store) events(ctx context.Context, query model.Query, includeTrace bool
 	if bounds.rawSet && query.Start.UnixNano() < bounds.raw {
 		return model.EventPage{}, RetainedRangeError{Cutoff: time.Unix(0, bounds.raw).UTC()}
 	}
-	selectionSQL, err := s.rawSelection(ctx, query, "event_json", "proxy_status_code", "proxy_error", "responded_at_ns", "session_captured", "session_id", "requested_at_ns", "attempt_id")
+	pageBounds := readSelection{}
+	if cursor.RequestedAt != nil {
+		pageBounds.SQL = " AND (requested_at_ns < ? OR (requested_at_ns = ? AND attempt_id > ?))"
+		pageBounds.Args = append(pageBounds.Args, cursor.RequestedAt.UnixNano(), cursor.RequestedAt.UnixNano(), cursor.AttemptID)
+	}
+	pageBounds.SQL += " ORDER BY requested_at_ns DESC,attempt_id ASC LIMIT ?"
+	pageBounds.Args = append(pageBounds.Args, query.PageSize+1)
+	selectionSQL, err := s.rawPageSelection(ctx, query, pageBounds, "event_json", "proxy_status_code", "proxy_error", "responded_at_ns", "session_captured", "session_id", "requested_at_ns", "attempt_id")
 	if err != nil {
 		return model.EventPage{}, err
 	}
@@ -184,6 +192,7 @@ func (s *Store) EventByAttemptID(ctx context.Context, attemptID string, query mo
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.Event{}, false, ErrClosed
 	}

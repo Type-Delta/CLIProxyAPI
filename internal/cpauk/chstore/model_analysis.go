@@ -22,6 +22,7 @@ func (s *Store) analysisModels(ctx context.Context, q model.Query) (model.Analys
 func (s *Store) analysisAccounting(ctx context.Context, q model.Query, series *model.AnalysisSeriesByCategory) (model.AnalysisModelByTime, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	partial, err := s.rawRangePartial(ctx, q)
 	if err != nil {
 		return model.AnalysisModelByTime{}, err
@@ -181,10 +182,14 @@ func (s *Store) rawRangePartial(ctx context.Context, q model.Query) (bool, error
 // validateAnalysisRange reads overlap, partial coverage and retained grains in
 // one pass. The error order matches validateRetainedRange.
 func (s *Store) validateAnalysisRange(ctx context.Context, q model.Query) error {
-	all := q
-	all.Start = time.Unix(0, -9223372036854775808).UTC()
-	all.End = time.Unix(0, 9223372036854775807).UTC()
-	selection, err := s.retainedSelection(ctx, all, false, "bucket_start_ns", "bucket_end_ns", "grain")
+	bounds, err := s.readCutoffs(ctx)
+	if err != nil {
+		return err
+	}
+	if !bounds.rawSet || q.Start.UnixNano() >= bounds.raw {
+		return nil
+	}
+	selection, err := s.retainedRangeSelection(ctx, q, false, true, "bucket_start_ns", "bucket_end_ns", "grain")
 	if err != nil {
 		return err
 	}

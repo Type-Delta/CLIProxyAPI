@@ -63,8 +63,10 @@ func (s *Store) Reindex(ctx context.Context) error {
 	if s.db == nil {
 		return ErrClosed
 	}
+	// Request ordinary background-sized merges. FINAL would force all parts into
+	// one, including the active event partition, without improving correctness.
 	for _, table := range analyticsTables {
-		if err := s.db.Conn().Exec(ctx, "OPTIMIZE TABLE "+s.table(table)+" FINAL"); err != nil {
+		if err := s.db.Conn().Exec(ctx, "OPTIMIZE TABLE "+s.table(table)); err != nil {
 			return fmt.Errorf("optimize analytics table %s: %w", table, err)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -63,7 +64,7 @@ func (h *Handle) Get(ctx context.Context) (*DB, error) {
 	if !databasePattern.MatchString(h.cfg.Database) {
 		return nil, errors.New("clickhouse: invalid database identifier")
 	}
-	opts, err := ch.ParseDSN(h.cfg.DSN)
+	opts, err := connectionOptions(h.cfg.DSN)
 	if err != nil {
 		return nil, errors.New("clickhouse: invalid DSN")
 	}
@@ -97,6 +98,24 @@ func (h *Handle) Get(ctx context.Context) (*DB, error) {
 	log.WithField("database", h.cfg.Database).Info("clickhouse connected")
 	return db, nil
 }
+func connectionOptions(dsn string) (*ch.Options, error) {
+	opts, err := ch.ParseDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if _, specified := u.Query()["compress"]; !specified {
+		if opts.Compression == nil {
+			opts.Compression = &ch.Compression{}
+		}
+		opts.Compression.Method = ch.CompressionLZ4
+	}
+	return opts, nil
+}
+
 func (h *Handle) Close() (err error) {
 	defer func() { err = errors.Join(err, h.CloseAgent()) }()
 	h.mu.Lock()

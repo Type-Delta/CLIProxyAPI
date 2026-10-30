@@ -96,6 +96,8 @@ type RepriceOptions struct {
 	ChunkSize        int
 	Resume           bool
 	ResumeCheckpoint string
+	// Matched carries the previous chunk's count within one run; zero recounts.
+	Matched int64
 }
 type RepriceResult struct {
 	Matched         int64

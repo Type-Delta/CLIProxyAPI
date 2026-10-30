@@ -22,6 +22,12 @@ Set CPA's `clickhouse.dsn` to the native-protocol address of the Compose ClickHo
 
 For a separately managed server, create a CPA account with permission to create the database and tables, manage the schema, and use SQL access management to create and alter users, settings profiles and grants. CPA provisions a separate account for agent queries. If SQL access management is unavailable, storage can still operate but the agent SQL endpoints return 503. Keep the ClickHouse server private and use secure network transport where appropriate.
 
+## Storage and upgrades
+
+CPA uses LZ4 compression on the ClickHouse native transport by default. If the DSN sets `compress`, that setting wins.
+
+Migrations update physical storage and lookup paths without changing stored values or API results. Analytics migration 0002 converts repeated dimensions to LowCardinality strings, adds codecs, and materializes a proxy-request bloom index. Telemetry migrations add request and response lookup indexes and ZSTD or delta codecs, with larger blocks for transcript content. On a new database these run as part of normal setup. On an existing database, the LowCardinality conversion rewrites those analytics columns, so upgrade time scales with the size of the analytics table. Codec-only changes apply to newly written and merged parts. CPA does not rewrite existing data, so older parts that no longer merge keep their previous compression until retention removes them. To reclaim that space sooner, run `OPTIMIZE TABLE <table> PARTITION <partition> FINAL` one partition at a time during low traffic; each rewrite needs temporary disk space for the partition. Analytics archives made by schema version 1 remain restorable after the upgrade.
+
 ## Legacy import and retention
 
 On the first migration of each component, CPA creates a one-time import job. The analytics job imports the legacy SQLite analytics database at `analytics.path`. The request-log job imports legacy request and error log files from the log directory on a best-effort basis. The jobs run in the background, resume after interruption and retry infrastructure failures on a later start. Unparseable request logs and persistently rejected request records are counted as skipped. A completed job does not run again. Source files are left untouched. Request-log checkpoints use the header timestamp and compression-independent filename; `.log` to `.log.gz` rotation does not create a new request identity. Timestamp read failures pause import rather than checkpointing past an unreadable file.

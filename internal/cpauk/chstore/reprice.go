@@ -64,11 +64,6 @@ func (s *Store) Reprice(ctx context.Context, options RepriceOptions, progress fu
 	if previous != "" && previous != digest {
 		return RepriceResult{}, ErrRepriceCatalogChanged
 	}
-	var matched uint64
-	if err := s.db.Conn().QueryRow(ctx, "SELECT count() FROM "+s.table("analytics_events")+" FINAL WHERE is_deleted=0 AND requested_at_ns>=? AND requested_at_ns<?", start.UnixNano(), options.Range.End.UnixNano()).Scan(&matched); err != nil {
-		return RepriceResult{}, err
-	}
-	result.Matched = int64(matched)
 	statement := "SELECT event_json FROM " + s.table("analytics_events") + " FINAL WHERE is_deleted=0 AND requested_at_ns>=? AND requested_at_ns<?"
 	args := []any{start.UnixNano(), options.Range.End.UnixNano()}
 	if options.ResumeCheckpoint != "" {
@@ -103,6 +98,16 @@ func (s *Store) Reprice(ctx context.Context, options RepriceOptions, progress fu
 	result.Completed = len(events) <= options.ChunkSize
 	if !result.Completed {
 		events = events[:options.ChunkSize]
+	}
+	// Intermediate chunks of one run reuse the caller's count; the first and
+	// final chunks recount so the reported total reflects the current range.
+	result.Matched = options.Matched
+	if options.Matched <= 0 || result.Completed {
+		var matched uint64
+		if err := s.db.Conn().QueryRow(ctx, "SELECT count() FROM "+s.table("analytics_events")+" FINAL WHERE is_deleted=0 AND requested_at_ns>=? AND requested_at_ns<?", start.UnixNano(), options.Range.End.UnixNano()).Scan(&matched); err != nil {
+			return RepriceResult{}, err
+		}
+		result.Matched = int64(matched)
 	}
 	if len(events) > 0 {
 		last := events[len(events)-1]

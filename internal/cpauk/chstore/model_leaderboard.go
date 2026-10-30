@@ -15,6 +15,7 @@ func (s *Store) ModelLeaderboard(ctx context.Context, query model.Query) (model.
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.ModelLeaderboard{}, ErrClosed
 	}
@@ -35,10 +36,16 @@ func (s *Store) ModelLeaderboard(ctx context.Context, query model.Query) (model.
  sumIf(reasoning_tokens,eligible AND accounting_schema!='raw-fallback-v1' AND generated>0) AS reasoning,
  sumIf(generated,eligible AND accounting_schema!='raw-fallback-v1' AND generated>0) AS generated_total FROM evidence GROUP BY model),
  awards AS (
- SELECT 'most_used' AS metric,model,toFloat64(sessions) AS value,sessions AS tie,providers,CAST(NULL AS Nullable(Int64)) AS attempts,CAST(NULL AS Nullable(Int64)) AS failed,CAST(NULL AS Nullable(Int64)) AS samples,CAST(NULL AS Nullable(Float64)) AS share FROM stats WHERE sessions>0
- UNION ALL SELECT 'most_reliable',model,toFloat64(attempts-failed)/attempts,attempts,NULL,attempts,failed,NULL,NULL FROM stats WHERE attempts>=200
- UNION ALL SELECT 'speed',model,arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70))),toInt64(length(speeds)),NULL,attempts-failed,NULL,toInt64(length(speeds)),NULL FROM stats WHERE length(speeds)>0 AND arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70)))>=80
- UNION ALL SELECT 'most_talkative',model,toFloat64(arrayElement(talkative,toUInt64(ceil(length(talkative)*0.95)))),toInt64(length(talkative)),NULL,NULL,NULL,toInt64(length(talkative)),least(1.,toFloat64(reasoning)/generated_total) FROM stats WHERE length(talkative)>0
+ SELECT tupleElement(award,1) AS metric,model,tupleElement(award,2) AS value,
+ tupleElement(award,3) AS tie,tupleElement(award,4) AS providers,
+ tupleElement(award,5) AS attempts,tupleElement(award,6) AS failed,
+ tupleElement(award,7) AS samples,tupleElement(award,8) AS share
+ FROM (SELECT model,arrayJoin(arrayFilter(x -> tupleElement(x,9),[
+ tuple('most_used',toFloat64(sessions),sessions,toNullable(providers),CAST(NULL AS Nullable(Int64)),CAST(NULL AS Nullable(Int64)),CAST(NULL AS Nullable(Int64)),CAST(NULL AS Nullable(Float64)),sessions>0),
+ tuple('most_reliable',toFloat64(attempts-failed)/attempts,attempts,NULL,toNullable(attempts),toNullable(failed),NULL,NULL,attempts>=200),
+ tuple('speed',toFloat64(arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70)))),toInt64(length(speeds)),NULL,toNullable(attempts-failed),NULL,toNullable(toInt64(length(speeds))),NULL,length(speeds)>0 AND arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70)))>=80),
+ tuple('most_talkative',toFloat64(arrayElement(talkative,toUInt64(ceil(length(talkative)*0.95)))),toInt64(length(talkative)),NULL,NULL,NULL,toNullable(toInt64(length(talkative))),toNullable(least(1.,toFloat64(reasoning)/generated_total)),length(talkative)>0)
+ ])) AS award FROM stats)
  ) SELECT metric,model,value,providers,attempts,failed,samples,share FROM awards ORDER BY metric,value DESC,tie DESC,model LIMIT 6 BY metric`
 	rows, err := s.db.Conn().Query(ctx, statement, raw.Args...)
 	if err != nil {

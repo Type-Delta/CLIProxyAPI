@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
@@ -29,6 +30,12 @@ OR (startsWith(trimBoth(upstream_error_body), 'Get "') AND endsWith(trimBoth(ups
 // first-wins response patches applied before the outer filter. It never selects
 // event_json unless requested. Query cursor bounds belong to the page query only.
 func (s *Store) rawSelection(ctx context.Context, q model.Query, columns ...string) (readSelection, error) {
+	return s.rawPageSelection(ctx, q, readSelection{}, columns...)
+}
+
+// A page suffix is safe before the response overlay: none of the supported
+// event predicates depends on proxy response patches.
+func (s *Store) rawPageSelection(ctx context.Context, q model.Query, page readSelection, columns ...string) (readSelection, error) {
 	bounds, err := s.readCutoffs(ctx)
 	if err != nil {
 		return readSelection{}, err
@@ -46,6 +53,9 @@ func (s *Store) rawSelection(ctx context.Context, q model.Query, columns ...stri
 		if name != "outcome" && name != "result" && name != "success" {
 			baseQuery.Filters[name] = value
 		}
+	}
+	if page.SQL != "" {
+		baseQuery = q
 	}
 	baseWhere, baseArgs, err := buildWhere(baseQuery)
 	if err != nil {
@@ -119,9 +129,14 @@ func (s *Store) rawSelection(ctx context.Context, q model.Query, columns ...stri
 			projection[i] = "(session_id IS NOT NULL OR outcome IS NOT NULL OR (import_batch_id IS NULL AND requested_at_ns >= (SELECT coalesce(max(toInt64(value)),0) FROM " + s.table("analytics_metadata") + " FINAL WHERE key='session_capture_since_ns' AND is_deleted=0))) AS session_captured"
 		}
 	}
-	source := "(SELECT " + strings.Join(rawColumns, ",") + " FROM " + s.table("analytics_events") + " FINAL " + baseWhere + " AND is_deleted=0) AS e"
+	baseWhere += " AND is_deleted=0" + page.SQL
+	baseArgs = append(baseArgs, page.Args...)
+	source := "(SELECT " + strings.Join(rawColumns, ",") + " FROM " + s.table("analytics_events") + " FINAL " + baseWhere + ") AS e"
 	if overlay {
-		source += " LEFT JOIN (SELECT attempt_id, argMin(tuple(status_code,error,responded_at_ns),sequence) AS patch, toUInt8(1) AS present FROM " + s.table("analytics_outcomes") + " ARRAY JOIN attempt_ids AS attempt_id GROUP BY attempt_id) AS o ON e.attempt_id=o.attempt_id"
+		source += " LEFT JOIN (SELECT attempt_id, argMin(tuple(status_code,error,responded_at_ns),sequence) AS patch, toUInt8(1) AS present FROM " + s.table("analytics_outcomes") + " ARRAY JOIN attempt_ids AS attempt_id WHERE proxy_request_id IN (SELECT proxy_request_id FROM " + s.table("analytics_events") + " FINAL " + baseWhere + ") GROUP BY attempt_id) AS o ON e.attempt_id=o.attempt_id"
+	}
+	if overlay {
+		baseArgs = append(baseArgs, baseArgs...)
 	}
 	statement := "SELECT " + strings.Join(projection, ",") + " FROM (SELECT " + strings.Join(inner, ",") + " FROM " + source + ") " + where
 	return readSelection{statement, append(baseArgs, args...)}, nil
@@ -132,19 +147,41 @@ type readCutoffs struct {
 	rawSet, hourlySet bool
 }
 
+// A snapshot belongs to one read-lock scope, never to a Store or caller context.
+type readCutoffsContextKey struct{}
+type readCutoffsSnapshot struct {
+	once   sync.Once
+	bounds readCutoffs
+	err    error
+}
+
+func withReadCutoffs(ctx context.Context) context.Context {
+	return context.WithValue(ctx, readCutoffsContextKey{}, &readCutoffsSnapshot{})
+}
+
 func (s *Store) readCutoffs(ctx context.Context) (readCutoffs, error) {
+	if snapshot, ok := ctx.Value(readCutoffsContextKey{}).(*readCutoffsSnapshot); ok {
+		snapshot.once.Do(func() { snapshot.bounds, snapshot.err = s.loadReadCutoffs(ctx) })
+		return snapshot.bounds, snapshot.err
+	}
+	return s.loadReadCutoffs(ctx)
+}
+
+func (s *Store) loadReadCutoffs(ctx context.Context) (readCutoffs, error) {
 	var result readCutoffs
 	if !s.retentionCutoff.IsZero() {
 		result.raw = s.retentionCutoff.UnixNano()
 		result.rawSet = true
 	}
-	for _, key := range []string{"retention_raw_cutoff_ns", "retention_raw_checkpoint_ns", "retention_hourly_cutoff_ns"} {
-		value, ok, err := s.metadata(ctx, key)
-		if err != nil {
+	rows, err := s.db.Conn().Query(ctx, "SELECT key,value FROM "+s.table("analytics_metadata")+" FINAL WHERE key IN ('retention_raw_cutoff_ns','retention_raw_checkpoint_ns','retention_hourly_cutoff_ns') AND is_deleted=0")
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
 			return result, err
-		}
-		if !ok {
-			continue
 		}
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
@@ -163,13 +200,20 @@ func (s *Store) readCutoffs(ctx context.Context) (readCutoffs, error) {
 			result.rawSet = true
 		}
 	}
-	return result, nil
+	return result, rows.Err()
 }
 
 // retainedSelection reads only published history. The same predicate is used
 // for aggregate facts and exact request identities. No physical-row inference.
 func (s *Store) retainedSelection(ctx context.Context, q model.Query, requests bool, columns ...string) (readSelection, error) {
+	return s.retainedRangeSelection(ctx, q, requests, false, columns...)
+}
+
+func (s *Store) retainedRangeSelection(ctx context.Context, q model.Query, requests, overlap bool, columns ...string) (readSelection, error) {
 	where, args, err := buildRollupWhere(q, "bucket_start_ns", "bucket_end_ns")
+	if overlap {
+		where = strings.Replace(where, "bucket_start_ns >= ? AND bucket_end_ns <= ?", "bucket_end_ns > ? AND bucket_start_ns < ?", 1)
+	}
 	if err != nil {
 		return readSelection{}, err
 	}
@@ -182,7 +226,12 @@ func (s *Store) retainedSelection(ctx context.Context, q model.Query, requests b
 		table = "analytics_request_rollups"
 	}
 	// Both retained tables must resolve the same published bucket generation.
-	where += " AND is_deleted=0 AND " + s.c4bPublishedPredicate()
+	headWhere := " WHERE grain IN ('hourly','daily') AND bucket_start_ns < " + strconv.FormatInt(q.End.UnixNano(), 10)
+	if !overlap {
+		headWhere += " AND bucket_start_ns >= " + strconv.FormatInt(q.Start.UnixNano(), 10)
+	}
+	publication := strings.ReplaceAll(s.c4bPublishedPredicate(), s.table("analytics_retention_heads")+" FINAL", s.table("analytics_retention_heads")+" FINAL"+headWhere)
+	where += " AND is_deleted=0 AND " + publication
 	if !bounds.rawSet {
 		where += " AND 0"
 	} else {
@@ -195,10 +244,15 @@ func (s *Store) retainedSelection(ctx context.Context, q model.Query, requests b
 // validateRetainedRange mirrors SQLite's selection-dependent partial-bucket and
 // timezone errors, but ignores unpublished destination buckets.
 func (s *Store) validateRetainedRange(ctx context.Context, q model.Query) error {
-	selectionQ := q
-	selectionQ.Start = time.Unix(0, -9223372036854775808).UTC()
-	selectionQ.End = time.Unix(0, 9223372036854775807).UTC()
-	selected, err := s.retainedSelection(ctx, selectionQ, false, "bucket_start_ns", "bucket_end_ns", "grain")
+	bounds, err := s.readCutoffs(ctx)
+	if err != nil {
+		return err
+	}
+	// Published retained buckets end at or before the raw cutoff.
+	if !bounds.rawSet || q.Start.UnixNano() >= bounds.raw {
+		return nil
+	}
+	selected, err := s.retainedRangeSelection(ctx, q, false, true, "bucket_start_ns", "bucket_end_ns", "grain")
 	if err != nil {
 		return err
 	}
@@ -223,7 +277,7 @@ func (s *Store) validateRetainedRange(ctx context.Context, q model.Query) error 
 		return RetainedTimeZoneError{StorageTimeZone: zone, QueryTimeZone: q.TimeZone, BucketWidth: q.BucketWidth}
 	}
 	if overlapping > 0 && q.Operation == model.OperationTimeseries {
-		rows, err := s.db.Conn().Query(ctx, "SELECT DISTINCT grain FROM ("+selected.SQL+") WHERE bucket_start_ns<? AND bucket_end_ns>?", append(selected.Args, q.End.UnixNano(), q.Start.UnixNano())...)
+		rows, err := s.db.Conn().Query(ctx, "SELECT DISTINCT grain FROM ("+selected.SQL+") WHERE bucket_start_ns<? AND bucket_end_ns>? ORDER BY grain", append(selected.Args, q.End.UnixNano(), q.Start.UnixNano())...)
 		if err != nil {
 			return err
 		}
@@ -368,8 +422,8 @@ func buildWhere(query model.Query) (string, []any, error) {
 func buildRollupWhere(query model.Query, startColumn, endColumn string) (string, []any, error) {
 	// Keep the grain predicate explicit so SQLite can use the composite
 	// (grain,bucket_start_ns) range index instead of scanning both prefixes.
-	clauses := []string{startColumn + " >= ?", endColumn + " <= ?", "grain IN ('hourly','daily')"}
-	arguments := []any{query.Start.UnixNano(), query.End.UnixNano()}
+	clauses := []string{startColumn + " >= ?", endColumn + " <= ?", startColumn + " < ?", "grain IN ('hourly','daily')"}
+	arguments := []any{query.Start.UnixNano(), query.End.UnixNano(), query.End.UnixNano()}
 	if len(query.KeyIDs) != 0 {
 		clauses = append(clauses, inClause("key_id", len(query.KeyIDs)))
 		for _, keyID := range query.KeyIDs {

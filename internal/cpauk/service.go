@@ -903,7 +903,13 @@ func (s *service) UpdateKeyLifecycle(ctx context.Context, configuredIDs, rotated
 			err = ErrInternal
 		}
 	}()
-	return provider.UpdateKeyLifecycle(ctx, configuredIDs, rotatedIDs)
+	err = provider.UpdateKeyLifecycle(ctx, configuredIDs, rotatedIDs)
+	if err == nil {
+		s.mu.Lock()
+		s.responseCacheEpoch++
+		s.mu.Unlock()
+	}
+	return err
 }
 
 func (s *service) Close(ctx context.Context) error {

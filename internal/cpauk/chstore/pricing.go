@@ -234,6 +234,18 @@ func (s *Store) PricingMissing(ctx context.Context, selected model.Range) ([]mod
 	if s.db == nil {
 		return nil, ErrClosed
 	}
+	// The management pricing read requests the maximum rolling window. Retained
+	// daily buckets cannot be split at its moving start. Validate the caller's
+	// window first, then include the containing storage-calendar day. Other
+	// explicit ranges retain their strict partial-bucket errors.
+	if selected.End.Sub(selected.Start) == model.MaxQueryRangeDays*24*time.Hour {
+		dayStart, _, err := aggregate.BucketBounds(selected.Start, s.config.RetentionTimeZone, "1d")
+		if err != nil {
+			return nil, err
+		}
+		selected.Start = dayStart.UTC()
+		selected.TimeZone = s.config.RetentionTimeZone
+	}
 	bounds, err := s.readCutoffs(ctx)
 	if err != nil {
 		return nil, err
@@ -254,14 +266,14 @@ func (s *Store) PricingMissing(ctx context.Context, selected model.Range) ([]mod
 	}
 	type accum struct {
 		item             model.PricingMissing
-		requests         map[string]bool
+		requests         int64
 		retainedRequests int64
 	}
 	grouped := map[string]*accum{}
 	get := func(provider, name string) *accum {
 		key := provider + "\x00" + name
 		if grouped[key] == nil {
-			grouped[key] = &accum{item: model.PricingMissing{Provider: provider, Model: name}, requests: map[string]bool{}}
+			grouped[key] = &accum{item: model.PricingMissing{Provider: provider, Model: name}}
 		}
 		return grouped[key]
 	}
@@ -274,17 +286,30 @@ func (s *Store) PricingMissing(ctx context.Context, selected model.Range) ([]mod
 	if cutoff != 0 && start < cutoff {
 		start = cutoff
 	}
-	events, err := s.loadEvents(ctx, "requested_at_ns>=? AND requested_at_ns<? AND unpriced_tokens>0", start, selected.End.UnixNano())
+	rows, err := s.db.Conn().Query(ctx, "SELECT provider,model,min(requested_at_ns),sum(unpriced_tokens),uniqExact(proxy_request_id) FROM "+s.table("analytics_events")+" FINAL WHERE is_deleted=0 AND requested_at_ns>=? AND requested_at_ns<? AND unpriced_tokens>0 GROUP BY provider,model", start, selected.End.UnixNano())
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range events {
-		a := get(e.Provider, e.Model)
-		addTime(a, e.RequestedAt)
-		a.item.UnpricedTokens += e.UnpricedTokens
-		a.requests[e.ProxyRequestID] = true
+	for rows.Next() {
+		var provider, name string
+		var first, unpriced int64
+		var requests uint64
+		if err := rows.Scan(&provider, &name, &first, &unpriced, &requests); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		a := get(provider, name)
+		addTime(a, time.Unix(0, first).UTC())
+		a.item.UnpricedTokens += unpriced
+		a.requests = int64(requests)
 	}
-	rows, err := s.db.Conn().Query(ctx, "SELECT provider,model,first_activity_ns,proxy_requests,unpriced_tokens FROM "+s.table("analytics_rollups")+" FINAL WHERE "+visible+" AND bucket_start_ns>=? AND bucket_end_ns<=? AND unpriced_tokens>0", append(args, selected.Start.UnixNano(), selected.End.UnixNano())...)
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err = s.db.Conn().Query(ctx, "SELECT provider,model,min(first_activity_ns),sum(proxy_requests),sum(unpriced_tokens) FROM "+s.table("analytics_rollups")+" FINAL WHERE "+visible+" AND bucket_start_ns>=? AND bucket_end_ns<=? AND unpriced_tokens>0 GROUP BY provider,model", append(args, selected.Start.UnixNano(), selected.End.UnixNano())...)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +336,7 @@ func (s *Store) PricingMissing(ctx context.Context, selected model.Range) ([]mod
 
 	result := make([]model.PricingMissing, 0, len(grouped))
 	for _, a := range grouped {
-		a.item.Requests = int64(len(a.requests)) + a.retainedRequests
+		a.item.Requests = a.requests + a.retainedRequests
 		result = append(result, a.item)
 	}
 	sort.Slice(result, func(i, j int) bool {

@@ -78,6 +78,7 @@ func (s *Store) Summary(ctx context.Context, query model.Query) (model.Summary, 
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.Summary{}, ErrClosed
 	}
@@ -169,6 +170,7 @@ func (s *Store) timeseriesWithOutcomes(ctx context.Context, q model.Query) (mode
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.Timeseries{}, nil, ErrClosed
 	}

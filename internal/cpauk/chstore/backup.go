@@ -54,6 +54,12 @@ func (s *Store) tableSchema(ctx context.Context, table string) (string, error) {
 	return strings.Join(columns, ", "), nil
 }
 
+// logicalTableSchema drops LowCardinality wrappers, which change storage but
+// not archived JSON values, so archives from before migration 2 still match.
+func logicalTableSchema(schema string) string {
+	return strings.NewReplacer("LowCardinality(Nullable(String))", "Nullable(String)", "LowCardinality(String)", "String").Replace(schema)
+}
+
 func (s *Store) Backup(ctx context.Context, destination string) (BackupManifest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -241,7 +247,9 @@ func (s *Store) restore(ctx context.Context, databasePath, manifestPath string) 
 	if err != nil {
 		return err
 	}
-	if manifest.SchemaVersion != s.currentSchema {
+	// Archives hold logical rows; schema 2 changed only physical storage, so
+	// older archives restore into the current tables.
+	if manifest.SchemaVersion > s.currentSchema {
 		return ErrUnsupportedSchema
 	}
 	key, err := os.ReadFile(filepath.Join(filepath.Dir(manifestPath), manifest.IdentityKeyFile))
@@ -286,7 +294,7 @@ func (s *Store) restore(ctx context.Context, databasePath, manifestPath string) 
 			if err != nil {
 				return err
 			}
-			if schema != archiveSchema {
+			if logicalTableSchema(schema) != logicalTableSchema(archiveSchema) {
 				return fmt.Errorf("archive schema does not match %s", table)
 			}
 			stage = "c4_restore_" + id + "_" + table

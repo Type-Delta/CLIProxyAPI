@@ -818,48 +818,39 @@ func (h *Handler) GetAnalyticsKeys(c *gin.Context) {
 		writeAnalyticsInvalid(c, fmt.Errorf("key catalog cursor exceeds its bounds"))
 		return
 	}
-	service := h.analyticsService()
-	if service == nil {
-		writeAnalyticsError(c, cpauk.ErrUnavailable)
-		return
-	}
-	provider, ok := service.(interface {
-		KeyCatalog(context.Context, model.Query) (backend.KeyCatalogPage, error)
+	h.executeAnalyticsCached(c, query, query, "keys", func(ctx context.Context, service cpauk.Service, query model.Query) (any, error) {
+		provider, ok := service.(interface {
+			KeyCatalog(context.Context, model.Query) (backend.KeyCatalogPage, error)
+		})
+		if !ok {
+			return nil, cpauk.ErrUnavailable
+		}
+		page, err := provider.KeyCatalog(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		configured := map[string]apiKeyIdentityEntry{}
+		h.mu.Lock()
+		if h.cfg != nil {
+			catalog, _ := buildAPIKeyIdentityCatalog(h.cfg.APIKeys, config.APIKeyID)
+			for _, identity := range catalog {
+				configured[identity.KeyID] = identity
+			}
+		}
+		h.mu.Unlock()
+		keys := page.Keys
+		for index := range keys {
+			identity, exists := configured[keys[index].KeyID]
+			if !exists {
+				continue
+			}
+			keys[index].Status = model.KeyStatusConfigured
+			if identity.Status == "identity_conflict" {
+				keys[index].Status = model.KeyStatusConflict
+			}
+			keys[index].ConfigIndexes = slices.Clone(identity.ConfigIndexes)
+			keys[index].Label = identity.Label
+		}
+		return gin.H{"meta": page.Meta, "keys": keys}, nil
 	})
-	if !ok {
-		writeAnalyticsError(c, cpauk.ErrUnavailable)
-		return
-	}
-	page, err := provider.KeyCatalog(c.Request.Context(), query)
-	if err != nil {
-		writeAnalyticsError(c, classifyAnalyticsReadError(err))
-		return
-	}
-	configured := map[string]apiKeyIdentityEntry{}
-	h.mu.Lock()
-	if h.cfg != nil {
-		catalog, _ := buildAPIKeyIdentityCatalog(h.cfg.APIKeys, config.APIKeyID)
-		for _, identity := range catalog {
-			configured[identity.KeyID] = identity
-		}
-	}
-	h.mu.Unlock()
-	keys := page.Keys
-	for index := range keys {
-		identity, exists := configured[keys[index].KeyID]
-		if !exists {
-			continue
-		}
-		keys[index].Status = model.KeyStatusConfigured
-		if identity.Status == "identity_conflict" {
-			keys[index].Status = model.KeyStatusConflict
-		}
-		keys[index].ConfigIndexes = slices.Clone(identity.ConfigIndexes)
-		keys[index].Label = identity.Label
-	}
-	setAnalyticsNoStore(c)
-	if page.Meta.NextCursor != "" {
-		c.Header("X-Analytics-Next-Cursor", page.Meta.NextCursor)
-	}
-	c.JSON(http.StatusOK, gin.H{"meta": page.Meta, "keys": keys})
 }

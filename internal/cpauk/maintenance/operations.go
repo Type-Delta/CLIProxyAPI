@@ -89,7 +89,7 @@ func StoreOperations(database Store) map[string]Operation {
 				}
 				result, errReprice := database.Reprice(ctx, backenddto.RepriceOptions{
 					Range: selected, DryRun: dryRun, Resume: resume,
-					ChunkSize: chunkSize, ResumeCheckpoint: checkpoint,
+					ChunkSize: chunkSize, ResumeCheckpoint: checkpoint, Matched: matched,
 				}, nil)
 				if errReprice != nil {
 					return nil, errReprice

@@ -15,9 +15,10 @@ including a COMMENT on every column and table. Money is signed Int64 nano-USD.
 - `operations.go`, `epoch.go`, `backup.go`, `archive.go`, `restore_journal.go`: maintenance and recovery.
 - `migrations/`: authoritative ClickHouse schema.
 
-All analytics tables, including `analytics_quota_history`, are created directly by
-the single unreleased `0001_analytics.sql`. There is no intermediate control-snapshot
-quota-history format or compatibility copy. The quota-history import helper preserves
+`0001_analytics.sql` creates every analytics table, including
+`analytics_quota_history`; `0002_event_storage.sql` upgrades existing tables in place
+without changing logical values or the control-snapshot contract. There is no intermediate
+control-snapshot quota-history format or compatibility copy. The quota-history import helper preserves
 source observation times and deduplicates repeated observations in its append-only
 table. `MigrateWithJob` still records the pending `legacy-import:analytics` job before
 initial schema creation. Databases made with earlier pre-release migrations must be
@@ -66,9 +67,14 @@ Keep Store fields in `store.go`; shared refresh synchronization is managed by th
 (requested_at_ns,attempt_id) and partitioned by the UTC YYYYMM of event time.
 Partition zero is reserved for compact late-import replay receipts; those are
 is_deleted=1 and never event facts. A bloom_filter(0.0001) skip index on attempt_id
-supports global existence checks and detail lookups. The writer checks incoming
+supports global existence checks and detail lookups. Migration 0002 adds the same kind of
+index on proxy_request_id and materializes it synchronously. It also converts repeated
+dimensions to LowCardinality strings and adds codecs to event time and diagnostic JSON
+mirrors; logical values stay unchanged. The writer checks incoming
 IDs across all partitions with a safe attempt-ID PREWHERE and FINAL before
-inserting, so conflicting replay dates still keep the original. Replacement
+inserting, so conflicting replay dates still keep the original. Before applying patches,
+the writer selects only eligible scalar columns and excludes attempt IDs already recorded
+in outcomes. Replacement
 writers, including reprice, must preserve requested_at_ns as well as attempt_id.
 The time-leading key permits primary-key pruning for range queries. Detail lookup
 resolves the ID through the bloom index, then reads its exact timestamp.
@@ -170,8 +176,10 @@ Late-write plans persist the exact bucket bounds in `late_retention` control sna
 A late imported or live row below the raw floor is published directly into the
 appropriate hourly/daily bucket through the same generation protocol. Only its
 own import-batch snapshot is merged; empty batch IDs identify native history.
-Durable pending event markers and compact receipts make recovery/replay safe.
-Rollback and purge remove all matching physical generations and receipts, while
+Durable pending event markers and compact receipts make recovery/replay safe. If no
+durable late plans exist, recovery prunes the scan below the published raw cutoff and
+excludes receipt partition zero; unsupported old pending rows without plans still produce
+their explicit recovery error. Rollback and purge remove all matching physical generations and receipts, while
 preview counts and backups select only published snapshots. Reprice stays limited
 to surviving raw rows and retains SQLite's partial-history reporting. Exact
 requests combine DISTINCT IDs across raw and retained request identities.
@@ -221,7 +229,11 @@ backup/restore procedures cannot be reused as ClickHouse storage operations.
 Open uses MigrateWithJob for analytics, recording `legacy-import:analytics`
 before the first statement of a from-zero migration. Existing components never
 create this job. The shared Handle and unrelated components survive
-Store.Close. All migrations and table/column comments are tested on real CH.
+Store.Close. All migrations and table/column comments are tested on real CH. Restore
+accepts archives no newer than the live schema and compares logical table schemas with
+LowCardinality wrappers ignored, so a schema-1 archive restores into schema 2. Reindex
+issues ordinary `OPTIMIZE TABLE` statements; it does not force `FINAL`, which readers
+already use for logical correctness.
 
 ## Implementation notes for dependent slices
 

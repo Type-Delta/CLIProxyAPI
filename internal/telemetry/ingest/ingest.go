@@ -42,6 +42,7 @@ type Ingester struct {
 	processMu          sync.Mutex
 	pending            map[string]*batchRows
 	known              map[string]bool
+	heads              map[string]batchHead
 	cache              map[string]*list.Element
 	lru                *list.List
 	drainMu            sync.Mutex
@@ -163,6 +164,49 @@ func (i *Ingester) Drain(ctx context.Context) error {
 	if len(paths) == 0 {
 		return i.idleHealth(ctx)
 	}
+	// Try bounded batches. If a batch fails, retry the first file through the
+	// normal per-file path so rejection and retry accounting stay precise.
+	for len(paths) > 1 {
+		deadline := time.Now().Add(50 * time.Millisecond)
+		var records []*record.Request
+		var bytes int64
+		for _, path := range paths {
+			if len(records) >= 100 || time.Now().After(deadline) {
+				break
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil || (len(records) > 0 && bytes+info.Size() > 8<<20) {
+				break
+			}
+			r, readErr := outbox.Read(path)
+			if readErr != nil {
+				break
+			}
+			encoded, encodeErr := json.Marshal(r)
+			if encodeErr != nil || bytes+int64(len(encoded)) > 8<<20 {
+				break
+			}
+			records = append(records, r)
+			bytes += int64(len(encoded))
+		}
+		if len(records) < 2 {
+			break
+		}
+		if err = i.IngestRecords(ctx, records); err != nil {
+			break
+		}
+		for _, path := range paths[:len(records)] {
+			if err = os.Remove(path); err != nil {
+				return fail(err)
+			}
+			remaining--
+		}
+		i.failedPath = ""
+		i.failedAttempts = 0
+		i.failedDataAttempts = 0
+		paths = paths[len(records):]
+		i.setStatus(remaining, nil)
+	}
 	for n, path := range paths {
 		if err = ctx.Err(); err != nil {
 			return fail(err)
@@ -234,12 +278,12 @@ func (i *Ingester) IngestRecords(ctx context.Context, recs []*record.Request) er
 			return fmt.Errorf("%w: clickhouse free disk %d below minimum %d", ErrPaused, free, i.minFree)
 		}
 	}
+	i.pending = make(map[string]*batchRows)
+	i.known = make(map[string]bool)
+	i.heads = make(map[string]batchHead)
+	defer func() { i.pending = nil; i.known = nil; i.heads = nil }()
 	for _, r := range recs {
-		i.pending = make(map[string]*batchRows)
-		i.known = make(map[string]bool)
 		if err := i.process(ctx, r); err != nil {
-			i.pending = nil
-			i.known = nil
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -248,24 +292,22 @@ func (i *Ingester) IngestRecords(ctx context.Context, recs []*record.Request) er
 			}
 			return fmt.Errorf("%w: %w", ErrPaused, err)
 		}
-		if err := i.flush(ctx); err != nil {
-			i.pending = nil
-			i.known = nil
-			i.cache = make(map[string]*list.Element)
-			i.lru.Init()
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if record.DataError(err) {
-				return err
-			}
-			return fmt.Errorf("%w: %w", ErrPaused, err)
+	}
+	if err := i.flush(ctx); err != nil {
+		i.cache = make(map[string]*list.Element)
+		i.lru.Init()
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		for key := range i.known {
-			i.remember(key)
+		if record.DataError(err) {
+			return err
 		}
-		i.pending = nil
-		i.known = nil
+		return fmt.Errorf("%w: %w", ErrPaused, err)
+	}
+	for key := range i.known {
+		i.remember(key)
+	}
+	if len(recs) > 0 {
 		i.mu.Lock()
 		i.status.LastSuccess = i.nowFunc().UTC()
 		i.mu.Unlock()
@@ -340,6 +382,44 @@ func (i *Ingester) flush(ctx context.Context) error {
 		if b == nil {
 			continue
 		}
+		if table == "transcript_content" || table == "transcript_entries" {
+			col := "content_id"
+			if table == "transcript_entries" {
+				col = "entry_id"
+			}
+			ids := make([]string, len(b.rows))
+			for n, row := range b.rows {
+				ids[n] = row[0].(string)
+			}
+			rows, err := i.store.DB().Conn().Query(ctx, "SELECT "+col+" FROM "+i.table(table)+" WHERE "+col+" IN (?)", ids)
+			if err != nil {
+				return err
+			}
+			existing := make(map[string]bool)
+			for rows.Next() {
+				var id string
+				if err = rows.Scan(&id); err != nil {
+					_ = rows.Close()
+					return err
+				}
+				existing[id] = true
+			}
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return err
+			}
+			filtered := b.rows[:0]
+			for _, row := range b.rows {
+				if !existing[row[0].(string)] {
+					filtered = append(filtered, row)
+				}
+			}
+			b.rows = filtered
+			if len(b.rows) == 0 {
+				continue
+			}
+		}
 		batch, err := i.store.DB().Conn().PrepareBatch(ctx, "INSERT INTO "+i.table(table)+" ("+b.cols+")")
 		if err != nil {
 			return fmt.Errorf("prepare %s: %w", table, err)
@@ -376,6 +456,9 @@ func (i *Ingester) exists(ctx context.Context, table, col, id string) (bool, err
 	if e := i.cache[key]; e != nil {
 		i.lru.MoveToFront(e)
 		return true, nil
+	}
+	if table == "transcript_content" || table == "transcript_entries" {
+		return false, nil
 	}
 	var count uint64
 	err := i.store.DB().Conn().QueryRow(ctx, "SELECT count() FROM "+i.table(table)+" WHERE "+col+" = ?", id).Scan(&count)
@@ -465,6 +548,7 @@ func (i *Ingester) process(ctx context.Context, r *record.Request) error {
 			return e
 		}
 	}
+	i.known["requests:"+r.RequestID] = true
 	return i.insert(ctx, "requests", "request_id,proxy_request_id,started_at,first_chunk_at,finished_at,method,url,path,client_format,model,stream,status,actor_key_id,session_id,detail,source,transport,request_headers,response_headers,envelope_content_id,response_id,response_body,response_truncated,websocket_timeline,errors,request_body_raw,ingested_at", r.RequestID, r.ProxyRequestID, at, nullable(r.FirstChunkAt), nullable(r.FinishedAt), r.Method, r.URL, path, string(f), view.model, requestedStream, uint16(r.Status), r.ActorKeyID, r.SessionID, r.Detail, r.Source, r.Transport, jsonString(r.Headers), jsonString(r.ResponseHeaders), view.envelope, view.responseID, string(r.Response), r.ResponseTruncated, string(r.WebsocketTimeline), r.Errors, string(view.raw), time.Now().UTC())
 }
 
@@ -572,6 +656,14 @@ func (i *Ingester) processView(ctx context.Context, r *record.Request, index int
 		}
 	}
 
+	if out.responseID != "" {
+		key := headKey(r.ActorKeyID, f, out.responseID, index)
+		old, ok := i.heads[key]
+		started := actual(r.StartedAt, at)
+		if !ok || started.After(old.started) {
+			i.heads[key] = batchHead{parent, depth, started}
+		}
+	}
 	return out, nil
 }
 func (i *Ingester) entry(ctx context.Context, r *record.Request, index int, f transcript.Format, parent string, depth uint32, e transcript.Element, origin string, at time.Time, occurred *time.Time) (string, error) {
@@ -595,20 +687,46 @@ func (i *Ingester) entry(ctx context.Context, r *record.Request, index int, f tr
 	}
 	return id, err
 }
+
+type batchHead struct {
+	parent  string
+	depth   uint32
+	started time.Time
+}
+
+func headKey(actor string, f transcript.Format, responseID string, index int) string {
+	view := "client"
+	if index > 0 {
+		view = "upstream"
+	}
+	return jsonString([]string{actor, string(f), responseID, view})
+}
 func (i *Ingester) previousHead(ctx context.Context, actor string, f transcript.Format, responseID, root string, index int) (string, uint32, error) {
 	var reqID, body string
 	var attempt uint32
 	var stream bool
-	query := "SELECT request_id, toUInt32(0), response_body, stream FROM " + i.table("requests") + " WHERE response_id = ? AND actor_key_id = ? AND client_format = ? ORDER BY started_at DESC LIMIT 1"
+	var started time.Time
+	pending, hasPending := i.heads[headKey(actor, f, responseID, index)]
+	query := "SELECT request_id, toUInt32(0), response_body, stream, started_at FROM " + i.table("requests") + " WHERE response_id = ? AND actor_key_id = ? AND client_format = ? ORDER BY started_at DESC LIMIT 1"
+	args := []any{responseID, actor, string(f)}
 	if index > 0 {
-		query = "SELECT a.request_id, a.attempt_index, a.response_body, r.stream FROM " + i.table("attempts") + " a INNER JOIN " + i.table("requests") + " r ON a.request_id=r.request_id WHERE a.response_id = ? AND r.actor_key_id = ? AND a.upstream_format = ? ORDER BY a.request_started_at DESC LIMIT 1"
+		// Restrict the joined requests to the matching attempts so both
+		// request_id and response_id indexes prune instead of hashing all requests.
+		query = "SELECT a.request_id, a.attempt_index, a.response_body, r.stream, a.request_started_at FROM " + i.table("attempts") + " a INNER JOIN (SELECT request_id, stream FROM " + i.table("requests") + " WHERE actor_key_id = ? AND request_id IN (SELECT request_id FROM " + i.table("attempts") + " WHERE response_id = ?)) r ON a.request_id=r.request_id WHERE a.response_id = ? AND a.upstream_format = ? ORDER BY a.request_started_at DESC LIMIT 1"
+		args = []any{actor, responseID, responseID, string(f)}
 	}
-	err := i.store.DB().Conn().QueryRow(ctx, query, responseID, actor, string(f)).Scan(&reqID, &attempt, &body, &stream)
+	err := i.store.DB().Conn().QueryRow(ctx, query, args...).Scan(&reqID, &attempt, &body, &stream, &started)
 	if errors.Is(err, sql.ErrNoRows) {
+		if hasPending {
+			return pending.parent, pending.depth, nil
+		}
 		return root, 0, nil
 	}
 	if err != nil {
 		return "", 0, err
+	}
+	if hasPending && pending.started.After(started) {
+		return pending.parent, pending.depth, nil
 	}
 	var ids []string
 	var responseHead string

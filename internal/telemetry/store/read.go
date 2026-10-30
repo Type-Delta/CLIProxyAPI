@@ -67,8 +67,14 @@ func Request(ctx context.Context, db *clickhouse.DB, id string) (*record.Request
 	var first, finished *time.Time
 	var reqHeaders, respHeaders, envelope, raw, response, timeline string
 	var status uint16
-	q := "SELECT request_id,proxy_request_id,started_at,first_chunk_at,finished_at,method,url,client_format,transport,actor_key_id,session_id,detail,source,request_headers,response_headers,envelope_content_id,request_body_raw,status,response_body,response_truncated,websocket_timeline,errors FROM " + table(db, "requests") + " FINAL WHERE request_id = ? OR endsWith(request_id, ?) OR proxy_request_id = ? ORDER BY (request_id = ?) DESC, started_at DESC LIMIT 1"
-	err := db.Conn().QueryRow(ctx, q, id, id, id, id).Scan(&r.RequestID, &r.ProxyRequestID, &r.StartedAt, &first, &finished, &r.Method, &r.URL, &r.ClientFormat, &r.Transport, &r.ActorKeyID, &r.SessionID, &r.Detail, &r.Source, &reqHeaders, &respHeaders, &envelope, &raw, &status, &response, &r.ResponseTruncated, &timeline, &r.Errors)
+	q := "SELECT request_id,proxy_request_id,started_at,first_chunk_at,finished_at,method,url,client_format,transport,actor_key_id,session_id,detail,source,request_headers,response_headers,envelope_content_id,request_body_raw,status,response_body,response_truncated,websocket_timeline,errors FROM " + table(db, "requests") + " FINAL WHERE "
+	scan := func(query string, args ...any) error {
+		return db.Conn().QueryRow(ctx, q+query, args...).Scan(&r.RequestID, &r.ProxyRequestID, &r.StartedAt, &first, &finished, &r.Method, &r.URL, &r.ClientFormat, &r.Transport, &r.ActorKeyID, &r.SessionID, &r.Detail, &r.Source, &reqHeaders, &respHeaders, &envelope, &raw, &status, &response, &r.ResponseTruncated, &timeline, &r.Errors)
+	}
+	err := scan("request_id = ? ORDER BY started_at DESC LIMIT 1 SETTINGS use_skip_indexes_if_final=1", id)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = scan("request_id = ? OR endsWith(request_id, ?) OR proxy_request_id = ? ORDER BY (request_id = ?) DESC, started_at DESC LIMIT 1", id, id, id, id)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -138,7 +144,7 @@ func Request(ctx context.Context, db *clickhouse.DB, id string) (*record.Request
 }
 func rebuild(ctx context.Context, db *clickhouse.DB, id string, attempt int, f transcript.Format, envelopeID string) ([]byte, error) {
 	var ids []string
-	err := db.Conn().QueryRow(ctx, "SELECT content_ids FROM "+table(db, "request_contexts")+" FINAL WHERE request_id=? AND attempt_index=? LIMIT 1", id, uint32(attempt)).Scan(&ids)
+	err := db.Conn().QueryRow(ctx, "SELECT content_ids FROM "+table(db, "request_contexts")+" FINAL WHERE request_id=? AND attempt_index=? LIMIT 1 SETTINGS use_skip_indexes_if_final=1", id, uint32(attempt)).Scan(&ids)
 	if err != nil {
 		return nil, fmt.Errorf("read transcript context: %w", err)
 	}

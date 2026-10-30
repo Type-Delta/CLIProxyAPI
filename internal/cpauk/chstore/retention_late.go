@@ -128,7 +128,25 @@ func (s *Store) c4bInsertLate(ctx context.Context, arguments [][]any, estimated 
 // After publication only compact tombstone receipts remain, preserving replay
 // deduplication without retaining diagnostics or token payloads indefinitely.
 func (s *Store) c4bRecoverLate(ctx context.Context) error {
-	rows, err := s.db.Conn().Query(ctx, "SELECT DISTINCT retained_generation FROM "+s.table("analytics_events")+" FINAL WHERE is_deleted=0 AND retained_generation>0 ORDER BY retained_generation")
+	controls, err := s.loadControl(ctx, "late_retention")
+	if err != nil {
+		return err
+	}
+	statement := "SELECT DISTINCT retained_generation FROM " + s.table("analytics_events") + " FINAL PREWHERE _partition_id!='0'"
+	var args []any
+	if len(controls) == 0 {
+		// Pending sources are staged strictly below the published raw floor.
+		// Keep detecting old sources without plans, while pruning healthy raw
+		// history by its leading sort key. Partition zero contains only deleted compact receipts.
+		var floor int64
+		if !s.retentionCutoff.IsZero() {
+			floor = s.retentionCutoff.UnixNano()
+		}
+		statement += " AND requested_at_ns<?"
+		args = append(args, floor)
+	}
+	statement += " WHERE is_deleted=0 AND retained_generation>0 ORDER BY retained_generation"
+	rows, err := s.db.Conn().Query(ctx, statement, args...)
 	if err != nil {
 		return err
 	}
@@ -143,10 +161,6 @@ func (s *Store) c4bRecoverLate(ctx context.Context) error {
 	}
 	err = rows.Err()
 	_ = rows.Close()
-	if err != nil {
-		return err
-	}
-	controls, err := s.loadControl(ctx, "late_retention")
 	if err != nil {
 		return err
 	}

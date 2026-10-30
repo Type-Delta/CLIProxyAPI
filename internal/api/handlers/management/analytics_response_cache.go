@@ -147,6 +147,12 @@ func (h *Handler) GetAnalyticsQuery(c *gin.Context) {
 }
 
 func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Query) {
+	h.executeAnalyticsCached(c, query, selection, "query", func(ctx context.Context, service cpauk.Service, q model.Query) (any, error) {
+		return h.readAnalyticsQuery(ctx, service, q)
+	})
+}
+
+func (h *Handler) executeAnalyticsCached(c *gin.Context, query, selection model.Query, scope string, load func(context.Context, cpauk.Service, model.Query) (any, error)) {
 	if h == nil {
 		writeAnalyticsError(c, cpauk.ErrUnavailable)
 		return
@@ -164,10 +170,21 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 	}
 	// Legacy and public viewer routes retain their existing response contract.
 	if !strings.HasPrefix(c.Request.URL.Path, "/v8/management/analytics/") {
-		result, err := h.readAnalyticsQuery(c.Request.Context(), service, query)
+		result, err := load(c.Request.Context(), service, query)
 		if err != nil {
 			writeAnalyticsError(c, classifyAnalyticsReadError(err))
 			return
+		}
+		if scope == "keys" {
+			body, _ := json.Marshal(result)
+			var page struct {
+				Meta struct {
+					NextCursor string `json:"next_cursor"`
+				} `json:"meta"`
+			}
+			if json.Unmarshal(body, &page) == nil && page.Meta.NextCursor != "" {
+				c.Header("X-Analytics-Next-Cursor", page.Meta.NextCursor)
+			}
 		}
 		setAnalyticsNoStore(c)
 		c.JSON(http.StatusOK, result)
@@ -195,10 +212,17 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 	selection.KeyIDs = slices.Clone(selection.KeyIDs)
 	slices.Sort(selection.KeyIDs)
 	selection.Start, selection.End = selection.Start.UTC(), selection.End.UTC()
+	// The key catalog validates retained buckets against its exact bounds, so
+	// minute grouping could serve a cached page for a partial-bucket range.
+	cacheQuery := selection
+	if scope != "keys" {
+		cacheQuery = quantizeAnalyticsCacheQuery(selection)
+	}
 	encoded, err := json.Marshal(struct {
+		Scope string      `json:"scope"`
 		Epoch string      `json:"epoch"`
 		Query model.Query `json:"query"`
-	}{Epoch: epoch, Query: quantizeAnalyticsCacheQuery(selection)})
+	}{Scope: scope, Epoch: epoch, Query: cacheQuery})
 	if err != nil {
 		writeAnalyticsError(c, err)
 		return
@@ -212,7 +236,7 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 				return nil, err
 			}
 		}
-		result, err := h.readAnalyticsQuery(requestContext, service, query)
+		result, err := load(requestContext, service, query)
 		if err != nil {
 			return nil, err
 		}
@@ -243,10 +267,22 @@ func (h *Handler) executeAnalyticsQuery(c *gin.Context, query, selection model.Q
 	setAnalyticsNoStore(c)
 	c.Header("ETag", response.etag)
 	c.Writer.Header().Add("Vary", analyticsQueryHeader+", Authorization, X-Management-Key")
+	if scope == "keys" {
+		var page struct {
+			Meta struct {
+				NextCursor string `json:"next_cursor"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(response.body, &page); err == nil && page.Meta.NextCursor != "" {
+			c.Header("X-Analytics-Next-Cursor", page.Meta.NextCursor)
+		}
+		c.Writer.Header().Add("Vary", "X-Analytics-Cursor")
+	}
 	if c.Request.Method == http.MethodGet && analyticsETagMatches(strings.Join(c.Request.Header.Values("If-None-Match"), ","), response.etag) {
 		c.Status(http.StatusNotModified)
 		return
 	}
+
 	c.Data(http.StatusOK, "application/json; charset=utf-8", response.body)
 }
 

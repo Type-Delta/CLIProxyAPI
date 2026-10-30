@@ -20,7 +20,7 @@ func TestC3QuotaHistoryFreshSchemaAndRetrySafeImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close(ctx) }()
-	if s.SchemaVersion() != 1 {
+	if s.SchemaVersion() != 2 {
 		t.Fatalf("initial analytics schema version=%d", s.SchemaVersion())
 	}
 	db := s.db

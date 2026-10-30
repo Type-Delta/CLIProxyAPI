@@ -104,14 +104,13 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 		cost   model.NanoUSD
 	}
 	type entry struct {
-		item     model.KeyIdentity
-		models   map[string]modelUsage
-		requests map[string]bool
+		item   model.KeyIdentity
+		models map[string]modelUsage
 	}
 	entries := map[string]*entry{}
 	ensure := func(id string) *entry {
 		if entries[id] == nil {
-			entries[id] = &entry{item: model.KeyIdentity{KeyID: id, Status: model.KeyStatusHistorical}, models: map[string]modelUsage{}, requests: map[string]bool{}}
+			entries[id] = &entry{item: model.KeyIdentity{KeyID: id, Status: model.KeyStatusHistorical}, models: map[string]modelUsage{}}
 		}
 		return entries[id]
 	}
@@ -123,18 +122,25 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
-	statement := "SELECT key_id,model,requested_at_ns,requested_at_ns,total_tokens,coalesce(known_cost_nano,0),unpriced_tokens,generation_time_ms FROM (" + raw.SQL + ") UNION ALL SELECT key_id,model,first_activity_ns,last_activity_ns,total_tokens,known_cost_nano,unpriced_tokens,CAST(NULL AS Nullable(Int64)) FROM (" + retained.SQL + ")"
+	statement := "SELECT key_id,model,min(first),max(last),sum(total_tokens),toString(sum(toInt128(cost))),sum(unpriced_tokens),sum(generation_time_ms),count(generation_time_ms) FROM (SELECT key_id,model,requested_at_ns AS first,requested_at_ns AS last,total_tokens,coalesce(known_cost_nano,0) AS cost,unpriced_tokens,generation_time_ms FROM (" + raw.SQL + ") UNION ALL SELECT key_id,model,first_activity_ns,last_activity_ns,total_tokens,known_cost_nano,unpriced_tokens,CAST(NULL AS Nullable(Int64)) FROM (" + retained.SQL + ")) GROUP BY key_id,model"
 	rows, err := s.db.Conn().Query(ctx, statement, append(raw.Args, retained.Args...)...)
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
 	for rows.Next() {
 		var id, name string
-		var first, last, tokens, cost, unpriced int64
+		var first, last, tokens, unpriced int64
+		var costText string
+		var samples uint64
 		var generation *int64
-		if err := rows.Scan(&id, &name, &first, &last, &tokens, &cost, &unpriced, &generation); err != nil {
+		if err := rows.Scan(&id, &name, &first, &last, &tokens, &costText, &unpriced, &generation, &samples); err != nil {
 			_ = rows.Close()
 			return KeyCatalogPage{}, err
+		}
+		cost, errCost := strconv.ParseInt(costText, 10, 64)
+		if errCost != nil {
+			_ = rows.Close()
+			return KeyCatalogPage{}, fmt.Errorf("integer overflow in analytics money total")
 		}
 		e := ensure(id)
 		e.item.TotalTokens += tokens
@@ -145,23 +151,15 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 		}
 		e.item.KnownCost = model.NanoUSD(combined)
 		e.item.UnpricedTokens += unpriced
-		usage := e.models[name]
-		usage.tokens += tokens
-		combined, errSum = addMoney(int64(usage.cost), cost)
-		if errSum != nil {
-			_ = rows.Close()
-			return KeyCatalogPage{}, errSum
-		}
-		usage.cost = model.NanoUSD(combined)
-		e.models[name] = usage
+		e.models[name] = modelUsage{tokens: tokens, cost: model.NanoUSD(cost)}
 		c3UpdateBounds(&e.item.FirstActivityAt, &e.item.LastActivityAt, first, last)
-		if generation != nil {
+		if generation != nil && samples > 0 {
 			if e.item.GenerationTimeMS == nil {
 				v := int64(0)
 				e.item.GenerationTimeMS = &v
 			}
 			*e.item.GenerationTimeMS += *generation
-			e.item.GenerationSampleCount++
+			e.item.GenerationSampleCount += int64(samples)
 		}
 	}
 	err = rows.Err()
@@ -177,17 +175,18 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
-	rows, err = s.db.Conn().Query(ctx, raw.SQL+" UNION ALL "+retained.SQL, append(raw.Args, retained.Args...)...)
+	rows, err = s.db.Conn().Query(ctx, "SELECT key_id,uniqExact(proxy_request_id) FROM ("+raw.SQL+" UNION ALL "+retained.SQL+") GROUP BY key_id", append(raw.Args, retained.Args...)...)
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
 	for rows.Next() {
-		var id, request string
-		if err := rows.Scan(&id, &request); err != nil {
+		var id string
+		var requests uint64
+		if err := rows.Scan(&id, &requests); err != nil {
 			_ = rows.Close()
 			return KeyCatalogPage{}, err
 		}
-		ensure(id).requests[request] = true
+		ensure(id).item.Requests = int64(requests)
 	}
 	err = rows.Err()
 	_ = rows.Close()
@@ -208,7 +207,7 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
-	rows, err = s.db.Conn().Query(ctx, "SELECT key_id,requested_at_ns,requested_at_ns FROM ("+raw.SQL+") UNION ALL SELECT key_id,first_activity_ns,last_activity_ns FROM ("+retained.SQL+")", append(raw.Args, retained.Args...)...)
+	rows, err = s.db.Conn().Query(ctx, "SELECT key_id,min(first),max(last) FROM (SELECT key_id,requested_at_ns AS first,requested_at_ns AS last FROM ("+raw.SQL+") UNION ALL SELECT key_id,first_activity_ns,last_activity_ns FROM ("+retained.SQL+")) GROUP BY key_id", append(raw.Args, retained.Args...)...)
 	if err != nil {
 		return KeyCatalogPage{}, err
 	}
@@ -219,10 +218,7 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 			_ = rows.Close()
 			return KeyCatalogPage{}, err
 		}
-		if previous, ok := lifetimeBounds[id]; ok {
-			first = min(first, previous[0])
-			last = max(last, previous[1])
-		}
+
 		lifetimeBounds[id] = [2]int64{first, last}
 	}
 	err = rows.Err()
@@ -260,7 +256,6 @@ func (s *Store) KeyCatalog(ctx context.Context, query model.Query) (KeyCatalogPa
 	items := make([]model.KeyIdentity, 0, len(entries))
 	for id, e := range entries {
 		e.item.ShortKeyID = short[id]
-		e.item.Requests = int64(len(e.requests))
 		names := make([]string, 0, len(e.models))
 		for name := range e.models {
 			names = append(names, name)

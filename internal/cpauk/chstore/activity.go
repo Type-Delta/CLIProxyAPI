@@ -65,14 +65,7 @@ func (s *Store) activityBuckets(ctx context.Context, q model.Query, width string
 // Year activity preserves the legacy daily-stat validation even though its
 // values now come from published accounting and exact request facts.
 func (s *Store) validateYearActivity(ctx context.Context, q model.Query) error {
-	all := q
-	all.Start = time.Unix(0, -9223372036854775808).UTC()
-	all.End = time.Unix(0, 9223372036854775807).UTC()
-	all.Filters = nil
-	retained, err := s.retainedSelection(ctx, all, false, "bucket_start_ns")
-	if err != nil {
-		return err
-	}
+	ctx = withReadCutoffs(ctx)
 	zone, ok, err := s.metadata(ctx, "retention_time_zone")
 	if err != nil {
 		return err
@@ -85,6 +78,13 @@ func (s *Store) validateYearActivity(ctx context.Context, q model.Query) error {
 	dq.BucketWidth = "1d"
 	day := coreBucketExpression("bucket_start_ns", dq)
 	dayStart, _, err := aggregate.BucketBounds(q.Start, zone, "1d")
+	if err != nil {
+		return err
+	}
+	all := q
+	all.Start = dayStart
+	all.Filters = nil
+	retained, err := s.retainedRangeSelection(ctx, all, false, true, "bucket_start_ns")
 	if err != nil {
 		return err
 	}

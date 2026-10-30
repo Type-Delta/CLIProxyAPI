@@ -2003,8 +2003,9 @@ restart. The log directory is resolved once to an absolute path at startup, in p
 a later working-directory change no longer moves it.
 
 Schema comes from checksummed, embedded migrations per component (`core`, `analytics`,
-`telemetry`), each starting from a single `0001` file; telemetry adds `0002`, which only
-updates comments. Databases created by earlier pre-release migration sequences must be recreated. A `cpa_jobs` journal records one-time jobs. A job row is written
+`telemetry`), each starting from a single `0001` file; analytics adds `0002` for physical
+storage efficiency, while telemetry adds `0002` comments plus `0003` lookup indexes and
+`0004` storage codecs (DL065). Databases created by earlier pre-release migration sequences must be recreated. A `cpa_jobs` journal records one-time jobs. A job row is written
 before the first schema statement, so an interrupted creation still runs its import.
 
 **Requested streaming correction, 2026-10-29.** `requests.stream` now derives from
@@ -2090,8 +2091,9 @@ Setup, the API, limits and troubleshooting are in `docs/clickhouse.md`.
 **Known limits:**
 
 - Read performance was benchmarked with `internal/cpauk/chstore/c5_bench_test.go` on a
-  5-million-event fixture. Unfiltered 365-day Analysis is the slowest reader, and every read
-  scans the outcomes table. Results depend on hardware.
+  5-million-event fixture. At that baseline, unfiltered 365-day Analysis was the slowest
+  reader and every read scanned the outcomes table. DL065 reworks those query paths; results
+  still depend on hardware.
 - Transcript identity has documented merge and split edge cases.
 - Legacy text-log parsing is best effort.
 - Readable reasoning persistence was not observed live, because the test models returned no
@@ -2294,6 +2296,67 @@ Upstream moved the root module to `github.com/router-for-me/CLIProxyAPI/v8`, but
 **Implementation evidence:** `examples/plugin/*/go/go.mod` (and `go.sum` for `claude-web-search-router`), `examples/realtime-openai-go/go.mod`, `examples/plugin/scripts/generate_examples.py`, and `examples/plugin/README.md`.
 
 **Recorded validation:** On 2026-10-30, every example module that depends on CPA (22 plugin modules) builds with `go build ./...` in Go's default read-only module mode, and offline with `GOPROXY=off`. Before the fix, 8 of them failed with `require github.com/router-for-me/CLIProxyAPI/v8: version "v7.0.0" invalid`. `examples/realtime-openai-go` does not import CPA and builds once its third-party modules are downloaded.
+
+**Last updated:** 2026-10-30
+
+### DL065 — ClickHouse query, ingest, and storage efficiency
+
+The first ClickHouse implementation moved many full analytics rows into Go and issued
+repeated discovery queries. The fork now keeps bounded report work in SQL. Key catalog,
+provider credentials, missing-pricing, and Analysis cost aggregation run set-based queries;
+Analysis costs use exact Int256 rational arithmetic with the same current-price validation,
+per-event rounding and reconciliation, credit semantics, errors, and Go fallback. Shared
+reads memoize retention cutoffs within one read-lock scope, bound retained validation and
+publication lookups, prune event pages before response overlays, restrict outcome overlays
+to selected requests, compute model awards in one pass, and send all throughput-estimate
+targets through one external-table join. The maximum-window missing-pricing read starts at
+the containing storage-calendar day, so retained buckets no longer make it fail. Management `/keys` uses the analytics response
+cache with its exact range and cursor. Public report and request-log contracts are
+intentionally unchanged; some paths scan more ClickHouse rows so that substantially less
+data reaches Go.
+
+Ingest and maintenance avoid repeated work without changing replay or recovery semantics.
+Analytics outcome eligibility reads only scalar columns and excludes attempts that already
+have patches. Reprice reuses one matched count within a run and recounts at its first and
+final chunk. Late-retention recovery checks durable plans first; when no plans exist, it
+prunes healthy raw history by the published cutoff while retaining recovery for unsupported
+old pending rows. Telemetry ingestion drains bounded request batches, probes shared
+transcript identities set-based, and preserves per-file rejection, retry, and continuation
+behavior. Upstream continuation lookups join only the requests that own the matching
+attempts. Request detail tries its exact ID first and falls back only for suffix and proxy
+IDs. CPA defaults native ClickHouse transport to LZ4 unless the DSN sets `compress`.
+
+Migration `analytics/0002_event_storage.sql` converts repeated event dimensions to
+LowCardinality strings, adds Delta/ZSTD codecs to event time and ZSTD codecs to diagnostic
+JSON mirrors, and materializes a proxy-request bloom index synchronously. Telemetry
+migration `0003_lookup_indexes.sql` adds request and response bloom indexes; migration
+`0004_storage_codecs.sql` adds ZSTD and delta codecs, with larger ZSTD blocks for transcript
+content. Stored values and query results do not change. Codec-only changes apply to newly
+written and merged parts; older parts that no longer merge keep their previous compression
+until retention removes them or an operator rewrites them. The LowCardinality conversion
+rewrites those analytics columns during upgrade. Ordinary analytics reindex requests background-sized merges instead of forcing
+`FINAL`, and schema-1 analytics archives restore into schema 2. Deferred follow-ups include
+hot-window rollups, alternate text indexes, exact percentile histograms, lightweight routine
+deletes, report fusion, an error-log paging contract change, and further transcript
+storage factoring and deduplication.
+
+**Implementation evidence:** `internal/api/handlers/management/{analytics_pricing.go,analytics_response_cache.go}`,
+`internal/clickhouse/clickhouse.go`, `internal/cpauk/{backend/types.go,service.go}`,
+`internal/cpauk/chstore/{activity.go,aggregates.go,analysis.go,backup.go,dimensions.go,key_catalog.go,model_analysis.go,model_cost_series.go,model_leaderboard.go,operations.go,pricing.go,provider_quota.go,query.go,read_selection.go,reprice.go,retention_late.go,throughput_estimate.go,write.go,migrations/0002_event_storage.sql}`,
+`internal/cpauk/maintenance/operations.go`,
+`internal/telemetry/{ingest/ingest.go,store/read.go,store/migrations/0003_lookup_indexes.sql,store/migrations/0004_storage_codecs.sql}`,
+and the `s1_*`, `s2_*`, `s3_*`, `s4_*`, and `s5_*` regression suites.
+
+**Recorded validation:** Real ClickHouse tests compare reports and request rebuilding with
+frozen pre-change readers. They cover maximum-page cohorts, cached `/keys` ranges and
+lifecycle invalidation, patch eligibility across batches, migration and retry, reprice
+resume, bounded late recovery, ordinary reindex, schema-1 restore, batched telemetry replay
+and failure, exact-detail lookup, and LZ4/DSN compression selection. Representative tests
+are `TestS1ReportParity`, `TestS2MixedReadParity`,
+`TestS3MigrationExistingDataAndRetry`, `TestS3LateRecoveryAfterReopen`,
+`TestS5AnalysisParity`, `TestS4BatchReplayAndLookup`, `TestS4CompressionOptions`,
+`TestS1KeyCatalogResponseCache`, and `TestC3QuotaHistoryFreshSchemaAndRetrySafeImport`.
+`gofmt`, `go vet`, and the required disposable server compile check also pass.
 
 **Last updated:** 2026-10-30
 

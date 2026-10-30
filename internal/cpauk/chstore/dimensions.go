@@ -91,6 +91,7 @@ func (s *Store) Dimensions(ctx context.Context, query model.Query) (model.Dimens
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.DimensionPage{}, ErrClosed
 	}
@@ -162,6 +163,7 @@ func (s *Store) Leaderboard(ctx context.Context, query model.Query) (model.Leade
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	ctx = withReadCutoffs(ctx)
 	if s.db == nil {
 		return model.LeaderboardPage{}, ErrClosed
 	}
