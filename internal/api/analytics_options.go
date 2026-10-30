@@ -35,6 +35,26 @@ func newAnalyticsService(ctx context.Context, cfg *config.Config, handle *clickh
 	return cpauk.New(ctx, moduleConfig, factory)
 }
 
+// queueAnalyticsSync runs analytics configuration work in submission order
+// without holding up the caller. The work can wait on ClickHouse mutations, so
+// config reloads and the auth/model registration behind them must not block on it.
+// The returned channel closes when the job has finished.
+func (s *Server) queueAnalyticsSync(job func()) <-chan struct{} {
+	done := make(chan struct{})
+	s.analyticsSyncMu.Lock()
+	previous := s.analyticsSyncTail
+	s.analyticsSyncTail = done
+	s.analyticsSyncMu.Unlock()
+	go func() {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		job()
+	}()
+	return done
+}
+
 type analyticsKeyLifecycle interface {
 	UpdateKeyLifecycle(context.Context, []string, []string) error
 }

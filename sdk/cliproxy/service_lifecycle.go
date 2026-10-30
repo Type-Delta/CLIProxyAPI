@@ -98,6 +98,9 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
+		// Publish stored auths' models before the listener opens. The watcher
+		// re-registers them later; until then clients would see an empty catalog.
+		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)

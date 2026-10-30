@@ -2228,6 +2228,40 @@ connections instead of three. That test passes in isolation.
 
 **Last updated:** 2026-10-29
 
+### DL063 - Restarts never serve an empty OAuth model catalog
+
+Upstream opens the HTTP listener before the file watcher loads the auth directory, so stored OAuth
+credentials have no registered models for a short window after every start. Requests in that window
+fail with `400 unknown provider for model`, and `/v1/models` returns 200 without those providers'
+models; Codex clients cache that list and their GPT models disappear from the picker. `Service.Run`
+now registers models for the auths loaded from the store before the listener opens. The watcher's
+initial load still re-registers them afterwards.
+
+The window was seconds long here because the reload callback that precedes model registration ran
+CPAUK's analytics reconfiguration and API-key lifecycle sync inline. Those calls wait on the
+ClickHouse store lock and run synchronous `ALTER` mutations, so a slow or busy ClickHouse stalled the
+whole auth load. Startup and reload analytics sync now run as a FIFO background chain on the server
+with unchanged calls and order, and a reload no longer waits for ClickHouse.
+
+**Implementation evidence:** `sdk/cliproxy/service_lifecycle.go`, `internal/api/server.go`,
+`internal/api/server_reload.go`, `internal/api/analytics_options.go`,
+`sdk/cliproxy/service_run_startup_models_test.go`, and
+`internal/api/analytics_reload_async_test.go`.
+
+**Recorded validation:** the startup test fails on the unfixed code (no codex models at
+`OnBeforeStart`) and passes with the fix, race-clean. The reload test fails within 5s when analytics
+sync runs inline and passes with the FIFO chain. A local CPA with three codex auths and a ClickHouse
+seeded to production size (424k events, about 900 MiB) was held behind a slow `analytics_control`
+mutation. Polling `/v1/models` from launch, the unfixed binary returned 250 consecutive responses
+without codex models for about 8s. The fixed binary returned all codex models on every response, and
+a hot-reloaded API key worked and later reached the analytics key lifecycle. The full suite passes
+except `TestBundledArtifactIsValid`, which needs a built panel bundle, and the existing flaky
+`TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch` and
+`TestEndToEndAuthFileReplacement_RestoresModelsInV1ModelsWithoutRestart`, which fail the same way
+on the unfixed code.
+
+**Last updated:** 2026-10-30
+
 ## Merge History
 
 This is an append-only historical decision record. It provides context for integrations but never, by itself, establishes an ongoing fork divergence; use the current Divergence Log for that determination.

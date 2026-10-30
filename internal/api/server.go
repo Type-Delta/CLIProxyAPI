@@ -111,6 +111,8 @@ type Server struct {
 	usageLimitDetach   coreusage.UnregisterFunc
 	analytics          cpauk.Service
 	analyticsDetach    coreusage.UnregisterFunc
+	analyticsSyncMu    sync.Mutex
+	analyticsSyncTail  chan struct{}
 	quotaHistoryCancel context.CancelFunc
 	quotaHistoryDone   chan struct{}
 
@@ -267,11 +269,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.usageLimitTracker = usagelimit.NewTracker()
 	s.usageLimitPath = usageLimitPath
 	s.analytics = newAnalyticsService(context.Background(), cfg, s.ClickHouse())
-	go func() {
+	s.queueAnalyticsSync(func() {
 		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(context.Background(), s.analytics, nil, cfg.APIKeys); errAnalyticsKeys != nil && !errors.Is(errAnalyticsKeys, cpauk.ErrClosed) {
 			log.WithError(errAnalyticsKeys).Warn("failed to initialize analytics key lifecycle")
 		}
-	}()
+	})
 	if detachAnalytics, errRegisterAnalytics := coreusage.RegisterSanitizerTapNamedPlugin("cpauk-analytics", s.analytics.Observer()); errRegisterAnalytics != nil {
 		log.WithError(errRegisterAnalytics).Error("failed to register analytics sanitizer tap")
 	} else {

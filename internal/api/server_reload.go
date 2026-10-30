@@ -138,32 +138,36 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 	applySignatureCacheConfig(oldCfg, cfg)
 	if s.analytics != nil {
+		analytics := s.analytics
 		analyticsConfig := analyticsModuleConfig(cfg)
 		problem := cfg.Analytics.Problem()
 		if problem != nil {
 			analyticsConfig.QueueCapacity = -1
 		}
-		result := s.analytics.Reconfigure(analyticsConfig)
-		if result.Error != nil {
-			log.WithError(result.Error).Warn("analytics configuration update was rejected; keeping the previous generation")
-			if problem != nil {
-				if marker, ok := s.analytics.(interface{ MarkConfigProblem(string, string) }); ok {
-					marker.MarkConfigProblem(problem.Category, problem.Field)
-				}
-			}
-		} else if len(result.RestartRequired) != 0 {
-			log.WithField("fields", result.RestartRequired).Warn("analytics configuration update requires a restart")
-		}
-		if fields := markAnalyticsViewerRestartRequired(s.analytics, oldCfg, cfg); len(fields) != 0 {
-			log.WithField("fields", fields).Warn("analytics viewer security update requires a restart")
-		}
 		var previousKeys []config.APIKeyEntry
 		if oldCfg != nil {
 			previousKeys = oldCfg.APIKeys
 		}
-		if errAnalyticsKeys := syncAnalyticsKeyLifecycle(ctx, s.analytics, previousKeys, cfg.APIKeys); errAnalyticsKeys != nil {
-			log.WithError(errAnalyticsKeys).Warn("failed to update analytics key lifecycle")
-		}
+		syncCtx := context.WithoutCancel(ctx)
+		s.queueAnalyticsSync(func() {
+			result := analytics.Reconfigure(analyticsConfig)
+			if result.Error != nil {
+				log.WithError(result.Error).Warn("analytics configuration update was rejected; keeping the previous generation")
+				if problem != nil {
+					if marker, ok := analytics.(interface{ MarkConfigProblem(string, string) }); ok {
+						marker.MarkConfigProblem(problem.Category, problem.Field)
+					}
+				}
+			} else if len(result.RestartRequired) != 0 {
+				log.WithField("fields", result.RestartRequired).Warn("analytics configuration update requires a restart")
+			}
+			if fields := markAnalyticsViewerRestartRequired(analytics, oldCfg, cfg); len(fields) != 0 {
+				log.WithField("fields", fields).Warn("analytics viewer security update requires a restart")
+			}
+			if errAnalyticsKeys := syncAnalyticsKeyLifecycle(syncCtx, analytics, previousKeys, cfg.APIKeys); errAnalyticsKeys != nil {
+				log.WithError(errAnalyticsKeys).Warn("failed to update analytics key lifecycle")
+			}
+		})
 	}
 	applyClaudeToolSearchConfig(cfg)
 
