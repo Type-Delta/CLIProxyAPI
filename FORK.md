@@ -2287,6 +2287,16 @@ on the unfixed code.
 
 **Last updated:** 2026-10-30
 
+### DL064 — Example modules build against the v8 tree
+
+Upstream moved the root module to `github.com/router-for-me/CLIProxyAPI/v8`, but its example modules still name themselves `/v7` and `require CLIProxyAPI/v7 v7.0.0` with a `replace` to the repository root. That `replace` no longer matches the root module, so the plugin examples that import the SDK only build by downloading a published v8 release instead of using the local tree. The fork names every example module `/v8`, requires `CLIProxyAPI/v8 v8.0.0`, and replaces it with the repository root, so each example builds offline against the checkout it ships in. The example generator writes the same `/v8` module path. When upstream fixes its examples, prefer upstream's paths and retire this entry.
+
+**Implementation evidence:** `examples/plugin/*/go/go.mod` (and `go.sum` for `claude-web-search-router`), `examples/realtime-openai-go/go.mod`, `examples/plugin/scripts/generate_examples.py`, and `examples/plugin/README.md`.
+
+**Recorded validation:** On 2026-10-30, every example module that depends on CPA (22 plugin modules) builds with `go build ./...` in Go's default read-only module mode, and offline with `GOPROXY=off`. Before the fix, 8 of them failed with `require github.com/router-for-me/CLIProxyAPI/v8: version "v7.0.0" invalid`. `examples/realtime-openai-go` does not import CPA and builds once its third-party modules are downloaded.
+
+**Last updated:** 2026-10-30
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.
