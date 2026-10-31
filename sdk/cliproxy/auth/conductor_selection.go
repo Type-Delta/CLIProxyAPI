@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	utls "github.com/refraction-networking/utls"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -2043,12 +2044,13 @@ func isRequestRetryRoundError(err error) bool {
 	var hostname x509.HostnameError
 	var verification *tls.CertificateVerificationError
 	var recordHeader tls.RecordHeaderError
-	if errors.As(err, &unknownAuthority) || errors.As(err, &invalidCertificate) || errors.As(err, &hostname) || errors.As(err, &verification) || errors.As(err, &recordHeader) {
+	var utlsRecordHeader utls.RecordHeaderError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &invalidCertificate) || errors.As(err, &hostname) || errors.As(err, &verification) || errors.As(err, &recordHeader) || errors.As(err, &utlsRecordHeader) {
 		return false
 	}
 	// Recorded cooldown errors no longer retain their original TLS error type.
 	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "x509:") || strings.Contains(message, "tls: failed to verify certificate") || strings.Contains(message, "tls: first record does not look like a tls handshake") {
+	if strings.Contains(message, "x509:") || strings.Contains(message, "tls: failed to verify certificate") || strings.Contains(message, "tls: first record does not look like a tls handshake") || strings.Contains(message, "tls: oversized record received with length") || strings.Contains(message, "tls: unsupported sslv2 handshake received") || strings.Contains(message, "tls: received record with version") {
 		return false
 	}
 	status := statusCodeFromError(err)

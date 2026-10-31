@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -12,8 +13,10 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	utls "github.com/refraction-networking/utls"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
@@ -592,5 +595,59 @@ func TestStatuslessRetryExclusions(t *testing.T) {
 		if credentialRetryRoundStateEligible(err, false) {
 			t.Errorf("excluded state retried: %v", err)
 		}
+	}
+}
+
+func TestTLSRecordHeaderErrorsDoNotRetry(t *testing.T) {
+	for _, msg := range []string{"oversized record received with length 65535", "first record does not look like a TLS handshake", "unsupported SSLv2 handshake received", "received record with version 301 when expecting version 303"} {
+		for _, failure := range []error{tls.RecordHeaderError{Msg: msg}, utls.RecordHeaderError{Msg: msg}} {
+			err := fmt.Errorf("claude tls: handshake upstream: %w", failure)
+			if isRequestRetryRoundError(err) {
+				t.Errorf("typed record-header error retried: %v", err)
+			}
+			if credentialRetryRoundStateEligible(resultErrorFromError(err), false) {
+				t.Errorf("recorded record-header error retried: %v", err)
+			}
+		}
+	}
+}
+
+func TestManagerOversizedUTLSRecordDoesNotRetry(t *testing.T) {
+	clientConn, peer := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer func() { _ = peer.Close() }()
+		header := make([]byte, 5)
+		_, err := io.ReadFull(peer, header)
+		if err == nil {
+			_, err = io.CopyN(io.Discard, peer, int64(header[3])<<8|int64(header[4]))
+		}
+		if err == nil {
+			_, err = peer.Write([]byte{22, 3, 3, 255, 255})
+		}
+		serverDone <- err
+	}()
+	client := utls.UClient(clientConn, &utls.Config{ServerName: "localhost"}, utls.HelloChrome_Auto)
+	failure := client.HandshakeContext(t.Context())
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	var recordHeader utls.RecordHeaderError
+	if !errors.As(failure, &recordHeader) {
+		t.Fatalf("expected uTLS record-header error, got %v", failure)
+	}
+	failure = fmt.Errorf("claude tls: handshake upstream: %w", failure)
+	manager := NewManager(nil, nil, nil)
+	manager.SetRetryConfig(1, 2*time.Minute, 0)
+	model, id := "tls-record-"+uuid.NewString(), "tls-record-"+uuid.NewString()
+	registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: model}})
+	defer registry.GetGlobalRegistry().UnregisterClient(id)
+	if _, err := manager.Register(t.Context(), &Auth{ID: id, Provider: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkResult(t.Context(), Result{AuthID: id, Provider: "claude", Model: model, Error: resultErrorFromError(failure)})
+	if wait, retry := manager.shouldRetryAfterError(failure, 0, []string{"claude"}, model, 2*time.Minute); retry || wait != 0 {
+		t.Fatalf("oversized uTLS record scheduled retry=%v wait=%v", retry, wait)
 	}
 }
