@@ -67,8 +67,11 @@ func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {
 	switch provider {
 	case "codex":
 		switch normalized {
-		case "pro", "pro-200", "pro200":
+		// Pro 100, Pro 200, and Pro 500 give 10x, 20x, and 50x Plus usage.
+		case "promax", "pro-max", "pro_max", "pro max", "pro-500", "pro500":
 			return GSRAllowanceElite, true
+		case "pro", "pro-200", "pro200":
+			return GSRAllowanceMax, true
 		case "prolite", "pro-lite", "pro_lite", "self_serve_business_prolite":
 			return GSRAllowancePremium, true
 		case "team", "business", "self_serve_business_usage_based":
@@ -78,7 +81,8 @@ func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {
 		}
 	case "claude":
 		switch {
-		case strings.Contains(normalized, "max"):
+		// Ultra (formerly Max 20x) still reports a max_20x rate-limit tier.
+		case strings.Contains(normalized, "max") || strings.Contains(normalized, "ultra"):
 			return GSRAllowanceMax, true
 		case strings.Contains(normalized, "team") || strings.Contains(normalized, "business"):
 			return GSRAllowancePremium, true

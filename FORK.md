@@ -1092,7 +1092,8 @@ affinity rebinding tracks transiently unavailable credential IDs computed from t
 same candidate pool and timestamp used by GSR, so quota recovery and sticky-session
 decisions remain consistent.
 GSR also applies a provider-neutral allowance tier multiplier. Codex plan metadata
-and explicit `gsr_tier` overrides are supported; unknown tiers remain neutral and
+(Pro 500 elite, Pro 200 max, Pro 100 premium, matching their 50x/20x/10x Plus
+allowances; Claude Max and Ultra both map to max) and explicit `gsr_tier` overrides are supported; unknown tiers remain neutral and
 raw quota totals are never compared across providers. The credential scheduling
 weight is added after recovery decay and the allowance multiplier in both the
 selector and scheduler. Omitted weights add 1; non-positive or invalid weights
@@ -1145,7 +1146,7 @@ manager's selection path with the six-day weekly/two-day manual-reset example.
 The full repository suite, focused auth and management race tests, canonical
 panel build, and disposable server compile check pass.
 
-**Last updated:** 2026-10-28
+**Last updated:** 2026-10-31
 
 ### DL029 — CPAMC quota summary redesign
 
