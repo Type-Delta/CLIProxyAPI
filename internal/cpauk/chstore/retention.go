@@ -44,6 +44,7 @@ func (s *Store) ApplyRetentionPolicy(ctx context.Context, rawCutoff, hourlyCutof
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.clearHistory()
 	if s.db == nil {
 		return result, ErrClosed
 	}

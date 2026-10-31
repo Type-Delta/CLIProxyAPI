@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"sort"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func (s *Store) metadata(ctx context.Context, key string) (string, bool, error) {
@@ -22,7 +23,8 @@ func (s *Store) setMetadata(ctx context.Context, key, value string) error {
 	return s.setMetadataBatch(ctx, map[string]string{key: value})
 }
 func (s *Store) setMetadataBatch(ctx context.Context, values map[string]string) error {
-	batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_metadata")+" (key,value,version,is_deleted)")
+	defer s.clearHistory()
+	batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_metadata")+" (key,value,version,is_deleted)")
 	if err != nil {
 		return err
 	}
@@ -64,6 +66,9 @@ func (s *Store) replaceControl(ctx context.Context, namespace string, values map
 }
 
 func (s *Store) replaceControlMode(ctx context.Context, namespace string, values map[string]json.RawMessage, enforceBudget bool) error {
+	if namespace == "pricing" {
+		defer s.clearHistory()
+	}
 	for key, value := range values {
 		if !json.Valid(value) {
 			return fmt.Errorf("invalid analytics control JSON for %s/%s", namespace, key)
@@ -99,7 +104,7 @@ func (s *Store) replaceControlMode(ctx context.Context, namespace string, values
 	}
 	generation := s.nextVersion()
 	if len(values) > 0 {
-		batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_control")+" (namespace,generation,key,value,version,is_deleted)")
+		batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_control")+" (namespace,generation,key,value,version,is_deleted)")
 		if err != nil {
 			return err
 		}
@@ -118,7 +123,7 @@ func (s *Store) replaceControlMode(ctx context.Context, namespace string, values
 			return fmt.Errorf("stage analytics control: %w", err)
 		}
 	}
-	if err := s.db.Conn().Exec(ctx, "INSERT INTO "+s.table("analytics_control_heads")+" (namespace,generation,version) VALUES (?,?,?)", namespace, generation, s.nextVersion()); err != nil {
+	if err := s.db.Conn().Exec(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_control_heads")+" (namespace,generation,version) VALUES (?,?,?)", namespace, generation, s.nextVersion()); err != nil {
 		return err
 	}
 	// Publishing the head commits this snapshot. Reclamation cannot undo it.

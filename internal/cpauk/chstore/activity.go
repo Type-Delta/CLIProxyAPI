@@ -3,9 +3,11 @@ package chstore
 import (
 	"context"
 	"fmt"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 func (s *Store) Activity(ctx context.Context, q model.Query) (model.Activity, error) {
@@ -20,11 +22,34 @@ func (s *Store) Activity(ctx context.Context, q model.Query) (model.Activity, er
 	if err != nil {
 		return model.Activity{}, err
 	}
-	buckets, err := s.activityBuckets(ctx, q, grain)
+	boundary, err := activityDayStart(s.now(), q.TimeZone)
 	if err != nil {
 		return model.Activity{}, err
 	}
-	return model.Activity{Meta: responseMeta(q), Grain: grain, Zone: q.TimeZone, Buckets: buckets}, nil
+	if q.Start.Before(boundary) && boundary.Before(q.End) {
+		historyQuery := q
+		historyQuery.End = boundary
+		history, err := s.cachedActivity(ctx, historyQuery, grain)
+		if err != nil {
+			return model.Activity{}, err
+		}
+		liveQuery := q
+		liveQuery.Start = boundary
+		live, err := s.activityBuckets(ctx, liveQuery, grain)
+		if err != nil {
+			return model.Activity{}, err
+		}
+		return model.Activity{Meta: responseMeta(q), Grain: grain, Zone: q.TimeZone, Buckets: append(history.Buckets, live...)}, nil
+	}
+	return s.cachedActivity(ctx, q, grain)
+}
+
+func (s *Store) cachedActivity(ctx context.Context, q model.Query, grain string) (model.Activity, error) {
+	value, err := cachedHistory(s, ctx, q, func() (backend.HistoryCacheValue, error) {
+		buckets, err := s.activityBuckets(ctx, q, grain)
+		return backend.HistoryCacheValue{Operation: model.OperationActivity, Activity: model.Activity{Meta: responseMeta(q), Grain: grain, Zone: q.TimeZone, Buckets: buckets}}, err
+	})
+	return value.Activity, err
 }
 func activityDayStart(at time.Time, zone string) (time.Time, error) {
 	b, err := aggregate.NewBucketer(zone, "1d")

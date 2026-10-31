@@ -226,11 +226,12 @@ func (s *Store) insertEventsMode(ctx context.Context, events []model.Event, batc
 	if err := s.checkQuota(ctx, estimated); err != nil {
 		return 0, err
 	}
+	defer s.invalidateEventHistory(events)
 	// Below-floor writes must publish retained snapshots, never hidden raw rows.
 	if !replace && s.c4bLateArguments(arguments) {
 		return s.c4bInsertLate(ctx, arguments, estimated)
 	}
-	batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_events")+" ("+eventColumns+",event_json,version,is_deleted)")
+	batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_events")+" ("+eventColumns+",event_json,version,is_deleted)")
 	if err != nil {
 		return 0, fmt.Errorf("prepare analytics events: %w", err)
 	}
@@ -270,18 +271,27 @@ func (s *Store) WriteBatchWithPatches(ctx context.Context, events []model.Event,
 	}
 	// Read each existing outcome before choosing the eligible attempts. The write
 	// lock also serializes patches arriving in separate collector batches.
-	rows, err := s.db.Conn().Query(ctx, "SELECT attempt_id,proxy_request_id FROM "+s.table("analytics_events")+" FINAL PREWHERE proxy_request_id IN (?) WHERE is_deleted=0 AND proxy_status_code IS NULL AND responded_at_ns IS NULL SETTINGS use_skip_indexes_if_final=1", ids)
+	rows, err := s.db.Conn().Query(ctx, "SELECT attempt_id,proxy_request_id,requested_at_ns FROM "+s.table("analytics_events")+" FINAL PREWHERE proxy_request_id IN (?) WHERE is_deleted=0 AND proxy_status_code IS NULL AND responded_at_ns IS NULL SETTINGS use_skip_indexes_if_final=1", ids)
 	if err != nil {
 		return err
 	}
 	eligible := make(map[string][]string)
+	var affectedStart, affectedEnd time.Time
 	for rows.Next() {
 		var attempt, request string
-		if err := rows.Scan(&attempt, &request); err != nil {
+		var requestedNS int64
+		if err := rows.Scan(&attempt, &request, &requestedNS); err != nil {
 			_ = rows.Close()
 			return err
 		}
 		eligible[request] = append(eligible[request], attempt)
+		requestedAt := time.Unix(0, requestedNS).UTC()
+		if affectedStart.IsZero() || requestedAt.Before(affectedStart) {
+			affectedStart = requestedAt
+		}
+		if affectedEnd.IsZero() || requestedAt.After(affectedEnd) {
+			affectedEnd = requestedAt
+		}
 	}
 	err = rows.Err()
 	_ = rows.Close()
@@ -342,7 +352,12 @@ func (s *Store) WriteBatchWithPatches(ctx context.Context, events []model.Event,
 	if err := s.checkQuota(ctx, estimated); err != nil {
 		return err
 	}
-	batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_outcomes")+" (proxy_request_id,attempt_ids,status_code,error,responded_at_ns,sequence)")
+	defer func() {
+		if !affectedStart.IsZero() {
+			s.invalidateHistory(affectedStart, affectedEnd.Add(time.Nanosecond))
+		}
+	}()
+	batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_outcomes")+" (proxy_request_id,attempt_ids,status_code,error,responded_at_ns,sequence)")
 	if err != nil {
 		return err
 	}

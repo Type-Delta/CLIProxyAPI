@@ -65,6 +65,7 @@ func (s *Store) recoverRestore(ctx context.Context) error {
 }
 
 func (s *Store) finishRestore(ctx context.Context, journal *restoreJournal, hook func(int) error) error {
+	defer s.clearHistory()
 	save := func(state string) error {
 		detail, err := json.Marshal(journal)
 		if err != nil {

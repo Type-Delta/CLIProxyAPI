@@ -1,190 +1,30 @@
 package store
 
 import (
-	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
-// Historical analytics are read often by dashboards while their selected
-// ranges change infrequently. Keep a small process-local cache for those
-// reads. The durable history generation digest in the key makes a cache entry
-// local to the exact set of persisted history it covers.
-const (
-	historyCacheMaxEntries = 128
-	historyCacheMaxBytes   = 32 << 20
-)
+// Both analytics backends share the bounded LRU and JSON ownership boundaries.
+type historyCacheValue = backend.HistoryCacheValue
+type historyResultCache struct{ backend.HistoryResultCache }
 
-type historyCacheValue struct {
-	operation  model.Operation
-	summary    model.Summary
-	timeseries model.Timeseries
-	activity   model.Activity
-	analysis   model.Analysis
-}
-
-type historyCacheEntry struct {
-	key   string
-	value historyCacheValue
-	size  int64
-}
-
-type historyResultCache struct {
-	mu      sync.Mutex
-	entries map[string]*list.Element
-	lru     *list.List
-	bytes   int64
-}
-
-func (c *historyResultCache) initializeLocked() {
-	if c.entries == nil {
-		c.entries = make(map[string]*list.Element)
-		c.lru = list.New()
-	}
-}
-
-func (c *historyResultCache) get(key string) (historyCacheValue, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.initializeLocked()
-	element, ok := c.entries[key]
-	if !ok {
-		return historyCacheValue{}, false
-	}
-	c.lru.MoveToFront(element)
-	entry := element.Value.(*historyCacheEntry)
-	return cloneHistoryCacheValue(entry.value), true
-}
-
-func (c *historyResultCache) put(key string, value historyCacheValue) {
-	encoded, err := marshalHistoryCacheValue(value)
-	if err != nil {
-		return
-	}
-	size := int64(len(encoded) + len(key))
-	if size > historyCacheMaxBytes {
-		return
-	}
-	entry := &historyCacheEntry{key: key, value: cloneHistoryCacheValue(value), size: size}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.initializeLocked()
-	if old, ok := c.entries[key]; ok {
-		c.bytes -= old.Value.(*historyCacheEntry).size
-		c.lru.Remove(old)
-		delete(c.entries, key)
-	}
-	element := c.lru.PushFront(entry)
-	c.entries[key] = element
-	c.bytes += size
-	for len(c.entries) > historyCacheMaxEntries || c.bytes > historyCacheMaxBytes {
-		old := c.lru.Back()
-		if old == nil {
-			break
-		}
-		c.lru.Remove(old)
-		item := old.Value.(*historyCacheEntry)
-		delete(c.entries, item.key)
-		c.bytes -= item.size
-	}
-}
-
-func marshalHistoryCacheValue(value historyCacheValue) ([]byte, error) {
-	switch value.operation {
-	case model.OperationSummary:
-		return json.Marshal(value.summary)
-	case model.OperationTimeseries:
-		return json.Marshal(value.timeseries)
-	case model.OperationActivity:
-		return json.Marshal(value.activity)
-	case model.OperationAnalysis:
-		return json.Marshal(value.analysis)
-	default:
-		return nil, nil
-	}
-}
-
-func (c *historyResultCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = nil
-	c.lru = nil
-	c.bytes = 0
-}
-
-// historyCacheStats is intentionally package-private so tests and benchmarks
-// can verify the memory bound without making cache policy part of the service
-// API.
-func (c *historyResultCache) historyCacheStats() (entries int, bytes int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries), c.bytes
-}
-
-func cloneHistoryCacheValue(value historyCacheValue) historyCacheValue {
-	result := historyCacheValue{operation: value.operation}
-	switch value.operation {
-	case model.OperationSummary:
-		result.summary = cloneJSON(value.summary)
-	case model.OperationTimeseries:
-		result.timeseries = cloneJSON(value.timeseries)
-	case model.OperationActivity:
-		result.activity = cloneJSON(value.activity)
-	case model.OperationAnalysis:
-		result.analysis = cloneJSON(value.analysis)
-	}
-	return result
-}
-
-// cloneJSON is used only for cache ownership boundaries. All cached model
-// values are JSON contracts, so this also keeps nested maps and optional
-// pointers independent of callers without duplicating every response shape.
-func cloneJSON[T any](value T) T {
-	data, err := json.Marshal(value)
-	if err != nil {
-		var zero T
-		return zero
-	}
-	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
-		var zero T
-		return zero
-	}
-	return result
-}
+func (c *historyResultCache) get(key string) (historyCacheValue, bool) { return c.Get(key) }
+func (c *historyResultCache) put(key string, value historyCacheValue)  { c.Put(key, value) }
+func (c *historyResultCache) clear()                                   { c.Clear() }
+func (c *historyResultCache) historyCacheStats() (int, int64)          { return c.Stats() }
 
 func historyQueryIsHistorical(query model.Query) bool {
 	return !query.End.IsZero() && !query.End.After(time.Now().UTC())
 }
 
-// historyQueryDigest includes fields that SelectionDigest deliberately omits
-// for cursor pagination but which remain part of the exact analytics query
-// contract. Named ranges normally have been resolved by the service before a
-// store query arrives; retaining the field here avoids accidental collisions
-// for direct store callers.
-func historyQueryDigest(query model.Query) (string, error) {
-	selection, err := query.SelectionDigest()
-	if err != nil {
-		return "", err
-	}
-	payload := struct {
-		Selection string              `json:"selection"`
-		Window    string              `json:"window"`
-		Range     *model.RangeRequest `json:"range,omitempty"`
-	}{Selection: selection, Window: query.Window, Range: query.Range}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(data)
-	return hex.EncodeToString(digest[:]), nil
-}
+func historyQueryDigest(query model.Query) (string, error) { return backend.HistoryQueryDigest(query) }
 
 // historyPricingDigestLocked includes both current rules and their persisted
 // provenance because analysis cost components are checked against the current
@@ -287,14 +127,14 @@ func (s *SQLiteStore) cachedSummary(ctx context.Context, query model.Query) (mod
 		return model.Summary{}, err
 	}
 	if cacheable && hit {
-		return value.summary, nil
+		return value.Summary, nil
 	}
 	result, err := s.summaryUncached(ctx, query)
 	if err != nil {
 		return model.Summary{}, err
 	}
 	if cacheable {
-		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationSummary, summary: result})
+		s.publishHistoryCache(ctx, query, key, historyCacheValue{Operation: model.OperationSummary, Summary: result})
 	}
 	return result, nil
 }
@@ -305,14 +145,14 @@ func (s *SQLiteStore) cachedTimeseries(ctx context.Context, query model.Query) (
 		return model.Timeseries{}, err
 	}
 	if cacheable && hit {
-		return value.timeseries, nil
+		return value.Timeseries, nil
 	}
 	result, err := s.timeseriesUncached(ctx, query)
 	if err != nil {
 		return model.Timeseries{}, err
 	}
 	if cacheable {
-		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationTimeseries, timeseries: result})
+		s.publishHistoryCache(ctx, query, key, historyCacheValue{Operation: model.OperationTimeseries, Timeseries: result})
 	}
 	return result, nil
 }
@@ -323,24 +163,16 @@ func (s *SQLiteStore) cachedActivity(ctx context.Context, query model.Query) (mo
 		return model.Activity{}, err
 	}
 	if cacheable && hit {
-		return value.activity, nil
+		return value.Activity, nil
 	}
 	result, err := s.activityUncached(ctx, query)
 	if err != nil {
 		return model.Activity{}, err
 	}
 	if cacheable {
-		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationActivity, activity: result})
+		s.publishHistoryCache(ctx, query, key, historyCacheValue{Operation: model.OperationActivity, Activity: result})
 	}
 	return result, nil
-}
-
-func analysisResultComplete(result model.Analysis) bool {
-	return result.SeriesByCategory != nil && !result.SeriesByCategory.Meta.Partial &&
-		result.ModelByTime != nil && !result.ModelByTime.Meta.Partial &&
-		result.Latency != nil && !result.Latency.Meta.Partial &&
-		result.CostComponents != nil && !result.CostComponents.Meta.Partial &&
-		result.KeyModelMatrix != nil && !result.KeyModelMatrix.Meta.Partial
 }
 
 func (s *SQLiteStore) cachedAnalysis(ctx context.Context, query model.Query) (model.Analysis, error) {
@@ -349,14 +181,14 @@ func (s *SQLiteStore) cachedAnalysis(ctx context.Context, query model.Query) (mo
 		return model.Analysis{}, err
 	}
 	if cacheable && hit {
-		return value.analysis, nil
+		return value.Analysis, nil
 	}
 	result, err := s.analysisUncached(ctx, query)
 	if err != nil {
 		return model.Analysis{}, err
 	}
-	if cacheable && analysisResultComplete(result) {
-		s.publishHistoryCache(ctx, query, key, historyCacheValue{operation: model.OperationAnalysis, analysis: result})
+	if cacheable && backend.AnalysisResultComplete(result) {
+		s.publishHistoryCache(ctx, query, key, historyCacheValue{Operation: model.OperationAnalysis, Analysis: result})
 	}
 	return result, nil
 }

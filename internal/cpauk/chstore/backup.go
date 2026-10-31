@@ -243,6 +243,7 @@ func (s *Store) Restore(ctx context.Context, databasePath, manifestPath string) 
 }
 
 func (s *Store) restore(ctx context.Context, databasePath, manifestPath string) error {
+	defer s.clearHistory()
 	manifest, err := s.VerifyBackup(ctx, databasePath, manifestPath)
 	if err != nil {
 		return err
@@ -279,8 +280,8 @@ func (s *Store) restore(ctx context.Context, databasePath, manifestPath string) 
 		if hook, ok := ctx.Value(archiveChunkTestHookKey{}).(func(int)); ok {
 			hook(chunk.Len())
 		}
-		queryCtx := ch.Context(ctx, ch.WithSettings(ch.Settings{"max_query_size": uint64(2*chunk.Len() + 2*len(schema) + 4096)}))
-		err := s.db.Conn().Exec(queryCtx, "INSERT INTO "+s.table(stage)+" SELECT * FROM format(JSONEachRow, ?, ?)", schema, chunk.String())
+		queryCtx := ch.Context(ctx, ch.WithSettings(ch.Settings{"async_insert": 0, "wait_for_async_insert": 1, "max_query_size": uint64(2*chunk.Len() + 2*len(schema) + 4096)}))
+		err := s.db.Conn().Exec(context.WithoutCancel(queryCtx), "INSERT INTO "+s.table(stage)+" SELECT * FROM format(JSONEachRow, ?, ?)", schema, chunk.String())
 		chunk.Reset()
 		return err
 	}
@@ -484,6 +485,12 @@ func (s *Store) restore(ctx context.Context, databasePath, manifestPath string) 
 		return fmt.Errorf("restore interrupted; reopen to recover: %w", err)
 	}
 	s.identityKey, s.identityEpoch, s.retentionCutoff, s.config.PriceBook = key, epoch, cutoff, book
+	pending, err := s.loadControl(publishCtx, "late_retention")
+	if err != nil {
+		s.historyPending = true
+		return fmt.Errorf("read restored pending analytics publications: %w", err)
+	}
+	s.historyPending = len(pending) > 0
 	for old := s.version.Load(); maxVersion > old; old = s.version.Load() {
 		if s.version.CompareAndSwap(old, maxVersion) {
 			break

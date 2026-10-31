@@ -138,7 +138,7 @@ func (s *Store) Reprice(ctx context.Context, options RepriceOptions, progress fu
 		}
 	}
 	if result.Completed {
-		if err := s.db.Conn().Exec(ctx, "INSERT INTO "+s.table("analytics_metadata")+" (key,value,version,is_deleted) VALUES (?,?,?,?)", key, "", s.nextVersion(), uint8(1)); err != nil {
+		if err := s.db.Conn().Exec(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_metadata")+" (key,value,version,is_deleted) VALUES (?,?,?,?)", key, "", s.nextVersion(), uint8(1)); err != nil {
 			return RepriceResult{}, err
 		}
 	} else if err := s.setMetadata(ctx, key, result.Checkpoint); err != nil {

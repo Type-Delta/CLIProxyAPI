@@ -32,6 +32,7 @@ func (s *Store) c4bLateArguments(arguments [][]any) bool {
 // snapshots are staged. Both imported and live late rows are promoted, matching
 // SQLite's next retention pass. The caller holds the writer lock.
 func (s *Store) c4bInsertLate(ctx context.Context, arguments [][]any, estimated int64) (int64, error) {
+	s.historyPending = true
 	hourly, err := s.c4bBoundary(ctx, true)
 	if err != nil {
 		return 0, err
@@ -100,7 +101,7 @@ func (s *Store) c4bInsertLate(ctx context.Context, arguments [][]any, estimated 
 	if err = s.replaceControl(ctx, "late_retention", controls); err != nil {
 		return 0, err
 	}
-	batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_events")+" ("+eventColumns+",event_json,version,is_deleted,retained_generation,retained_grain,retained_bucket_start_ns)")
+	batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_events")+" ("+eventColumns+",event_json,version,is_deleted,retained_generation,retained_grain,retained_bucket_start_ns)")
 	if err != nil {
 		return 0, err
 	}
@@ -181,6 +182,10 @@ func (s *Store) c4bRecoverLate(ctx context.Context) error {
 		if err = s.replaceControlMode(ctx, "late_retention", controls, false); err != nil {
 			return err
 		}
+	}
+	s.historyPending = len(generations) > 0 || len(controls) > 0
+	if s.historyPending {
+		defer s.clearHistory()
 	}
 	for _, generation := range generations {
 		rows, err = s.db.Conn().Query(ctx, "SELECT DISTINCT retained_grain,retained_bucket_start_ns,ifNull(import_batch_id,'') FROM "+s.table("analytics_events")+" FINAL WHERE is_deleted=0 AND retained_generation=?", generation)
@@ -271,6 +276,7 @@ func (s *Store) c4bRecoverLate(ctx context.Context) error {
 			return err
 		}
 	}
+	s.historyPending = false
 	return nil
 }
 
@@ -293,7 +299,7 @@ func (s *Store) c4bStageLateBucket(ctx context.Context, bucket c4bBucket, genera
 	args = append(args, baselineArgs...)
 	args = append(args, bucket.Grain, bucket.Start, bucket.End)
 	args = append(args, sourceArgs...)
-	if err := s.db.Conn().Exec(ctx, query, args...); err != nil {
+	if err := s.db.Conn().Exec(synchronousWriteContext(ctx), query, args...); err != nil {
 		return fmt.Errorf("stage additive late totals: %w", err)
 	}
 	if err := c4bStep(ctx, "late:totals"); err != nil {
@@ -307,7 +313,7 @@ func (s *Store) c4bStageLateBucket(ctx context.Context, bucket c4bBucket, genera
 	args = append(args, sourceArgs...)
 	// Parameters are bound in SELECT-before-FROM order, including the outer
 	// version/generation before the baseline and delta subquery parameters.
-	if err := s.db.Conn().Exec(ctx, query, args...); err != nil {
+	if err := s.db.Conn().Exec(synchronousWriteContext(ctx), query, args...); err != nil {
 		return fmt.Errorf("stage additive late request identities: %w", err)
 	}
 	return c4bStep(ctx, "late:requests")
@@ -315,7 +321,7 @@ func (s *Store) c4bStageLateBucket(ctx context.Context, bucket c4bBucket, genera
 
 func (s *Store) c4bLateReceipts(ctx context.Context, generation uint64) error {
 	query := "INSERT INTO " + s.table("analytics_events") + " (attempt_id,key_id,import_batch_id,retained_generation,retained_grain,retained_bucket_start_ns,version,is_deleted) SELECT attempt_id,key_id,import_batch_id,retained_generation,retained_grain,retained_bucket_start_ns,?,toUInt8(1) FROM " + s.table("analytics_events") + " FINAL WHERE retained_generation=? AND is_deleted=0"
-	if err := s.db.Conn().Exec(ctx, query, s.nextVersion(), generation); err != nil {
+	if err := s.db.Conn().Exec(synchronousWriteContext(ctx), query, s.nextVersion(), generation); err != nil {
 		return fmt.Errorf("compact late-write replay receipts for generation %s: %w", strconv.FormatUint(generation, 10), err)
 	}
 	return s.c4bDelete(ctx, "analytics_events", "retained_generation=? AND is_deleted=0", generation)

@@ -24,7 +24,7 @@ func (s *Store) c4bPublishHeads(ctx context.Context, buckets []c4bBucket, genera
 	if len(buckets) == 0 {
 		return nil
 	}
-	batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_retention_heads")+" (grain,bucket_start_ns,import_batch_id,generation,version)")
+	batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_retention_heads")+" (grain,bucket_start_ns,import_batch_id,generation,version)")
 	if err != nil {
 		return err
 	}

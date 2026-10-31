@@ -198,7 +198,7 @@ func (s *Store) c4bPromote(ctx context.Context, cutoff time.Time, daily bool, re
 	sql := "INSERT INTO " + s.table("analytics_rollups") + " (" + c4bRollupColumns + ",version,is_deleted,generation) SELECT ?,b.planned_start_ns,b.planned_end_ns," + activity + "," + dimensions + "," + counts + "," + c4bSums + ",?,toUInt8(0),?" + joined(table, sourceWhere, column) + groupBy
 	insertArgs := []any{grain, s.nextVersion(), generation}
 	insertArgs = append(insertArgs, args...)
-	if err = s.db.Conn().Exec(stageCtx, sql, insertArgs...); err != nil {
+	if err = s.db.Conn().Exec(synchronousWriteContext(stageCtx), sql, insertArgs...); err != nil {
 		return fmt.Errorf("stage bulk %s retention totals: %w", grain, err)
 	}
 	if err = c4bStep(ctx, step+":totals"); err != nil {
@@ -211,7 +211,7 @@ func (s *Store) c4bPromote(ctx context.Context, cutoff time.Time, daily bool, re
 	sql = "INSERT INTO " + s.table("analytics_request_rollups") + " (" + c4bRequestColumns + ",version,is_deleted,generation) SELECT DISTINCT ?,b.planned_start_ns,b.planned_end_ns,proxy_request_id," + dimensions + ",?,toUInt8(0),?" + joined(requestTable, sourceWhere, column)
 	insertArgs = []any{grain, s.nextVersion(), generation}
 	insertArgs = append(insertArgs, args...)
-	if err = s.db.Conn().Exec(stageCtx, sql, insertArgs...); err != nil {
+	if err = s.db.Conn().Exec(synchronousWriteContext(stageCtx), sql, insertArgs...); err != nil {
 		return fmt.Errorf("stage bulk %s retention identities: %w", grain, err)
 	}
 	if err = c4bStep(ctx, step+":requests"); err != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
@@ -73,6 +74,16 @@ func (s *Store) combinedProxyRequests(ctx context.Context, q model.Query) (int64
 	return int64(count), err
 }
 func (s *Store) Summary(ctx context.Context, query model.Query) (model.Summary, error) {
+	if err := s.validateQuery(&query, model.OperationSummary); err != nil {
+		return model.Summary{}, err
+	}
+	value, err := cachedHistory(s, ctx, query, func() (backend.HistoryCacheValue, error) {
+		result, err := s.summaryUncached(ctx, query)
+		return backend.HistoryCacheValue{Operation: model.OperationSummary, Summary: result}, err
+	})
+	return value.Summary, err
+}
+func (s *Store) summaryUncached(ctx context.Context, query model.Query) (model.Summary, error) {
 	if err := s.validateQuery(&query, model.OperationSummary); err != nil {
 		return model.Summary{}, err
 	}
@@ -161,8 +172,14 @@ func coreBucketExpression(column string, q model.Query) string {
 	return "toInt64(" + quotient + "*" + width + "-" + offset + ")"
 }
 func (s *Store) Timeseries(ctx context.Context, q model.Query) (model.Timeseries, error) {
-	result, _, err := s.timeseriesWithOutcomes(ctx, q)
-	return result, err
+	if err := s.validateQuery(&q, model.OperationTimeseries); err != nil {
+		return model.Timeseries{}, err
+	}
+	value, err := cachedHistory(s, ctx, q, func() (backend.HistoryCacheValue, error) {
+		result, _, err := s.timeseriesWithOutcomes(ctx, q)
+		return backend.HistoryCacheValue{Operation: model.OperationTimeseries, Timeseries: result}, err
+	})
+	return value.Timeseries, err
 }
 func (s *Store) timeseriesWithOutcomes(ctx context.Context, q model.Query) (model.Timeseries, map[int64][2]int64, error) {
 	if err := s.validateQuery(&q, model.OperationTimeseries); err != nil {

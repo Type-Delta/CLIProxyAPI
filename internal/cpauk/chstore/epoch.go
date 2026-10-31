@@ -20,6 +20,7 @@ import (
 func (s *Store) StartNewIdentityEpoch(ctx context.Context) (store.EpochResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.clearHistory()
 	if s.db == nil {
 		return store.EpochResult{}, ErrClosed
 	}

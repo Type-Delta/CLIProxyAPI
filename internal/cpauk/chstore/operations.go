@@ -134,6 +134,7 @@ func (s *Store) countRemoval(ctx context.Context, column, value string) (int64, 
 // removeHistory removes response references before allowing an attempt ID to be inserted again.
 // Mutations are synchronous, and the caller holds the writer lock throughout.
 func (s *Store) removeHistory(ctx context.Context, column, value string) (int64, error) {
+	defer s.clearHistory()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

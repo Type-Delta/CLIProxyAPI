@@ -184,9 +184,41 @@ preview counts and backups select only published snapshots. Reprice stays limite
 to surviving raw rows and retains SQLite's partial-history reporting. Exact
 requests combine DISTINCT IDs across raw and retained request identities.
 
-SQLite 15-minute compact materializations, daily_stats, historical generation
-counters, history cache and their indexes are dropped. ClickHouse scans the
-columnar facts directly. No raw-event TTL, because deletion must follow durable
+SQLite 15-minute compact materializations, daily_stats, durable historical generation
+counters and their indexes are dropped. ClickHouse scans the columnar facts directly
+on cache misses. Both backends share the process-local historical result LRU in
+`backend/history_cache.go`, bounded to 128 entries and 32 MiB of encoded response
+and key bytes, with defensive JSON cloning at ownership boundaries. There are no
+additional ClickHouse cache tables.
+
+ClickHouse caches complete Summary, Timeseries, Activity and Analysis results only
+when the selected end is at or before today's calendar boundary in the query's
+configured IANA analytics zone. Today, future ranges, incomplete Analysis sections,
+active legacy imports and known pending late publications bypass the cache. Activity
+splits a range spanning today at that calendar boundary, reusing its closed-day
+prefix while recalculating today. Calendar bucketing preserves DST transitions and
+fractional offsets. Retained-range and year-activity validation still run on misses;
+a mutation invalidates any previously validated result before readers can reuse it.
+
+ClickHouse keys include the normalized selection plus window and named range,
+identity epoch, and a process-local range mutation generation. A bounded journal
+coalesces writes in the same UTC 15-minute interval and records at most 256 ranges;
+overflow clears the LRU and starts a new generation. Native intake, imports,
+repricing and response patches advance generations for their affected event times,
+so unrelated tail writes preserve closed history. Pricing publication, catalog
+binding changes, retention, purge, rollback, restore, identity changes, legacy
+publication and recovered late generations clear the cache. Metadata publication
+also clears it, covering time-zone and retention-boundary changes. Time-zone
+reconfiguration requires restart, which starts with an empty cache.
+
+All cache generation checks and mutation invalidation hold the Store lock. A miss
+captures the revision before computing and publishes only if that revision remains
+unchanged. Multi-statement mutations invalidate on errors too. Analytics event,
+outcome, control, metadata and retention writes disable asynchronous INSERT and
+await submitted writes without caller cancellation, then invalidate before releasing
+the writer lock. Restore staging follows the same visibility rule. Synchronous
+maintenance mutations retain their existing `mutations_sync=2` contract, so a cache
+entry cannot survive a write that becomes visible after invalidation. No raw-event TTL, because deletion must follow durable
 rollup publication. Purge and import rollback filter raw and both retained tables
 and checkpoints; maintenance uses synchronous mutations or replacement tombstones and
 must make read visibility consistent before returning.

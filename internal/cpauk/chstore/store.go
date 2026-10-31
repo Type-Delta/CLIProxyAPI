@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
@@ -24,19 +25,26 @@ var migrationFiles embed.FS
 
 // Store borrows the process connection pool. mu serializes analytics mutations.
 type Store struct {
-	mu              sync.RWMutex
-	db              *clickhouse.DB
-	config          Config
-	identityKey     []byte
-	identityEpoch   string
-	currentSchema   int
-	retentionCutoff time.Time
-	version         atomic.Uint64
-	budgetMu        sync.Mutex
-	budgetAt        time.Time
-	budgetUsed      int64
-	budgetFree      uint64
-	budgetReserved  int64
+	mu                sync.RWMutex
+	historyCache      backend.HistoryResultCache
+	historyRevision   uint64
+	historyGeneration uint64
+	historyMutations  []historyMutation
+	historyImporting  bool
+	historyPending    bool
+	nowFunc           func() time.Time
+	db                *clickhouse.DB
+	config            Config
+	identityKey       []byte
+	identityEpoch     string
+	currentSchema     int
+	retentionCutoff   time.Time
+	version           atomic.Uint64
+	budgetMu          sync.Mutex
+	budgetAt          time.Time
+	budgetUsed        int64
+	budgetFree        uint64
+	budgetReserved    int64
 }
 
 func Open(ctx context.Context, handle *clickhouse.Handle, config Config) (*Store, error) {
@@ -142,6 +150,11 @@ func Open(ctx context.Context, handle *clickhouse.Handle, config Config) (*Store
 			s.retentionCutoff = cutoff
 		}
 	}
+	pending, err := s.loadControl(ctx, "late_retention")
+	if err != nil {
+		return nil, fmt.Errorf("read pending analytics publications: %w", err)
+	}
+	s.historyPending = len(pending) > 0
 	// Opening remains possible while over budget, so maintenance can reclaim space.
 	return s, nil
 }
@@ -198,4 +211,5 @@ func (s *Store) SetCatalogBindings(bindings []CatalogBinding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config.CatalogBindings = canonicalBindings(bindings)
+	s.clearHistory()
 }

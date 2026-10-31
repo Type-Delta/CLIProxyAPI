@@ -14,12 +14,23 @@ import (
 	ch "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/ext"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/aggregate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/backend"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
 )
 
 const analysisLatencySampleLimit = 1000
 
 func (s *Store) Analysis(ctx context.Context, query model.Query) (model.Analysis, error) {
+	if err := s.validateQuery(&query, model.OperationAnalysis); err != nil {
+		return model.Analysis{}, err
+	}
+	value, err := cachedHistory(s, ctx, query, func() (backend.HistoryCacheValue, error) {
+		result, err := s.analysisUncached(ctx, query)
+		return backend.HistoryCacheValue{Operation: model.OperationAnalysis, Analysis: result}, err
+	})
+	return value.Analysis, err
+}
+func (s *Store) analysisUncached(ctx context.Context, query model.Query) (model.Analysis, error) {
 	if err := s.validateQuery(&query, model.OperationAnalysis); err != nil {
 		return model.Analysis{}, err
 	}

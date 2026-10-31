@@ -46,6 +46,8 @@ func RunLegacyImport(ctx context.Context, s *Store, sqlitePath string) (err erro
 		if !locked {
 			s.mu.Lock()
 		}
+		s.clearHistory()
+		s.historyImporting = false
 		if err != nil && jobStarted && s.db != nil {
 			err = errors.Join(err, s.db.SetJob(context.WithoutCancel(ctx), c4bLegacyJob, "failed", err.Error()))
 		}
@@ -65,6 +67,7 @@ func RunLegacyImport(ctx context.Context, s *Store, sqlitePath string) (err erro
 		return err
 	}
 	jobStarted = true
+	s.historyImporting = true
 	progress := c4bLegacyProgress{Tables: map[string]bool{}, Counts: map[string]int64{}, SessionSince: time.Now().UTC().UnixNano()}
 	controls, err := s.loadControl(ctx, "retention")
 	if err != nil {
@@ -335,6 +338,7 @@ func c4bSourceFingerprint(path string) (string, error) {
 }
 
 func (s *Store) c4bCopyFacts(ctx context.Context, db *sql.DB, table, columns string) (int64, error) {
+	defer s.clearHistory()
 	rows, err := db.QueryContext(ctx, "SELECT "+columns+" FROM "+table)
 	if err != nil {
 		return 0, err
@@ -343,7 +347,7 @@ func (s *Store) c4bCopyFacts(ctx context.Context, db *sql.DB, table, columns str
 	var count int64
 	names := strings.Split(columns, ",")
 	for {
-		batch, err := s.db.Conn().PrepareBatch(ctx, "INSERT INTO "+s.table("analytics_"+table)+" ("+columns+",version,is_deleted)")
+		batch, err := s.db.Conn().PrepareBatch(synchronousWriteContext(ctx), "INSERT INTO "+s.table("analytics_"+table)+" ("+columns+",version,is_deleted)")
 		if err != nil {
 			return count, err
 		}
@@ -386,6 +390,7 @@ func (s *Store) c4bCopyFacts(ctx context.Context, db *sql.DB, table, columns str
 // yieldLegacyImport lets readers and native intake run between durable chunks.
 // The caller holds mu; it remains held when this method returns or panics.
 func (s *Store) yieldLegacyImport(ctx context.Context) (err error) {
+	s.clearHistory()
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
