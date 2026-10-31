@@ -502,6 +502,11 @@ func (s *service) Reconfigure(config Config) ReconfigureResult {
 	}
 	s.mu.Lock()
 	s.config = config
+	if target := s.observer.target.Load(); target != nil {
+		if adapter, ok := target.plugin.(*collector.Adapter); ok {
+			adapter.SetAssumeCodexServiceTier(config.AssumeCodexServiceTier)
+		}
+	}
 	s.invalidatePricingDemandLocked()
 	s.mu.Unlock()
 	s.snapshots.setConfig(config)
@@ -1368,10 +1373,12 @@ func (s *service) collectorCallbacks(sequence uint64) collector.Callbacks {
 			s.mu.RLock()
 			currentCollector := s.collector
 			sanitizer := s.sanitizer
-			s.mu.RUnlock()
 			if currentCollector != nil && sanitizer != nil && currentCollector.Generation() == generation {
-				s.observer.set(collector.NewAdapter(currentCollector, sanitizer))
+				adapter := collector.NewAdapter(currentCollector, sanitizer)
+				adapter.SetAssumeCodexServiceTier(s.config.AssumeCodexServiceTier)
+				s.observer.set(adapter)
 			}
+			s.mu.RUnlock()
 		},
 	}
 }

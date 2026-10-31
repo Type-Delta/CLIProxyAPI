@@ -173,6 +173,7 @@ func analyticsModuleConfig(cfg *config.Config) cpauk.Config {
 	}
 	slices.SortFunc(bindings, func(left, right cpauk.CatalogBinding) int { return strings.Compare(left.Provider, right.Provider) })
 	return cpauk.Config{
+		AssumeCodexServiceTier:  cfg.Codex.AssumeRequestedServiceTier,
 		Enabled:                 value.Enabled,
 		Path:                    path,
 		QueueCapacity:           value.QueueCapacity,

@@ -359,6 +359,56 @@ func TestServiceCloseReturnsAtDeadlineWhenBackendStalls(t *testing.T) {
 	}
 }
 
+type tierPolicyBackend struct {
+	*fakeBackend
+	events chan model.Event
+}
+
+func (b *tierPolicyBackend) WriteBatch(_ context.Context, events []model.Event) error {
+	for _, event := range events {
+		b.events <- event
+	}
+	return nil
+}
+
+func TestCodexTierPolicyHotReload(t *testing.T) {
+	backend := &tierPolicyBackend{fakeBackend: &fakeBackend{}, events: make(chan model.Event, 3)}
+	cfg := smallConfig()
+	cfg.AssumeCodexServiceTier = true
+	svc := New(context.Background(), cfg, func(context.Context, Config) (Backend, [32]byte, error) {
+		return backend, [32]byte{}, nil
+	})
+	t.Cleanup(func() {
+		if err := svc.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	waitServiceState(t, svc, StateReady)
+	for _, enabled := range []bool{true, false, true} {
+		cfg.AssumeCodexServiceTier = enabled
+		if result := svc.Reconfigure(cfg); !result.Applied || result.Error != nil {
+			t.Fatalf("hot reload: %+v", result)
+		}
+		record := validServiceRecord()
+		record.Provider = "codex"
+		record.EffectiveServiceTier = "priority"
+		record.ResponseServiceTier = "default"
+		svc.Observer().HandleUsage(context.Background(), record)
+		select {
+		case event := <-backend.events:
+			want := "default"
+			if enabled {
+				want = "priority"
+			}
+			if event.ServiceTierUsed == nil || *event.ServiceTierUsed != want {
+				t.Fatalf("assume=%v: used=%v, want %s", enabled, event.ServiceTierUsed, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("usage did not reach backend")
+		}
+	}
+}
+
 func smallConfig() Config {
 	config := DefaultConfig()
 	config.Enabled = true

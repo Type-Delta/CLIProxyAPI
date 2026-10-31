@@ -250,6 +250,8 @@ func (c ResponseCompressionConfig) EffectiveMinBytes() int {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// AssumeRequestedServiceTier uses the outbound tier for Codex usage pricing even when the response reports another tier.
+	AssumeRequestedServiceTier bool `yaml:"assume-requested-service-tier" json:"assume-requested-service-tier"`
 	// WebsocketCompression controls upstream and downstream permessage-deflate; unset means enabled.
 	WebsocketCompression *bool `yaml:"websocket-compression,omitempty" json:"websocket-compression,omitempty"`
 	// UpstreamRequestCompression enables zstd request bodies for the ChatGPT Codex backend.

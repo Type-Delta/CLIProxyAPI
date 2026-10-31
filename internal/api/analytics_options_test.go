@@ -17,6 +17,16 @@ func TestAnalyticsModuleConfigPropagatesStorageTimeZone(t *testing.T) {
 	}
 }
 
+func TestAnalyticsModuleConfigPropagatesCodexTierPolicy(t *testing.T) {
+	cfg := &config.Config{Analytics: config.DefaultAnalyticsConfig()}
+	for _, enabled := range []bool{false, true} {
+		cfg.Codex.AssumeRequestedServiceTier = enabled
+		if analyticsModuleConfig(cfg).AssumeCodexServiceTier != enabled {
+			t.Fatalf("Codex tier assumption did not propagate: %v", enabled)
+		}
+	}
+}
+
 func TestAnalyticsModuleConfigBuildsCatalogBindings(t *testing.T) {
 	cfg := &config.Config{Analytics: config.DefaultAnalyticsConfig(), OpenAICompatibility: []config.OpenAICompatibility{
 		{Name: " ZAI ", PricingCatalog: " ZAI-Coding-Plan "},

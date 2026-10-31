@@ -428,6 +428,10 @@ client:
 # Shared upstream behavior applies to OAuth and API-key credentials.
 upstream:
   codex:
+    # Assume the effective outbound service tier was applied for usage pricing and
+    # service_tier_used, even when Codex returns another tier. Default: false.
+    # Hot reload applies to new usage intake; raw returned tiers remain recorded.
+    assume-requested-service-tier: false
     # Experimental full-duplex Codex Responses WebSocket steering (default: false).
     # Keeps one upstream account/model per socket; accepted input is never replayed.
     response-steering: false

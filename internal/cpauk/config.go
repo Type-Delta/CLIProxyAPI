@@ -32,6 +32,7 @@ type CatalogBinding = backend.CatalogBinding
 // Config is the validated analytics configuration passed by CPA. The module
 // does not read or decode CPA configuration files itself.
 type Config struct {
+	AssumeCodexServiceTier  bool             `yaml:"-" json:"-"`
 	Enabled                 bool             `yaml:"enabled" json:"enabled"`
 	Path                    string           `yaml:"path" json:"path"`
 	QueueCapacity           int              `yaml:"queue-capacity" json:"queue_capacity"`

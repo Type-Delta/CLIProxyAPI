@@ -24,10 +24,11 @@ type Event = model.Event
 // Adapter is the only CPAUK type that accepts a raw usage.Record. It is tied
 // to one intake generation, so callbacks retained across a swap can only drop.
 type Adapter struct {
-	intake     Intake
-	sanitizer  *Sanitizer
-	generation uint64
-	dropped    atomic.Int64
+	intake                 Intake
+	sanitizer              *Sanitizer
+	generation             uint64
+	dropped                atomic.Int64
+	assumeCodexServiceTier atomic.Bool
 }
 
 func NewAdapter(intake Intake, sanitizer *Sanitizer) *Adapter {
@@ -36,6 +37,11 @@ func NewAdapter(intake Intake, sanitizer *Sanitizer) *Adapter {
 		generation = intake.Generation()
 	}
 	return &Adapter{intake: intake, sanitizer: sanitizer, generation: generation}
+}
+
+// SetAssumeCodexServiceTier changes tier selection for subsequent Codex usage records.
+func (a *Adapter) SetAssumeCodexServiceTier(enabled bool) {
+	a.assumeCodexServiceTier.Store(enabled)
 }
 
 func (a *Adapter) HandleUsage(ctx context.Context, record coreusage.Record) {
@@ -53,6 +59,9 @@ func (a *Adapter) HandleUsage(ctx context.Context, record coreusage.Record) {
 		return
 	}
 	source := adaptRecord(record)
+	if a.assumeCodexServiceTier.Load() && record.Provider == "codex" && strings.TrimSpace(record.EffectiveServiceTier) != "" {
+		source.ResponseTier = record.EffectiveServiceTier
+	}
 	if source.SessionID == "" {
 		source.SessionID = internallogging.GetClientRequestMetadata(ctx).SessionID
 	}

@@ -1945,18 +1945,18 @@ separately, and identities derived by CPA (`derived`, `ctx`, `lcp`) are reported
 the client. The events query accepts an exact Session ID filter on raw client IDs through
 `events_session_id_idx`. Public viewer responses do not include session or pricing fields.
 
-Intake chooses the returned service tier first, including the detail-level returned tier, then the effective outbound tier, then the client preference for pricing. The client preference remains stored separately. Persisting the effective tier in `service_tier_used` keeps DL056 model cost grouping and recorded pricing snapshots consistent.
+Intake chooses the returned service tier first, including the detail-level returned tier, then the effective outbound tier, then the client preference for pricing. The opt-in `upstream.codex.assume-requested-service-tier` option makes a nonempty effective outbound tier take precedence for Codex-provider usage, because Codex can return `default` even when the outbound request specifies `priority`. This is a pricing assumption, not confirmation of upstream scheduling. It defaults to false, supports hot reload for subsequent intake, and leaves other providers and records without an outbound tier unchanged. Raw returned tiers remain in the upstream usage evidence, and the client preference remains stored separately. Persisting the selected tier in `service_tier_used` keeps DL056 model cost grouping and recorded pricing snapshots consistent. Existing recorded events are not changed.
 
 **Implementation evidence:** `internal/cpauk/store/migrations/018_event_pricing_session.sql`,
 `internal/cpauk/aggregate/{pricing.go,pricing_snapshot.go}`,
 `internal/cpauk/model/{pricing_breakdown.go,session_identity.go}`,
 `internal/cpauk/collector/adapter.go`, `internal/cpauk/store/{write.go,reprice.go,query.go}`,
-and `internal/api/handlers/management/analytics_events.go`. `internal/cpauk/collector/adapter_test.go` covers `Adapter.HandleUsage` through sanitization and pricing, returned versus outbound precedence, and client-only fallback.
+and `internal/api/handlers/management/analytics_events.go`. The Codex tier option is mapped in `internal/config/config_v8.go` and passed through `internal/api/analytics_options.go` and `internal/cpauk/{config.go,service.go}`. `internal/cpauk/collector/adapter_test.go` covers `Adapter.HandleUsage` through sanitization and pricing, returned versus outbound precedence, client-only fallback, the opt-in Codex override, other-provider isolation, and raw-tier preservation. `internal/cpauk/service_test.go` covers switching the policy on and off through hot reload.
 
 **Recorded validation:** regression tests cover token and Kiro snapshots, repricing consistency, native
 import after a pricebook change, invalid snapshots, session capture, and raw-ID filtering across
 sources. A copy of an existing database downgraded to v16 migrated through 019 with rows and cost
-totals intact. The synthetic auto-to-priority override prices 100 input and 100 output tokens at 400,000 nano-USD; restoring the old adapter through a Go overlay fails the regression. An authoritative returned default prices the same usage at 200,000 nano-USD. Collector tests, full build, disposable server compile, and touched-package vet pass.
+totals intact. The synthetic auto-to-priority override prices 100 input and 100 output tokens at 400,000 nano-USD; restoring the old adapter through a Go overlay fails the regression. With the Codex assumption off, an authoritative returned default prices the same usage at 200,000 nano-USD; with it on, outbound priority prices at 400,000 nano-USD while raw evidence retains default. Removing the opt-in selection through a Go overlay fails that regression. Config, API, CPAUK service, and collector tests and vet pass, including policy hot reload. The server compiles and starts on localhost with the option enabled. Live `gpt-6-luna` calls on 2026-10-31 that sent `priority` upstream returned `default` (non-stream) and `auto` then `default` (stream); none of 10,848 production Codex events requested as priority or flex over the prior seven days returned either tier.
 
 **Last updated:** 2026-10-31
 

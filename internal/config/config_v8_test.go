@@ -15,6 +15,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestV8CodexAssumeRequestedServiceTier(t *testing.T) {
+	data := []byte("config-version: 8\nupstream:\n  codex:\n    assume-requested-service-tier: true\n")
+	if err := ValidateV8Config(data); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseConfigBytes(data)
+	if err != nil || !cfg.Codex.AssumeRequestedServiceTier {
+		t.Fatalf("Codex tier option did not load: config=%+v err=%v", cfg, err)
+	}
+}
+
 func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	example, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {

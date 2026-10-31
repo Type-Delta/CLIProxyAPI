@@ -91,6 +91,7 @@ func buildV8Paths() []configPath {
 		{"oauth-model-alias", "oauth.model-alias"}, {"oauth-excluded-models", "oauth.excluded-models"},
 		{"oauth-request-scoped-errors", "oauth.request-scoped-errors"}, {"oauth-settings", "oauth.settings"}, {"ws-auth", "oauth.providers.aistudio.ws-auth"},
 		{"codex.disable-codex-cloaking", "upstream.codex.disable-codex-cloaking"},
+		{"codex.assume-requested-service-tier", "upstream.codex.assume-requested-service-tier"},
 		{"codex.stream-bootstrap-buffering", "upstream.codex.stream-bootstrap-buffering"},
 		{"codex.stream-bootstrap-timeout", "upstream.codex.stream-bootstrap-timeout"},
 		{"codex.orphan-delegation-compatibility", "upstream.codex.orphan-delegation-compatibility"},
