@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
@@ -1719,7 +1721,7 @@ func credentialRetryRoundStateEligible(lastErr *Error, quotaExceeded bool) bool 
 	if lastErr == nil {
 		return quotaExceeded
 	}
-	return isCredentialRetryRoundStatus(statusCodeFromResult(lastErr))
+	return isRequestRetryRoundError(lastErr)
 }
 
 func (m *Manager) closestCooldownWait(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) (time.Duration, bool) {
@@ -2027,7 +2029,30 @@ func isRequestRetryRoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return isCredentialRetryRoundStatus(statusCodeFromError(err)) || isTransientTransportError(err)
+	if isRequestInvalidError(err) || isRequestStopError(err) {
+		return false
+	}
+	if isTransientTransportError(err) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var invalidCertificate x509.CertificateInvalidError
+	var hostname x509.HostnameError
+	var verification *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &invalidCertificate) || errors.As(err, &hostname) || errors.As(err, &verification) || errors.As(err, &recordHeader) {
+		return false
+	}
+	// Recorded cooldown errors no longer retain their original TLS error type.
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "x509:") || strings.Contains(message, "tls: failed to verify certificate") || strings.Contains(message, "tls: first record does not look like a tls handshake") {
+		return false
+	}
+	status := statusCodeFromError(err)
+	return status == 0 || isCredentialRetryRoundStatus(status)
 }
 
 // cooldownWaitJitterCap bounds the random jitter added to cooldown waits so a

@@ -61,6 +61,8 @@ func TestManager_ShouldRetryAfterError_RetriesPreHTTPTransportFailure(t *testing
 		{name: "windows tls handshake", err: windowsCodexTLSHandshakeError(), want: true},
 		{name: "dial refused", err: dialRefusedError(), want: true},
 		{name: "unexpected eof", err: io.ErrUnexpectedEOF, want: true},
+		{name: "http2 response body closed", err: errors.New("http2: response body closed"), want: true},
+		{name: "unclassified disconnect", err: errors.New("provider disconnected without HTTP status"), want: true},
 		{name: "http2 force closed", err: errors.New("http2: client connection force closed via ClientConn.Close"), want: true},
 		{name: "http2 conn closed", err: &url.Error{Op: "Post", URL: "https://example.com", Err: errors.New("http2: client conn is closed")}, want: true},
 		{name: "unauthorized", err: &Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}, want: false},
@@ -565,6 +567,30 @@ func TestManager_ShouldRetryAfterError_DoesNotRetryCanceledOrDeadline(t *testing
 	for _, err := range cases {
 		if _, shouldRetry := m.shouldRetryAfterError(err, 0, []string{"codex"}, model, 0); shouldRetry {
 			t.Fatalf("expected shouldRetry=false for %v", err)
+		}
+	}
+}
+
+func TestCredentialRetryRoundStateStatusless(t *testing.T) {
+	for _, message := range []string{"http2: response body closed", "provider disconnected without HTTP status"} {
+		if !credentialRetryRoundStateEligible(&Error{Message: message}, false) {
+			t.Errorf("statusless cooldown %q excluded", message)
+		}
+	}
+	if credentialRetryRoundStateEligible(&Error{Code: requestScopedErrorCode, Message: "invalid request"}, false) {
+		t.Fatal("request-scoped fault eligible")
+	}
+}
+
+func TestStatuslessRetryExclusions(t *testing.T) {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, x509.UnknownAuthorityError{}, x509.HostnameError{Certificate: &x509.Certificate{}}, x509.CertificateInvalidError{Cert: &x509.Certificate{}}, &Error{Code: requestScopedErrorCode, Message: "invalid request"}, wrapRequestStopError(errors.New("stop"))} {
+		if isRequestRetryRoundError(err) {
+			t.Errorf("excluded error retried: %v", err)
+		}
+	}
+	for _, err := range []*Error{resultErrorFromError(x509.UnknownAuthorityError{}), {Code: requestScopedErrorCode, Message: "invalid request"}} {
+		if credentialRetryRoundStateEligible(err, false) {
+			t.Errorf("excluded state retried: %v", err)
 		}
 	}
 }
