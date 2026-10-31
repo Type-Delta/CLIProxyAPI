@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        CPAMC_COMMIT: ${CPAMC_COMMIT:-}
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
@@ -33,6 +34,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        CPAMC_COMMIT: ${CPAMC_COMMIT:-}
     depends_on:
       - cli-proxy-api
     ports:
