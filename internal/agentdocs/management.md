@@ -64,8 +64,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 
 | Method and path | Purpose | Key parameters |
 | --- | --- | --- |
-| `POST /v8/management/telemetry/query` | Execute restricted agent SQL | JSON `sql`, optional `params`, `max_rows`; see [SQL](sql.md) |
-| `GET /v8/management/telemetry/schema` | Read live tables, column types, comments and example SQL | No params |
+| `POST /v8/management/telemetry/query` | Execute restricted agent SQL | JSON `sql`, optional `params`, `max_rows`; registered only with ClickHouse DSN; see [SQL](sql.md) |
+| `GET /v8/management/telemetry/schema` | Read live tables, column types, comments and example SQL | No params; registered only with ClickHouse DSN |
 | `GET /v8/management/telemetry/health` | Read capture ingestion backlog and legacy import state | No params; registered only with ClickHouse DSN |
 
 ## Analytics, usage and quota

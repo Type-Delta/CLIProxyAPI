@@ -12,7 +12,7 @@ Paths are relative to the base URL you were given. Management and telemetry call
 ## Live discovery
 
 - [Telemetry health](/v8/management/telemetry/health): Capture, ingestion and import state; registered only with ClickHouse configured.
-- [Telemetry schema](/v8/management/telemetry/schema): Full table and column comments, types and executable query examples; requires agent SQL enabled.
+- [Telemetry schema](/v8/management/telemetry/schema): Full table and column comments, types and executable query examples; registered only with ClickHouse configured; requires agent SQL enabled.
 
 ## Optional
 

@@ -28,9 +28,21 @@ func TestTelemetryQueryHTTPDisconnectCancelsClickHouse(t *testing.T) {
 	}
 	cfg.RemoteManagement.SecretKey = string(hashed)
 	cfg.RemoteManagement.AllowRemote = true
-	s := newTestServerWithConfig(t, cfg)
+	s := newTestServerWithConfig(t, &config.Config{ClickHouse: cfg.ClickHouse})
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
+	s.clickHouse.handle = h
+	s.mgmt.SetConfig(cfg)
 	s.mgmt.SetClickHouse(h)
-	defer s.Stop(context.Background())
+	s.managementRoutesEnabled.Store(true)
+	s.registerManagementRoutes()
+	defer func() {
+		s.clickHouse.handle = nil // chtest owns the connection.
+		if err := s.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	live := httptest.NewServer(s.engine)
 	defer live.Close()
 	ctx, cancel := context.WithCancel(context.Background())

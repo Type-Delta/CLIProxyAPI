@@ -32,8 +32,10 @@ func (s *Server) registerManagementV8Routes() {
 	// live under this authenticated v8 group.
 	v8.GET("/capabilities", s.mgmt.GetCapabilities)
 	v8.GET("/storage", s.mgmt.GetStorageUsage)
-	v8.POST("/telemetry/query", s.mgmt.PostTelemetryQuery)
-	v8.GET("/telemetry/schema", s.mgmt.GetTelemetrySchema)
+	if s.clickHouse.handle != nil && s.clickHouse.handle.Configured() {
+		v8.POST("/telemetry/query", s.mgmt.PostTelemetryQuery)
+		v8.GET("/telemetry/schema", s.mgmt.GetTelemetrySchema)
+	}
 	analytics := v8.Group("/analytics")
 	analytics.Use(analyticsRecoveryMiddleware(), rejectAnalyticsKeyIdentityInURL(), s.mgmt.AnalyticsRateLimitMiddleware())
 	analytics.GET("/health", s.mgmt.GetAnalyticsHealth)

@@ -132,7 +132,11 @@ func TestTelemetryRealServerConversation(t *testing.T) {
 			}
 			for _, key := range []string{"", "smoke-client"} {
 				status, b := send("/v8/management/telemetry/query", key, map[string]string{"sql": "SELECT 1"})
-				if status != 401 {
+				want := http.StatusNotFound
+				if serverMode {
+					want = http.StatusUnauthorized
+				}
+				if status != want {
 					t.Fatalf("management auth %q: %d %s", key, status, b)
 				}
 			}

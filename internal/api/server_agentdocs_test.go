@@ -15,15 +15,21 @@ import (
 )
 
 func TestAgentDocsRouteParity(t *testing.T) {
-	s := newTestServerWithConfig(t, &config.Config{RemoteManagement: config.RemoteManagement{SecretKey: "test-key"}})
+	s := newTestServerWithConfig(t, &config.Config{ClickHouse: config.DefaultClickHouseConfig()})
 	s.clickHouse.handle = chtest.Handle(t)
 	s.startTelemetry(t.TempDir())
+	s.registerManagementRoutes()
 	t.Cleanup(func() {
 		s.stopTelemetry()
 		s.clickHouse.handle = nil // chtest owns database cleanup and connection closure.
 		if err := s.Stop(context.Background()); err != nil {
 			t.Error(err)
 		}
+	})
+	waitTelemetryCondition(t, func() bool {
+		s.telemetry.mu.RLock()
+		defer s.telemetry.mu.RUnlock()
+		return s.telemetry.ingester != nil
 	})
 	content, err := agentdocs.Files.ReadFile("management.md")
 	if err != nil {
