@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func TestServiceShutdown_ViolentShutdownImmediatelyClosesServer(t *testing.T) {
@@ -79,7 +81,7 @@ func TestServiceShutdown_ViolentShutdownImmediatelyClosesServer(t *testing.T) {
 	}
 }
 
-func TestServiceRun_ShutdownContextFreshAtExit(t *testing.T) {
+func TestServiceRun_ClosesListenerAtExit(t *testing.T) {
 	ln, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
 		t.Fatalf("failed to listen: %v", errListen)
@@ -157,4 +159,82 @@ func TestServiceRun_ShutdownContextFreshAtExit(t *testing.T) {
 		_ = connClosed.Close()
 		t.Fatal("expected server to be closed after Run exit, but dial succeeded")
 	}
+}
+
+// shutdownTokenProvider pauses Run after its deferred shutdown has been installed.
+type shutdownTokenProvider struct {
+	load func() error
+}
+
+func (p shutdownTokenProvider) Load(context.Context, *config.Config) (*TokenClientResult, error) {
+	return nil, p.load()
+}
+
+type shutdownUsageObserver struct {
+	entered, release, drained chan struct{}
+}
+
+func (o shutdownUsageObserver) HandleUsage(context.Context, usage.Record) {
+	close(o.entered)
+	<-o.release
+	close(o.drained)
+}
+
+func TestServiceRun_ShutdownContextFreshAtExit(t *testing.T) {
+	authDir := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		observer := shutdownUsageObserver{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+		unregister, err := usage.RegisterPlugin(observer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = unregister(context.Background()) }()
+		usage.StartDefault(context.Background())
+		defer usage.StopDefault()
+
+		priorBudget, cancelPrior := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelPrior()
+		exit := make(chan struct{})
+		loaded := make(chan struct{})
+		stopErr := errors.New("stop before listener startup")
+		service := &Service{
+			cfg: &config.Config{AuthDir: authDir},
+			tokenProvider: shutdownTokenProvider{load: func() error {
+				usage.PublishRecord(context.Background(), usage.Record{})
+				close(loaded)
+				<-exit
+				return stopErr
+			}},
+		}
+		// Cancel background catalog work while retaining the independent usage drain.
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		cancelRun()
+		runDone := make(chan error, 1)
+		go func() { runDone <- service.Run(runCtx) }()
+		<-loaded
+		<-observer.entered
+		<-priorBudget.Done()
+		close(exit)
+		synctest.Wait()
+
+		// A fresh 30-second deadline must still permit a drain 29 seconds after exit,
+		// even though a budget created at startup has already expired.
+		<-time.After(29 * time.Second)
+		synctest.Wait()
+		select {
+		case errRun := <-runDone:
+			close(observer.release)
+			t.Fatalf("Run returned before usage drained after the prior budget expired: %v", errRun)
+		default:
+		}
+		close(observer.release)
+		if errRun := <-runDone; !errors.Is(errRun, stopErr) {
+			t.Fatalf("Run error = %v, want %v", errRun, stopErr)
+		}
+		select {
+		case <-observer.drained:
+		default:
+			t.Fatal("Run returned without draining usage")
+		}
+	})
 }
