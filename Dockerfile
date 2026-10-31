@@ -15,7 +15,7 @@ RUN test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build \
     && printf '{"schema_version":1,"cpamc_commit":"%s","management_api":{"min":1,"max":1},"built_at":"%s","sha256":"%s"}\n' \
          "$CPAMC_COMMIT" "$PANEL_BUILT_AT" "$html_sha" > dist/management-artifact.json
 
-FROM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS builder
+FROM golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb AS builder
 
 WORKDIR /app
 
