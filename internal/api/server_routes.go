@@ -401,6 +401,9 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		return
 	}
 	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
+	if keyID := handlers.RequestClientKeyID(c); keyID != "" {
+		selectionOpts.Metadata = map[string]any{coreexecutor.ClientKeyIDMetadataKey: keyID}
+	}
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
 	if s.handlers.AuthManager.HomeEnabled() {

@@ -301,7 +301,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
 		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
 	}
-	if keyID := requestClientKeyID(ginCtx); keyID != "" {
+	if keyID := RequestClientKeyID(ginCtx); keyID != "" {
 		meta[coreexecutor.ClientKeyIDMetadataKey] = keyID
 	}
 	if disallowFreeAuthFromContext(ctx) {
@@ -368,9 +368,9 @@ func requestCallerScope(ginCtx *gin.Context) string {
 	return coresession.CallerScope(fmt.Sprint(value))
 }
 
-// requestClientKeyID returns the management-visible ID of the authenticated
+// RequestClientKeyID returns the management-visible ID of the authenticated
 // client API key, matching config.APIKeyID. Only config-key principals have one.
-func requestClientKeyID(ginCtx *gin.Context) string {
+func RequestClientKeyID(ginCtx *gin.Context) string {
 	if ginCtx == nil {
 		return ""
 	}
