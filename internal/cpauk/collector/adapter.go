@@ -130,6 +130,9 @@ func adaptRecord(record coreusage.Record) Source {
 	if responseTier == "" {
 		responseTier = record.Detail.ResponseServiceTier
 	}
+	if responseTier == "" {
+		responseTier = record.EffectiveServiceTier
+	}
 	var timing *model.OutputTiming
 	if record.OutputTiming != nil {
 		value := record.OutputTiming
