@@ -552,3 +552,47 @@ func TestFileTokenStoreSaveAllowsDeletingNonCredentialMetadata(t *testing.T) {
 		t.Fatalf("deleted proxy_url was resurrected in memory: %v", auth.Metadata["proxy_url"])
 	}
 }
+
+func TestFileTokenStoreListSkipsForkStateDirectory(t *testing.T) {
+	baseDir := t.TempDir()
+	files := map[string]string{
+		"codex.json":                      `{"type":"codex"}`,
+		"team/claude.json":                `{"type":"claude"}`,
+		"state/usage-limits.json":         `{"version":1,"keys":{}}`,
+		"state/analytics/viewers.json":    `{"viewers":[]}`,
+		"nested/state/still-an-auth.json": `{"type":"codex"}`,
+	}
+	for name, body := range files {
+		path := filepath.Join(baseDir, filepath.FromSlash(name))
+		if errMkdir := os.MkdirAll(filepath.Dir(path), 0o700); errMkdir != nil {
+			t.Fatalf("mkdir %s: %v", name, errMkdir)
+		}
+		if errWrite := os.WriteFile(path, []byte(body), 0o600); errWrite != nil {
+			t.Fatalf("write %s: %v", name, errWrite)
+		}
+	}
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	got := make(map[string]string, len(auths))
+	for _, auth := range auths {
+		got[filepath.ToSlash(auth.FileName)] = auth.Provider
+	}
+	want := map[string]string{
+		"codex.json":                      "codex",
+		"team/claude.json":                "claude",
+		"nested/state/still-an-auth.json": "codex",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("List() files = %v, want %v", got, want)
+	}
+	for name, provider := range want {
+		if got[name] != provider {
+			t.Fatalf("List() files = %v, want %v", got, want)
+		}
+	}
+}

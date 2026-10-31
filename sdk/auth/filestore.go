@@ -186,6 +186,10 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
+			// <auth-dir>/state holds fork runtime state (usage limits, analytics), not credentials.
+			if path == filepath.Join(dir, "state") {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
