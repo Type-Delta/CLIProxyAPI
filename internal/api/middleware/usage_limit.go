@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,11 +60,14 @@ func usageLimitRouteIsSkipped(c *gin.Context) bool {
 	case "GET /v1/models",
 		"GET /v1/models/*model",
 		"GET /v1beta/models",
+		"GET /v1beta/models/*action",
 		"POST /v1/messages/count_tokens",
 		"GET /v1/videos/:request_id",
 		"GET /openai/v1/videos/:video_id",
 		"GET /openai/v1/videos/:video_id/content":
 		return true
+	case "POST /v1beta/models/*action":
+		return strings.HasSuffix(c.Param("action"), ":countTokens")
 	default:
 		return false
 	}

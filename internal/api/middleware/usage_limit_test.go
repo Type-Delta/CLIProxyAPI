@@ -203,6 +203,8 @@ func TestUsageLimitMiddlewareSkipsRoutesWithoutConsumingQuota(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/v1/models", route: "/v1/models"},
 		{method: http.MethodGet, path: "/v1beta/models", route: "/v1beta/models"},
+		{method: http.MethodGet, path: "/v1beta/models/gemini-test", route: "/v1beta/models/*action"},
+		{method: http.MethodPost, path: "/v1beta/models/gemini-test:countTokens", route: "/v1beta/models/*action"},
 		{method: http.MethodPost, path: "/v1/messages/count_tokens", route: "/v1/messages/count_tokens"},
 		{method: http.MethodGet, path: "/v1/videos/request-1", route: "/v1/videos/:request_id"},
 		{method: http.MethodGet, path: "/openai/v1/videos/video-1", route: "/openai/v1/videos/:video_id"},
@@ -274,4 +276,19 @@ func equalJSONValues(got, want map[string]any) bool {
 	gotJSON, errGot := json.Marshal(got)
 	wantJSON, errWant := json.Marshal(want)
 	return errGot == nil && errWant == nil && string(gotJSON) == string(wantJSON)
+}
+
+func TestUsageLimitMiddlewareCountsGeminiGeneration(t *testing.T) {
+	tracker := newUsageLimitTestTracker()
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) { c.Set("userApiKey", usageLimitTestKey) })
+	engine.Use(UsageLimitMiddleware(tracker, ProtocolGemini))
+	engine.POST("/v1beta/models/*action", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	for _, action := range []string{"generateContent", "streamGenerateContent"} {
+		tracker.Reset(usageLimitTestKey)
+		serveUsageLimitTestRequest(engine, http.MethodPost, "/v1beta/models/gemini-test:"+action)
+		if got := tracker.Snapshot(usageLimitTestKey, time.Now()).RequestsUsed; got != 1 {
+			t.Fatalf("%s usage = %d, want 1", action, got)
+		}
+	}
 }
