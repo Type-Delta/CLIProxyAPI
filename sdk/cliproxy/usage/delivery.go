@@ -139,6 +139,10 @@ type queueItem struct {
 }
 
 type contextSnapshot struct {
+	apiKey         string
+	accessProvider string
+	isNativeKey    bool
+	selectionID    string
 	base           context.Context
 	proxyRequestID string
 	endpointClass  string
@@ -595,6 +599,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	}
 	record = normalizeRecordRequestID(ctx, record)
 	record = normalizeExecutionIDs(ctx, record)
+	if strings.TrimSpace(record.SelectionID) == "" {
+		record.SelectionID = SelectionIDFromContext(ctx)
+	}
 	record.EndpointClass = strings.TrimSpace(record.EndpointClass)
 	if record.EndpointClass == "" {
 		record.EndpointClass = EndpointClassFromContext(ctx)
@@ -613,6 +620,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
 		}
 	}
+	ctx = WithCapturedIdentity(ctx, record.APIKey, record.AccessProvider, record.IsNativeKey)
 	record = fillHopMetadata(ctx, record)
 
 	m.mu.Lock()
@@ -868,6 +876,11 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 		return value
 	}
 
+	record.AccessProvider = copyString(record.AccessProvider)
+	record.BaseURL = copyString(record.BaseURL)
+	record.ResponseModel = copyString(record.ResponseModel)
+	record.SelectionID = copyString(record.SelectionID)
+	record.EffectiveServiceTier = copyString(record.EffectiveServiceTier)
 	record.ProxyRequestID = copyString(record.ProxyRequestID)
 	record.Provider = copyString(record.Provider)
 	record.ExecutorType = copyString(record.ExecutorType)
@@ -891,6 +904,40 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.RequestServiceTier = copyString(record.RequestServiceTier)
 	record.ResponseServiceTier = copyString(record.ResponseServiceTier)
 	record.Fail.Body = copyString(record.Fail.Body)
+
+	// Structured usage shares the observer byte budget with diagnostics. Decode the
+	// bounded representation to detach nested maps, slices, pointers and strings.
+	structured := record.Detail
+	structured.RawUsage = ""
+	encoded, errStructured := json.Marshal(structured)
+	structuredBudget := remaining
+	if len(record.Detail.RawUsage) <= remaining {
+		structuredBudget -= len(record.Detail.RawUsage)
+	}
+	if errStructured == nil && len(encoded) <= structuredBudget {
+		rawUsage := record.Detail.RawUsage
+		var frozen Detail
+		if json.Unmarshal(encoded, &frozen) == nil {
+			record.Detail = frozen
+			record.Detail.RawUsage = rawUsage
+			remaining -= len(encoded)
+		}
+	} else {
+		record.Detail = Detail{
+			ProviderCredits:     record.Detail.ProviderCredits,
+			InputTokens:         record.Detail.InputTokens,
+			OutputTokens:        record.Detail.OutputTokens,
+			ReasoningTokens:     record.Detail.ReasoningTokens,
+			CachedTokens:        record.Detail.CachedTokens,
+			CacheReadTokens:     record.Detail.CacheReadTokens,
+			CacheCreationTokens: record.Detail.CacheCreationTokens,
+			TotalTokens:         record.Detail.TotalTokens,
+			TokenBreakdown:      record.Detail.TokenBreakdown,
+			ResponseServiceTier: record.Detail.ResponseServiceTier,
+			TokenQuality:        record.Detail.TokenQuality,
+			RawUsage:            record.Detail.RawUsage,
+		}
+	}
 	record.Detail.ResponseServiceTier = copyString(record.Detail.ResponseServiceTier)
 	if len(record.Detail.RawUsage) <= remaining {
 		record.Detail.RawUsage = copyString(record.Detail.RawUsage)
@@ -929,6 +976,10 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 
 	stream, streamKnown := LookupStreamFromContext(ctx)
 	snapshot := contextSnapshot{
+		apiKey:         record.APIKey,
+		accessProvider: record.AccessProvider,
+		isNativeKey:    record.IsNativeKey,
+		selectionID:    record.SelectionID,
 		proxyRequestID: record.ProxyRequestID,
 		endpointClass:  copyString(EndpointClassFromContext(ctx)),
 		alias:          copyString(RequestedModelAliasFromContext(ctx)),
@@ -971,6 +1022,8 @@ func (s contextSnapshot) context() context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = WithCapturedIdentity(ctx, s.apiKey, s.accessProvider, s.isNativeKey)
+	ctx = WithSelectionID(ctx, s.selectionID)
 	ctx = WithProxyRequestID(ctx, s.proxyRequestID)
 	ctx = WithEndpointClass(ctx, s.endpointClass)
 	ctx = WithRequestedModelAlias(ctx, s.alias)
@@ -984,6 +1037,7 @@ func (s contextSnapshot) context() context.Context {
 }
 
 func cloneRecord(record Record) Record {
+	record.Detail = record.Detail.Clone()
 	record.ResponseHeaders = record.ResponseHeaders.Clone()
 	if record.OutputTiming != nil {
 		value := *record.OutputTiming

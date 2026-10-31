@@ -304,7 +304,7 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 	}()
 
 	plugin := &captureAIStudioUsagePlugin{records: make(chan usage.Record, 16)}
-	usage.RegisterPlugin(plugin)
+	registerExecutorTestUsage(t, plugin)
 	exec := NewAIStudioExecutor(&config.Config{}, "aistudio", relay)
 	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
 	_, errExecute := exec.Execute(ctx, &cliproxyauth.Auth{ID: authID, Provider: "aistudio"}, cliproxyexecutor.Request{
@@ -623,7 +623,7 @@ func TestAIStudioExecutorClaudeMalformedFunctionCallReturnsRetryableError(t *tes
 	capture := &malformedFunctionCallUsageCapture{authID: authID, records: make(chan usage.Record, 3)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), malformedFunctionCallUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	exec := NewAIStudioExecutor(&config.Config{}, "aistudio", relay)
@@ -755,7 +755,7 @@ func TestAIStudioExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsCondu
 			capture := &malformedFunctionCallUsageCapture{authID: authID, records: make(chan usage.Record, 1)}
 			usage.RegisterNamedPlugin(t.Name(), capture)
 			t.Cleanup(func() {
-				usage.RegisterNamedPlugin(t.Name(), malformedFunctionCallUsageNoop{})
+				_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 			})
 
 			exec := NewAIStudioExecutor(&config.Config{}, "aistudio", relay)

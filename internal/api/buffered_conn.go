@@ -34,3 +34,13 @@ func (c *bufferedTLSConn) ConnectionState() tls.ConnectionState {
 	}
 	return c.tlsConn.ConnectionState()
 }
+
+func (c *bufferedConn) CloseWrite() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}

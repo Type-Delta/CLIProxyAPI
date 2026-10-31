@@ -114,6 +114,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | --- | --- | --- |
 | `POST /v8/management/routing/cooldown/reset` | Clear one credential cooldown/quota routing state | JSON `auth_index`; does not reset provider billing quota |
 | `GET /v8/management/routing/model-definitions/:channel` | Read static provider model definitions | Path `channel`: `claude`, `kiro`, `gemini`, `gemini-interactions`, `vertex`, `aistudio`, `codex`, `kimi`, `kimi-ai`, `kimi.ai`, `kimi.com`, `antigravity`, `xai`, `x-ai`, `grok`, `devin`, `meta`, `muse`; case-insensitive. No static channel exists for `openai-compatibility` or arbitrary config API-key provider names; these built-in channels are not per-key catalogs. |
+| `POST /v8/management/routing/model-definitions/refresh` | Refresh model catalogs immediately | No body; returns catalog status, sources and `changed_providers`; invalid sources return 400, refresh failures return 502 |
+| `POST /v8/management/models/refresh` | Refresh model catalogs immediately | Alias of `/routing/model-definitions/refresh` |
 | `GET /v8/management/routing/credentials` | List secret-free routable credentials | Returns `credentials` with `cooldowns`, `observed_at`, `client_types`; covers config API keys and OAuth; IDs are Auth.ID, not analytics HMAC IDs |
 | `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, draft `rules`; returns `trace`, `warnings` |
 
@@ -141,8 +143,13 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `PATCH /v8/management/credentials/status` | Enable or disable a credential | JSON `name`, `disabled`; optional `auth_index` |
 | `PATCH /v8/management/credentials/fields` | Edit credential settings | JSON `name` plus supported fields such as `label`, `prefix`, `priority`, `weight`, `proxy_url`, `request_retry` |
 | `POST /v8/management/credentials/refresh` | Refresh one or all credential tokens | JSON or query `name`, `auth_index`, `all`; `all=true` selects all |
+| `POST /v8/management/credentials/verify` | Verify a credential with a minimal inference request | JSON `name`, optional `model`; uses an isolated session and a minimal 1-token prompt |
+| `GET /v8/management/credentials/siwc/status` | Read local SIWC credential status | Alias of `/oauth/siwc/status`; query `name` or `auth_index`; no upstream requests |
 | `POST /v8/management/oauth/import` | Import Vertex service account | Query `provider=vertex`; multipart `file` |
 | `GET /v8/management/oauth/auth-url` | Start built-in or plugin OAuth | Required query `provider`; optional provider-specific login params; returns `url`, `state` |
+| `POST /v8/management/oauth/auth-url` | Start built-in or plugin OAuth | JSON provider and login options; supports targeted recovery using `name` or `auth_index` and optional `verify` |
+| `POST /v8/management/oauth/siwc/bind` | Bind SIWC to an existing Codex OAuth credential | JSON `name`; standalone mode and local file-backed credentials required |
+| `GET /v8/management/oauth/siwc/status` | Read local SIWC credential status | Query `name` or `auth_index`; returns `status`: `off`, `valid`, or `invalid`; no refresh or inference request |
 | `GET /v8/management/oauth/status` | Poll OAuth exchange and persistence | Query `state`; `status`: `wait`, `ok`, `error` |
 | `DELETE /v8/management/oauth/session` | Cancel pending OAuth session | Query `state` |
 | `GET /v8/management/oauth/callback` | Submit OAuth callback without management key | Query `state`, `code` or `error`, optional `provider` |

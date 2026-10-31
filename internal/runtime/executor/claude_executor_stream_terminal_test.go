@@ -72,7 +72,7 @@ func TestClaudeExecutor_ExecuteStream_Translated_ClientDisconnectAfterTerminalEv
 	}
 	usage.RegisterNamedPlugin(pluginName, plugin)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(pluginName, noopClaudeUsagePlugin{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), pluginName)
 	})
 
 	exec := NewClaudeExecutor(&config.Config{})
@@ -168,7 +168,7 @@ func TestClaudeExecutor_ExecuteStream_Passthrough_ClientDisconnectAfterTerminalE
 	}
 	usage.RegisterNamedPlugin(pluginName, plugin)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(pluginName, noopClaudeUsagePlugin{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), pluginName)
 	})
 
 	exec := NewClaudeExecutor(&config.Config{})

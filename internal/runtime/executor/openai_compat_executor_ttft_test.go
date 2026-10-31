@@ -66,7 +66,7 @@ func TestOpenAICompatExecutorStreamTTFTWaitsForEffectiveToken(t *testing.T) {
 			capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 			coreusage.RegisterNamedPlugin(t.Name(), capture)
 			t.Cleanup(func() {
-				coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+				_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 			})
 			// Keep the global usage dispatcher outside the fake-clock bubble.
 			coreusage.StartDefault(context.Background())
@@ -143,7 +143,7 @@ func TestOpenAICompatExecutorStreamTTFTErrorFallback(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 	coreusage.StartDefault(context.Background())
 	synctest.Test(t, func(t *testing.T) {

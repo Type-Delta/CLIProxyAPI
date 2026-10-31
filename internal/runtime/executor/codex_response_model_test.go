@@ -78,7 +78,7 @@ func TestCodexUsageRecordsCarryResponseModelPerModel(t *testing.T) {
 	capture := &codexResponseModelUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), codexResponseModelNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)

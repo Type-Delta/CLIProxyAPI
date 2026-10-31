@@ -65,7 +65,7 @@ func TestCapturedRequestCanBeDownloaded(t *testing.T) {
 	router := gin.New()
 	router.Use(func(c *gin.Context) { logging.SetGinRequestID(c, "captured-12345678"); c.Next() })
 	router.Use(middleware.RequestLoggingMiddleware(logger))
-	router.POST("/v1/messages", func(c *gin.Context) { c.JSON(403, gin.H{"error": "forbidden"}) })
+	router.POST("/v1/messages", middleware.CaptureAuthenticatedRequestBody, func(c *gin.Context) { c.JSON(403, gin.H{"error": "forbidden"}) })
 	body := `{"messages":[{"role":"user","content":"live capture"}]}`
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))

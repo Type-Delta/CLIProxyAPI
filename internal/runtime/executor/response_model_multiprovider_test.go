@@ -50,7 +50,7 @@ func TestClaudeUsageRecordCarriesResponseModel(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -74,7 +74,7 @@ func TestGeminiUsageRecordCarriesResponseModel(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -98,7 +98,7 @@ func TestOpenAICompatUsageRecordCarriesResponseModel(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -122,7 +122,7 @@ func TestGeminiInteractionsUsageRecordCarriesResponseModel(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -151,7 +151,7 @@ func TestDevinStreamRecordsResponseModelFromUsage(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -211,7 +211,7 @@ func TestDevinStreamEmptyWhenNoModelNameInUsage(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
@@ -266,7 +266,7 @@ func TestDevinNonStreamRecordsResponseModelFromUsage(t *testing.T) {
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)

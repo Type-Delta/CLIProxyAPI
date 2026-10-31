@@ -92,7 +92,7 @@ func TestGeminiVertexStream_ClientDisconnectAfterTerminalEventIsNotFailed(t *tes
 					capture := &vertexTerminalDisconnectUsageCapture{authID: auth.ID, records: make(chan usage.Record, 1)}
 					usage.RegisterNamedPlugin(t.Name(), capture)
 					t.Cleanup(func() {
-						usage.RegisterNamedPlugin(t.Name(), vertexTerminalDisconnectUsageNoop{})
+						_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 					})
 
 					ctx, cancel := context.WithCancel(ctx)

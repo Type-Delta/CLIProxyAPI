@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -89,7 +90,7 @@ func TestR3ClosedClientFlushThroughRealMiddleware(t *testing.T) {
 	cfg.RequestLog = true
 	flushed := make(chan error, 1)
 	server := NewServer(cfg, nil, nil, "", WithRouterConfigurator(func(engine *gin.Engine, _ *handlers.BaseAPIHandler, _ *config.Config) {
-		engine.POST("/v1/flush-probe", func(c *gin.Context) {
+		engine.POST("/v1/flush-probe", middleware.CaptureAuthenticatedRequestBody, func(c *gin.Context) {
 			c.Header("Content-Type", "text/event-stream")
 			_, _ = c.Writer.Write([]byte("data: ready\n\n"))
 			if err := httpwire.FlushResponse(c.Writer); err != nil {

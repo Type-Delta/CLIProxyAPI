@@ -429,7 +429,7 @@ func newKiroUsageCapture(t *testing.T, alias string) *multiProviderUsageCapture 
 	capture := &multiProviderUsageCapture{alias: alias, records: make(chan coreusage.Record, 4)}
 	coreusage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+		_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 	return capture
 }

@@ -25,7 +25,7 @@ func TestAntigravityStream_ClientDisconnectAfterTerminalChunkDoesNotReportFailur
 	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	const upstreamSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello, world!"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-3.8-flash","responseId":"resp-123"}}
@@ -119,7 +119,7 @@ func TestAntigravityStream_ClientDisconnectPlainContextAfterTerminalChunkDoesNot
 	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	const upstreamSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello, world!"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":8,"totalTokenCount":28},"modelVersion":"gemini-3.8-flash","responseId":"resp-456"}}
@@ -207,7 +207,7 @@ func TestAntigravityStream_OpenAIChatCompletions_ClientDisconnectAfterStopChunkD
 	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	const upstreamSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello, world!"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":12,"totalTokenCount":42},"modelVersion":"gemini-3.8-flash","responseId":"resp-789"}}

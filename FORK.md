@@ -167,15 +167,15 @@ A 2026-09-08 metric audit produced eleven corrections. The intake adapter now pe
 
 ### DL006 — Reproducible embedded CPAMC artifact
 
-CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.3.14 container and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Runtime images and release archives consume that canonical HTML and compatibility manifest directly; no product build compares generated artifacts byte-for-byte or compiles an arbitrary panel working tree. No product build clones or floats on a remote CPAMC branch. DL050 later stops committing that bundle: panel-shipping builds now produce it from the pinned submodule, and the submodule is a hard build dependency.
+CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.4.3 container (the version CPAMC's `packageManager` declares) and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Runtime images and release archives consume that canonical HTML and compatibility manifest directly; no product build compares generated artifacts byte-for-byte or compiles an arbitrary panel working tree. No product build clones or floats on a remote CPAMC branch. DL050 later stops committing that bundle: panel-shipping builds now produce it from the pinned submodule, and the submodule is a hard build dependency.
 
 Mutable and downloaded panels require an adjacent `management-artifact.json` whose Management API range accepts this CPA build and whose SHA-256 matches the exact HTML bytes. An invalid, missing, incompatible, or tampered mutable panel falls back to the immutable bundled artifact. The former undigested network fallback is removed, and updates default to the Type-Delta CPAMC fork.
 
 **Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
 
-**Recorded validation:** the canonical builder rebuilt the checked-in bundle from CPAMC `e2cb1d6cf7fdd996010d5cebe279e971a9ff222c`; the manifest records HTML SHA-256 `bdaad2c97c31701993456fd3ca34c8024da5fff2c5174110ddd86cc959bd24a9`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
+**Recorded validation:** on 2026-10-31 the canonical builder on Bun 1.4.3 built CPAMC `b380bea7e0757417e970468b6edcf016e7497f45` to HTML SHA-256 `5ccf480d8f1915214e5101084d578730801f88e122629d18b94be41d489cea15`, and the bundled-artifact tests pass. Before that, the builder rebuilt the checked-in bundle from CPAMC `e2cb1d6cf7fdd996010d5cebe279e971a9ff222c`; the manifest records HTML SHA-256 `bdaad2c97c31701993456fd3ca34c8024da5fff2c5174110ddd86cc959bd24a9`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-31
 
 ### DL007 — Analytics management and shared-view control plane
 
@@ -2088,6 +2088,8 @@ Compose file without publishing its ports. Server shutdown closes CPA-owned WebS
 before finalizing request capture, so open sockets no longer hold shutdown until its deadline.
 Setup, the API, limits and troubleshooting are in `docs/clickhouse.md`.
 
+Request capture records every upstream dispatch, including the plaintext retry after an upstream rejects a zstd-compressed Codex body: one logical request keeps both the 415 and the 200 attempt.
+
 **Known limits:**
 
 - Read performance was benchmarked with `internal/cpauk/chstore/c5_bench_test.go` on a
@@ -2103,7 +2105,7 @@ Setup, the API, limits and troubleshooting are in `docs/clickhouse.md`.
 **Implementation evidence:** `internal/clickhouse/`, `internal/config/clickhouse.go`,
 `internal/telemetry/{record,outbox,ingest,transcript,store,legacylog}`,
 `internal/logging/{telemetry_*.go,global_logger.go,log_dir_cleaner.go}`,
-`internal/runtime/executor/helps/logging_helpers.go`,
+`internal/runtime/executor/helps/logging_helpers.go`, `internal/runtime/executor/codex_executor_request.go` (compression retry capture, `codex_executor_compression_test.go`),
 `internal/api/{clickhouse.go,telemetry.go,hijacked_connections.go,analytics_options.go,server_options.go}`,
 `internal/api/handlers/management/{telemetry_query.go,telemetry_query_examples.json,logs.go,clickhouse.go}`,
 `internal/cpauk/{backend,chstore}`, `internal/cpauk/service.go`, `docker-compose.clickhouse.yml`,
@@ -2127,7 +2129,7 @@ SQLite store. Live checks ran in Docker, with the Compose override where ClickHo
 - Without a DSN, a real model request, file request logs, upstream cancellation after a client
   disconnect, and shutdown with an open WebSocket behave like the previous build.
 
-**Last updated:** 2026-10-29
+**Last updated:** 2026-10-31
 
 ### DL061 — Rule-based routing, routing traces, and routing dry run
 
@@ -2375,6 +2377,20 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.
+
+### 2026-10-31 - Merge upstream `main` at `dbb70621`
+
+Target: upstream `main` at `dbb706215` (v8.0.48). Parents: fork `main` `63cf82582` and upstream `dbb706215`; 230 upstream commits since `base` (`20e098bf`). The CPAMC gitlink moves to `b380bea`, the CPAMC fork's own sync with its upstream `4e4aeff` (41 commits, recorded in its FORK.md).
+
+Integrated upstream's structured per-provider usage capture (Anthropic, OpenAI/Codex, xAI, Gemini, Vertex, AI Studio, Antigravity), Codex websocket early-429 credential retry and downstream keep-open on upstream disconnect, Codex request compression with plaintext fallback, response compression encoder reuse and bounded zstd request decoding, home-mode websocket restriction, plugin-host multi-provider registrars and body-delivery opt-out, cooldown-state placement next to relative auth directories, incomplete-stream cooldown exemptions, AI Studio SSE frame reassembly, discovery TXT schema, signature and translator fixes, and Claude client-detection baseline updates.
+
+User decisions: Codex plan badges follow upstream (platinum only for Pro 500; Pro 200 and Pro 100 gold). Plan-allowance updates (Codex Pro 100/200/500 = 10x/20x/50x Plus; Claude Max 20x renamed Ultra at 10x Pro weekly, Max 5x renamed Max) land as separate commits after the merge, in CPAMC and in the GSR tier mapping. Divergences that the audit found already broken before this merge (DL001, DL002, DL003, DL008, DL023, DL038, DL057, DL058, the no-DSN telemetry routes of DL060) are fixed in separate follow-up commits, and the DL032/DL051 caches are ported to the ClickHouse backend.
+
+Other decisions: all 33 content conflicts keep both sides. Usage-manager and executor usage helpers combine upstream's structured usage with the fork's bounded delivery, timing, outcome, diagnostic, and routing-trace metadata. Claude client detection keeps the fork's configured-baseline acceptance and safeguard rules on upstream's baseline. Conductor selection keeps GSR, reserves, retry rounds, and routing rules with upstream's scheduler snapshots. No divergence was retired.
+
+Integration repairs: Codex compression retries now capture each upstream dispatch (DL060 regression found in the audit, fixed with buffered and streaming tests). Runtime and panel Dockerfiles move to digest-pinned Bun 1.4.3, which the merged CPAMC requires. Structured usage cloning and identity propagation, executor test observer cleanup, capture fixtures, a zstd single-segment fixture, seven new agent-docs route inventory entries, and a Home reconnect test allowance were adapted.
+
+Validation at merge time: `gofmt`, `go build`, and `go vet ./...` pass. `go test ./... -count=1` with the ClickHouse test container passes except the pre-existing flaky `TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless` (30/5,000 failures before the merge, 20/5,000 after). The pre-merge baseline also failed `TestClaudeExecutorManagerRetriesSilentTLSHandshakeThroughConnectProxy` and `TestInterruptExecutionSessionRequiresActiveRead`. The canonical CPAMC bundle builds and the bundled-artifact tests pass. Three independent audits covered all 65 divergence entries. CPAMC passes 2,576 tests, lint, TypeScript, build, and desktop/mobile browser checks. End-to-end checks of the final tree are recorded with the follow-up commits.
 
 ### 2026-10-19 - Merge upstream `main` at `2422c6b0`
 

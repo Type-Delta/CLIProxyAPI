@@ -80,3 +80,17 @@ func TestCodexLocalLatencyMeasuresEachReusedWebsocketRequest(t *testing.T) {
 		t.Fatalf("connections=%d, want reuse", connections.Load())
 	}
 }
+
+// registerExecutorTestUsage releases each observer after the test finishes.
+func registerExecutorTestUsage(t *testing.T, plugin usage.Plugin) {
+	t.Helper()
+	unregister, errRegister := usage.RegisterPlugin(plugin)
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	t.Cleanup(func() {
+		if errUnregister := unregister(context.Background()); errUnregister != nil {
+			t.Errorf("unregister usage observer: %v", errUnregister)
+		}
+	})
+}

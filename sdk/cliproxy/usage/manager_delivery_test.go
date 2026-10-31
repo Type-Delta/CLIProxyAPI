@@ -375,3 +375,55 @@ func waitChannel(t *testing.T, channel <-chan struct{}, description string) {
 func errorsIsDeadline(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
+
+func TestStructuredUsageObserverSnapshotIsolation(t *testing.T) {
+	original := Record{Detail: Detail{
+		InputTokens: 12, RawUsage: `{"usage":{"input_tokens":12}}`,
+		CacheDetails:     &CacheDetails{ByTTL: map[string]int64{"5m": 4}},
+		TextInputTokens:  Int64Ptr(12),
+		ToolUsageDetails: &ToolUsageDetails{Extra: map[string]int64{"search": 2}},
+		Iterations:       IterationsPtr([]IterationUsage{{Model: "test", InputTokens: Int64Ptr(12)}}),
+	}}
+	frozen, _, size := freezeObserverSnapshot(context.Background(), original)
+	first, second := cloneRecord(frozen), cloneRecord(frozen)
+	*first.Detail.TextInputTokens = 99
+	first.Detail.CacheDetails.ByTTL["5m"] = 99
+	first.Detail.ToolUsageDetails.Extra["search"] = 99
+	*(*first.Detail.Iterations)[0].InputTokens = 99
+	*original.Detail.TextInputTokens = 88
+	original.Detail.CacheDetails.ByTTL["5m"] = 88
+	if *second.Detail.TextInputTokens != 12 || second.Detail.CacheDetails.ByTTL["5m"] != 4 || second.Detail.ToolUsageDetails.Extra["search"] != 2 || *(*second.Detail.Iterations)[0].InputTokens != 12 {
+		t.Fatalf("structured fields leaked mutations: %+v", second.Detail)
+	}
+	if second.Detail.RawUsage != original.Detail.RawUsage || size > MaxObserverSnapshotBytes {
+		t.Fatalf("diagnostics or snapshot budget changed: %+v size=%d", second.Detail, size)
+	}
+}
+
+func TestStructuredUsageObserverSnapshotBounds(t *testing.T) {
+	record := Record{Detail: Detail{InputTokens: 12, RawUsage: strings.Repeat("r", MaxRawUsageBytes), ImageDetails: &ImageDetails{Size: strings.Repeat("x", MaxObserverSnapshotBytes/2)}}}
+	frozen, _, size := freezeObserverSnapshot(context.Background(), record)
+	if size > MaxObserverSnapshotBytes || frozen.Detail.ImageDetails != nil || frozen.Detail.InputTokens != 12 || frozen.Detail.RawUsage != record.Detail.RawUsage {
+		t.Fatalf("oversized structured usage affected accounting or diagnostics: %+v size=%d", frozen.Detail, size)
+	}
+}
+
+func TestObserverSnapshotPreservesCapturedIdentityAndSelection(t *testing.T) {
+	ctx := WithSelectionID(WithCapturedIdentity(context.Background(), "key", "config", true), "selection")
+	manager := NewManager(1)
+	delivered := make(chan Record, 1)
+	if _, err := manager.RegisterNamed("identity", pluginFunc(func(observerCtx context.Context, record Record) {
+		if APIKeyFromContext(observerCtx) != "key" || AccessProviderFromContext(observerCtx) != "config" || SelectionIDFromContext(observerCtx) != "selection" {
+			t.Error("observer context lost captured identity or selection")
+		}
+		delivered <- record
+	})); err != nil {
+		t.Fatal(err)
+	}
+	manager.Publish(ctx, Record{})
+	closeManager(t, manager)
+	record := <-delivered
+	if record.APIKey != "key" || record.AccessProvider != "config" || record.SelectionID != "selection" || !record.IsNativeKey {
+		t.Fatalf("record lost identity: %+v", record)
+	}
+}

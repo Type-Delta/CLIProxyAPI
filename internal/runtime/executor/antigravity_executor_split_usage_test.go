@@ -124,7 +124,7 @@ func TestAntigravityStreamReportsSplitTerminalUsage(t *testing.T) {
 	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

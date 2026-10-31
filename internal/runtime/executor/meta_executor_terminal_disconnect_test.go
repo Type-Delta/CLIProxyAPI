@@ -67,7 +67,7 @@ func runMetaClaudeDisconnect(t *testing.T, upstreamSSE, cancelAfter string) usag
 	capture := &metaTerminalDisconnectUsageCapture{authID: auth.ID, records: make(chan usage.Record, 1)}
 	usage.RegisterNamedPlugin(t.Name(), capture)
 	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), metaTerminalDisconnectUsageNoop{})
+		_ = usage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
