@@ -208,6 +208,9 @@ func TestPionMediaRelayBridgesAudioAndDataChannel(t *testing.T) {
 	if errSession != nil {
 		t.Fatalf("create media relay session: %v", errSession)
 	}
+	if !offerCandidatesAreLoopback(t, relayOffer) {
+		t.Fatal("relay offer must contain only loopback ICE candidates")
+	}
 	session.SetCallID("call-log-test")
 	defer func() {
 		if errClose := session.Close(); errClose != nil {
@@ -373,7 +376,11 @@ func newTestWebRTCAPI(t *testing.T) *webrtc.API {
 	if errRegister := webrtc.RegisterDefaultInterceptors(mediaEngine, interceptorRegistry); errRegister != nil {
 		t.Fatalf("register test interceptors: %v", errRegister)
 	}
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetIncludeLoopbackCandidate(true)
+	settingEngine.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
 	return webrtc.NewAPI(
+		webrtc.WithSettingEngine(settingEngine),
 		webrtc.WithMediaEngine(mediaEngine),
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
 	)
@@ -394,7 +401,11 @@ func completeOffer(t *testing.T, connection *webrtc.PeerConnection) string {
 	case <-time.After(5 * time.Second):
 		t.Fatal("offer ICE gathering did not complete")
 	}
-	return connection.LocalDescription().SDP
+	sdp := connection.LocalDescription().SDP
+	if !offerCandidatesAreLoopback(t, sdp) {
+		t.Fatal("test offer must contain only loopback ICE candidates")
+	}
+	return sdp
 }
 
 func completeAnswer(t *testing.T, connection *webrtc.PeerConnection) string {
