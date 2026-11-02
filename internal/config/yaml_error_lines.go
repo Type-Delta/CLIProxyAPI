@@ -78,6 +78,26 @@ func rewriteYAMLErrorLines(msg string, rendered []byte, tree *yaml.Node, format 
 	})
 }
 
+// DescribeYAMLErrorLines rewrites the "line N: " references in msg, which point
+// into rendered = yaml.Marshal(tree), to name the same node of tree by its
+// dotted path. With withLines, the reference also keeps the line the node had
+// in the document tree was parsed from: "line 11 (server.port): ". Pass
+// withLines only when every node of tree came from that one document.
+func DescribeYAMLErrorLines(msg string, rendered []byte, tree *yaml.Node, withLines bool) string {
+	return rewriteYAMLErrorLines(msg, rendered, tree, func(node *yaml.Node, path string) string {
+		switch {
+		case withLines && node.Line > 0 && path != "":
+			return "line " + strconv.Itoa(node.Line) + " (" + path + "): "
+		case withLines && node.Line > 0:
+			return "line " + strconv.Itoa(node.Line) + ": "
+		case path != "":
+			return path + ": "
+		default:
+			return ""
+		}
+	})
+}
+
 // describeV8DecodeError restates a strict legacy decode error in terms of the
 // v8 document the caller passed to ValidateV8Config. flat carries that
 // document's node positions; encoded is yaml.Marshal(flat). Unknown fields are

@@ -193,13 +193,19 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
+	// Validation errors point into data, the re-encoded document. Name the
+	// field instead, plus its line when the whole document came from the body.
+	describe := func(err error) string {
+		wholeBody := c.Request.Method == http.MethodPut && len(parts) == 0
+		return config.DescribeYAMLErrorLines(err.Error(), data, &doc, wholeBody)
+	}
 	next, err := config.ParseConfigBytes(data)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": describe(err)})
 		return
 	}
 	if err = config.ValidateV8Config(data); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": describe(err)})
 		return
 	}
 	data, _, err = config.NormalizeConfigLayout(data, true)
