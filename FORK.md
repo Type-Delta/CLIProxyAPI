@@ -2477,6 +2477,27 @@ read-only overview counts, opaque usage identities, plugin YAML secrets, log sec
 spoofing, and denied logging mutations. Desktop and mobile browser checks cover the
 Dashboard, Logs Viewer, and Management Center Info with no privileged preloads.
 
+### DL067 — Config YAML syntax errors report their line
+
+**Last updated:** 2026-11-02
+
+`PUT /v8/management/config.yaml` and the other v8 config writes return the YAML parser's message
+as `message` when the request body is not valid YAML, alongside the unchanged
+`"error": "invalid_body"` code. Upstream returned only the code, so neither the management panel
+nor a script editing the config could see what was wrong or where. gopkg.in/yaml.v3 v3.0.1
+reports zero-based lines for parser errors (scanner errors are already one-based), so the
+handler adds one for its fixed set of parser messages. Every reported line is then one-based in
+the submitted body. Type errors that fail later validation (`422 invalid_config`) still carry
+upstream's line numbers, which refer to the server's normalized document, not the submitted body.
+
+**Implementation evidence:** `internal/api/handlers/management/config_v8.go` (the
+`invalid_body` response) and `internal/api/handlers/management/config_v8_yaml_error.go`.
+
+**Recorded validation:** On 2026-11-02, `config_v8_parse_error_test.go` covers parser errors
+(unclosed flow sequence, dedent mismatch) and scanner errors (tab indentation, unclosed quote).
+Each reports the one-based line in the submitted body, and the config file stays unchanged.
+Before the line correction, yaml.v3 reported the two parser errors one line early.
+
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.
