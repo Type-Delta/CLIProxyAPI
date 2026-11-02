@@ -2487,8 +2487,7 @@ as `message` when the request body is not valid YAML, alongside the unchanged
 nor a script editing the config could see what was wrong or where. gopkg.in/yaml.v3 v3.0.1
 reports zero-based lines for parser errors (scanner errors are already one-based), so the
 handler adds one for its fixed set of parser messages. Every reported line is then one-based in
-the submitted body. Type errors that fail later validation (`422 invalid_config`) still carry
-upstream's line numbers, which refer to the server's normalized document, not the submitted body.
+the submitted body. Lines in later validation errors are covered by DL069.
 
 **Implementation evidence:** `internal/api/handlers/management/config_v8.go` (the
 `invalid_body` response) and `internal/api/handlers/management/config_v8_yaml_error.go`.
@@ -2497,6 +2496,49 @@ upstream's line numbers, which refer to the server's normalized document, not th
 (unclosed flow sequence, dedent mismatch) and scanner errors (tab indentation, unclosed quote).
 Each reports the one-based line in the submitted body, and the config file stays unchanged.
 Before the line correction, yaml.v3 reported the two parser errors one line early.
+
+### DL068 — Unknown v8 config fields are named at their own line
+
+**Last updated:** 2026-11-02
+
+`ValidateV8Config` decodes a flattened legacy copy of the v8 document strictly. Flattening moves
+every known v8 field out of its section, so a typo such as `server.hots` stays behind under
+`server`. Upstream then reported `line 1: field server not found in type config.legacyConfig`,
+which names the parent section, the line in the internal copy, and an internal Go type. The
+fork maps each strict-decode error back to the node in the `ValidateV8Config` input. Below a
+leftover v8 section it reports every unknown key (`line 6: field hots not found`), and inside
+a section decoded as one struct it reports the key at its input line. The flattened tree keeps
+input positions because its nodes are copies of the parsed input. Drop this entry if upstream
+accepts the change.
+
+**Implementation evidence:** `internal/config/yaml_error_lines.go` (`describeV8DecodeError`) and
+the `ValidateV8Config` decode call in `internal/config/config_v8.go`.
+
+**Recorded validation:** On 2026-11-02, `yaml_error_lines_test.go` covers a typo beside a known
+sibling, a typo in a nested section, every unknown key in one section, and a typo in a section
+decoded as one struct (`routing`). Each test failed before the change with the
+`config.legacyConfig` message.
+
+### DL069 — Config validation errors point at the submitted field
+
+**Last updated:** 2026-11-02
+
+The v8 config handler validates its re-encoded document, so upstream's `invalid_config` line
+references ignored the body's comments, blank lines, and indentation. A type error on line 11 of
+an uploaded `config.yaml` was reported on line 6. The handler maps each `line N` back through its
+merged node tree, which keeps body positions, and names the field:
+`line 11 (server.port): cannot unmarshal !!str 'notaport' into int`. Only whole-document PUTs
+keep the line. PATCH and sub-path writes merge into nodes from the stored file, so they report
+only the path (`server.port: ...`). Drop this entry if upstream accepts the change.
+
+**Implementation evidence:** `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
+and its use after `ParseConfigBytes` and `ValidateV8Config` in
+`internal/api/handlers/management/config_v8.go`.
+
+**Recorded validation:** On 2026-11-02, `config_v8_validation_error_test.go` covers one and two
+type errors and an unknown field in a whole-document YAML PUT, and a JSON PATCH that reports
+the path without a line. Before the change, the same requests reported lines 6, 8, and 7 for
+mistakes on lines 11, 13, and 12.
 
 ## Merge History
 
