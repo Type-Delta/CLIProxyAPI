@@ -67,6 +67,8 @@ type VertexCompatKey struct {
 	// QuotaReserveConfig keeps a reserve on this credential's usage bars.
 	QuotaReserveConfig `yaml:",inline"`
 
+	// Name is the v8 group name, optionally overridden by this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 	// Interactions optionally enables native Vertex Interactions API routing for this key.

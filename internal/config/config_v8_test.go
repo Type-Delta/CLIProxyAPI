@@ -310,6 +310,10 @@ openai-compatibility:
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Migration generates display names for unnamed legacy groups.
+	for i := range before.CodexKey {
+		before.CodexKey[i].Name = fmt.Sprintf("codex-%d", i+1)
+	}
 	// Scope metadata is intentionally added when fields move under oauth.providers.
 	after.OAuthOnlyFields = nil
 	if !reflect.DeepEqual(before, after) {
@@ -858,6 +862,10 @@ api-keys:
 	after, err := ParseConfigBytes(migrated)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Migration generates display names for unnamed legacy groups.
+	for i := range before.CodexKey {
+		before.CodexKey[i].Name = fmt.Sprintf("codex-%d", i+1)
 	}
 	if !reflect.DeepEqual(before, after) || len(after.CodexKey) != 2 || len(after.GeminiKey) != 2 {
 		t.Fatal("alias migration changed effective credentials")

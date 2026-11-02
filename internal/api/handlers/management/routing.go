@@ -21,11 +21,13 @@ var routingClientTypes = []string{"claude", "codex", "opencode", "pi", "agy", "g
 type routingCredential struct {
 	ID        string                  `json:"id"`
 	Label     string                  `json:"label"`
+	Name      string                  `json:"name,omitempty"`
 	Provider  string                  `json:"provider"`
 	Kind      string                  `json:"kind"`
 	Priority  int                     `json:"priority"`
 	Weight    int64                   `json:"weight"`
 	Disabled  bool                    `json:"disabled"`
+	Status    string                  `json:"status,omitempty"`
 	Prefix    string                  `json:"prefix"`
 	Cooldowns []coreauth.CooldownView `json:"cooldowns"`
 }
@@ -55,6 +57,10 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 		if auth.AuthKind() == coreauth.AuthKindAPIKey {
 			kind = "api-key"
 		}
+		name := ""
+		if kind == "api-key" {
+			name = authAttribute(auth, "name")
+		}
 		weight, hasWeight := authWeightValue(auth)
 		if !hasWeight {
 			weight = credentialweight.Default
@@ -66,11 +72,13 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 		credentials = append(credentials, routingCredential{
 			ID:        auth.ID,
 			Label:     routingCredentialLabel(auth),
+			Name:      name,
 			Provider:  auth.Provider,
 			Kind:      kind,
 			Priority:  routingCredentialPriority(auth),
 			Weight:    weight,
 			Disabled:  auth.Disabled || auth.Status == coreauth.StatusDisabled,
+			Status:    string(auth.Status),
 			Prefix:    auth.Prefix,
 			Cooldowns: cooldowns,
 		})

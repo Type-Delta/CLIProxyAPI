@@ -92,6 +92,9 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
 			"config_index": strconv.Itoa(i),
 		}
+		if entry.Name != "" {
+			attrs["name"] = entry.Name
+		}
 		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
 		addQuotaReserveToAttrs(entry.QuotaReserveConfig, attrs)
 		authLabel := label
@@ -160,6 +163,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:claude[%s]", token),
 			"config_index": strconv.Itoa(i),
+		}
+		if ck.Name != "" {
+			attrs["name"] = ck.Name
 		}
 		addCredentialSelectorsToAttrs(ck.PricingCatalog, ck.UsageProbe, attrs)
 		addQuotaReserveToAttrs(ck.QuotaReserveConfig, attrs)
@@ -251,6 +257,9 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
 			"config_index": strconv.Itoa(i),
+		}
+		if entry.Name != "" {
+			attrs["name"] = entry.Name
 		}
 		addCredentialSelectorsToAttrs(entry.PricingCatalog, entry.UsageProbe, attrs)
 		addQuotaReserveToAttrs(entry.QuotaReserveConfig, attrs)
@@ -350,6 +359,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				authLabel = entry.Label
 				attrs["label"] = entry.Label
 			}
+			if compat.Name != "" {
+				attrs["name"] = compat.Name
+			}
 			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 			addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)
 			metadata := map[string]any{}
@@ -397,6 +409,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
+			}
+			if compat.Name != "" {
+				attrs["name"] = compat.Name
 			}
 			addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 			addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)
@@ -455,6 +470,9 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"base_url":     base,
 			"provider_key": providerName,
 			"config_index": strconv.Itoa(i),
+		}
+		if compat.Name != "" {
+			attrs["name"] = compat.Name
 		}
 		addCredentialSelectorsToAttrs(compat.PricingCatalog, compat.UsageProbe, attrs)
 		addQuotaReserveToAttrs(compat.QuotaReserveConfig, attrs)

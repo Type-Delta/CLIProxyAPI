@@ -786,6 +786,8 @@ type ClaudeKey struct {
 	// ExperimentalCCHSigning is retained for configuration compatibility.
 	// CCH signing is automatic for Claude OAuth and supported direct upstreams.
 	ExperimentalCCHSigning bool `yaml:"experimental-cch-signing,omitempty" json:"experimental-cch-signing,omitempty"`
+	// Name is the v8 group name, optionally overridden by this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -899,6 +901,8 @@ type CodexKey struct {
 	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
 	QuotaReserveConfig `yaml:",inline"`
+	// Name is the v8 group name, optionally overridden by this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }
@@ -1019,6 +1023,8 @@ type GeminiKey struct {
 	// QuotaReserve keeps a reserve on this credential's usage bars (bar ID -> minimum
 	// remaining percent) and lists client key IDs allowed to bypass it.
 	QuotaReserveConfig `yaml:",inline"`
+	// Name is the v8 group name, optionally overridden by this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 	// Label is an optional operator-defined display name for this credential.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 }

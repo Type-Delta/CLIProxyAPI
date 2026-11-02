@@ -2193,9 +2193,12 @@ pick, and decider). A credential withheld only by its quota reserve reports gate
 the reserve's reset time instead of the generic `policy`. The trace travels on the usage record, is stored with the attempt's event in
 ClickHouse `analytics_events.routing_trace_json` as nullable String, with candidate IDs replaced
 by credential pseudonyms. `GET /v8/management/analytics/events/:attempt_id` returns the trace
-with labels resolved from loaded credentials. `GET /v8/management/routing/credentials` lists routable credentials
-without secrets, and `POST /v8/management/routing/dry-run` simulates a request (optionally with
-draft rules) without moving strategy, affinity, or cooldown state. CPAMC DL073 adds the Config →
+with labels resolved from loaded credentials. `GET /v8/management/routing/credentials` lists routable
+credentials without secrets and includes the v8 group name for all API-key families and the non-secret
+auth lifecycle `status`, never status-message details.
+Non-compat key-level name overrides take precedence; labels are unchanged. Names survive v8 saves
+and legacy migration at group level. `POST /v8/management/routing/dry-run` simulates a
+request (optionally with draft rules) without moving strategy, affinity, or cooldown state. CPAMC DL073 adds the Config →
 Routing tab and the event "Routing decision" section. Detail and exports include the stored trace;
 ordinary event lists omit it. Without ClickHouse, analytics and trace capture are unavailable,
 while routing rules and dry runs remain usable.

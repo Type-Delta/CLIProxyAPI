@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
@@ -28,6 +31,13 @@ func TestGetRoutingCredentialsIsSecretFreeAndComplete(t *testing.T) {
 			Label:    "person@example.com",
 			Status:   coreauth.StatusActive,
 			Metadata: map[string]any{"access_token": "oauth-access-secret"},
+		},
+		{
+			ID:            "aaa-error",
+			Provider:      "codex",
+			Label:         "failing account",
+			Status:        coreauth.StatusError,
+			StatusMessage: "refresh-failure-private-detail",
 		},
 		{
 			ID:       "api-key-auth",
@@ -62,22 +72,113 @@ func TestGetRoutingCredentialsIsSecretFreeAndComplete(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.HomeMode || len(body.Credentials) != 2 {
+	if !body.HomeMode || len(body.Credentials) != 3 {
 		t.Fatalf("home_mode=%t credentials=%+v", body.HomeMode, body.Credentials)
 	}
-	if body.Credentials[0].ID != "oauth-file" || body.Credentials[0].Kind != "oauth" || body.Credentials[0].Weight != 1 {
+	if body.Credentials[0].ID != "oauth-file" || body.Credentials[0].Kind != "oauth" || body.Credentials[0].Weight != 1 || body.Credentials[0].Status != string(coreauth.StatusActive) {
 		t.Fatalf("oauth credential = %+v", body.Credentials[0])
 	}
-	if body.Credentials[1].ID != "api-key-auth" || body.Credentials[1].Kind != "api-key" || !body.Credentials[1].Disabled || body.Credentials[1].Priority != 7 || body.Credentials[1].Weight != 3 || body.Credentials[1].Prefix != "team/" {
-		t.Fatalf("API-key credential = %+v", body.Credentials[1])
+	if body.Credentials[1].ID != "aaa-error" || body.Credentials[1].Status != string(coreauth.StatusError) || !strings.Contains(response.Body.String(), `"status":"error"`) || !strings.Contains(response.Body.String(), `"status":"active"`) {
+		t.Fatalf("error credential = %+v, body=%s", body.Credentials[1], response.Body.String())
+	}
+	if body.Credentials[2].ID != "api-key-auth" || body.Credentials[2].Kind != "api-key" || !body.Credentials[2].Disabled || body.Credentials[2].Priority != 7 || body.Credentials[2].Weight != 3 || body.Credentials[2].Prefix != "team/" || body.Credentials[2].Status != string(coreauth.StatusDisabled) {
+		t.Fatalf("API-key credential = %+v", body.Credentials[2])
 	}
 	if len(body.ClientTypes) != 7 || body.ClientTypes[0] != "claude" || body.ClientTypes[6] != "generic" {
 		t.Fatalf("client types = %v", body.ClientTypes)
 	}
-	for _, secret := range []string{"oauth-access-secret", "oauth-token-secret", "upstream-api-key-secret", `"attributes"`, `"metadata"`} {
+	for _, secret := range []string{"refresh-failure-private-detail", `"status_message"`, `"statusMessage"`, "oauth-access-secret", "oauth-token-secret", "upstream-api-key-secret", `"attributes"`, `"metadata"`} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatalf("routing credentials response exposed %q: %s", secret, response.Body.String())
 		}
+	}
+}
+
+func TestGetRoutingCredentialsV8GroupNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, family := range []string{"gemini", "interactions", "codex", "xai", "meta", "claude", "vertex", "openai-compatibility"} {
+		t.Run(family, func(t *testing.T) {
+			raw := fmt.Sprintf(`config-version: 8
+api-keys:
+  %s:
+    - name: fake-high
+      base-url: https://api.example.invalid
+      keys:
+        - api-key: dummy-named-secret
+          label: routing-label
+    - base-url: https://api.example.invalid
+      keys:
+        - api-key: dummy-unnamed-secret
+          label: unnamed-label
+`, family)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			auths, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
+				Config: cfg, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(auths) != 2 {
+				t.Fatalf("got %d auths, want 2", len(auths))
+			}
+			manager := coreauth.NewManager(nil, nil, nil)
+			for _, auth := range auths {
+				if _, err := manager.Register(context.Background(), auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handler := &Handler{authManager: manager, cfg: cfg}
+			router := gin.New()
+			router.GET("/v8/management/routing/credentials", handler.GetRoutingCredentials)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v8/management/routing/credentials", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "dummy-") {
+				t.Fatal("response leaked API key")
+			}
+			var body struct {
+				Credentials []map[string]json.RawMessage `json:"credentials"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body.Credentials) != 2 {
+				t.Fatalf("credentials=%s", response.Body.String())
+			}
+			seen := map[string]bool{}
+			for _, credential := range body.Credentials {
+				var label string
+				if err := json.Unmarshal(credential["label"], &label); err != nil {
+					t.Fatal(err)
+				}
+				seen[label] = true
+				switch label {
+				case "routing-label":
+					var name string
+					if err := json.Unmarshal(credential["name"], &name); err != nil || name != "fake-high" {
+						t.Fatalf("name=%q, err=%v", name, err)
+					}
+				case "unnamed-label":
+					if _, exists := credential["name"]; exists {
+						t.Fatal("unnamed credential included name")
+					}
+				default:
+					t.Fatalf("label changed to %q", label)
+				}
+			}
+			if !seen["routing-label"] || !seen["unnamed-label"] {
+				t.Fatalf("labels=%v", seen)
+			}
+		})
 	}
 }
 
