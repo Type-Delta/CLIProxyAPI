@@ -1209,7 +1209,7 @@ ClickHouse event, outcome, control, metadata, retained-publication, and restore
 writes await visibility before invalidation and unlocking. Submitted writes detach
 caller cancellation and disable asynchronous INSERT; synchronous maintenance keeps
 its existing mutation-visibility contract. Errors after a partial mutation also
-invalidate results. The existing 60-second HTTP response cache remains independent.
+invalidate results. The range-based HTTP response cache in DL043 remains independent.
 
 **Implementation evidence:** `internal/cpauk/backend/history_cache.go`,
 `internal/cpauk/store/{history_cache.go,history_generation.go}`, and
@@ -1226,7 +1226,7 @@ legacy-import yields, and asynchronous-insert settings. `go build ./...` and
 `go test -count=1 ./internal/cpauk/... ./internal/api/...` passes against the running
 ClickHouse Docker test container.
 
-**Last updated:** 2026-10-31
+**Last updated:** 2026-11-02
 
 
 ### DL033 — Kiro GSR recovery, plan tier, Retry-After, and Identity Center login
@@ -1498,13 +1498,11 @@ CPAUK timeseries queries retain the requested IANA timezone for calendar bucket 
 
 **Last updated:** 2026-10-16
 
-### DL043 — Shared one-minute analytics responses and conditional reads
+### DL043 — Shared range-based analytics responses and conditional reads
 
-First-page explicit and custom range cache keys floor both endpoints to UTC minutes. Seconds and fractional seconds no longer split server snapshots or CPAMC validators. Computation and `meta.range` retain the first request's exact bounds. Cursor continuation keys remain exact so signature validation and pagination stay tied to that snapshot. Adjacent minutes, timezones, and filters remain distinct, and cache entries still expire 60 seconds after computation.
+First-page explicit and custom range cache keys floor both endpoints to UTC minutes. Seconds and fractional seconds no longer split server snapshots or CPAMC validators. Computation and `meta.range` retain the first request's exact bounds. Cursor continuation keys remain exact so signature validation and pagination stay tied to that snapshot. Adjacent minutes, timezones, and filters remain distinct, and TTL tiers identify separate entries even when minute-rounded bounds match.
 
-Minute-identity regressions reproduce the old misses and cover all seven operations, GET revalidation and POST reuse, TTL expiry, sub-minute ranges, offset equivalence, and exact SQLite cursor continuation. A browser check changes explicit custom bounds within the same minute and observes `304`; crossing an endpoint minute observes `200`.
-
-The v8 management analytics query operations share successful responses for 60 seconds after computation, bounded to 128 entries and 16 MiB. Cache identity includes the operation, original named or explicit range, timezone, normalized filters, key scope, bucket width, pagination, and sort. Concurrent matching requests share one calculation. Rolling presets reuse the cached response's resolved range during that minute; ordinary intake intentionally permits this bounded staleness. Configuration, pricing, service, and maintenance changes invalidate snapshots, and unavailable services cannot return cached results.
+The v8 management analytics query operations share successful responses after computation, bounded to 128 entries and 16 MiB. TTL follows the exact resolved range before minute grouping: up to 6 hours uses 1 minute, up to 24 hours uses 3 minutes, up to 7 days uses 15 minutes, up to 30 days uses 30 minutes, and longer ranges use 1 hour. Cache identity includes the operation, original named or explicit range, timezone, normalized filters, key scope, bucket width, pagination, and sort. Concurrent matching requests share one calculation. Rolling presets reuse the cached response's resolved range during that cache interval; ordinary intake intentionally permits this bounded staleness. Configuration, pricing, service, and maintenance changes invalidate snapshots, and unavailable services cannot return cached results.
 
 Authenticated `GET /v8/management/analytics/query` carries base64url JSON in `X-Analytics-Query`, keeping filters and full key IDs out of URLs. Responses include ETags; a matching `If-None-Match` returns an empty `304`. Existing POST requests share the cache and continue returning `200` bodies. Errors are not cached, and legacy v0 and public viewer routes retain their prior behavior.
 
@@ -1512,9 +1510,9 @@ CPAMC retains validators and response bodies in bounded, connection-scoped memor
 
 **Implementation evidence:** `internal/api/handlers/management/analytics_response_cache.go`, the v8 route and CORS registration, `internal/cpauk/service.go`, their response-cache tests, and the CPAMC analytics API and refresh coordinator.
 
-**Recorded validation:** deterministic cache expiry, concurrent readers, query isolation, conditional GET, authentication, lifecycle invalidation, client session isolation, and manual-refresh scheduling tests pass, including focused Go race tests. A real CPAMC browser session against CPAUK confirmed initial `200` responses, manual refresh through `304`, suppression of the old automatic deadline, and fresh responses about 60 seconds after manual completion. Six concurrent 90-day Analysis requests against a 100k-request fixture completed in about 7.06 seconds; cached conditional reads took 2–3 ms in the local fixture server. The canonical management bundle was rebuilt from CPAMC `6110c3f`. The full-suite legacy management-config compatibility and CPAMC legacy-login diagnostic failures remain outside this change.
+**Recorded validation:** deterministic GET revalidation and POST reuse tests cover explicit, custom, and rolling ranges, exact inclusive TTL thresholds, nanosecond-over-threshold ranges, expiry after calculation, and isolation between TTL tiers with the same minute-rounded bounds. `go test ./internal/api/handlers/management ./internal/api ./internal/agentdocs -count=1` passes against an isolated Docker ClickHouse fixture, including authenticated HTTP cache reads and exact cursor continuation. `go test -race ./internal/api/handlers/management -run '^TestAnalyticsResponseCache' -count=1` passes. The canonical CPAMC bundle build and disposable `cmd/server` compile pass.
 
-**Last updated:** 2026-10-16
+**Last updated:** 2026-11-02
 
 ### DL044 — Preserve unavailable provider metrics
 

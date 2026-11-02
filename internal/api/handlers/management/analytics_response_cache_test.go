@@ -135,6 +135,92 @@ func TestAnalyticsResponseCacheConditionalGETAndPOST(t *testing.T) {
 	}
 }
 
+func TestAnalyticsResponseCacheRangeTTL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		duration time.Duration
+		ttl      time.Duration
+	}{
+		{time.Second, time.Minute},
+		{6 * time.Hour, time.Minute},
+		{6*time.Hour + time.Nanosecond, 3 * time.Minute},
+		{24 * time.Hour, 3 * time.Minute},
+		{24*time.Hour + time.Nanosecond, 15 * time.Minute},
+		{7 * 24 * time.Hour, 15 * time.Minute},
+		{7*24*time.Hour + time.Nanosecond, 30 * time.Minute},
+		{30 * 24 * time.Hour, 30 * time.Minute},
+		{30*24*time.Hour + time.Nanosecond, time.Hour},
+		{365 * 24 * time.Hour, time.Hour},
+	} {
+		for _, form := range []string{"explicit", "custom", "preset"} {
+			t.Run(test.duration.String()+"/"+form, func(t *testing.T) {
+				start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+				query := map[string]any{"schema_version": 2, "operation": "summary"}
+				switch form {
+				case "explicit":
+					query["start"], query["end"] = start, start.Add(test.duration)
+					query["time_zone"] = "UTC"
+				case "custom":
+					query["range"] = map[string]any{"preset": "custom", "start": start, "end": start.Add(test.duration), "time_zone": "UTC"}
+				case "preset":
+					// Rolling presets accept whole hours; test the next whole hour above each boundary.
+					hours := int((test.duration + time.Hour - 1) / time.Hour)
+					query["range"] = map[string]any{"preset": "last_n_hours", "n": hours, "time_zone": "UTC"}
+				}
+				body, err := json.Marshal(query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler, service := responseCacheHandler()
+				now := start
+				handler.analyticsResponseCache = &analyticsResponseCache{now: func() time.Time { return now }}
+				first := responseCacheRequest(handler, http.MethodGet, string(body), "")
+				if first.Code != http.StatusOK || first.Header().Get("ETag") == "" {
+					t.Fatalf("first request: %d %s", first.Code, first.Body.String())
+				}
+				etag := first.Header().Get("ETag")
+				now = now.Add(test.ttl - time.Nanosecond)
+				hit := responseCacheRequest(handler, http.MethodGet, string(body), etag)
+				if hit.Code != http.StatusNotModified || service.reader.calls.Load() != 1 {
+					t.Fatalf("before %s expiry: status=%d reads=%d", test.ttl, hit.Code, service.reader.calls.Load())
+				}
+				post := responseCacheRequest(handler, http.MethodPost, string(body), etag)
+				if post.Code != http.StatusOK || post.Body.String() != first.Body.String() || service.reader.calls.Load() != 1 {
+					t.Fatalf("POST before expiry: status=%d reads=%d", post.Code, service.reader.calls.Load())
+				}
+				now = now.Add(time.Nanosecond)
+				refreshed := responseCacheRequest(handler, http.MethodGet, string(body), etag)
+				if refreshed.Code != http.StatusOK || service.reader.calls.Load() != 2 || refreshed.Header().Get("ETag") == etag {
+					t.Fatalf("at %s expiry: status=%d reads=%d", test.ttl, refreshed.Code, service.reader.calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestAnalyticsResponseCacheSeparatesTTLTiersWithinMinute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, duration := range []time.Duration{6 * time.Hour, 24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour} {
+		t.Run(duration.String(), func(t *testing.T) {
+			handler, service := responseCacheHandler()
+			start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+			var etag string
+			for _, extra := range []time.Duration{0, time.Nanosecond} {
+				body := fmt.Sprintf(`{"schema_version":2,"operation":"summary","start":%q,"end":%q,"time_zone":"UTC"}`,
+					start.Format(time.RFC3339Nano), start.Add(duration+extra).Format(time.RFC3339Nano))
+				response := responseCacheRequest(handler, http.MethodGet, body, etag)
+				if response.Code != http.StatusOK {
+					t.Fatalf("TTL tier reused another tier's snapshot: %d", response.Code)
+				}
+				etag = response.Header().Get("ETag")
+			}
+			if service.reader.calls.Load() != 2 {
+				t.Fatalf("different TTL tiers performed %d reads", service.reader.calls.Load())
+			}
+		})
+	}
+}
+
 func TestAnalyticsResponseCacheQuantizesRanges(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, form := range []string{"explicit", "custom", "custom_offset", "subminute"} {
@@ -171,7 +257,11 @@ func TestAnalyticsResponseCacheQuantizesRanges(t *testing.T) {
 				t.Fatalf("computation bounds changed: %+v", summary.Meta.Range)
 			}
 			etag := first.Header().Get("ETag")
-			now = now.Add(time.Minute - time.Nanosecond)
+			ttl := 3 * time.Minute
+			if form == "subminute" {
+				ttl = time.Minute
+			}
+			now = now.Add(ttl - time.Nanosecond)
 			hit := responseCacheRequest(handler, http.MethodGet, body(nextStart, nextEnd), etag)
 			if hit.Code != http.StatusNotModified || hit.Body.Len() != 0 || service.reader.calls.Load() != 1 {
 				t.Fatalf("sub-minute conditional request: %d %s reads=%d", hit.Code, hit.Body.String(), service.reader.calls.Load())
@@ -343,7 +433,7 @@ func TestAnalyticsResponseCacheExpiryAndErrors(t *testing.T) {
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	handler.analyticsResponseCache = &analyticsResponseCache{now: func() time.Time { return now }}
 	first := responseCacheRequest(handler, http.MethodGet, analyticsNamedCacheQuery, "")
-	now = now.Add(analyticsResponseCacheTTL - time.Nanosecond)
+	now = now.Add(3*time.Minute - time.Nanosecond)
 	hit := responseCacheRequest(handler, http.MethodGet, analyticsNamedCacheQuery, "")
 	if hit.Body.String() != first.Body.String() || service.reader.calls.Load() != 1 {
 		t.Fatalf("snapshot changed before expiry: %s", hit.Body.String())
@@ -541,7 +631,7 @@ func TestAnalyticsResponseCacheRejectsInvalidGETInputs(t *testing.T) {
 func TestAnalyticsResponseCacheBoundsAndCancellation(t *testing.T) {
 	cache := &analyticsResponseCache{now: time.Now}
 	for index := range analyticsResponseCacheMaxEntries + 1 {
-		_, err := cache.do(context.Background(), fmt.Sprint(index), func() ([]byte, error) { return []byte("{}"), nil })
+		_, err := cache.do(context.Background(), fmt.Sprint(index), time.Minute, func() ([]byte, error) { return []byte("{}"), nil })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -552,7 +642,7 @@ func TestAnalyticsResponseCacheBoundsAndCancellation(t *testing.T) {
 	if _, ok := cache.get("0"); ok {
 		t.Fatal("least recently used entry was retained")
 	}
-	_, err := cache.do(context.Background(), "oversize", func() ([]byte, error) { return make([]byte, analyticsResponseCacheMaxBytes+1), nil })
+	_, err := cache.do(context.Background(), "oversize", time.Minute, func() ([]byte, error) { return make([]byte, analyticsResponseCacheMaxBytes+1), nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +650,7 @@ func TestAnalyticsResponseCacheBoundsAndCancellation(t *testing.T) {
 		t.Fatal("oversize response was cached")
 	}
 	for _, key := range []string{"large-a", "large-b"} {
-		if _, err := cache.do(context.Background(), key, func() ([]byte, error) { return make([]byte, analyticsResponseCacheMaxBytes/2+1), nil }); err != nil {
+		if _, err := cache.do(context.Background(), key, time.Minute, func() ([]byte, error) { return make([]byte, analyticsResponseCacheMaxBytes/2+1), nil }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -573,7 +663,7 @@ func TestAnalyticsResponseCacheBoundsAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	release := make(chan struct{})
-	_, err = cache.do(ctx, "cancelled", func() ([]byte, error) { <-release; return nil, ctx.Err() })
+	_, err = cache.do(ctx, "cancelled", time.Minute, func() ([]byte, error) { <-release; return nil, ctx.Err() })
 	close(release)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled request error=%v", err)
@@ -582,7 +672,7 @@ func TestAnalyticsResponseCacheBoundsAndCancellation(t *testing.T) {
 
 func TestAnalyticsResponseCacheRecoversLoadPanic(t *testing.T) {
 	cache := &analyticsResponseCache{now: time.Now}
-	_, err := cache.do(context.Background(), "panic", func() ([]byte, error) {
+	_, err := cache.do(context.Background(), "panic", time.Minute, func() ([]byte, error) {
 		panic("private storage details")
 	})
 	if !errors.Is(err, cpauk.ErrInternal) {
@@ -591,7 +681,7 @@ func TestAnalyticsResponseCacheRecoversLoadPanic(t *testing.T) {
 	if _, ok := cache.get("panic"); ok {
 		t.Fatal("failed computation was cached")
 	}
-	if _, err := cache.do(context.Background(), "panic", func() ([]byte, error) { return []byte("{}"), nil }); err != nil {
+	if _, err := cache.do(context.Background(), "panic", time.Minute, func() ([]byte, error) { return []byte("{}"), nil }); err != nil {
 		t.Fatalf("computation did not recover: %v", err)
 	}
 }

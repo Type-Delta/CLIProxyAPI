@@ -23,7 +23,6 @@ import (
 
 const (
 	analyticsQueryHeader             = "X-Analytics-Query"
-	analyticsResponseCacheTTL        = time.Minute
 	analyticsResponseCacheMaxEntries = 128
 	analyticsResponseCacheMaxBytes   = 16 << 20
 )
@@ -36,7 +35,7 @@ type analyticsCachedResponse struct {
 }
 
 // analyticsResponseCache shares successful management query snapshots across
-// clients for one minute. Authentication still runs before every cache lookup.
+// clients with range-based expiry. Authentication still runs before every cache lookup.
 type analyticsResponseCache struct {
 	mu      sync.Mutex
 	entries map[string]*list.Element
@@ -69,7 +68,7 @@ func (cache *analyticsResponseCache) remove(element *list.Element) {
 	cache.lru.Remove(element)
 }
 
-func (cache *analyticsResponseCache) do(ctx context.Context, key string, load func() ([]byte, error)) (analyticsCachedResponse, error) {
+func (cache *analyticsResponseCache) do(ctx context.Context, key string, ttl time.Duration, load func() ([]byte, error)) (analyticsCachedResponse, error) {
 	if value, ok := cache.get(key); ok {
 		return value, nil
 	}
@@ -92,7 +91,7 @@ func (cache *analyticsResponseCache) do(ctx context.Context, key string, load fu
 		_, _ = digest.Write(body)
 		value := analyticsCachedResponse{
 			key: key, body: body, etag: `"` + hex.EncodeToString(digest.Sum(nil)) + `"`,
-			expiresAt: cache.now().Add(analyticsResponseCacheTTL),
+			expiresAt: cache.now().Add(ttl),
 		}
 		if len(body) > analyticsResponseCacheMaxBytes {
 			return value, nil
@@ -218,18 +217,20 @@ func (h *Handler) executeAnalyticsCached(c *gin.Context, query, selection model.
 	if scope != "keys" {
 		cacheQuery = quantizeAnalyticsCacheQuery(selection)
 	}
+	ttl := analyticsResponseCacheTTL(query)
 	encoded, err := json.Marshal(struct {
-		Scope string      `json:"scope"`
-		Epoch string      `json:"epoch"`
-		Query model.Query `json:"query"`
-	}{Scope: scope, Epoch: epoch, Query: cacheQuery})
+		Scope string        `json:"scope"`
+		Epoch string        `json:"epoch"`
+		Query model.Query   `json:"query"`
+		TTL   time.Duration `json:"ttl"`
+	}{Scope: scope, Epoch: epoch, Query: cacheQuery, TTL: ttl})
 	if err != nil {
 		writeAnalyticsError(c, err)
 		return
 	}
 	digest := sha256.Sum256(encoded)
 	requestContext := c.Request.Context()
-	response, err := cache.do(requestContext, hex.EncodeToString(digest[:]), func() ([]byte, error) {
+	response, err := cache.do(requestContext, hex.EncodeToString(digest[:]), ttl, func() ([]byte, error) {
 		if selection.Range != nil {
 			query = selection
 			if err := resolveAnalyticsRange(&query, time.Now().UTC()); err != nil {
@@ -284,6 +285,22 @@ func (h *Handler) executeAnalyticsCached(c *gin.Context, query, selection model.
 	}
 
 	c.Data(http.StatusOK, "application/json; charset=utf-8", response.body)
+}
+
+// analyticsResponseCacheTTL uses resolved bounds before cache-key minute grouping.
+func analyticsResponseCacheTTL(query model.Query) time.Duration {
+	switch duration := query.End.Sub(query.Start); {
+	case duration <= 6*time.Hour:
+		return time.Minute
+	case duration <= 24*time.Hour:
+		return 3 * time.Minute
+	case duration <= 7*24*time.Hour:
+		return 15 * time.Minute
+	case duration <= 30*24*time.Hour:
+		return 30 * time.Minute
+	default:
+		return time.Hour
+	}
 }
 
 // quantizeAnalyticsCacheQuery groups first-page explicit and custom ranges by

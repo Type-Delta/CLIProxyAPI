@@ -138,23 +138,37 @@ identity filters in bounded request bodies or the conditional query header.
 
 ### Analytics response reuse
 
-The seven analytics query operations share successful responses for 60 seconds
-after calculation. Matching requests from multiple authenticated administrators
+Analytics query operations and the key catalog share successful responses after
+calculation. TTL follows the exact resolved time range, before minute grouping:
+
+| Requested range | Cache TTL |
+| --- | --- |
+| Up to 6 hours | 1 minute |
+| Over 6 hours, up to 24 hours | 3 minutes |
+| Over 24 hours, up to 7 days | 15 minutes |
+| Over 7 days, up to 30 days | 30 minutes |
+| Over 30 days | 1 hour |
+
+Days mean 24 elapsed hours. Explicit, custom, and named ranges use the same rules.
+
+Matching requests from multiple authenticated administrators
 reuse one response, and concurrent cache misses share one calculation. Identity
 includes the operation, range, timezone, filters, key scope, bucket width, sort,
-page size, and cursor. Named rolling ranges reuse the original response's
+page size, cursor, and TTL tier. Named rolling ranges reuse the original response's
 resolved `meta.range` while cached. New intake can therefore take up to one cache
 interval to appear; configuration, pricing, service, and maintenance changes
 invalidate responses sooner. Errors are not cached.
 
 For requests without a cursor, cache identity floors explicit start and end
 timestamps to whole UTC minutes, including custom named-range bounds. Requests
-that differ only in seconds or fractional seconds share a snapshot. The first
-request's exact bounds are used for calculation and returned in `meta.range`.
+that differ only in seconds or fractional seconds share a snapshot within the
+same TTL tier. The first request's exact bounds are used for calculation and
+returned in `meta.range`.
 Cursor continuations must use those exact returned bounds and are not rounded;
 the cursor signature remains bound to its original selection. Timezones, filters,
-and neighboring minutes still identify separate entries. The 60-second TTL
-starts when calculation finishes; it does not expire at a wall-clock minute boundary.
+and neighboring minutes still identify separate entries. The TTL starts when
+calculation finishes; it does not expire at a wall-clock minute boundary. Key-catalog
+requests keep exact bounds even on the first page.
 
 For conditional reads, send `GET /analytics/query` with an `X-Analytics-Query`
 header containing the query JSON encoded as UTF-8 and unpadded base64url. The
