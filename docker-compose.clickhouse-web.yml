@@ -1,0 +1,5 @@
+# Connect the private ClickHouse service to the web deployment's network.
+services:
+  clickhouse:
+    networks:
+      - cpa-web

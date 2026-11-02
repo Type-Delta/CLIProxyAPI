@@ -93,6 +93,52 @@ broken image, so assets are always optional.
 
 ## Container images and release archives
 
+### Published production images
+
+The `docker-image` workflow publishes CPA and the Nginx panel to the Docker Hub
+repository selected by the GitHub Actions variable `DOCKERHUB_REPOSITORY`.
+Configure `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as Actions secrets. The
+Type-Delta deployment uses the public repository `typedelta/cliproxyapi`.
+
+Pushes to `main`, version tags, and manual workflow runs build both images from
+the same checkout and its pinned CPAMC submodule. Native amd64 and arm64 jobs
+publish architecture-specific images. The final job publishes the paired
+multi-platform tags only after both architecture jobs succeed:
+
+- CPA: `typedelta/cliproxyapi:sha-<full CPA commit>`
+- Panel: `typedelta/cliproxyapi:web-sha-<full CPA commit>`
+
+Main builds also update `latest` and `web-latest`. Version tags publish the version
+and `web-<version>`. Production should select the full commit tags to request a
+specific source revision.
+
+Use the published-image override to remove the local build definitions:
+
+```bash
+commit=$(git rev-parse HEAD)
+export CLI_PROXY_IMAGE="typedelta/cliproxyapi:sha-$commit"
+export CLI_PROXY_WEB_IMAGE="typedelta/cliproxyapi:web-sha-$commit"
+docker compose -f docker-compose-web.yml -f docker-compose-web-published.yml pull
+docker compose -f docker-compose-web.yml -f docker-compose-web-published.yml \
+  up -d --no-build --pull never --wait
+```
+
+Wait for the publishing workflow to succeed before deploying its commit. Pull both
+images before recreating either service. The override requires explicit image
+references and removes both `build` sections, so production cannot compile Go,
+TypeScript, or Vite as part of this deployment.
+
+For a ClickHouse web deployment, include its private credentials with
+`--env-file "$HOME/.config/cliproxyapi/clickhouse.env"` and append
+`-f docker-compose.clickhouse.yml -f docker-compose.clickhouse-web.yml` to both
+Compose commands. Keep the existing configuration, auth and log mounts, identity
+key, and ClickHouse volume. The web-specific ClickHouse override attaches the
+database to the private `cpa-web` network without publishing database ports.
+If mount settings come from `.env`, pass `--env-file .env` before the private
+credentials file so those settings remain loaded.
+
+### Local builds and release archives
+
 - `Dockerfile.management` is the canonical panel builder. It exports
   `management.html` and `management-assets/`; the script adds the manifest with the
   CPAMC commit time and the HTML digest.

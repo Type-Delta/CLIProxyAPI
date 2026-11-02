@@ -1,0 +1,9 @@
+# Use with docker-compose-web.yml for deployments of CI-published images.
+services:
+  cli-proxy-api:
+    image: ${CLI_PROXY_IMAGE:?Set CLI_PROXY_IMAGE to a published CPA image}
+    build: !reset null
+  web:
+    image: ${CLI_PROXY_WEB_IMAGE:?Set CLI_PROXY_WEB_IMAGE to a published web image}
+    build: !reset null
+    pull_policy: always

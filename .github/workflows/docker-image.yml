@@ -2,172 +2,137 @@ name: docker-image
 
 on:
   push:
-    tags:
-      - v*
+    branches: [main]
+    tags: [v*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  APP_NAME: CLIProxyAPI
-  DOCKERHUB_REPO: eceasy/cli-proxy-api
+  DOCKERHUB_REPO: ${{ vars.DOCKERHUB_REPOSITORY }}
 
 jobs:
-  docker_amd64:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Verify pinned submodules
+        run: scripts/verify-submodules.sh
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify pinned submodules
-        run: scripts/verify-submodules.sh
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Build and push (amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          provenance: mode=max
-          sbom: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            COMMIT=${{ env.COMMIT }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
-            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
-            PANEL_BUILT_AT=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:latest-amd64
-            ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-amd64
-
-  docker_arm64:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Verify pinned submodules
-        run: scripts/verify-submodules.sh
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Build and push (arm64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: true
-          provenance: mode=max
-          sbom: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            COMMIT=${{ env.COMMIT }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
-            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
-            PANEL_BUILT_AT=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:latest-arm64
-            ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-arm64
-
-  docker_manifest:
-    runs-on: ubuntu-latest
-    needs:
-      - docker_amd64
-      - docker_arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Create and push multi-arch manifests
-        run: |
-          docker buildx imagetools create \
-            --tag "${DOCKERHUB_REPO}:latest" \
-            "${DOCKERHUB_REPO}:latest-amd64" \
-            "${DOCKERHUB_REPO}:latest-arm64"
-          docker buildx imagetools create \
-            --tag "${DOCKERHUB_REPO}:${VERSION}" \
-            "${DOCKERHUB_REPO}:${VERSION}-amd64" \
-            "${DOCKERHUB_REPO}:${VERSION}-arm64"
-      - name: Cleanup temporary tags
-        continue-on-error: true
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Generate build metadata
+        shell: bash
         run: |
           set -euo pipefail
-          namespace="${DOCKERHUB_REPO%%/*}"
-          repo_name="${DOCKERHUB_REPO#*/}"
+          test -n "$DOCKERHUB_REPO" || { echo 'Set the DOCKERHUB_REPOSITORY repository variable.' >&2; exit 1; }
+          version="git-${GITHUB_SHA:0:12}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then version="$GITHUB_REF_NAME"; fi
+          {
+            echo "VERSION=$version"
+            echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)"
+            echo "PANEL_BUILT_AT=$(git -C web/management-center show -s --format=%cI HEAD)"
+            echo "BUILD_DATE=$(git show -s --format=%cI HEAD)"
+          } >> "$GITHUB_ENV"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push CPA
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=cpa-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=cpa-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
+            PANEL_BUILT_AT=${{ env.PANEL_BUILT_AT }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            io.cliproxyapi.cpamc.commit=${{ env.CPAMC_COMMIT }}
+          tags: ${{ env.DOCKERHUB_REPO }}:sha-${{ github.sha }}-${{ matrix.arch }}
+      - name: Build and push web panel
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=web-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=web-${{ matrix.arch }}
+          build-args: |
+            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
+            PANEL_BUILT_AT=${{ env.PANEL_BUILT_AT }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            io.cliproxyapi.cpamc.commit=${{ env.CPAMC_COMMIT }}
+          tags: ${{ env.DOCKERHUB_REPO }}:web-sha-${{ github.sha }}-${{ matrix.arch }}
 
-          token="$(
-            curl -fsSL \
-              -H 'Content-Type: application/json' \
-              -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
-              'https://hub.docker.com/v2/users/login/' \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-          )"
-
-          delete_tag() {
-            local tag="$1"
-            local url="https://hub.docker.com/v2/repositories/${namespace}/${repo_name}/tags/${tag}/"
-            local http_code
-            http_code="$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: JWT ${token}" "${url}" || true)"
-            if [ "${http_code}" = "204" ] || [ "${http_code}" = "404" ]; then
-              echo "Docker Hub tag removed (or missing): ${DOCKERHUB_REPO}:${tag} (HTTP ${http_code})"
-              return 0
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish matching multi-platform image tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          for prefix in '' 'web-'; do
+            tags=(--tag "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA")
+            if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+              tags+=(--tag "$DOCKERHUB_REPO:${prefix}latest")
             fi
-            echo "Docker Hub tag delete failed: ${DOCKERHUB_REPO}:${tag} (HTTP ${http_code})"
-            return 0
-          }
-
-          delete_tag "latest-amd64"
-          delete_tag "latest-arm64"
-          delete_tag "${VERSION}-amd64"
-          delete_tag "${VERSION}-arm64"
+            if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+              tags+=(--tag "$DOCKERHUB_REPO:${prefix}$GITHUB_REF_NAME")
+            fi
+            docker buildx imagetools create "${tags[@]}" \
+              "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA-amd64" \
+              "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA-arm64"
+          done
+          {
+            echo '### Published images'
+            echo "- CPA: \`$DOCKERHUB_REPO:sha-$GITHUB_SHA\`"
+            echo "- Web: \`$DOCKERHUB_REPO:web-sha-$GITHUB_SHA\`"
+            echo 'Both images support linux/amd64 and linux/arm64.'
+          } >> "$GITHUB_STEP_SUMMARY"
