@@ -35,6 +35,7 @@ auths/*
 # Documentation
 docs/*
 !docs/management-api-v8.md
+!docs/management-keys.md
 AGENTS.md
 AGENTS.local.md
 CLAUDE.md

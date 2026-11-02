@@ -152,6 +152,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 				files = append(files, entry)
 			}
 		}
+		sanitizeReadOnlyCredentials(c, files)
 		c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
 		return
 	}
@@ -173,6 +174,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		nameJ, _ := files[j]["name"].(string)
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
+	sanitizeReadOnlyCredentials(c, files)
 	c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
 }
 
@@ -478,6 +480,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 
 		files = append(files, fileData)
 	}
+	sanitizeReadOnlyCredentials(c, files)
 	c.JSON(200, authFilesListResponse(observedAt, files, pagination, total, end))
 }
 

@@ -87,7 +87,7 @@ func (h *Handler) GetAnalyticsPricing(c *gin.Context) {
 		})
 		return
 	}
-	if requester, okRequester := service.(analyticsPricingRefreshRequester); okRequester {
+	if requester, okRequester := service.(analyticsPricingRefreshRequester); okRequester && !isReadOnlyManagement(c) {
 		requester.RequestPricingRefresh()
 	}
 	book, err := provider.PriceBook(c.Request.Context())
@@ -103,7 +103,7 @@ func (h *Handler) GetAnalyticsPricing(c *gin.Context) {
 			return
 		}
 		response = pricingSnapshotFromDurable(durable, time.Now().UTC())
-		if _, okRequester := service.(analyticsPricingRefreshRequester); okRequester && response.SyncState != "ready" && !time.Now().UTC().Before(durable.Provenance.CatalogRetryAt) {
+		if _, okRequester := service.(analyticsPricingRefreshRequester); okRequester && !isReadOnlyManagement(c) && response.SyncState != "ready" && !time.Now().UTC().Before(durable.Provenance.CatalogRetryAt) {
 			// The request was deliberately queued above. Let CPAMC poll while
 			// the background fetch is in flight instead of blocking this read.
 			response.SyncState = "refreshing"

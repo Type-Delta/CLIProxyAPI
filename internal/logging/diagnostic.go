@@ -39,9 +39,7 @@ func SafeDiagnosticForLog(message string) string {
 	if excerpt == "" {
 		return ""
 	}
-	excerpt = urlUserinfoLogPattern.ReplaceAllString(excerpt, `${1}[REDACTED]@`)
-	excerpt = sensitiveLogAssignmentPattern.ReplaceAllString(excerpt, `${1}"[REDACTED]"`)
-	excerpt = authorizationLogPattern.ReplaceAllString(excerpt, `${1} [REDACTED]`)
+	excerpt = RedactCredentialValues(excerpt)
 
 	return truncateDiagnosticLogExcerpt(excerpt, sourceTruncated)
 }
@@ -169,4 +167,13 @@ func truncateDiagnosticLogExcerpt(message string, sourceTruncated bool) string {
 		}
 	}
 	return output + "..."
+}
+
+// RedactCredentialValues removes credential assignments and URL userinfo without truncating log content.
+func RedactCredentialValues(message string) string {
+	message = urlUserinfoLogPattern.ReplaceAllString(message, `${1}[REDACTED]@`)
+	message = sensitiveLogAssignmentPattern.ReplaceAllString(message, `${1}"[REDACTED]"`)
+	message = authorizationLogPattern.ReplaceAllString(message, `${1} [REDACTED]`)
+
+	return message
 }

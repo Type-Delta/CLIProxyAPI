@@ -443,9 +443,14 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			provided = c.GetHeader("X-Management-Key")
 		}
 
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
+		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, provided)
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
+			return
+		}
+		c.Set(managementScopeContextKey, scope)
+		if scope == config.ManagementScopeReadOnly && !readOnlyManagementRoute(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "read-only management key"})
 			return
 		}
 		c.Next()
@@ -455,11 +460,19 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
+	scope, allowed, status, message := h.authenticateManagementScope(clientIP, localClient, provided)
+	if allowed && scope != config.ManagementScopeFullAccess {
+		return false, http.StatusForbidden, "full-access management key required"
+	}
+	return allowed, status, message
+}
+
+func (h *Handler) authenticateManagementScope(clientIP string, localClient bool, provided string) (string, bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
 	if h == nil {
-		return false, http.StatusForbidden, "remote management disabled"
+		return "", false, http.StatusForbidden, "remote management disabled"
 	}
 
 	h.mu.Lock()
@@ -467,10 +480,12 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	var (
 		allowRemote bool
 		secretHash  string
+		keys        []config.ManagementKey
 	)
 	if cfg != nil {
 		allowRemote = cfg.RemoteManagement.AllowRemote
 		secretHash = cfg.RemoteManagement.SecretKey
+		keys = append([]config.ManagementKey(nil), cfg.RemoteManagement.Keys...)
 	}
 	h.mu.Unlock()
 	if h.allowRemoteOverride {
@@ -485,7 +500,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		if now.Before(ai.blockedUntil) {
 			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 			h.attemptsMu.Unlock()
-			return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
+			return "", false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
 		}
 		// Ban expired, reset state
 		ai.blockedUntil = time.Time{}
@@ -494,7 +509,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	h.attemptsMu.Unlock()
 
 	if !localClient && !allowRemote {
-		return false, http.StatusForbidden, "remote management disabled"
+		return "", false, http.StatusForbidden, "remote management disabled"
 	}
 
 	fail := func() {
@@ -522,37 +537,51 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		h.attemptsMu.Unlock()
 	}
 
-	if secretHash == "" && envSecret == "" {
-		return false, http.StatusForbidden, "remote management key not set"
+	if secretHash == "" && envSecret == "" && len(keys) == 0 && (!localClient || h.localPassword == "") {
+		return "", false, http.StatusForbidden, "remote management key not set"
 	}
 
 	if provided == "" {
 		fail()
-		return false, http.StatusUnauthorized, "missing management key"
+		return "", false, http.StatusUnauthorized, "missing management key"
 	}
 
 	if localClient {
 		if lp := h.localPassword; lp != "" {
 			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
 				reset()
-				return true, 0, ""
+				return config.ManagementScopeFullAccess, true, 0, ""
 			}
 		}
 	}
 
 	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
 		reset()
-		return true, 0, ""
+		return config.ManagementScopeFullAccess, true, 0, ""
 	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
-		fail()
-		return false, http.StatusUnauthorized, "invalid management key"
+	if secretHash != "" && bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) == nil {
+		reset()
+		return config.ManagementScopeFullAccess, true, 0, ""
 	}
-
-	reset()
-
-	return true, 0, ""
+	// If duplicate credentials have different scopes, the least privilege wins.
+	matchedScope := ""
+	for _, key := range keys {
+		if !config.ValidManagementScope(key.Scope) || key.SecretKey == "" {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(key.SecretKey), []byte(provided)) == nil {
+			if matchedScope == "" || key.Scope == config.ManagementScopeReadOnly {
+				matchedScope = key.Scope
+			}
+		}
+	}
+	if matchedScope != "" {
+		reset()
+		return matchedScope, true, 0, ""
+	}
+	fail()
+	return "", false, http.StatusUnauthorized, "invalid management key"
 }
 
 // persistLocked saves the current in-memory config to disk.

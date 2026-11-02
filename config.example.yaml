@@ -97,9 +97,22 @@ management:
   allow-remote: false
 
   # Management key. If a plaintext value is provided here, it will be hashed on startup.
-  # All management requests (even from localhost) require this key.
-  # Leave empty to disable the Management API entirely (404 for /v0/management and /v8/management routes).
+  # This legacy key, MANAGEMENT_PASSWORD, and a local management password grant full access.
+  # All management requests, including localhost requests, require an accepted key.
+  # With no secret-key, additional keys, environment password, or local password,
+  # management routes return 404.
   secret-key: ""
+
+  # Additional named management keys. Scopes must be exactly full-access or read-only.
+  # IDs must be unique and names, IDs, and secret keys must be nonempty.
+  # Plaintext secrets are bcrypt-hashed and persisted on startup.
+  # Read-only keys can observe analytics and quotas but cannot retrieve credentials,
+  # raw config, API keys, or invoke arbitrary requests. See docs/management-keys.md.
+  keys: []
+  # - id: dashboard
+  #   name: Dashboard
+  #   secret-key: "replace-with-a-long-random-secret"
+  #   scope: read-only
 
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false

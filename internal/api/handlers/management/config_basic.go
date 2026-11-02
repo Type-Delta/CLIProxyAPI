@@ -101,6 +101,12 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 }
 
 func WriteConfig(path string, data []byte) error {
+	var errPrepare error
+	data, errPrepare = config.PrepareManagementKeysYAML(data)
+	if errPrepare != nil {
+		return errPrepare
+	}
+
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return err

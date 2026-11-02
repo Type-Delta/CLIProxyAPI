@@ -17,6 +17,21 @@ Docs are public whenever local management is available, even if remote API calls
 
 OAuth callbacks are the exception to management-key authentication. They validate a pending login state. Do not treat callback acceptance as completed credential exchange.
 
+Management keys have `full-access` or `read-only` scope. The existing single management secret keeps full access. Use `/session` to discover the current key's scope. Read-only keys can inspect analytics and quota observations and run restricted SQL; writes, credential downloads, raw configuration, client keys, legacy management routes, and arbitrary upstream calls return 403. Quota probes accept only recognized observational requests. Dashboard, Logs Viewer, and Management Center Info use `/overview`, the version check, and allowlisted observational log and usage reads. Read-only logs redact credentials; request downloads omit headers and payloads. API-key usage preserves buckets and totals with opaque numbered identities instead of URL/key pairs. Log deletion, settings changes, updates, and model refreshes remain denied.
+
+## Management keys
+
+Only full-access keys can manage additional keys. Responses contain metadata and never return a key or its hash. Keep the submitted key securely when creating or rotating it.
+
+| Method and path | Purpose | Key parameters |
+| --- | --- | --- |
+| `GET /v8/management/overview` | Read safe dashboard settings and counts | Returns `config`, `counts`, `providerKeyCounts`; proxy scheme/host only, no raw config or credentials |
+| `GET /v8/management/session` | Read the authenticated key's scope | Returns `scope` |
+| `GET /v8/management/management-keys` | List additional management keys | Returns `keys` with `id`, `name`, `scope` |
+| `POST /v8/management/management-keys` | Create an additional key | JSON `name`, `key`, `scope` |
+| `PATCH /v8/management/management-keys/:id` | Rename, rotate, or change a key's scope | JSON optional `name`, `key`, `scope` |
+| `DELETE /v8/management/management-keys/:id` | Revoke an additional key | Path `id` |
+
 ## Conventions
 
 Use JSON bodies and `Content-Type: application/json`, except YAML replacement, file uploads and downloads. Config JSON accepts the target value directly, without a `value` envelope. GET reads persisted configuration in the v8 tree without adding omitted defaults or migrating the file. PUT replaces its target; PATCH merges objects and replaces arrays and scalars; DELETE removes a field. Mapping paths cannot index arrays: replace the list. Successful writes save the latest layout; reads and rejected writes leave the file unchanged. Legacy field names are rejected; historical v8 aliases remain accepted. Per-key `null` inherits the corresponding group setting. Home-owned revision fields cannot be edited. JSON config reads redact TURN credentials; YAML reads include them.

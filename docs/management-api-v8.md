@@ -9,7 +9,12 @@ available in the [management API guide](https://help.router-for.me/management/ap
 
 ## Access
 
-The v8 endpoints use the same management key and remote-access policy as v0.
+Management keys use the same remote-access policy for every scope. Legacy passwords
+retain full access; additional named keys may have `full-access` or `read-only` scope.
+`GET /v8/management/session` returns the authenticated scope. Read-only keys are limited
+to explicitly allowed v8 observations and cannot access v0 management routes. Full-access
+users manage named credentials through `/management-keys`. See
+[scoped management keys](management-keys.md) for the CRUD contract and quota restrictions.
 Send `Authorization: Bearer <management-key>` or `X-Management-Key: <management-key>`.
 OAuth callbacks validate a pending login state and do not require a management-key
 header. Home mode disables local management endpoints for both versions.

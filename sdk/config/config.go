@@ -21,6 +21,11 @@ type TLSConfig = internalconfig.TLSConfig
 type DiscoveryConfig = internalconfig.DiscoveryConfig
 type DiscoveryInterfacesConfig = internalconfig.DiscoveryInterfacesConfig
 type RemoteManagement = internalconfig.RemoteManagement
+type ManagementKey = internalconfig.ManagementKey
+
+const ManagementScopeFullAccess = internalconfig.ManagementScopeFullAccess
+const ManagementScopeReadOnly = internalconfig.ManagementScopeReadOnly
+
 type OAuthModelAlias = internalconfig.OAuthModelAlias
 type OAuthModelSetting = internalconfig.OAuthModelSetting
 type PayloadConfig = internalconfig.PayloadConfig

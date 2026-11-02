@@ -30,7 +30,7 @@ func (h *Handler) GetAnalyticsPricingCatalogProviders(c *gin.Context) {
 		writeAnalyticsError(c, err)
 		return
 	}
-	if requester, ok := service.(analyticsPricingRefreshRequester); ok {
+	if requester, ok := service.(analyticsPricingRefreshRequester); ok && !isReadOnlyManagement(c) {
 		requester.RequestPricingRefresh()
 	}
 	providerStore, ok := service.(analyticsCatalogProviders)

@@ -1,7 +1,9 @@
 package management
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,5 +115,23 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		}
 	}
 
+	if isReadOnlyManagement(c) {
+		for _, bucket := range out {
+			identities := make([]string, 0, len(bucket))
+			for identity := range bucket {
+				identities = append(identities, identity)
+			}
+			sort.Strings(identities)
+			opaque := make(map[string]apiKeyUsageEntry, len(bucket))
+			for i, identity := range identities {
+				opaque[fmt.Sprintf("key-%d", i+1)] = bucket[identity]
+			}
+			clear(bucket)
+			for identity, entry := range opaque {
+				bucket[identity] = entry
+			}
+		}
+	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, out)
 }

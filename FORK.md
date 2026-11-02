@@ -2415,6 +2415,63 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 - Check CPAMC against the merged CPA in a browser at desktop (1440px) and mobile (390px) widths.
 - If a change touches CLIProxyAPIHome integration (`internal/home/`), check whether the CLIProxyAPIHome repository needs a matching update.
 
+
+### DL066 — Scoped management keys
+
+**Last updated:** 2026-11-02
+
+Additional `management.keys` credentials have explicit `full-access` or `read-only`
+scopes. Legacy, environment, and local passwords retain full access. Startup, config
+uploads, comment-preserving persistence, and reloads validate metadata and hash plaintext
+keys. The v8 session endpoint reports the authenticated scope; full-access key CRUD
+returns only IDs, names, and scopes. Ordinary JSON config reads redact scoped-key hashes.
+
+Read-only management uses an explicit v8 allowlist for analytics and quota observation,
+including event exports that only read data and stream an in-memory CSV/JSON response.
+Dashboard, Logs Viewer, and Management Center Info remain accessible through a safe
+`GET /v8/management/overview` summary, the latest-version check, and allowlisted log and
+API-key usage reads. Overview exposes selected settings and counts, with proxy scheme/host
+only. Read-only usage replaces raw URL/key identities with numbered labels. Application
+logs remove credentials and known secrets; request downloads omit all headers and payloads
+while retaining request metadata and response status. Full-access log/usage behavior and
+filename/path validation remain unchanged. Full config, log deletion/settings writes,
+updates, and model refreshes remain denied.
+It rejects legacy routes, config and credential downloads, mutations, plugin management
+operations, and non-HTTP management authentication. Quota proxy requests require validated
+provider-specific read operations, prohibit redirect/proxy/header/body escapes, and redact
+credential-bearing response fields. Observational plugin quota fetches remain available;
+quota resets and paid inference probes require full access. Pricing GETs do not schedule
+catalog refreshes for read-only sessions. Read-only plugin requests must match the
+credential's server-selected quota plugin, and plugin errors never return provider details.
+See `docs/management-keys.md` for the contract. Numeric token accounting fields survive
+quota sanitization only for recognized count names; token credential fields and
+string-valued lookalikes remain stripped. Read-only panel quota reads use official Kimi
+endpoints without credential downloads and sanitized Antigravity project metadata.
+Plugin quota routing uses the credential's server-selected plugin ID without privileged
+discovery. Meta refresh is unavailable to read-only sessions because its existing quota
+flow mints a key.
+
+**Implementation evidence:** `internal/config/management_keys.go`,
+`internal/api/handlers/management/management_keys.go`,
+`internal/api/handlers/management/management_quota_read.go`, v8 route registration,
+startup/reload availability checks, scoped-key and quota security regression tests.
+
+**Recorded validation:** `go test ./...` passes with an isolated ClickHouse instance,
+including restricted SQL reads, rejected SQL writes and external-source access, key
+lifecycle, scope enforcement, redaction, and quota transport regressions. The canonical
+Docker panel build and disposable server compile pass. Live API checks cover create,
+rename, scope changes, rotation, revocation, restricted reads, and a successful read-only
+`SELECT`. Chrome checks against the bundled panel cover key management, read-only login,
+restricted-route redirects, and absence of config requests at desktop and mobile widths.
+The Docker runtime smoke test covers scoped login, key CRUD, denied mutations, and bundled
+panel delivery. The panel's pinned Bun 1.4.3 verification passes 2,637 tests, lint,
+TypeScript, and its production build. Session races are covered through the real Axios
+interceptors as well as deferred config completions; plugin regressions cover credential
+selection and secret-bearing errors for both GET and POST. Additional tests cover
+read-only overview counts, opaque usage identities, plugin YAML secrets, log section
+spoofing, and denied logging mutations. Desktop and mobile browser checks cover the
+Dashboard, Logs Viewer, and Management Center Info with no privileged preloads.
+
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.

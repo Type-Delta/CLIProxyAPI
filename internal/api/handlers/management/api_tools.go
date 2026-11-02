@@ -137,6 +137,10 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	if isReadOnlyManagement(c) && !authorizeReadOnlyQuota(&body, auth, parsedURL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "read-only quota probe denied"})
+		return
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {
@@ -145,7 +149,14 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	requestKind := classifyQuotaRequest(auth, method, parsedURL, body.Data)
 	cacheKey := buildQuotaCacheKey(h, auth, method, parsedURL, requestProxyURL, reqHeaders, body.Data)
+	readOnly := isReadOnlyManagement(c)
+	if readOnly {
+		cacheKey.requestHash += ":read-only"
+	}
 	execute := func(ctx context.Context) quotaCallOutcome {
+		if readOnly {
+			ctx = context.WithValue(ctx, readOnlyQuotaContextKey{}, true)
+		}
 		return h.executeAPICall(ctx, method, urlStr, authIndex, auth, requestProxyURL, reqHeaders, body.Data)
 	}
 	if body.ForceRefresh && requestKind == quotaRequestCacheable {
@@ -178,6 +189,9 @@ func (h *Handler) APICall(c *gin.Context) {
 		h.applyQuotaReserveFromQuotaRead(auth, parsedURL, []byte(outcome.response.Body))
 	}
 
+	if isReadOnlyManagement(c) {
+		sanitizeReadOnlyQuota(&outcome, auth)
+	}
 	h.writeAPICallOutcome(c, outcome)
 }
 
@@ -265,6 +279,9 @@ func (h *Handler) executeAPICall(ctx context.Context, method, urlStr, authIndex 
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
 	}
+	if ctx.Value(readOnlyQuotaContextKey{}) == true {
+		httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	}
 	httpClient.Transport = h.apiCallTransport(auth, requestProxyURL)
 
 	resp, errDo := httpClient.Do(req)
@@ -294,7 +311,7 @@ func (h *Handler) executeAPICall(ctx context.Context, method, urlStr, authIndex 
 		}
 	}
 
-	return quotaCallOutcome{
+	outcome := quotaCallOutcome{
 		hasResponse: true,
 		response: apiCallResponse{
 			StatusCode: resp.StatusCode,
@@ -302,6 +319,10 @@ func (h *Handler) executeAPICall(ctx context.Context, method, urlStr, authIndex 
 			Body:       string(respBody),
 		},
 	}
+	if ctx.Value(readOnlyQuotaContextKey{}) == true {
+		sanitizeReadOnlyQuota(&outcome, auth, token)
+	}
+	return outcome
 }
 
 func (h *Handler) writeAPICallOutcome(c *gin.Context, outcome quotaCallOutcome) {

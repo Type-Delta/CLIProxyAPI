@@ -104,7 +104,11 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 		if handled {
 			if errFetch != nil {
 				log.WithError(errFetch).Warnf("failed to fetch quota for credential %s", auth.Index)
-				c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
+				if isReadOnlyManagement(c) {
+					c.JSON(http.StatusBadGateway, gin.H{"error": "quota fetch failed"})
+				} else {
+					c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
+				}
 				return
 			}
 			c.JSON(http.StatusOK, quotaResp)
@@ -280,6 +284,11 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		return
 	}
 
+	if isReadOnlyManagement(c) && host.QuotaProviderPluginIDs(c.Request.Context())[strings.ToLower(strings.TrimSpace(auth.Provider))] != pluginID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "quota plugin does not match credential"})
+		return
+	}
+
 	quotaResp, handled, errFetch := host.FetchQuotaByPlugin(c.Request.Context(), pluginID, pluginapi.QuotaFetchRequest{
 		AuthIndex:  auth.Index,
 		AuthID:     auth.ID,
@@ -292,7 +301,22 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 		return
 	}
 	if errFetch != nil {
+		if isReadOnlyManagement(c) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch quota"})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to fetch quota: %v", errFetch)})
+		return
+	}
+	if isReadOnlyManagement(c) {
+		raw, err := json.Marshal(quotaResp)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "invalid quota response"})
+			return
+		}
+		outcome := quotaCallOutcome{response: apiCallResponse{Body: string(raw)}}
+		sanitizeReadOnlyQuota(&outcome, auth)
+		c.Data(http.StatusOK, "application/json", []byte(outcome.response.Body))
 		return
 	}
 	c.JSON(http.StatusOK, quotaResp)

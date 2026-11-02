@@ -58,6 +58,17 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 		if !yamlRequest {
+			if keys := configV8Node(root, []string{"management", "keys"}); keys != nil {
+				hashes := map[string]bool{}
+				for _, key := range keys.Content {
+					if secret := configV8Node(key, []string{"secret-key"}); secret != nil && secret.Value != "" {
+						hashes[secret.Value] = true
+					}
+					deleteConfigV8Path(key, []string{"secret-key"})
+				}
+				// A persisted YAML anchor can also expose the same hash outside management.
+				redactV8ManagementHashes(root, hashes)
+			}
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
 				for _, server := range servers.Content {
 					deleteConfigV8Path(server, []string{"username"})
@@ -153,6 +164,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	}
 	if !yamlRequest && c.Request.Method != http.MethodDelete {
 		preserveV8TURNSecrets(root, before)
+		preserveV8ManagementKeySecrets(root, before)
 	}
 	// Revisions are owned by Home and must not become ordinary editable settings.
 	for _, field := range []string{"credentials/concurrency/lifecycle-config-revision", "credentials/concurrency/observation-barrier-revision", "plugins/auth-revision"} {
@@ -375,5 +387,41 @@ func mergeConfigV8Patch(dst, src *yaml.Node) {
 		} else {
 			dst.Content = append(dst.Content, key, value)
 		}
+	}
+}
+
+// JSON reads redact key hashes. Preserve them by immutable ID on JSON round trips;
+// a newly added key must still supply a secret and pass ordinary validation.
+func preserveV8ManagementKeySecrets(root, before *yaml.Node) {
+	next := configV8Node(root, []string{"management", "keys"})
+	old := configV8Node(before, []string{"management", "keys"})
+	if next == nil || old == nil || next.Kind != yaml.SequenceNode || old.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, entry := range next.Content {
+		id := configV8Node(entry, []string{"id"})
+		if id == nil || configV8Node(entry, []string{"secret-key"}) != nil {
+			continue
+		}
+		for _, previous := range old.Content {
+			oldID := configV8Node(previous, []string{"id"})
+			secret := configV8Node(previous, []string{"secret-key"})
+			if oldID != nil && oldID.Value == id.Value && secret != nil {
+				entry.Content = append(entry.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "secret-key"}, cloneConfigV8Node(secret))
+				break
+			}
+		}
+	}
+}
+
+func redactV8ManagementHashes(node *yaml.Node, hashes map[string]bool) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.ScalarNode && hashes[node.Value] {
+		node.Value = "[redacted]"
+	}
+	for _, child := range node.Content {
+		redactV8ManagementHashes(child, hashes)
 	}
 }

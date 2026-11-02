@@ -68,13 +68,19 @@ func prepareConfigForUpload(data []byte) ([]byte, error) {
 	if errParse := yaml.Unmarshal(data, &cfg); errParse != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", errParse)
 	}
-	prepared := data
+	if err := cfg.RemoteManagement.NormalizeKeys(); err != nil {
+		return nil, err
+	}
+	prepared, errKeys := prepareManagementKeysYAML(data, cfg.RemoteManagement.Keys)
+	if errKeys != nil {
+		return nil, errKeys
+	}
 	if secret := cfg.RemoteManagement.SecretKey; secret != "" && !looksLikeBcrypt(secret) {
 		hashed, errHash := hashSecret(secret)
 		if errHash != nil {
 			return nil, fmt.Errorf("failed to hash remote management key: %w", errHash)
 		}
-		updated, errUpdate := updateNestedScalarYAML(data, managementSecretKeyPath(data), hashed)
+		updated, errUpdate := updateNestedScalarYAML(prepared, managementSecretKeyPath(data), hashed)
 		if errUpdate != nil {
 			return nil, fmt.Errorf("failed to update remote management key: %w", errUpdate)
 		}
@@ -104,6 +110,12 @@ func prepareConfigForUpload(data []byte) ([]byte, error) {
 // data must already decode as a Config, which rejects cyclic aliases.
 func plaintextManagementSecrets(data []byte, effective string) []string {
 	candidates := []string{effective}
+	var source Config
+	if yaml.Unmarshal(data, &source) == nil {
+		for _, key := range source.RemoteManagement.Keys {
+			candidates = append(candidates, key.SecretKey)
+		}
+	}
 	var doc yaml.Node
 	if yaml.Unmarshal(data, &doc) == nil && len(doc.Content) > 0 {
 		root := expandConfigAliases(doc.Content[0])
@@ -259,6 +271,22 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 	if errValidate := cfg.ValidateProviderSelectorFields(); errValidate != nil {
 		return nil, errValidate
+	}
+
+	if errKeys := cfg.RemoteManagement.NormalizeKeys(); errKeys != nil {
+		return nil, errKeys
+	}
+	if len(cfg.RemoteManagement.Keys) > 0 {
+		prepared, errKeys := prepareManagementKeysYAML(data, cfg.RemoteManagement.Keys)
+		if errKeys != nil {
+			return nil, errKeys
+		}
+		if !bytes.Equal(prepared, data) {
+			if errWrite := os.WriteFile(configFile, prepared, 0600); errWrite != nil {
+				return nil, fmt.Errorf("persist management keys: %w", errWrite)
+			}
+			data = prepared
+		}
 	}
 
 	// Hash remote management key if plaintext is detected (nested)

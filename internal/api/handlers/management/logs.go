@@ -69,7 +69,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 					latest = cursor.LatestTimestamp
 				}
 			}
-			writeLogsResponse(c, []string{}, 0, latest, "", rawCursor != "")
+			h.writeLogsResponse(c, []string{}, 0, latest, "", rawCursor != "")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list log files: %v", err)})
@@ -95,10 +95,10 @@ func (h *Handler) GetLogs(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log files: %v", errCursor)})
 				return
 			}
-			writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, true)
+			h.writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, true)
 			return
 		}
-		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
+		h.writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
 		return
 	}
 
@@ -108,7 +108,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log files: %v", errTail)})
 			return
 		}
-		writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
+		h.writeLogsResponse(c, result.lines, len(result.lines), result.latest, result.nextCursor, false)
 		return
 	}
 
@@ -129,7 +129,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to prepare log cursor: %v", errCursor)})
 		return
 	}
-	writeLogsResponse(c, lines, total, latest, nextCursor, false)
+	h.writeLogsResponse(c, lines, total, latest, nextCursor, false)
 }
 
 // DeleteLogs removes all rotated log files and truncates the active log.
@@ -381,7 +381,7 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 		return
 	}
 
-	c.FileAttachment(fullPath, matchedFile)
+	h.serveManagementLogFile(c, fullPath, matchedFile)
 }
 
 type logFileMeta struct {
@@ -519,7 +519,7 @@ func (h *Handler) DownloadRequestErrorLog(c *gin.Context) {
 		return
 	}
 
-	c.FileAttachment(fullPath, name)
+	h.serveManagementLogFile(c, fullPath, name)
 }
 
 func (h *Handler) logDirectory() string {
@@ -1447,5 +1447,5 @@ func (h *Handler) serveTelemetryLog(c *gin.Context, id string, errorOnly bool) {
 		return
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "error-"+r.RequestID+".log"))
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", logging.RenderRequestLog(r))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(h.readOnlyLogContent(c, string(logging.RenderRequestLog(r)), true)))
 }
