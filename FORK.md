@@ -2458,6 +2458,14 @@ Plugin quota routing uses the credential's server-selected plugin ID without pri
 discovery. Meta refresh is unavailable to read-only sessions because its existing quota
 flow mints a key.
 
+Codex manual-reset expiry observations accept CPAMC's fixed `OpenAI-Beta: codex-1`
+and `Originator: Codex Desktop` headers only on the exact reset-credit GET endpoint.
+Account header and subscription-query validation reuse the server's CPAMC account resolver,
+including stored ID-token claims and metadata/attribute aliases, with legacy `account_id`
+as a fallback. Reset-credit consumption and all existing request restrictions remain denied
+to read-only sessions. Actual-transport regressions replay usage, subscription, and reset
+details with production-shaped credentials and reject account/query/header escapes.
+
 **Implementation evidence:** `internal/config/management_keys.go`,
 `internal/api/handlers/management/management_keys.go`,
 `internal/api/handlers/management/management_quota_read.go`, v8 route registration,

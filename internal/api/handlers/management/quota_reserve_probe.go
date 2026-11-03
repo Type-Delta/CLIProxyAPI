@@ -475,7 +475,7 @@ func kiroQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 }
 
 // codexQuotaReserveAccountID matches CPAMC's resolveCodexChatgptAccountId for the
-// fields the auth-files listing exposes.
+// fields the auth-files listing exposes, with the stored account_id as a fallback.
 func codexQuotaReserveAccountID(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
@@ -493,5 +493,6 @@ func codexQuotaReserveAccountID(auth *coreauth.Auth) string {
 			return strings.TrimSpace(value)
 		}
 	}
-	return ""
+	value, _ := auth.Metadata["account_id"].(string)
+	return strings.TrimSpace(value)
 }

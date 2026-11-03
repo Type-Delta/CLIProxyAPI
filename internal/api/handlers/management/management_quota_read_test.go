@@ -223,3 +223,108 @@ func TestReadOnlyQuotaPreservesAccountingButStripsTokenCredentials(t *testing.T)
 		t.Fatal("nested credential survived")
 	}
 }
+
+// Replay the three reads made by CPAMC's Codex quota data layer. The reset
+// details add headers that usage and subscription reads do not send.
+func TestReadOnlyCodexPanelRequestsActualTransport(t *testing.T) {
+	for _, variant := range []string{"production", "id-token-only", "id-token-precedence", "metadata-snake", "metadata-camel", "attribute-snake", "attribute-camel", "legacy-account"} {
+		t.Run(variant, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			metadata := map[string]any{"access_token": "test-token"}
+			attributes := map[string]string{}
+			switch variant {
+			case "production":
+				metadata["account_id"] = "acc-oauth-test"
+				metadata["id_token"] = makeOAuthTestJWT("pro")
+			case "id-token-only":
+				metadata["id_token"] = makeOAuthTestJWT("pro")
+			case "id-token-precedence":
+				metadata["id_token"] = makeOAuthTestJWT("pro")
+				metadata["account_id"] = "stale-account"
+			case "metadata-snake":
+				metadata["chatgpt_account_id"] = "acc-oauth-test"
+			case "metadata-camel":
+				metadata["chatgptAccountId"] = "acc-oauth-test"
+			case "attribute-snake":
+				attributes["chatgpt_account_id"] = "acc-oauth-test"
+			case "attribute-camel":
+				attributes["chatgptAccountId"] = "acc-oauth-test"
+			case "legacy-account":
+				metadata["account_id"] = "acc-oauth-test"
+			}
+			auth := &coreauth.Auth{ID: "panel-codex", Index: "panel-codex", Provider: "codex", Metadata: metadata, Attributes: attributes}
+			if _, err := h.authManager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+			headers := map[string]string{
+				"Authorization":      "Bearer $TOKEN$",
+				"Content-Type":       "application/json",
+				"User-Agent":         "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)",
+				"Chatgpt-Account-Id": "acc-oauth-test",
+			}
+			for _, target := range []string{codexUsageQuotaURL, "https://chatgpt.com/backend-api/subscriptions?account_id=acc-oauth-test", codexResetCreditsURL} {
+				if target == codexResetCreditsURL {
+					headers["Accept"] = "application/json"
+					headers["OpenAI-Beta"] = "codex-1"
+					headers["Originator"] = "Codex Desktop"
+					proxy.setResponse(200, nil, `{"rate_limit_reset_credits":[{"expires_at":"2027-01-01T00:00:00Z"}]}`)
+				} else {
+					proxy.setResponse(200, nil, `{"plan_type":"pro","active_until":"2027-01-01T00:00:00Z"}`)
+				}
+				body := apiCallRequest{AuthIndexCamel: ptrString(auth.Index), Method: "GET", URL: target, Header: headers}
+				res := readOnlyQuotaCall(t, h, body)
+				if res.Code != 200 || !strings.Contains(res.Body.String(), `"status_code":200`) {
+					t.Fatalf("%s: HTTP %d %s", target, res.Code, res.Body)
+				}
+				if target == codexResetCreditsURL && !strings.Contains(res.Body.String(), "expires_at") {
+					t.Fatalf("manual reset expiry missing: %s", res.Body)
+				}
+			}
+			if proxy.count.Load() != 3 {
+				t.Fatalf("transport calls = %d, want all three panel reads", proxy.count.Load())
+			}
+			for _, tc := range []struct {
+				name   string
+				change func(*apiCallRequest)
+			}{
+				{"account header mismatch", func(b *apiCallRequest) { b.Header["Chatgpt-Account-Id"] = "other" }},
+				{"subscription account mismatch", func(b *apiCallRequest) { b.URL = "https://chatgpt.com/backend-api/subscriptions?account_id=other" }},
+				{"subscription extra query", func(b *apiCallRequest) {
+					b.URL = "https://chatgpt.com/backend-api/subscriptions?account_id=acc-oauth-test&redirect=other"
+				}},
+				{"subscription duplicate account", func(b *apiCallRequest) {
+					b.URL = "https://chatgpt.com/backend-api/subscriptions?account_id=acc-oauth-test&account_id=other"
+				}},
+				{"reset query", func(b *apiCallRequest) { b.URL += "?account_id=acc-oauth-test" }},
+				{"beta mismatch", func(b *apiCallRequest) { b.Header["OpenAI-Beta"] = "other" }},
+				{"originator mismatch", func(b *apiCallRequest) { b.Header["Originator"] = "other" }},
+				{"beta credential escape", func(b *apiCallRequest) { b.Header["OpenAI-Beta"] = "$TOKEN$" }},
+				{"originator credential escape", func(b *apiCallRequest) { b.Header["Originator"] = "$TOKEN$" }},
+				{"beta on usage", func(b *apiCallRequest) { b.URL = codexUsageQuotaURL }},
+				{"reset consumption", func(b *apiCallRequest) { b.Method = "POST"; b.URL = codexConsumeURL; b.Data = `{"amount":1}` }},
+				{"reset write", func(b *apiCallRequest) { b.Method = "POST" }},
+				{"arbitrary URL", func(b *apiCallRequest) { b.URL = "https://example.invalid/echo" }},
+				{"host header", func(b *apiCallRequest) { b.Header["Host"] = "example.invalid" }},
+				{"literal credential", func(b *apiCallRequest) { b.Header["Authorization"] = "Bearer test-token" }},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					requestHeaders := make(map[string]string, len(headers))
+					for key, value := range headers {
+						requestHeaders[key] = value
+					}
+					body := apiCallRequest{AuthIndexCamel: ptrString(auth.Index), Method: "GET", URL: codexResetCreditsURL, Header: requestHeaders}
+					tc.change(&body)
+					if strings.HasPrefix(body.URL, "https://chatgpt.com/backend-api/subscriptions") {
+						delete(body.Header, "OpenAI-Beta")
+						delete(body.Header, "Originator")
+					}
+					res := readOnlyQuotaCall(t, h, body)
+					if res.Code != http.StatusForbidden || proxy.count.Load() != 3 {
+						t.Fatalf("unsafe request reached transport: HTTP %d %s, calls %d", res.Code, res.Body, proxy.count.Load())
+					}
+				})
+			}
+		})
+	}
+}

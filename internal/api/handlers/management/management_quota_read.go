@@ -26,7 +26,7 @@ func authorizeReadOnlyQuota(body *apiCallRequest, auth *coreauth.Auth, target *u
 	}
 	if strings.EqualFold(auth.Provider, "codex") && method == http.MethodGet && body.Data == "" && target.Host == "chatgpt.com" && target.EscapedPath() == "/backend-api/subscriptions" && target.Fragment == "" {
 		q, err := url.ParseQuery(target.RawQuery)
-		accountID, _ := auth.Metadata["account_id"].(string)
+		accountID := codexQuotaReserveAccountID(auth)
 		if err == nil && accountID != "" && len(q) == 1 && len(q["account_id"]) == 1 && q.Get("account_id") == accountID {
 			allowed = true
 		}
@@ -94,8 +94,19 @@ func authorizeReadOnlyQuota(body *apiCallRequest, auth *coreauth.Auth, target *u
 				return false
 			}
 		case "chatgpt-account-id":
-			accountID, _ := auth.Metadata["account_id"].(string)
+			accountID := codexQuotaReserveAccountID(auth)
 			if accountID == "" || value != accountID {
+				return false
+			}
+		case "openai-beta", "originator":
+			// CPAMC sends these fixed headers only for Codex reset-credit observations.
+			if !strings.EqualFold(auth.Provider, "codex") || method != http.MethodGet || !exactQuotaURL(target, codexResetCreditsURL) {
+				return false
+			}
+			if strings.EqualFold(key, "openai-beta") && value != "codex-1" {
+				return false
+			}
+			if strings.EqualFold(key, "originator") && value != "Codex Desktop" {
 				return false
 			}
 		case "user-agent", "x-grok-client-version":
