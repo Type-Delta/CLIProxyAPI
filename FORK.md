@@ -2479,66 +2479,82 @@ Dashboard, Logs Viewer, and Management Center Info with no privileged preloads.
 
 ### DL067 — Config YAML syntax errors report their line
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-03
 
 `PUT /v8/management/config.yaml` and the other v8 config writes return the YAML parser's message
 as `message` when the request body is not valid YAML, alongside the unchanged
 `"error": "invalid_body"` code. Upstream returned only the code, so neither the management panel
-nor a script editing the config could see what was wrong or where. gopkg.in/yaml.v3 v3.0.1
-reports zero-based lines for parser errors (scanner errors are already one-based), so the
-handler adds one for its fixed set of parser messages. Every reported line is then one-based in
-the submitted body. Lines in later validation errors are covered by DL069.
+nor a script editing the config could see what was wrong or where. gopkg.in/yaml.v3 v3.0.1 can't
+be trusted for the line: depending on the problem it counts from zero, omits the line on line 1,
+or reports the start of the enclosing block. Its line is never past the problem, though, so the
+fork takes the shortest line prefix of the body that fails with the same message, starting at
+yaml.v3's line. Bodies over 1 MiB skip the search and keep yaml.v3's message. Lines in later
+validation errors are covered by DL069. Proposed upstream on the
+`fix/v8-config-error-messages` branch; drop this entry if upstream accepts it.
 
-**Implementation evidence:** `internal/api/handlers/management/config_v8.go` (the
-`invalid_body` response) and `internal/api/handlers/management/config_v8_yaml_error.go`.
+**Implementation evidence:** `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
+and the `invalid_body` response in `internal/api/handlers/management/config_v8.go`.
 
-**Recorded validation:** On 2026-11-02, `config_v8_parse_error_test.go` covers parser errors
-(unclosed flow sequence, dedent mismatch) and scanner errors (tab indentation, unclosed quote).
-Each reports the one-based line in the submitted body, and the config file stays unchanged.
-Before the line correction, yaml.v3 reported the two parser errors one line early.
+**Recorded validation:** On 2026-11-03, `yaml_syntax_error_test.go` covers dedents after
+comments, sequence entries in a mapping, unclosed flow collections and quotes (including after
+valid multi-line ones), one-line bodies, tabs, and CR, CRLF, NEL, LS, and PS line breaks.
+`config_v8_parse_error_test.go` covers the handler response, and the config file stays
+unchanged. A real server built from fork `main` reported the line for an unclosed quote and for
+a one-line body. An earlier version used a table of yaml.v3 parser messages and reported the
+enclosing block's line for several of them.
 
 ### DL068 — Unknown v8 config fields are named at their own line
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-03
 
 `ValidateV8Config` decodes a flattened legacy copy of the v8 document strictly. Flattening moves
 every known v8 field out of its section, so a typo such as `server.hots` stays behind under
 `server`. Upstream then reported `line 1: field server not found in type config.legacyConfig`,
 which names the parent section, the line in the internal copy, and an internal Go type. The
-fork maps each strict-decode error back to the node in the `ValidateV8Config` input. Below a
-leftover v8 section it reports every unknown key (`line 6: field hots not found`), and inside
-a section decoded as one struct it reports the key at its input line. The flattened tree keeps
-input positions because its nodes are copies of the parsed input. Drop this entry if upstream
-accepts the change.
+fork maps each strict-decode error back to the node in the `ValidateV8Config` input and keeps it
+a `*yaml.TypeError`. Below a leftover v8 section it reports every unknown key
+(`line 6: field hots not found`), and elsewhere it reports the key at its input line. Keys that
+flattening or API-key expansion generated have no position, so their value's line is used. The
+flattened tree keeps input positions because its nodes are copies of the parsed input. Proposed
+upstream with DL067; drop this entry if upstream accepts it.
 
 **Implementation evidence:** `internal/config/yaml_error_lines.go` (`describeV8DecodeError`) and
 the `ValidateV8Config` decode call in `internal/config/config_v8.go`.
 
-**Recorded validation:** On 2026-11-02, `yaml_error_lines_test.go` covers a typo beside a known
-sibling, a typo in a nested section, every unknown key in one section, and a typo in a section
-decoded as one struct (`routing`). Each test failed before the change with the
-`config.legacyConfig` message.
+**Recorded validation:** On 2026-11-03, `yaml_error_lines_test.go` covers a typo beside a known
+sibling, in a nested section, under `routing.retry`, in an expanded API-key entry, and in a
+section decoded as one struct (`routing`), plus every unknown key in one section. Run against
+the previous fork version, the `routing.retry` and API-key cases reported the parent section or
+no line. A real server built from fork `main` reported `line 9 (clickhouse.dns-typo)` for a typo
+in the fork-only `clickhouse` section.
 
 ### DL069 — Config validation errors point at the submitted field
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-03
 
 The v8 config handler validates its re-encoded document, so upstream's `invalid_config` line
 references ignored the body's comments, blank lines, and indentation. A type error on line 11 of
-an uploaded `config.yaml` was reported on line 6. The handler maps each `line N` back through its
-merged node tree, which keeps body positions, and names the field:
-`line 11 (server.port): cannot unmarshal !!str 'notaport' into int`. Only whole-document PUTs
-keep the line. PATCH and sub-path writes merge into nodes from the stored file, so they report
-only the path (`server.port: ...`). Drop this entry if upstream accepts the change.
+an uploaded `config.yaml` was reported on line 6. The handler maps each `line N` back to the field
+and names it: `line 11 (server.port): cannot unmarshal !!str 'notaport' into int`. A
+whole-document PUT re-parses the body only when there is an error to describe and reports the
+body's line and spelling, so a historical key name keeps the user's path. PATCH and sub-path writes merge into nodes from the
+stored file, so they report only the path (`server.port: ...`). Values copied through an anchor
+or merge key also get only the path, because their line is the anchor's, while the anchored
+original keeps its line; they are found from
+the submitted body's aliases, so this holds when normalization removes the anchor's own field. Without a column, a
+collection nested in one of the same kind on one line is named one level too deep. Documents
+over 1 MiB keep yaml.v3's message, as for DL067. Proposed upstream with DL067; drop this entry if upstream accepts it.
 
 **Implementation evidence:** `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
 and its use after `ParseConfigBytes` and `ValidateV8Config` in
 `internal/api/handlers/management/config_v8.go`.
 
-**Recorded validation:** On 2026-11-02, `config_v8_validation_error_test.go` covers one and two
-type errors and an unknown field in a whole-document YAML PUT, and a JSON PATCH that reports
-the path without a line. Before the change, the same requests reported lines 6, 8, and 7 for
-mistakes on lines 11, 13, and 12.
+**Recorded validation:** On 2026-11-03, `config_v8_validation_error_test.go` covers type and
+unknown-field errors in whole-document PUTs and PATCHes, `routing.retry`, API-key entries,
+historical spellings, a mapping where a list belongs, block-valued unknown fields, aliases
+(including one whose anchor normalization removes), merge keys, and user values containing `line N:`. Any case expecting no line fails if one
+appears. Run against the previous fork version, eight of these cases failed. HTTP statuses, error
+codes, and the bytes written for valid saves are unchanged.
 
 ## Merge History
 
