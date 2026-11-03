@@ -2014,6 +2014,8 @@ credentials, spaces reads one second apart, reuses the shared management quota c
 order-independent query parameters), does nothing when analytics is disabled, and stops with
 the server. Other providers are recorded only from CPAMC refreshes.
 
+CPAMC charts these samples on each provider's Quota tab: a live figure with projected pool-empty, next-reset and recent burn stats, a recorded line over a gradient fill, a dashed projection with labeled refills, and a Now marker (CPAMC DL071).
+
 **Implementation evidence:** `internal/cpauk/chstore/{migrations/0001_analytics.sql,quota_history.go}`,
 `internal/cpauk/store/migrations/017_quota_history.sql`,
 `internal/cpauk/{quota_history.go,store/quota_history.go}`,
@@ -2024,7 +2026,7 @@ and `internal/api/quota_history_collector.go`.
 a single provider call, Kiro query-order reuse, disabled analytics and credentials, and shutdown.
 Live collection against real provider credentials has not been exercised.
 
-**Last updated:** 2026-10-28
+**Last updated:** 2026-11-03
 
 ### DL060 — ClickHouse server mode: analytics, request capture, and agent SQL
 
