@@ -13,8 +13,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
-// TestConfigV8YAMLSyntaxErrorReportsLine keeps the YAML parser message, with
-// its line in the submitted body, so editors and scripts can locate the error.
 func TestConfigV8YAMLSyntaxErrorReportsLine(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -30,7 +28,6 @@ func TestConfigV8YAMLSyntaxErrorReportsLine(t *testing.T) {
 	router := gin.New()
 	router.PUT("/v8/management/config.yaml", h.ConfigV8)
 
-	// Each case names the one-based line a person would look at.
 	cases := []struct{ name, body, want string }{
 		{"unclosed flow sequence", "config-version: 8\n# comment\n\nserver:\n  port: [8317\n", "yaml: line 5: did not find expected ',' or ']'"},
 		{"dedent mismatch", "config-version: 8\nserver:\n   host: a\n  port: 1\n", "yaml: line 4: did not find expected key"},
