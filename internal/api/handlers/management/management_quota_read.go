@@ -18,6 +18,13 @@ func authorizeReadOnlyQuota(body *apiCallRequest, auth *coreauth.Auth, target *u
 	if auth == nil || target == nil || target.User != nil || target.Scheme != "https" || body.ProxyURL != "" {
 		return false
 	}
+	accountID := codexQuotaReserveAccountID(auth)
+	// Credential listings expose ID-token claims, which take precedence over stored aliases here.
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		if listedAccount, ok := claims["chatgpt_account_id"].(string); ok && listedAccount != "" {
+			accountID = listedAccount
+		}
+	}
 	method := strings.ToUpper(strings.TrimSpace(body.Method))
 	allowed := method == http.MethodGet && strings.TrimSpace(body.Data) == "" && classifyQuotaRequest(auth, method, target, "") == quotaRequestCacheable
 	if strings.EqualFold(auth.Provider, "kimi") && method == http.MethodGet && body.Data == "" && exactQuotaURL(target,
@@ -26,7 +33,6 @@ func authorizeReadOnlyQuota(body *apiCallRequest, auth *coreauth.Auth, target *u
 	}
 	if strings.EqualFold(auth.Provider, "codex") && method == http.MethodGet && body.Data == "" && target.Host == "chatgpt.com" && target.EscapedPath() == "/backend-api/subscriptions" && target.Fragment == "" {
 		q, err := url.ParseQuery(target.RawQuery)
-		accountID := codexQuotaReserveAccountID(auth)
 		if err == nil && accountID != "" && len(q) == 1 && len(q["account_id"]) == 1 && q.Get("account_id") == accountID {
 			allowed = true
 		}
@@ -94,7 +100,6 @@ func authorizeReadOnlyQuota(body *apiCallRequest, auth *coreauth.Auth, target *u
 				return false
 			}
 		case "chatgpt-account-id":
-			accountID := codexQuotaReserveAccountID(auth)
 			if accountID == "" || value != accountID {
 				return false
 			}

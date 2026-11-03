@@ -328,3 +328,72 @@ func TestReadOnlyCodexPanelRequestsActualTransport(t *testing.T) {
 		})
 	}
 }
+
+func TestReadOnlyCodexListedAccountOverridesStaleAliases(t *testing.T) {
+	for _, variant := range []string{"metadata-snake", "metadata-camel", "attribute-snake", "attribute-camel"} {
+		t.Run(variant, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h, router := scopedManagementFixture(t)
+			h.cfg.AuthDir = t.TempDir()
+			h.SetAuthManager(coreauth.NewManager(nil, nil, nil))
+			metadata := map[string]any{"access_token": "test-token", "account_id": "acc-oauth-test", "id_token": makeOAuthTestJWT("pro")}
+			attributes := map[string]string{"runtime_only": "true"}
+			switch variant {
+			case "metadata-snake":
+				metadata["chatgpt_account_id"] = "stale-account"
+			case "metadata-camel":
+				metadata["chatgptAccountId"] = "stale-account"
+			case "attribute-snake":
+				attributes["chatgpt_account_id"] = "stale-account"
+			case "attribute-camel":
+				attributes["chatgptAccountId"] = "stale-account"
+			}
+			auth := &coreauth.Auth{ID: "listing-codex", Index: "listing-codex", Provider: "codex", Metadata: metadata, Attributes: attributes}
+			if _, err := h.authManager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+			router.GET("/v8/management/credentials", h.Middleware(), h.ListAuthFiles)
+			router.POST("/v8/management/requests/api-call", h.Middleware(), h.APICall)
+			listed := scopedRequest(router, "GET", "/v8/management/credentials", "viewer-secret", "")
+			var listing struct {
+				Files []struct {
+					AuthIndex string `json:"auth_index"`
+					IDToken   struct {
+						AccountID string `json:"chatgpt_account_id"`
+					} `json:"id_token"`
+				} `json:"files"`
+			}
+			if listed.Code != 200 || json.Unmarshal(listed.Body.Bytes(), &listing) != nil || len(listing.Files) != 1 || listing.Files[0].IDToken.AccountID != "acc-oauth-test" {
+				t.Fatal("credential listing", listed.Code, listed.Body)
+			}
+			file := listing.Files[0]
+			for _, target := range []string{codexUsageQuotaURL, "https://chatgpt.com/backend-api/subscriptions?account_id=" + url.QueryEscape(file.IDToken.AccountID), codexResetCreditsURL} {
+				headers := map[string]string{"Authorization": "Bearer $TOKEN$", "Chatgpt-Account-Id": file.IDToken.AccountID}
+				if target == codexResetCreditsURL {
+					headers["OpenAI-Beta"] = "codex-1"
+					headers["Originator"] = "Codex Desktop"
+				}
+				proxy.setResponse(200, nil, `{"available_count":1,"credits":[{"expires_at":"2027-01-01T00:00:00Z"}]}`)
+				body, err := json.Marshal(apiCallRequest{AuthIndexCamel: &file.AuthIndex, Method: "GET", URL: target, Header: headers})
+				if err != nil {
+					t.Fatal(err)
+				}
+				res := scopedRequest(router, "POST", "/v8/management/requests/api-call", "viewer-secret", string(body))
+				if res.Code != 200 || !strings.Contains(res.Body.String(), `"status_code":200`) {
+					t.Fatalf("%s: %d %s", target, res.Code, res.Body)
+				}
+			}
+			if proxy.count.Load() != 3 {
+				t.Fatalf("transport calls = %d, want 3", proxy.count.Load())
+			}
+			body, err := json.Marshal(apiCallRequest{AuthIndexCamel: &file.AuthIndex, Method: "GET", URL: codexUsageQuotaURL, Header: map[string]string{"Authorization": "Bearer $TOKEN$", "Chatgpt-Account-Id": "stale-account"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := scopedRequest(router, "POST", "/v8/management/requests/api-call", "viewer-secret", string(body))
+			if res.Code != http.StatusForbidden || proxy.count.Load() != 3 {
+				t.Fatal("stale account reached upstream", res.Code, res.Body)
+			}
+		})
+	}
+}

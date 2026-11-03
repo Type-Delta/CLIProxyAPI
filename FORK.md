@@ -2425,7 +2425,7 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 
 ### DL066 — Scoped management keys
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-03
 
 Additional `management.keys` credentials have explicit `full-access` or `read-only`
 scopes. Legacy, environment, and local passwords retain full access. Startup, config
@@ -2460,11 +2460,18 @@ flow mints a key.
 
 Codex manual-reset expiry observations accept CPAMC's fixed `OpenAI-Beta: codex-1`
 and `Originator: Codex Desktop` headers only on the exact reset-credit GET endpoint.
-Account header and subscription-query validation reuse the server's CPAMC account resolver,
-including stored ID-token claims and metadata/attribute aliases, with legacy `account_id`
-as a fallback. Reset-credit consumption and all existing request restrictions remain denied
+Account header and subscription-query validation prefer the ID-token account exposed by
+credential listings, then use the existing metadata/attribute aliases and legacy `account_id`
+fallback. Stale stored aliases cannot override the account CPAMC receives. Reset-credit
+consumption and all existing request restrictions remain denied
 to read-only sessions. Actual-transport regressions replay usage, subscription, and reset
 details with production-shaped credentials and reject account/query/header escapes.
+Listing-to-request regressions also cover conflicting snake-case and camel-case aliases
+in both metadata and attributes, while preserving server-side quota-reserve selection.
+Desktop and mobile browser checks exercise the actual panel and CPA through a local TLS
+quota fixture: expiry details render without warnings and no reset mutation is sent.
+The Docker runtime accepts all three quota reads and rejects reset consumption and stale
+account headers. The full Go suite and pinned Bun Codex quota tests pass.
 
 **Implementation evidence:** `internal/config/management_keys.go`,
 `internal/api/handlers/management/management_keys.go`,

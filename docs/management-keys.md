@@ -57,8 +57,9 @@ mints a key and requires credential-file access; it is unavailable to read-only 
 Codex usage, subscription expiry, and manual reset-credit expiry are observational reads.
 The reset-credit details GET accepts only the panel's fixed `OpenAI-Beta: codex-1`
 and `Originator: Codex Desktop` values for those optional headers. Account headers and
-subscription queries must match the selected credential's account resolved from its
-metadata, attributes, or stored ID-token claims, with legacy `account_id` as a fallback.
+subscription queries must match the selected credential's account. The stored ID-token
+account exposed by credential listings takes precedence over metadata and attribute
+aliases, with legacy `account_id` as a fallback.
 Extra query parameters and reset-credit consumption remain forbidden.
 
 Dashboard, Logs Viewer, and Management Center Info are available to read-only sessions.
