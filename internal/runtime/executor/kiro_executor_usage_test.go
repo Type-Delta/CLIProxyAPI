@@ -565,7 +565,7 @@ func TestKiroMeteringZeroAndNumericTokenFields(t *testing.T) {
 	for _, event := range events {
 		frames = append(frames, kiroTestEventFrame(t, event.name, event.payload)...)
 	}
-	result, err := collectKiroEvents(bytes.NewReader(frames), "model", nil)
+	result, err := collectKiroEvents(bytes.NewReader(frames), "model", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

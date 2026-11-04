@@ -1166,6 +1166,8 @@ Kiro credentials register a native executor that translates OpenAI Responses and
 
 CPAMC adds Kiro to the OAuth page, provider branding, auth-file grouping, and quota views. The quota adapter reads Kiro `getUsageLimits` data through the management API and renders included and free-trial request windows, subscription details, overages, and reset times. Profile ARNs are exposed as sanitized metadata only; credential files are never downloaded into the browser.
 
+Kiro upstream requests are recorded like every other provider's: request logs and the ClickHouse `attempts` table receive the URL, masked headers, final Kiro payload, credential identity, status, error body, and stream errors. Because the binary AWS event-stream framing is unreadable, the response body stores each decoded event as SSE-style `event:`/`data:` text.
+
 The CPAMC Kiro quota body uses the redesigned quota row layout and contributes its plan and request windows to the quota summary strip. A later follow-up (DL033) adds the Kiro GSR recovery probe; Kiro credentials without an available monthly reset timestamp are still excluded under `greedy-soonest-recovery`.
 
 **Implementation evidence:** `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `web/management-center/src/{pages/OAuthPage.tsx,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.

@@ -188,30 +188,17 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), targetModel, "kiro", "", requestPayload, req, opts)
 	body = finalizePayload(body)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(auth), bytes.NewReader(body))
-	if err != nil {
-		return resp, err
-	}
-	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
-		return resp, errPrepare
-	}
-	httpClient := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
-	response, err := httpClient.Do(request)
+	response, err := e.sendKiroRequest(ctx, auth, reporter, body)
 	if err != nil {
 		return resp, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		return resp, statusErr{
-			code:       response.StatusCode,
-			msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
-			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
-		}
-	}
 	response.Body = trackKiroGenerationBody(ctx, reporter, response.Body)
-	result, err := collectKiroEvents(response.Body, req.Model, requestPayload)
+	result, err := collectKiroEvents(response.Body, req.Model, requestPayload, func(eventName string, data map[string]any) {
+		e.recordKiroEvent(ctx, eventName, data)
+	})
 	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		reporter.PublishFailureWithDetail(ctx, result.usageDetail(), err)
 		return resp, err
 	}
@@ -243,26 +230,9 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	}
 	finalizePayload := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), targetModel, "kiro", "", requestPayload, req, opts)
 	body = finalizePayload(body)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(auth), bytes.NewReader(body))
+	response, err := e.sendKiroRequest(ctx, auth, reporter, body)
 	if err != nil {
 		return nil, err
-	}
-	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
-		return nil, errPrepare
-	}
-	httpClient := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		response.Body.Close()
-		return nil, statusErr{
-			code:       response.StatusCode,
-			msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
-			retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
-		}
 	}
 	response.Body = trackKiroGenerationBody(ctx, reporter, response.Body)
 	out := make(chan cliproxyexecutor.StreamChunk, 8)
@@ -276,6 +246,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if streamErr == nil {
 				streamErr = context.Canceled
 			}
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailureWithDetail(ctx, events.usageDetail(), streamErr)
 		}
 		emit := func(payload []byte) bool {
@@ -303,7 +274,10 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			publishFailure(ctx.Err())
 			return
 		}
-		if errParse := parseKiroEventStream(response.Body, func(eventName string, data map[string]any) bool { return emit(events.consume(eventName, data)) }); errParse != nil {
+		if errParse := parseKiroEventStream(response.Body, func(eventName string, data map[string]any) bool {
+			e.recordKiroEvent(ctx, eventName, data)
+			return emit(events.consume(eventName, data))
+		}); errParse != nil {
 			publishFailure(errParse)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errParse}:
@@ -756,10 +730,65 @@ func numberField(data map[string]any, keys ...string) (int, bool) {
 	return 0, false
 }
 
-func collectKiroEvents(body io.Reader, model string, requestPayload []byte) (*kiroEventAccumulator, error) {
+// collectKiroEvents accumulates a whole Kiro stream; observe, when set, sees every decoded event first.
+func collectKiroEvents(body io.Reader, model string, requestPayload []byte, observe func(string, map[string]any)) (*kiroEventAccumulator, error) {
 	result := newKiroEventAccumulator(model, requestPayload)
-	err := parseKiroEventStream(body, func(eventName string, data map[string]any) bool { result.consume(eventName, data); return true })
+	err := parseKiroEventStream(body, func(eventName string, data map[string]any) bool {
+		if observe != nil {
+			observe(eventName, data)
+		}
+		result.consume(eventName, data)
+		return true
+	})
 	return result, err
+}
+
+// sendKiroRequest posts the finalized payload and records the upstream attempt
+// for request logs and telemetry. Non-2xx responses are closed and returned as
+// statusErr, so a returned response always carries a successful event stream.
+func (e *KiroExecutor) sendKiroRequest(ctx context.Context, auth *cliproxyauth.Auth, reporter *helps.UsageReporter, body []byte) (*http.Response, error) {
+	endpoint := e.endpoint(auth)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if errPrepare := e.PrepareRequest(request, auth); errPrepare != nil {
+		return nil, errPrepare
+	}
+	logInfo := helps.UpstreamRequestLog{URL: endpoint, Method: http.MethodPost, Headers: request.Header.Clone(), Body: body, Provider: e.Identifier()}
+	if auth != nil {
+		logInfo.AuthID, logInfo.AuthLabel = auth.ID, auth.Label
+		logInfo.AuthType, logInfo.AuthValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, logInfo)
+	httpClient := reporter.TrackHTTPClient(helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0))
+	response, err := httpClient.Do(request)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, response.StatusCode, response.Header.Clone())
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return response, nil
+	}
+	data, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	return nil, statusErr{
+		code:       response.StatusCode,
+		msg:        fmt.Sprintf("kiro upstream returned %d: %s", response.StatusCode, strings.TrimSpace(string(data))),
+		retryAfter: openAICompatRetryAfter(response.StatusCode, response.Header, nil, time.Now()),
+	}
+}
+
+// recordKiroEvent captures one decoded Kiro event as SSE-style text, because the
+// binary AWS event-stream framing is unreadable in request logs and telemetry.
+func (e *KiroExecutor) recordKiroEvent(ctx context.Context, eventName string, data map[string]any) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, []byte("event: "+eventName+"\ndata: "+string(encoded)+"\n\n"))
 }
 
 func trackKiroGenerationBody(ctx context.Context, reporter *helps.UsageReporter, body io.ReadCloser) io.ReadCloser {
