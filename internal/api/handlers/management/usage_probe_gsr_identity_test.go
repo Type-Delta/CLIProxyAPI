@@ -9,10 +9,14 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 // gsrProbeFixture serves every provider hostname locally. RefreshQuotaForRouting
@@ -317,4 +321,72 @@ func TestRefreshQuotaForRoutingRejectsUnusableWindows(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRoutingGSRProbeRecoveryAcrossSharedKeyEntries(t *testing.T) {
+	fixture := newGSRProbeFixture(t)
+	reset := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	fixture.setResponse(http.StatusOK, fmt.Sprintf(`{"code":200,"success":true,"data":{"limits":[{"unit":6,"number":1,"nextResetTime":%d}]}}`, reset.UnixMilli()))
+	manager := coreauth.NewManager(nil, &coreauth.GreedySoonestRecoverySelector{}, nil)
+	handler := &Handler{authManager: manager}
+	modelName := "glm-shared-key-recovery"
+	providers := []string{"openai-compatible-zai-a", "openai-compatible-zai-b"}
+	var auths []*coreauth.Auth
+	for _, provider := range providers {
+		a, err := manager.Register(context.Background(), &coreauth.Auth{ID: provider, Provider: provider, Status: coreauth.StatusActive, Attributes: map[string]string{"usage_probe": "zai", "api_key": "dummy-shared-key"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		auths = append(auths, a)
+		manager.RegisterExecutor(&refreshRecordExecutor{provider: provider})
+		registry.GetGlobalRegistry().RegisterClient(a.ID, provider, []*registry.ModelInfo{{ID: modelName}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(a.ID) })
+		// A repeated probe exercises the quota cache as well as persistence per entry.
+		for range 2 {
+			if err := handler.RefreshQuotaForRouting(context.Background(), a, modelName); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	calls := len(fixture.requests())
+	if calls != 2 {
+		t.Fatalf("probe calls = %d, want one cached lookup per credential: %v", calls, fixture.requests())
+	}
+	var refreshes atomic.Int32
+	manager.SetQuotaRecoveryRefresher(func(ctx context.Context, a *coreauth.Auth, model string) error {
+		refreshes.Add(1)
+		return handler.RefreshQuotaForRouting(ctx, a, model)
+	})
+	for cycle := range 4 {
+		dry, err := manager.DryRunRoute(context.Background(), routing.DryRunRequest{Model: modelName})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !dry.PickPredicted || dry.StrategyStep == nil || dry.StrategyStep.Applied != routing.StrategyGreedySoonestRecovery {
+			t.Fatalf("cycle=%d dry=%+v", cycle, dry)
+		}
+		for _, row := range dry.StrategyStep.Weights {
+			if row.RecoveryAtMs != reset.UnixMilli() || row.RecoverySource != "signal:weekly_reset_at" {
+				t.Fatalf("cycle=%d recovery=%+v", cycle, row)
+			}
+		}
+		ctx, holder := routing.WithTraceHolder(context.Background())
+		if _, err := manager.Execute(ctx, providers, cliproxyexecutor.Request{Model: modelName}, cliproxyexecutor.Options{}); err != nil {
+			t.Fatal(err)
+		}
+		live := holder.Last()
+		if live == nil || live.Candidates[live.Pick].ID != dry.Candidates[dry.Pick].ID {
+			t.Fatalf("cycle=%d dry=%+v live=%+v", cycle, dry, live)
+		}
+		for _, a := range auths {
+			current, _ := manager.GetByID(a.ID)
+			if current.Quota.Signals["weekly_reset_at"] != reset.Format(time.RFC3339) {
+				t.Fatalf("cycle=%d %s lost persisted recovery: %+v", cycle, a.ID, current.Quota)
+			}
+		}
+	}
+	if refreshes.Load() != 0 || len(fixture.requests()) != calls {
+		t.Fatalf("traffic forced quota refresh: refreshes=%d HTTP calls=%d", refreshes.Load(), len(fixture.requests()))
+	}
+	t.Logf("two shared-key entries retained weekly recovery across four dry-run/Execute cycles; initial HTTP calls=%d; subsequent refreshes=%d", calls, refreshes.Load())
 }

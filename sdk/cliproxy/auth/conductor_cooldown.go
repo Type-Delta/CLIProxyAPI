@@ -1585,7 +1585,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.Generation++
 		auth.UpdatedAt = now
 
-		if !result.SkipQuotaObservation {
+		// These providers' routing observations come from usage probes. Adapter
+		// responses cannot replace them, including adapters without passive headers.
+		quotaProvider := QuotaRecoveryProviderForAuth(auth)
+		if !result.SkipQuotaObservation && quotaProvider != quotaRecoveryProviderZai && quotaProvider != quotaRecoveryProviderOpenCodeGo {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
