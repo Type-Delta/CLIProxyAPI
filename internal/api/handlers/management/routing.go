@@ -98,12 +98,13 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 }
 
 type routingDryRunInput struct {
-	Model      string            `json:"model"`
-	APIKey     string            `json:"api_key_label"`
-	ClientType string            `json:"client_type"`
-	Headers    map[string]string `json:"headers"`
-	SessionID  string            `json:"session_id"`
-	Rules      json.RawMessage   `json:"rules"`
+	DownstreamWebsocket bool              `json:"downstream_websocket"`
+	Model               string            `json:"model"`
+	APIKey              string            `json:"api_key_label"`
+	ClientType          string            `json:"client_type"`
+	Headers             map[string]string `json:"headers"`
+	SessionID           string            `json:"session_id"`
+	Rules               json.RawMessage   `json:"rules"`
 }
 
 // PostRoutingDryRun simulates one routing decision without changing runtime state.
@@ -167,12 +168,13 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		headers.Add(name, value)
 	}
 	trace, err := h.authManager.DryRunRoute(c.Request.Context(), routing.DryRunRequest{
-		Model:      input.Model,
-		KeyID:      keyID,
-		ClientType: input.ClientType,
-		Headers:    headers,
-		SessionID:  input.SessionID,
-		Rules:      draft,
+		DownstreamWebsocket: input.DownstreamWebsocket,
+		Model:               input.Model,
+		KeyID:               keyID,
+		ClientType:          input.ClientType,
+		Headers:             headers,
+		SessionID:           input.SessionID,
+		Rules:               draft,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "routing dry run failed"})
@@ -193,9 +195,19 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 			}
 		}
 	}
+	service, _ := h.analyticsServiceForRead()
+	identityProvider, _ := service.(interface {
+		CredentialID(provider, authIndex, authID string) (*string, error)
+	})
 	if trace != nil {
 		for index := range trace.Candidates {
-			trace.Candidates[index].Label = labels[trace.Candidates[index].ID]
+			candidate := &trace.Candidates[index]
+			candidate.Label = labels[candidate.ID]
+			if identityProvider != nil && trace.Affinity != nil && trace.Affinity.Bound == index {
+				if id, errIdentity := identityProvider.CredentialID(candidate.Provider, candidate.AuthIndex, candidate.ID); errIdentity == nil && id != nil {
+					candidate.AnalyticsID = *id
+				}
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"trace": trace, "warnings": warnings})

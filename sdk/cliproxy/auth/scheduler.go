@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 // schedulerStrategy identifies which built-in routing semantics the scheduler should apply.
@@ -500,8 +501,11 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 	captureSingleScheduledTier(ctx, shard, preferWebsocket, predicate)
+	if strategy != schedulerStrategyGreedySoonestRecovery {
+		s.captureSingleStrategy(ctx, shard, preferWebsocket, predicate, strategy, providerKey, model)
+	}
 	if strategy == schedulerStrategyGreedySoonestRecovery {
-		if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(preferWebsocket, predicate); errPick != nil {
+		if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(preferWebsocket, predicate, ctx); errPick != nil {
 			return nil, errPick
 		} else if picked != nil {
 			if usedFallback {
@@ -573,8 +577,11 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		captureSingleScheduledTier(ctx, shard, false, predicate)
+		if strategy != schedulerStrategyGreedySoonestRecovery {
+			s.captureSingleStrategy(ctx, shard, false, predicate, strategy, providerKey, model)
+		}
 		if strategy == schedulerStrategyGreedySoonestRecovery {
-			if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(false, predicate); errPick != nil {
+			if picked, usedFallback, errPick := shard.pickGreedySoonestRecoveryLocked(false, predicate, ctx); errPick != nil {
 				return nil, "", errPick
 			} else if picked != nil {
 				if usedFallback {
@@ -619,6 +626,9 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 
 	captureScheduledTier(ctx, candidateShards, false, bestPriority, predicate)
+	if strategy != schedulerStrategyGreedySoonestRecovery {
+		s.captureScheduledStrategy(ctx, candidateShards, false, bestPriority, predicate, strategy, normalized, model)
+	}
 	if strategy == schedulerStrategyFillFirst {
 		for providerIndex, providerKey := range normalized {
 			shard := candidateShards[providerIndex]
@@ -697,7 +707,12 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			state = &smoothWeightedState{}
 			s.mixedWeightedStates[cursorKey] = state
 		}
-		weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(entries, predicate, modelKey, time.Now())
+		factors := routingGSRFactors(ctx, len(entries))
+		weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(entries, predicate, modelKey, time.Now(), factors)
+		if errWeights != nil {
+			factors = nil
+		}
+		s.captureScheduledStrategy(ctx, candidateShards, false, bestPriority, predicate, strategy, normalized, model, factors)
 		if errWeights != nil {
 			if picked := s.pickMixedGSRFallbackLocked(entries, cursorKey, predicate); picked != nil && picked.meta != nil {
 				info := quotaRecoveryFallbackInfoForAuths(scheduledRecoveryAuths(entries, predicate), "mixed", model)
@@ -1520,7 +1535,7 @@ func (m *modelScheduler) pickReadyLocked(preferWebsocket bool, strategy schedule
 // pickGreedySoonestRecoveryLocked selects from the highest ready priority using
 // provider recovery timestamps and exponential decay. The caller must hold the
 // scheduler lock.
-func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, predicate func(*scheduledAuth) bool) (*Auth, bool, error) {
+func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, predicate func(*scheduledAuth) bool, contexts ...context.Context) (*Auth, bool, error) {
 	if m == nil {
 		return nil, false, nil
 	}
@@ -1537,7 +1552,21 @@ func (m *modelScheduler) pickGreedySoonestRecoveryLocked(preferWebsocket bool, p
 	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
 		view = &bucket.ws
 	}
-	weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(view.flat, predicate, m.modelKey, time.Now())
+	var ctx context.Context
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
+	factors := routingGSRFactors(ctx, len(view.flat))
+	weighted, weights, errWeights := greedySoonestRecoveryScheduledWeights(view.flat, predicate, m.modelKey, time.Now(), factors)
+	if factors != nil {
+		pool := scheduledRecoveryAuths(view.flat, predicate)
+		if errWeights != nil {
+			captureStrategyPick(ctx, routing.StrategyRoundRobin, pool, m.modelKey, 0, view.lastPicked, nil, nil)
+			markStrategyFallback(ctx, defaultGreedySoonestRecoveryHalfLife)
+		} else {
+			captureStrategyPick(ctx, routing.StrategyGreedySoonestRecovery, pool, m.modelKey, defaultGreedySoonestRecoveryHalfLife, "", &view.gsrState, nil, factors)
+		}
+	}
 	if errWeights != nil {
 		if fallback := view.pickRoundRobin(predicate); fallback != nil && fallback.auth != nil {
 			return fallback.auth, true, nil
@@ -1981,39 +2010,18 @@ func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]in
 	return picked
 }
 
-func greedySoonestRecoveryScheduledWeights(entries []*scheduledAuth, predicate func(*scheduledAuth) bool, model string, now time.Time) ([]*scheduledAuth, map[string]int64, error) {
-	if len(entries) == 0 {
-		return nil, nil, greedySoonestRecoveryTimestampError("", model)
+func greedySoonestRecoveryScheduledWeights(entries []*scheduledAuth, predicate func(*scheduledAuth) bool, model string, now time.Time, explanations ...map[string]routing.StrategyWeight) ([]*scheduledAuth, map[string]int64, error) {
+	eligible := scheduledAuthList(entries, predicate)
+	auths := scheduledRecoveryAuths(eligible, nil)
+	var factors map[string]routing.StrategyWeight
+	if len(explanations) > 0 {
+		factors = explanations[0]
 	}
-	deadlines := make(map[string]time.Time, len(entries))
-	weighted := make([]*scheduledAuth, 0, len(entries))
-	eligibleCount := 0
-	var earliest time.Time
-	for _, entry := range entries {
-		if entry == nil || entry.auth == nil || entry.meta == nil || (predicate != nil && !predicate(entry)) {
-			continue
-		}
-		eligibleCount++
-		deadline, ok := authRecoveryTimestampAt(entry.auth, entry.meta.providerKey, model, now)
-		if !ok {
-			continue
-		}
-		deadlines[entry.auth.ID] = deadline
-		weighted = append(weighted, entry)
-		if earliest.IsZero() || deadline.Before(earliest) {
-			earliest = deadline
-		}
+	_, weights, err := greedySoonestRecoveryWeightsWithFactors(auths, "mixed", model, now, defaultGreedySoonestRecoveryHalfLife, factors)
+	if err != nil {
+		return nil, nil, err
 	}
-	if len(weighted) == 0 || len(weighted) != eligibleCount || earliest.IsZero() {
-		return nil, nil, greedySoonestRecoveryTimestampError("", model)
-	}
-	weights := make(map[string]int64, len(weighted))
-	for _, entry := range weighted {
-		baseWeight := greedySoonestRecoveryWeight(deadlines[entry.auth.ID].Sub(earliest), defaultGreedySoonestRecoveryHalfLife)
-		tierProvider := QuotaRecoveryProviderForAuth(entry.auth)
-		weights[entry.auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(entry.auth, tierProvider))) + entry.meta.weight
-	}
-	return weighted, weights, nil
+	return eligible, weights, nil
 }
 
 func pickSmoothWeightedScheduledWithWeights(entries []*scheduledAuth, weights map[string]int64, current map[string]int64, predicate func(*scheduledAuth) bool) *scheduledAuth {

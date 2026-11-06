@@ -18,6 +18,9 @@ import (
 
 // DryRunRoute evaluates a hypothetical request without advancing routing state.
 func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*routing.Trace, error) {
+	if req.DownstreamWebsocket {
+		ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
+	}
 	if m.HomeEnabled() {
 		return &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeDryRun, DecidedBy: routing.DecidedByHome, Pick: -1, Candidates: []routing.Candidate{}}, nil
 	}
@@ -102,6 +105,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		ctx = context.WithValue(ctx, routingPoolKey{}, &routingPool{decide: rules.Decide, attrs: attrs})
 	}
 	var heldBinding string
+	keptPick := -1
 	if affinityEnabled {
 		selector = affinity.fallback
 		preserveCtx := selectorContextForAvailableAuths(ctx, affinity, model)
@@ -128,15 +132,17 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 				if !found || !time.Now().Before(entry.expiresAt) {
 					continue
 				}
+				captureAffinityBinding(ctx, affinity.cache, key)
 				captureAffinity(ctx, routing.AffinityBroken, entry.authID)
 				for _, a := range eligible {
 					if a.ID == entry.authID {
 						captureAffinity(ctx, routing.AffinityKept, a.ID)
 						captureAffinityRules(ctx, eligible)
-						trace.Pick = capture.indexes[a.ID]
-						trace.PickPredicted = true
-						return trace, nil
+						keptPick = capture.indexes[a.ID]
 					}
+				}
+				if keptPick >= 0 {
+					break
 				}
 				if (identity == primaryID || (!isSubagent && !isFork)) && affinity.shouldPreserveBindingWhenUnavailable(preserveCtx, affinityCandidates, model, entry.authID, time.Now()) {
 					heldBinding = entry.authID
@@ -149,13 +155,38 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 			}
 		}
 	}
+	keptRules := trace.Rules
 	if rules != nil && rules.Len() > 0 {
 		eligible = narrowRoutingPool(ctx, eligible)
 	}
+	if keptPick >= 0 {
+		trace.Rules = keptRules
+	}
 
-	tier := highestPriorityAuths(eligible)
+	legacy := affinityEnabled || (rules != nil && rules.Len() > 0)
+	for _, a := range eligible {
+		if m.routeAwareSelectionRequired(a, model) {
+			legacy = true
+			break
+		}
+	}
+	preferWS := cliproxyexecutor.DownstreamWebsocket(ctx) && len(providers) == 1 && providerPrefersWebsocketTransport(provider)
+	tierCandidates := eligible
+	if preferWS && !legacy && m.useSchedulerFastPath() {
+		tierCandidates = preferWebsocketAuths(ctx, provider, tierCandidates)
+	}
+	tier := highestPriorityAuths(tierCandidates)
+	if preferWS {
+		tier = preferCodexWebsocketAuths(ctx, provider, tier)
+	}
 	if len(tier) == 0 {
-		trace.Error = "no_eligible"
+		if keptPick >= 0 {
+			trace.Pick = keptPick
+			trace.PickPredicted = true
+			trace.DecidedBy = routing.DecidedByAffinity
+		} else {
+			trace.Error = "no_eligible"
+		}
 		return trace, nil
 	}
 	if heldBinding != "" {
@@ -168,78 +199,104 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 	sort.Slice(tier, func(i, j int) bool { return tier[i].ID < tier[j].ID })
 	trace.DecidedBy = routing.DecidedByStrategy
 	if m.hasPluginScheduler() {
+		if keptPick >= 0 {
+			trace.Pick = keptPick
+			trace.PickPredicted = true
+			trace.DecidedBy = routing.DecidedByAffinity
+		}
 		return trace, nil
 	}
-	var chosen *Auth
-	switch s := selector.(type) {
-	case *FillFirstSelector:
-		chosen = tier[0]
-		if len(providers) > 1 && (rules == nil || rules.Len() == 0) && m.useSchedulerFastPath() && !m.hasPluginScheduler() {
-			for _, p := range providers {
-				for _, a := range tier {
-					if canonicalSchedulingProvider(executorKeyFromAuth(a)) == canonicalSchedulingProvider(p) {
-						chosen = a
-						break
-					}
-				}
-				if canonicalSchedulingProvider(executorKeyFromAuth(chosen)) == canonicalSchedulingProvider(p) {
-					break
-				}
+	step, sim := m.dryRunStrategy(capture, selector, tier, providers, provider, model, strategyModel, legacy, preferWS)
+	trace.StrategyStep = step
+	if step != nil {
+		for range 10 {
+			if a := sim.next(); a != nil {
+				step.Next = append(step.Next, capture.candidateIndex(a))
 			}
 		}
-	case *RoundRobinSelector:
-		// Rule and affinity paths use the selector's identity cursor. Indexed picks
-		// use scheduler cursors, which are inspected without creating shards.
-		if _, affinity := m.Selector().(*SessionAffinitySelector); affinity || (rules != nil && rules.Len() > 0) || !m.useSchedulerFastPath() || m.hasPluginScheduler() {
-			key := provider + ":" + canonicalModelKey(strategyModel)
-			s.mu.Lock()
-			last := s.lastPicked[key]
-			s.mu.Unlock()
-			chosen = tier[successorIndex(tier, last)]
-		} else if m.scheduler != nil {
-			m.scheduler.mu.Lock()
-			last := ""
-			chosenProvider := providers[0]
-			if len(providers) > 1 {
-				normalized := normalizeProviderKeys(providers)
-				slot := m.scheduler.mixedCursors[strings.Join(normalized, ",")+":"+canonicalModelKey(model)] % len(tier)
-				for _, providerKey := range normalized {
-					count := 0
-					for _, a := range tier {
-						if canonicalSchedulingProvider(executorKeyFromAuth(a)) == providerKey {
-							count++
-						}
-					}
-					if slot < count {
-						chosenProvider = providerKey
-						break
-					}
-					slot -= count
-				}
-			}
-			if p := m.scheduler.providers[canonicalSchedulingProvider(chosenProvider)]; p != nil {
-				if shard := p.modelShards[canonicalModelKey(model)]; shard != nil {
-					if bucket := shard.readyByPriority[authPriority(tier[0])]; bucket != nil {
-						last = bucket.all.lastPicked
-					}
-				}
-			}
-			m.scheduler.mu.Unlock()
-			providerTier := make([]*Auth, 0, len(tier))
-			for _, a := range tier {
-				if canonicalSchedulingProvider(executorKeyFromAuth(a)) == canonicalSchedulingProvider(chosenProvider) {
-					providerTier = append(providerTier, a)
-				}
-			}
-			if len(providerTier) > 0 {
-				chosen = providerTier[successorIndex(providerTier, last)]
-			}
+		if len(step.Next) > 0 {
+			step.Wanted = step.Next[0]
+			trace.Pick = step.Wanted
+			trace.PickPredicted = true
+		}
+		if step.Fallback == "missing_recovery_data" {
+			step.Fallback = routing.FallbackMissingRecoveryDataRefreshPending
+			trace.PickPredicted = false
 		}
 	}
-	if chosen != nil {
-		trace.Pick = capture.indexes[chosen.ID]
+	if keptPick >= 0 {
+		trace.Pick = keptPick
 		trace.PickPredicted = true
-		trace.DecidedBy = routing.DecidedByStrategy
+		trace.DecidedBy = routing.DecidedByAffinity
 	}
 	return trace, nil
+}
+
+func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*Auth, providers []string, provider, model, strategyModel string, legacy, preferWS bool) (*routing.StrategyStep, *strategySimulation) {
+	if !legacy && m.useSchedulerFastPath() && m.scheduler != nil {
+		// Build ready views privately, including deadlines that have expired since the
+		// live shard was last visited. Copy only cursor state from the live scheduler.
+		local := newAuthScheduler(selector)
+		local.rebuild(tier)
+		normalized := normalizeProviderKeys(providers)
+		shards := make([]*modelScheduler, len(normalized))
+		m.scheduler.mu.Lock()
+		defer m.scheduler.mu.Unlock()
+		key := canonicalModelKey(model)
+		for i, p := range normalized {
+			if ps := local.providers[p]; ps != nil {
+				shards[i] = ps.ensureModelLocked(key, time.Now())
+				if live := m.scheduler.providers[p]; live != nil {
+					if shard := live.modelShards[key]; shard != nil {
+						for priority, bucket := range shards[i].readyByPriority {
+							if old := shard.readyByPriority[priority]; old != nil {
+								restoreReadyViewCursors(&bucket.all, snapshotReadyViewCursors(old.all))
+								restoreReadyViewCursors(&bucket.ws, snapshotReadyViewCursors(old.ws))
+							}
+						}
+					}
+				}
+			}
+		}
+		for k, v := range m.scheduler.mixedCursors {
+			local.mixedCursors[k] = v
+		}
+		for k, v := range m.scheduler.mixedWeightedStates {
+			cp := cloneSmoothState(v)
+			local.mixedWeightedStates[k] = &cp
+		}
+		predicate := scheduledAuthPredicate(authSelectionEligibility{}, nil, "", local.strategy == schedulerStrategyWeightedRoundRobin)
+		return local.scheduledStrategySimulation(c, shards, preferWS, authPriority(tier[0]), predicate, local.strategy, normalized, model)
+	}
+	last := ""
+	var state smoothWeightedState
+	halfLife := time.Duration(0)
+	key := provider + ":" + canonicalModelKey(strategyModel)
+	switch s := selector.(type) {
+	case *RoundRobinSelector:
+		s.mu.Lock()
+		last = s.lastPicked[key]
+		s.mu.Unlock()
+	case *WeightedRoundRobinSelector:
+		key = provider + ":" + canonicalModelKey(model)
+		s.mu.Lock()
+		state = cloneSmoothState(s.states[key])
+		s.mu.Unlock()
+	case *GreedySoonestRecoverySelector:
+		halfLife = s.recoveryHalfLife()
+		key = strings.ToLower(strings.TrimSpace(provider)) + ":" + canonicalModelKey(strategyModel)
+		s.mu.Lock()
+		state = cloneSmoothState(s.states[key])
+		fallback := s.fallback
+		s.mu.Unlock()
+		if fallback != nil {
+			fallback.mu.Lock()
+			last = fallback.lastPicked[provider+":"+canonicalModelKey(strategyModel)]
+			fallback.mu.Unlock()
+		}
+	case *FillFirstSelector:
+	default:
+		return nil, nil
+	}
+	return strategyStep(c, c.trace.Strategy, tier, strategyModel, halfLife, last, &state)
 }

@@ -99,9 +99,81 @@ type Trace struct {
 	Pick int `json:"pick"`
 	// PickPredicted is set by dry runs only; false means the strategy's pick could not be
 	// predicted without side effects and Pick is -1 while Tier.Pool lists the choices.
-	PickPredicted bool   `json:"pick_predicted,omitempty"`
-	Error         string `json:"error,omitempty"`
+	PickPredicted bool `json:"pick_predicted,omitempty"`
+	// StrategyStep explains why the strategy wanted a credential. Live traces record it
+	// whenever a built-in strategy ran; dry runs record it for the tier pool even when
+	// affinity or a pin decides, so Wanted can differ from Pick.
+	StrategyStep *StrategyStep `json:"strategy_step,omitempty"`
+	Error        string        `json:"error,omitempty"`
 }
+
+// Strategy algorithms for StrategyStep.Applied.
+const (
+	StrategyRoundRobin            = "round-robin"
+	StrategyWeightedRoundRobin    = "weighted-round-robin"
+	StrategyFillFirst             = "fill-first"
+	StrategyGreedySoonestRecovery = "greedy-soonest-recovery"
+)
+
+// StrategyStep is the built-in strategy's view of the tier pool.
+type StrategyStep struct {
+	// Applied is the algorithm that actually ranked the pool (one of the Strategy* constants).
+	// It differs from Trace.Strategy when GSR falls back to round-robin.
+	Applied string `json:"applied"`
+	// Fallback names why the configured strategy was not applied, e.g. "missing_recovery_data".
+	Fallback string `json:"fallback,omitempty"`
+	// HalfLifeMs is the GSR decay half-life in milliseconds.
+	HalfLifeMs int64 `json:"half_life_ms,omitempty"`
+	// Last is the candidate the round-robin cursor picked previously, or -1.
+	Last int `json:"last"`
+	// Wanted is the candidate the strategy picked (live) or would pick next (dry run), or -1.
+	Wanted int `json:"wanted"`
+	// Weights has one entry per pool candidate, in pool order.
+	Weights []StrategyWeight `json:"weights"`
+	// Next lists predicted upcoming picks starting with Wanted, assuming the pool stays
+	// unchanged. Dry runs only.
+	Next []int `json:"next,omitempty"`
+}
+
+// StrategyWeight explains one pool candidate's standing in the strategy.
+type StrategyWeight struct {
+	// Index is the candidate index in Trace.Candidates.
+	Index int `json:"index"`
+	// Share is the candidate's long-run fraction of picks while the pool stays unchanged (0..1).
+	// Smooth weighted selection is deterministic, so this is a proportion, not a random draw.
+	Share float64 `json:"share"`
+	// Weight is the effective smooth-weighted weight (WRR and GSR).
+	Weight int64 `json:"weight,omitempty"`
+	// Credit is the accumulated smooth-weighted credit before this pick (WRR and GSR).
+	// The candidate with the highest Credit+Weight is wanted.
+	Credit int64 `json:"credit"`
+	// ConfigWeight is the credential's configured scheduling weight.
+	ConfigWeight int64 `json:"config_weight,omitempty"`
+
+	// GSR factors: Weight = BaseWeight*TierMultiplier + ConfigWeight, with
+	// BaseWeight = max(1, trunc(Decay * 1e6)) and Decay = exp(-DelayMs / HalfLifeMs).
+
+	// RecoveryAtMs is the cached recovery deadline (Unix ms); 0 when missing.
+	RecoveryAtMs int64 `json:"recovery_at_ms,omitempty"`
+	// RecoverySource names the field that supplied RecoveryAtMs: "retry_after",
+	// "quota_recover_at", "model_retry_after", "model_quota_recover_at", "manual_reset",
+	// or "signal:<header>".
+	RecoverySource string `json:"recovery_source,omitempty"`
+	// DelayMs is RecoveryAtMs minus the earliest recovery deadline in the pool.
+	DelayMs    int64   `json:"delay_ms,omitempty"`
+	Decay      float64 `json:"decay,omitempty"`
+	BaseWeight int64   `json:"base_weight,omitempty"`
+	// Tier is the GSR allowance tier: unknown, standard, pro, premium, max, elite.
+	Tier           string `json:"tier,omitempty"`
+	TierMultiplier int64  `json:"tier_multiplier,omitempty"`
+	// TierSource names where Tier came from: "override", "plan", "signal", or empty for unknown.
+	TierSource string `json:"tier_source,omitempty"`
+}
+
+// FallbackMissingRecoveryDataRefreshPending means a network-free dry run lacks
+// observations that live selection would refresh. Wanted and Weights are cached
+// estimates; PickPredicted is false unless affinity determines the actual pick.
+const FallbackMissingRecoveryDataRefreshPending = "missing_recovery_data_refresh_pending"
 
 // Candidate is one credential considered for the request.
 type Candidate struct {
@@ -115,6 +187,8 @@ type Candidate struct {
 	UntilMs int64 `json:"until_ms,omitempty"`
 	// Label is resolved from currently loaded credentials when serving API responses. Never persisted.
 	Label string `json:"label,omitempty"`
+	// AnalyticsID is the affinity-bound credential's analytics pseudonym in dry-run responses only. Never persisted.
+	AnalyticsID string `json:"analytics_id,omitempty"`
 	// AuthIndex is Auth.EnsureIndex(), used in-process to derive the analytics credential_id. Never serialized.
 	AuthIndex string `json:"-"`
 }
@@ -153,6 +227,12 @@ type AffinityStep struct {
 	Bound int `json:"bound"`
 	// AgeMs is how long ago the binding was created, when known.
 	AgeMs int64 `json:"age_ms,omitempty"`
+	// BoundAtMs is when the binding to Bound was created (Unix ms), when known. TTL
+	// refreshes and held failovers keep the original time.
+	BoundAtMs int64 `json:"bound_at_ms,omitempty"`
+	// BoundRequestID is the proxy request ID whose selection created the binding, when
+	// known. Analytics events carry it as proxy_request_id.
+	BoundRequestID string `json:"bound_request_id,omitempty"`
 }
 
 // RuleMatch is one matching rule as returned by RuleSet.Decide.
@@ -177,10 +257,12 @@ type Decision struct {
 
 // DryRunRequest describes a simulated request for Manager.DryRunRoute.
 type DryRunRequest struct {
-	Model      string
-	KeyID      string
-	ClientType string
-	Headers    http.Header
+	// DownstreamWebsocket enables the same transport preference as live WebSocket requests.
+	DownstreamWebsocket bool `json:"downstream_websocket,omitempty"`
+	Model               string
+	KeyID               string
+	ClientType          string
+	Headers             http.Header
 	// SessionID, when set, is looked up read-only in the session-affinity store.
 	SessionID string
 	// Rules overrides the live rules (for unsaved drafts); nil uses the live rules.

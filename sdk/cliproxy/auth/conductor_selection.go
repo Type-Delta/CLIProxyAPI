@@ -257,8 +257,8 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 	var mu sync.Mutex
 	semaphore := make(chan struct{}, 4)
 	for _, candidate := range missing {
-		if err := ctx.Err(); err != nil {
-			return nil, preparation, err
+		if ctx.Err() != nil {
+			break
 		}
 		waitGroup.Add(1)
 		go func(working *Auth) {

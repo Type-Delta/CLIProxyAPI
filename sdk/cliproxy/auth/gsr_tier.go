@@ -22,8 +22,14 @@ const (
 // GSRAllowanceTierForAuth returns the configured or provider-reported allowance
 // class. Unknown and free credentials retain the neutral base multiplier.
 func GSRAllowanceTierForAuth(auth *Auth, provider string) GSRAllowanceTier {
+	tier, _ := GSRAllowanceTierForAuthWithSource(auth, provider)
+	return tier
+}
+
+// GSRAllowanceTierForAuthWithSource also identifies the winning tier input.
+func GSRAllowanceTierForAuthWithSource(auth *Auth, provider string) (GSRAllowanceTier, string) {
 	if auth == nil {
-		return GSRAllowanceUnknown
+		return GSRAllowanceUnknown, ""
 	}
 	if resolvedProvider := QuotaRecoveryProviderForAuth(auth); resolvedProvider != "" || strings.TrimSpace(auth.Attributes["usage_probe"]) != "" {
 		provider = resolvedProvider
@@ -42,15 +48,18 @@ func GSRAllowanceTierForAuth(auth *Auth, provider string) GSRAllowanceTier {
 		stringMetadata(auth.Metadata, "gsr-tier"),
 	} {
 		if tier, ok := parseGSRAllowanceTier(provider, raw); ok {
-			return tier
+			return tier, "override"
 		}
 	}
-	for _, raw := range []string{auth.Attributes["plan_type"], stringMetadata(auth.Metadata, "plan_type"), tierSignal(auth.Quota.Signals)} {
+	for i, raw := range []string{auth.Attributes["plan_type"], stringMetadata(auth.Metadata, "plan_type"), tierSignal(auth.Quota.Signals)} {
 		if tier, ok := parseGSRProviderPlan(provider, raw); ok {
-			return tier
+			if i == 2 {
+				return tier, "signal"
+			}
+			return tier, "plan"
 		}
 	}
-	return GSRAllowanceUnknown
+	return GSRAllowanceUnknown, ""
 }
 
 func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {

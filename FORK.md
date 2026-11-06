@@ -2180,6 +2180,8 @@ Before the route fix, authenticated schema/query requests returned 503 in plain 
 
 ### DL061 — Rule-based routing, routing traces, and routing dry run
 
+DL070 extends these traces with strategy factors, read-only weighted predictions, and affinity binding provenance.
+
 `routing.rules[]` adds ordered custom rules: a condition tree (`all`, `any`, `not`) over the
 requested model, client API-key label, request header, and detected client type, plus `route-to`
 credential IDs (`Auth.ID`). Selection follows a fixed precedence stack, weakest first: custom
@@ -2574,6 +2576,108 @@ historical spellings, a mapping where a list belongs, block-valued unknown field
 (including one whose anchor normalization removes), merge keys, and user values containing `line N:`. Any case expecting no line fails if one
 appears. Run against the previous fork version, eight of these cases failed. HTTP statuses, error
 codes, and the bytes written for valid saves are unchanged.
+
+### DL070 — Routing strategy explanations and affinity provenance
+
+Routing traces explain the built-in strategy's preferred credential independently of
+session affinity. `strategy_step` records the applied algorithm, GSR's missing-data
+round-robin fallback, previous cursor pick, per-candidate scheduling shares, effective
+weights, and smooth credits before selection. GSR includes cached recovery deadlines
+and their source, delay, decay, base weight, allowance tier and source, tier multiplier,
+and configured weight. Legacy selectors and single/mixed-provider scheduler picks
+share the same GSR factor calculation. Live explanations consume the picker's prepared
+deadlines and weights, so expiry during tracing cannot change the reported algorithm
+or shares. Explanation maps are allocated only when a routing capture is present.
+Existing exported timestamp and tier APIs remain compatible. GSR keeps its existing truncation and minimum-one base weight; the contract
+comment now describes that arithmetic rather than rounding.
+
+Dry runs copy live credits and cursors and predict ten selections for RR, WRR, fill-first,
+and GSR. They use cached quota observations only, report GSR's fallback when observations
+are missing, and show the strategy's wanted credential even when affinity keeps another.
+When missing cached recovery data would need refreshing, `strategy_step.fallback` is
+`missing_recovery_data_refresh_pending` and `pick_predicted` is false. Weights and
+wanted selections remain cached-data estimates; an existing kept affinity binding can
+still determine a reliable pick. The optional dry-run input `downstream_websocket`
+defaults to false and applies live WebSocket priority and ready-view preferences.
+Dry-run scheduler WebSocket preference includes both Codex and xAI before priority
+selection. GSR fallback simulations read the fallback selector's provider/model cursor,
+including per-entry OpenAI-compatible provider names and `mixed`, and round-robin rows
+report zero smooth credits. Regressions alternate dry runs and live selections four
+times with missing recovery data and check both predicted picks and previous picks in
+live traces, with and without affinity; scheduler fallback coverage checks the ready
+view's cursor as well.
+
+Usage-probe observations for z.ai and OpenCode Go survive execution results, including
+when another adapter serves the credential. Previously `MarkResult` treated an
+OpenAI-compatible response as an unsupported passive snapshot and cleared the persisted
+probe signals. Alternating live picks could therefore erase and refresh one entry's
+weekly reset between dry runs. These probe-owned observations now bypass passive
+adapter-header replacement. A real quota HTTP transport/parser fixture verifies two
+entries with the same key retain their weekly reset across four dry-run/Execute cycles
+without further refreshes. The cache already isolates entries by credential identity,
+and routing refreshes already persist observations; neither needs a cache or persistence
+redesign.
+
+The affinity cache records the original binding time and proxy request ID; TTL refreshes,
+held failovers, and alias merges preserve them, while a rebind records the new request.
+LCP bindings also retain this provenance; forks inherit the parent's creation time
+and request ID. With analytics and credential identity storage enabled, only the
+bound candidate in the management dry-run response includes optional `analytics_id`,
+computed by CPAUK's credential identity service using the same provider, auth index,
+and identity key as persisted traces. The sanitizer always strips this response-only
+field. The trace's affinity step exposes the binding's creation time, age, and request ID when it references a previous credential.
+
+Persistence preserves candidate indexes and binding request IDs. Oversized traces lose
+predicted selections and per-weight GSR factors before candidate details. ClickHouse
+continues storing raw trace JSON with no schema migration; detail label resolution keeps
+the new fields. Event queries accept the correlation-ID-validated `proxy_request_id`
+filter. The v8 GET interface uses repeated `proxy_request_id=<id>` query parameters,
+matching CPAMC's existing flattened filter encoding; POST queries use
+`filters: {"proxy_request_id": ["<id>"]}`.
+
+**Implementation evidence:** `sdk/cliproxy/auth/{routing_strategy.go,routing_trace.go,routing_dry_run.go,selector.go,scheduler.go,gsr_tier.go,session_cache.go}`,
+`sdk/cliproxy/routing/contract.go`, `internal/cpauk/model/{routing_trace.go,query.go}`,
+`internal/cpauk/chstore/read_selection.go`, and
+`internal/api/handlers/management/{analytics.go,routing.go}`.
+QA regressions in `sdk/cliproxy/auth/routing_explanation_regression_test.go` cover
+expiry after factor preparation, quota refresh uncertainty, inherited LCP provenance,
+WebSocket priority and view cursor parity, and the pre-explanation allocation baseline.
+`sdk/cliproxy/auth/routing_dry_run_parity_test.go` adds GSR fallback cursor/credit and
+probe-observation regressions; `internal/api/handlers/management/usage_probe_gsr_identity_test.go`
+checks shared-key probe caching, persistence, and dry-run/live execution parity.
+Validation also exposed a quota-refresh cancellation race: the launch loop now stops
+launching on cancellation and joins started refresh workers before reading their
+shared preparation result in `conductor_selection.go`.
+Management telemetry and model sanitizer tests cover response-only analytics IDs and
+the WebSocket JSON input. Regression tests cover shared GSR math
+and sources, captured strategy steps, single/mixed scheduler parity, read-only dry runs
+against the next manager selection, no quota refresh during simulation, kept/held/rebound
+affinity provenance, alias merges, truncation order, query validation, real ClickHouse
+request filtering and trace round trips, and management detail resolution.
+
+**Recorded validation:** `gofmt -w` was applied to changed Go files and
+`git diff --check` passes. QA expiry, LCP fork, WebSocket, and raw-wanted-matrix
+reproducers pass across five runs. The deterministic expiry test uses already-expired
+wall-clock deadlines with factors prepared at a fixed historical time. The allocation
+regression and benchmark both report 62 allocations per call before and after tracing
+support, down from the reported regression of 64. The cancellation regression passes
+100 runs under the race detector. The final full auth race run passes in 17.460s.
+ `go build -o test-output ./cmd/server && unlink test-output`,
+`go test ./sdk/cliproxy/... ./internal/cpauk/... ./internal/api/...`, and
+`go test -race ./sdk/cliproxy/auth` all pass on the final implementation. Real ClickHouse
+tests ran successfully, including proxy-request filtering and raw trace persistence through
+detail/list/export and rewrite paths. Focused routing tests also pass. Earlier runs exposed
+and corrected a dry-run affinity/rule trace regression and obsolete tests that expected
+WRR/GSR to remain unpredicted. No known pre-existing flakes appeared in the final requested
+suite. One intermediate full-suite rerun was externally terminated with exit 143 and an
+empty log; the standalone rerun completed successfully.
+
+Follow-up WebSocket, fallback cursor/credit, and probe-retention regressions pass.
+The requested SDK/CPAUK/API suite and server build pass; the auth race run passes
+in 17.788s. The shared-key HTTP fixture makes two initial quota calls and no further
+refreshes across four dry-run/Execute cycles.
+
+**Last updated:** 2026-11-06
 
 ## Merge History
 

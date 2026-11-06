@@ -23,6 +23,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
@@ -475,13 +476,20 @@ func authWebsocketsEnabled(auth *Auth) bool {
 }
 
 func preferCodexWebsocketAuths(ctx context.Context, provider string, available []*Auth) []*Auth {
+	if !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return available
+	}
+	return preferWebsocketAuths(ctx, provider, available)
+}
+
+func preferWebsocketAuths(ctx context.Context, provider string, available []*Auth) []*Auth {
 	if len(available) == 0 {
 		return available
 	}
 	if !cliproxyexecutor.DownstreamWebsocket(ctx) {
 		return available
 	}
-	if !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+	if !providerPrefersWebsocketTransport(provider) {
 		return available
 	}
 
@@ -664,6 +672,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 
 	s.ensureRotationKey(key, limit)
 	picked := available[successorIndex(available, s.lastPicked[key])]
+	captureStrategyPick(ctx, routing.StrategyRoundRobin, available, model, 0, s.lastPicked[key], nil, picked)
 	s.lastPicked[key] = picked.ID
 	return picked, nil
 }
@@ -731,6 +740,7 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	}
 	weights := authWeightVector(available)
 	state.prepare(weights)
+	captureStrategyPick(ctx, routing.StrategyWeightedRoundRobin, available, model, 0, "", state, nil)
 	picked := pickSmoothWeightedAuth(available, state.current)
 	if picked == nil {
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}
@@ -756,7 +766,8 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 
-	weighted, weights, errWeights := greedySoonestRecoveryWeights(available, provider, model, now, s.recoveryHalfLife())
+	factors := routingGSRFactors(ctx, len(available))
+	weighted, weights, errWeights := greedySoonestRecoveryWeightsWithFactors(available, provider, model, now, s.recoveryHalfLife(), factors)
 	if errWeights != nil {
 		info := quotaRecoveryFallbackInfoForAuths(available, provider, model)
 		if prepared, ok := quotaRecoveryFallbackInfoFromContext(ctx); ok {
@@ -770,7 +781,9 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 			return nil, ctx.Err()
 		}
 		logQuotaRecoveryFallback(ctx, info)
-		return s.fallbackRoundRobin().Pick(ctx, provider, model, opts, available)
+		picked, err := s.fallbackRoundRobin().Pick(ctx, provider, model, opts, available)
+		markStrategyFallback(ctx, s.recoveryHalfLife())
+		return picked, err
 	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -797,6 +810,7 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 		s.states[key] = state
 	}
 	state.prepare(weights)
+	captureStrategyPick(ctx, routing.StrategyGreedySoonestRecovery, weighted, model, s.recoveryHalfLife(), "", state, nil, factors)
 	picked := pickSmoothWeightedAuthWithWeights(weighted, weights, state.current)
 	if picked == nil {
 		return nil, greedySoonestRecoveryTimestampError(provider, model)
@@ -904,8 +918,13 @@ func AuthRecoveryTimestamp(auth *Auth, provider, model string) (time.Time, bool)
 }
 
 func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) (time.Time, bool) {
+	deadline, _, ok := authRecoveryTimestampWithSourceAt(auth, provider, model, now)
+	return deadline, ok
+}
+
+func authRecoveryTimestampWithSourceAt(auth *Auth, provider, model string, now time.Time) (time.Time, string, bool) {
 	if auth == nil {
-		return time.Time{}, false
+		return time.Time{}, "", false
 	}
 	providerIdentity := QuotaRecoveryProviderForAuth(auth)
 	providerSignalAllowed := providerIdentity != ""
@@ -915,26 +934,28 @@ func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) 
 		provider = ""
 	}
 	var deadline time.Time
-	addEarliest := func(candidate time.Time) {
+	var source string
+	addEarliest := func(candidate time.Time, input string) {
 		if candidate.After(now) && (deadline.IsZero() || candidate.Before(deadline)) {
 			deadline = candidate
+			source = input
 		}
 	}
-	addEarliest(auth.NextRetryAfter)
-	addEarliest(auth.Quota.NextRecoverAt)
+	addEarliest(auth.NextRetryAfter, "retry_after")
+	addEarliest(auth.Quota.NextRecoverAt, "quota_recover_at")
 	if model != "" {
 		modelKey := canonicalModelKey(model)
 		for stateModel, state := range auth.ModelStates {
 			if state == nil || canonicalModelKey(stateModel) != modelKey {
 				continue
 			}
-			addEarliest(state.NextRetryAfter)
-			addEarliest(state.Quota.NextRecoverAt)
+			addEarliest(state.NextRetryAfter, "model_retry_after")
+			addEarliest(state.Quota.NextRecoverAt, "model_quota_recover_at")
 		}
 	}
 	if providerSignalAllowed {
-		if reset := providerSignalRecoveryTimestamp(auth, provider, model, now); !reset.IsZero() {
-			addEarliest(reset)
+		if reset, signal := providerSignalRecoveryTimestampWithSource(auth, provider, model, now); !reset.IsZero() {
+			addEarliest(reset, "signal:"+signal)
 		}
 		manual := auth.Quota.ManualReset
 		modelKey := strings.ToLower(canonicalModelKey(model))
@@ -942,21 +963,26 @@ func authRecoveryTimestampAt(auth *Auth, provider, model string, now time.Time) 
 			switch provider {
 			case "codex":
 				if modelKey != "codex-auto-review" && !strings.HasSuffix(modelKey, "-spark") {
-					addEarliest(manual.ExpiresAt)
+					addEarliest(manual.ExpiresAt, "manual_reset")
 				}
 			case "claude":
 				if !strings.Contains(modelKey, "fable") {
-					addEarliest(manual.ExpiresAt)
+					addEarliest(manual.ExpiresAt, "manual_reset")
 				}
 			}
 		}
 	}
-	return deadline, !deadline.IsZero()
+	return deadline, source, !deadline.IsZero()
 }
 
 func providerSignalRecoveryTimestamp(auth *Auth, provider, model string, now time.Time) time.Time {
+	deadline, _ := providerSignalRecoveryTimestampWithSource(auth, provider, model, now)
+	return deadline
+}
+
+func providerSignalRecoveryTimestampWithSource(auth *Auth, provider, model string, now time.Time) (time.Time, string) {
 	if auth == nil || len(auth.Quota.Signals) == 0 {
-		return time.Time{}
+		return time.Time{}, ""
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	observedAt := auth.Quota.ObservedAt
@@ -971,11 +997,11 @@ func providerSignalRecoveryTimestamp(auth *Auth, provider, model string, now tim
 			}
 			candidate, ok := parseRecoverySignalTime(rawValue, kind, observedAt)
 			if ok && candidate.After(now) {
-				return candidate
+				return candidate, strings.ToLower(strings.TrimSpace(key))
 			}
 		}
 	}
-	return time.Time{}
+	return time.Time{}, ""
 }
 
 type recoverySignalKind uint8
@@ -1055,44 +1081,74 @@ func parseRecoverySignalTime(rawValue string, kind recoverySignalKind, observedA
 }
 
 func greedySoonestRecoveryWeights(auths []*Auth, provider, model string, now time.Time, halfLife time.Duration) ([]*Auth, map[string]int64, error) {
-	if len(auths) == 0 {
-		return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
+	return greedySoonestRecoveryWeightsWithFactors(auths, provider, model, now, halfLife, nil)
+}
+
+// greedySoonestRecoveryFactors evaluates a cached-data estimate for dry runs.
+func greedySoonestRecoveryFactors(auths []*Auth, provider, model string, now time.Time, halfLife time.Duration) (map[string]routing.StrategyWeight, error) {
+	factors := make(map[string]routing.StrategyWeight, len(auths))
+	_, _, err := greedySoonestRecoveryWeightsWithFactors(auths, provider, model, now, halfLife, factors)
+	return factors, err
+}
+
+// greedySoonestRecoveryWeightsWithFactors records explanations only when requested.
+// The recorded deadlines and weights are the exact values used by the picker.
+func greedySoonestRecoveryWeightsWithFactors(auths []*Auth, provider, model string, now time.Time, halfLife time.Duration, factors map[string]routing.StrategyWeight) ([]*Auth, map[string]int64, error) {
+	if halfLife <= 0 {
+		halfLife = defaultGreedySoonestRecoveryHalfLife
 	}
 	deadlines := make(map[string]time.Time, len(auths))
 	weighted := make([]*Auth, 0, len(auths))
-	eligibleCount := 0
 	var earliest time.Time
 	for _, auth := range auths {
 		if auth == nil {
 			continue
 		}
-		eligibleCount++
-		deadline, ok := authRecoveryTimestampAt(auth, provider, model, now)
+		deadline, source, ok := authRecoveryTimestampWithSourceAt(auth, provider, model, now)
 		if !ok {
-			continue
+			return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
 		}
 		deadlines[auth.ID] = deadline
 		weighted = append(weighted, auth)
+		if factors != nil {
+			factors[auth.ID] = routing.StrategyWeight{RecoveryAtMs: deadline.UnixMilli(), RecoverySource: source}
+		}
 		if earliest.IsZero() || deadline.Before(earliest) {
 			earliest = deadline
 		}
 	}
-	if len(weighted) == 0 || len(weighted) != eligibleCount || earliest.IsZero() {
+	if earliest.IsZero() {
 		return nil, nil, greedySoonestRecoveryTimestampError(provider, model)
-	}
-	if halfLife <= 0 {
-		halfLife = defaultGreedySoonestRecoveryHalfLife
 	}
 	weights := make(map[string]int64, len(weighted))
 	for _, auth := range weighted {
-		if auth == nil {
-			continue
+		delay := deadlines[auth.ID].Sub(earliest)
+		base := greedySoonestRecoveryWeight(delay, halfLife)
+		tier, source := GSRAllowanceTierForAuthWithSource(auth, QuotaRecoveryProviderForAuth(auth))
+		multiplier := gsrAllowanceMultiplier(tier)
+		configWeight := authWeight(auth)
+		weight := multiplyGSRWeight(base, multiplier) + configWeight
+		weights[auth.ID] = weight
+		if factors != nil {
+			f := factors[auth.ID]
+			f.DelayMs = delay.Milliseconds()
+			f.Decay = math.Exp(-float64(delay) / float64(halfLife))
+			f.BaseWeight, f.TierMultiplier, f.ConfigWeight, f.Weight = base, multiplier, configWeight, weight
+			f.Tier = []string{"unknown", "standard", "pro", "premium", "max", "elite"}[tier]
+			f.TierSource = source
+			factors[auth.ID] = f
 		}
-		baseWeight := greedySoonestRecoveryWeight(deadlines[auth.ID].Sub(earliest), halfLife)
-		tierProvider := QuotaRecoveryProviderForAuth(auth)
-		weights[auth.ID] = multiplyGSRWeight(baseWeight, gsrAllowanceMultiplier(GSRAllowanceTierForAuth(auth, tierProvider))) + authWeight(auth)
 	}
 	return weighted, weights, nil
+}
+
+func routingGSRFactors(ctx context.Context, size int) map[string]routing.StrategyWeight {
+	if ctx != nil {
+		if c, _ := ctx.Value(routingCaptureKey{}).(*routingCapture); c != nil {
+			return make(map[string]routing.StrategyWeight, size)
+		}
+	}
+	return nil
 }
 
 func greedySoonestRecoveryWeight(delay time.Duration, halfLife time.Duration) int64 {
@@ -1251,6 +1307,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	captureStrategyPick(ctx, routing.StrategyFillFirst, available, model, 0, "", nil, available[0])
 	return available[0], nil
 }
 
@@ -1651,10 +1708,11 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				break
 			}
 		}
-		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
+		s.cache.setAliases(authID, sessionBinding{provider: bindingProvider, sessionID: primaryID, boundAt: time.Now(), requestID: coreusage.ProxyRequestIDFromContext(ctx)}, keys...)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
+		captureAffinityBinding(ctx, s.cache, cacheKey)
 		captureAffinity(ctx, routing.AffinityBroken, cachedAuthID)
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
@@ -1709,6 +1767,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 
 	if fallbackKey != "" {
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
+			captureAffinityBinding(ctx, s.cache, fallbackKey)
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					if !isSubagent || s.subagentAffinity {
@@ -1791,6 +1850,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 
 	var preservedAuthID string
+	var preservedCacheKey string
 	if match, ok := s.matcher.MatchFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength); ok {
 		for _, auth := range available {
 			if auth == nil || auth.ID != match.AuthID {
@@ -1830,13 +1890,21 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 				}
 				entry.Infof("session-affinity: LCP cache hit | session=%s prefix=%d auth=%s provider=%s model=%s", truncateSessionID(match.SessionID), match.PrefixLength, auth.ID, provider, model)
 			}
+			if !s.cache.Touch(namespace+"::"+match.SessionID, match.AuthID) && match.ParentSessionID != "" {
+				if id, at, requestID, ok := s.cache.LookupBinding(namespace + "::" + match.ParentSessionID); ok && id == match.AuthID {
+					s.cache.setAliases(match.AuthID, sessionBinding{boundAt: at, requestID: requestID}, namespace+"::"+match.SessionID)
+				}
+			}
+			captureAffinityBinding(ctx, s.cache, namespace+"::"+match.SessionID)
 			captureAffinity(ctx, routing.AffinityKept, match.AuthID)
 			captureAffinityRules(ctx, available)
 			return auth, true, nil
 		}
+		captureAffinityBinding(ctx, s.cache, namespace+"::"+match.SessionID)
 		captureAffinity(ctx, routing.AffinityBroken, match.AuthID)
 		if !match.IsFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, match.AuthID, now) {
 			preservedAuthID = match.AuthID
+			preservedCacheKey = namespace + "::" + match.SessionID
 		}
 	}
 
@@ -1855,6 +1923,11 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		captureAffinity(ctx, routing.AffinityNew, "")
 	}
 	if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, bindAuthID); bindRes.SessionID != "" {
+		keys := []string{namespace + "::" + bindRes.SessionID}
+		if preservedCacheKey != "" {
+			keys = append(keys, preservedCacheKey)
+		}
+		s.cache.setAliases(bindAuthID, sessionBinding{boundAt: now, requestID: coreusage.ProxyRequestIDFromContext(ctx)}, keys...)
 		opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 		opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID
 		if bindRes.ParentSessionID != "" {

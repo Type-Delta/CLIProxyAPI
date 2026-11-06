@@ -17,6 +17,7 @@ func SanitizeRoutingTrace(trace *routing.Trace, identityKey [32]byte, storeCrede
 	for index := range clone.Candidates {
 		candidate := &clone.Candidates[index]
 		candidate.Label = ""
+		candidate.AnalyticsID = ""
 		if storeCredential {
 			provider := candidate.Provider
 			if strings.TrimSpace(provider) == "" {
@@ -33,6 +34,24 @@ func SanitizeRoutingTrace(trace *routing.Trace, identityKey [32]byte, storeCrede
 		}
 	}
 	encoded, err := json.Marshal(clone)
+	if err == nil && len(encoded) > MaxRoutingTraceBytes && clone.StrategyStep != nil {
+		step := *clone.StrategyStep
+		step.Next = nil
+		step.Weights = append([]routing.StrategyWeight(nil), step.Weights...)
+		for i := range step.Weights {
+			w := &step.Weights[i]
+			// DelayMs, TierMultiplier, and ConfigWeight stay: with HalfLifeMs they
+			// rebuild the decay, base weight, and weight formula.
+			w.RecoveryAtMs = 0
+			w.RecoverySource = ""
+			w.Decay = 0
+			w.BaseWeight = 0
+			w.Tier = ""
+			w.TierSource = ""
+		}
+		clone.StrategyStep = &step
+		encoded, err = json.Marshal(clone)
+	}
 	if err == nil && len(encoded) > MaxRoutingTraceBytes {
 		for index := range clone.Candidates {
 			clone.Candidates[index].Provider = ""

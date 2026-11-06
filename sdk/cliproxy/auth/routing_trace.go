@@ -148,6 +148,9 @@ func finishRoutingCapture(ctx context.Context, capture *routingCapture, selected
 			capture.indexes[selected.ID] = i
 		}
 		t.Pick = i
+		if t.StrategyStep != nil {
+			t.StrategyStep.Wanted = i
+		}
 		if t.DecidedBy == routing.DecidedByNone {
 			t.DecidedBy = routing.DecidedByStrategy
 		}
@@ -340,6 +343,12 @@ func captureAffinity(ctx context.Context, state, bound string) {
 		return
 	}
 	c.trace.Affinity.State = state
+	if state == routing.AffinityNew && bound == "" {
+		c.trace.Affinity.Bound = -1
+		c.trace.Affinity.BoundAtMs = 0
+		c.trace.Affinity.BoundRequestID = ""
+		c.trace.Affinity.AgeMs = 0
+	}
 	if bound != "" {
 		i, ok := c.indexes[bound]
 		if !ok {
@@ -383,4 +392,18 @@ func recordExceptionalRouting(ctx context.Context, mode, decidedBy string, auth 
 	}
 	holder.Set(trace)
 	return routing.WithTrace(ctx, trace)
+}
+
+func captureAffinityBinding(ctx context.Context, cache *SessionCache, key string) {
+	c, _ := ctx.Value(routingCaptureKey{}).(*routingCapture)
+	if c == nil || c.trace.Affinity == nil {
+		return
+	}
+	_, at, requestID, ok := cache.LookupBinding(key)
+	if !ok || at.IsZero() {
+		return
+	}
+	c.trace.Affinity.BoundAtMs = at.UnixMilli()
+	c.trace.Affinity.BoundRequestID = requestID
+	c.trace.Affinity.AgeMs = max(0, time.Since(at).Milliseconds())
 }

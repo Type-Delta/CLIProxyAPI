@@ -128,6 +128,9 @@ func TestDryRunDoesNotMoveAffinityOrSelectorState(t *testing.T) {
 	if trace.Pick < 0 || trace.Candidates[trace.Pick].ID != "dry-b" || trace.Affinity.State != routing.AffinityKept {
 		t.Fatalf("trace = %+v", trace)
 	}
+	if trace.StrategyStep == nil || trace.Candidates[trace.StrategyStep.Wanted].ID != "dry-a" {
+		t.Fatalf("strategy must explain counterfactual pick: %+v", trace.StrategyStep)
+	}
 	affinity.cache.mu.RLock()
 	after := affinity.cache.entries[cacheKey]
 	affinity.cache.mu.RUnlock()

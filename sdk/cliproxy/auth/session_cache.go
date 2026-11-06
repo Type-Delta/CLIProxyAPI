@@ -17,6 +17,8 @@ type sessionBinding struct {
 	sessionID string
 	provider  string
 	sequence  uint64
+	boundAt   time.Time
+	requestID string
 }
 
 // sessionEntry stores an auth binding, its identifier aliases, and expiration.
@@ -171,6 +173,7 @@ func (c *SessionCache) setAliases(authID string, binding sessionBinding, session
 	defer c.mu.Unlock()
 	c.ensureInitializedLocked()
 	now := time.Now()
+	createdAt, requestID := binding.boundAt, binding.requestID
 
 	aliases := mergeSessionAliases(nil, sessionIDs...)
 	previousGroups := make([]sessionEntry, 0, len(sessionIDs))
@@ -198,6 +201,23 @@ func (c *SessionCache) setAliases(authID string, binding sessionBinding, session
 			if previous.binding.sequence > binding.sequence {
 				binding = previous.binding
 			}
+		}
+	}
+	// Reusing or merging a binding preserves its creation provenance.
+	var original sessionBinding
+	for _, previous := range previousGroups {
+		if previous.authID == authID && !previous.binding.boundAt.IsZero() && (original.boundAt.IsZero() || previous.binding.boundAt.Before(original.boundAt)) {
+			original = previous.binding
+		}
+	}
+	if !original.boundAt.IsZero() {
+		binding.boundAt = original.boundAt
+		binding.requestID = original.requestID
+	} else {
+		binding.boundAt = createdAt
+		binding.requestID = requestID
+		if binding.boundAt.IsZero() {
+			binding.boundAt = now
 		}
 	}
 	c.replaceAliasGroupsLocked(authID, now.Add(c.ttl), aliases, binding, previousGroups...)
@@ -511,4 +531,18 @@ func (c *SessionCache) cleanup() {
 			c.removeAliasGroupLocked(group)
 		}
 	}
+}
+
+// LookupBinding observes a live binding without refreshing TTL or removing expired entries.
+func (c *SessionCache) LookupBinding(key string) (string, time.Time, string, bool) {
+	if c == nil {
+		return "", time.Time{}, "", false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || !time.Now().Before(e.expiresAt) {
+		return "", time.Time{}, "", false
+	}
+	return e.authID, e.binding.boundAt, e.binding.requestID, true
 }
