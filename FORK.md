@@ -2579,6 +2579,11 @@ codes, and the bytes written for valid saves are unchanged.
 
 ### DL070 — Routing strategy explanations and affinity provenance
 
+**Panel controls, 2026-11-06.** CPAMC Routing reuses the Usage tab selector. Its shared Dry run
+and Rules model field searches the routing catalog and supports aliases, prefixed IDs, and
+custom entry. See CPAMC DL079 for implementation and verification details. The canonical panel
+build, CPA compile check, and desktop/mobile browser dry runs against a local CPA server pass.
+
 Routing traces explain the built-in strategy's preferred credential independently of
 session affinity. `strategy_step` records the applied algorithm, GSR's missing-data
 round-robin fallback, previous cursor pick, per-candidate scheduling shares, effective
