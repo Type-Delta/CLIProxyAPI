@@ -58,13 +58,14 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 
 // SanitizeClaudeHeaderDefaults trims surrounding whitespace from the
 // configured Claude fingerprint baseline values, normalizes the beta override
-// lists, and resets an unknown client-request-id mode to the default.
+// lists and custom identity list, and resets an unknown client-request-id mode to the default.
 func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	if cfg == nil {
 		return
 	}
-	cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaStrip)
-	cfg.ClaudeHeaderDefaults.AnthropicBetaAppend = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaAppend)
+	cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities)
+	cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.AnthropicBetaStrip)
+	cfg.ClaudeHeaderDefaults.AnthropicBetaAppend = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.AnthropicBetaAppend)
 	mode := strings.ToLower(strings.TrimSpace(cfg.ClaudeHeaderDefaults.ClientRequestID))
 	switch mode {
 	case "", ClaudeClientRequestIDOn, ClaudeClientRequestIDOff, ClaudeClientRequestIDPassthrough:
@@ -82,9 +83,9 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
 }
 
-// normalizeClaudeBetaNames trims beta names and drops empty and duplicate
+// normalizeClaudeHeaderValues trims header values and drops empty and duplicate
 // entries while keeping the configured order.
-func normalizeClaudeBetaNames(names []string) []string {
+func normalizeClaudeHeaderValues(names []string) []string {
 	if len(names) == 0 {
 		return nil
 	}

@@ -119,7 +119,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 	}
 	if !detection.NativeClient {
 		return s.reject(
-			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, or claude-desktop); received %q.", detection.Entrypoint),
+			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, claude-desktop, or a configured custom identity); received %q.", detection.Entrypoint),
 			"client entrypoint is not supported for native Claude Code requests",
 		)
 	}

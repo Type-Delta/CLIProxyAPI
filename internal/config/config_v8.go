@@ -46,6 +46,7 @@ var v8SharedPaths = []configPath{
 	{"oauth.providers.claude.disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
 	{"oauth.providers.claude.header-defaults.user-agent", "upstream.claude.header-defaults.user-agent"},
 	{"oauth.providers.claude.header-defaults.oauth-safeguard", "upstream.claude.header-defaults.oauth-safeguard"},
+	{"oauth.providers.claude.header-defaults.oauth-safeguard-client-identities", "upstream.claude.header-defaults.oauth-safeguard-client-identities"},
 	{"oauth.providers.claude.header-defaults.package-version", "upstream.claude.header-defaults.package-version"},
 	{"oauth.providers.claude.header-defaults.runtime-version", "upstream.claude.header-defaults.runtime-version"},
 	{"oauth.providers.claude.header-defaults.os", "upstream.claude.header-defaults.os"},

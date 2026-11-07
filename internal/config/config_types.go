@@ -173,6 +173,9 @@ type ClaudeHeaderDefaults struct {
 	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
 	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
 	ClientRequestID        string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
+
+	// OAuthSafeguardClientIdentities extends the native entrypoint allowlist only while the safeguard is active.
+	OAuthSafeguardClientIdentities []string `yaml:"oauth-safeguard-client-identities,omitempty" json:"oauth-safeguard-client-identities,omitempty"`
 }
 
 // Supported ClaudeHeaderDefaults.ClientRequestID values. An empty value means

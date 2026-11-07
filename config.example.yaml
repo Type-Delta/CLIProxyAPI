@@ -586,6 +586,7 @@ upstream:
     # credential resolves to cloak_mode: never, which preserves the confirmed caller's headers).
     # header-defaults:
     #   oauth-safeguard: false  # privately install/capture Claude Code, check updates every 24h, and block unmatched direct Anthropic OAuth requests
+    #   oauth-safeguard-client-identities: ["partner-app", "another-app"]  # additional entrypoints in (external, <identity>); only with safeguard enabled; all other checks still apply
     #   user-agent: "claude-cli/2.1.280 (external, cli)"  # OAuth safeguard accepts any claude-cli/X.X.X version
     #   package-version: "0.112.1"
     #   runtime-version: "v26.3.0"

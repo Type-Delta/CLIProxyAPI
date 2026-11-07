@@ -44,11 +44,17 @@ func TestConfigV8SharedUpstreamRoundTrip(t *testing.T) {
 	}
 	request(http.MethodPut, "upstream/codex/stream-bootstrap-buffering", "false", http.StatusOK)
 	request(http.MethodPut, "oauth/auth-auto-refresh-workers", "3", http.StatusOK)
-	request(http.MethodPatch, "upstream/claude", `{"header-defaults":{"timezone":"Asia/Singapore","stabilize-device-profile":false,"oauth-safeguard":true}}`, http.StatusOK)
+	request(http.MethodPatch, "upstream/claude", `{"header-defaults":{"timezone":"Asia/Singapore","stabilize-device-profile":false,"oauth-safeguard":true,"oauth-safeguard-client-identities":["partner-app","another-app"]}}`, http.StatusOK)
+	if got := request(http.MethodGet, "upstream/claude/header-defaults/oauth-safeguard-client-identities", "", http.StatusOK); got != `["partner-app","another-app"]` {
+		t.Fatalf("custom identities did not round trip: %s", got)
+	}
 	request(http.MethodPatch, "analytics", `{"queue-capacity":1024}`, http.StatusOK)
 	loaded, errLoad := config.LoadConfig(file)
 	if errLoad != nil {
 		t.Fatal(errLoad)
+	}
+	if got := loaded.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities; len(got) != 2 || got[0] != "partner-app" || got[1] != "another-app" {
+		t.Fatalf("persisted custom identities = %q", got)
 	}
 	if loaded.Codex.StreamBootstrapBuffering || loaded.AuthAutoRefreshWorkers != 3 || loaded.ClaudeHeaderDefaults.Timezone != "Asia/Singapore" || loaded.ForAPIKey().ClaudeHeaderDefaults.Timezone != "Asia/Singapore" || !loaded.ClaudeHeaderDefaults.OAuthSafeguard || loaded.Analytics.StorageTimeZone != "Asia/Bangkok" || loaded.Analytics.QueueCapacity != 1024 {
 		t.Fatal("management write lost shared upstream values")

@@ -159,6 +159,14 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	metadataUserID := gjson.GetBytes(payload, "metadata.user_id")
 	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == gjson.String && isValidUserID(metadataUserID.String())
 	detection.NativeClient = nativeClaudeEntrypoints[entrypoint]
+	if !detection.NativeClient && entrypoint != "" && cfg != nil && cfg.ClaudeHeaderDefaults.OAuthSafeguard {
+		for _, identity := range cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities {
+			if strings.EqualFold(entrypoint, strings.TrimSpace(identity)) {
+				detection.NativeClient = true
+				break
+			}
+		}
+	}
 	standardSignals := detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.HelperProfile = detection.NativeClient && matchesMeasuredClaudeCodeHelperProfile(headers, payload, countTokens, detection, cfg)
 	detection.StrongSignals = standardSignals || detection.HelperProfile

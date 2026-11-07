@@ -352,7 +352,7 @@ func claudeDeviceProfileScopeKey(auth *cliproxyauth.Auth, apiKey string) string 
 	}
 }
 
-// claudeDeviceProfileSubclientScope keeps first-party clients with distinct
+// claudeDeviceProfileSubclientScope keeps clients with distinct
 // wire identities from replacing one another in a credential's stabilized
 // profile. The CLI retains the legacy base scope for cache compatibility.
 func claudeDeviceProfileSubclientScope(profile ClaudeDeviceProfile) string {
@@ -360,10 +360,7 @@ func claudeDeviceProfileSubclientScope(profile ClaudeDeviceProfile) string {
 	if entrypoint == "" || entrypoint == "cli" {
 		return ""
 	}
-	if nativeClaudeEntrypoints[entrypoint] {
-		return entrypoint
-	}
-	return "other"
+	return entrypoint
 }
 
 func claudeDeviceProfileScopedKey(auth *cliproxyauth.Auth, apiKey string, profile ClaudeDeviceProfile) string {

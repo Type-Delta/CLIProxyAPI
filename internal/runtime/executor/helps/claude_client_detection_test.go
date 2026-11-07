@@ -648,3 +648,34 @@ func TestDetectClaudeCodeRequestRecognizesAgentSDKHaiku55Helpers(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectClaudeCodeRequestCustomSafeguardIdentities(t *testing.T) {
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		OAuthSafeguard:                 true,
+		OAuthSafeguardClientIdentities: []string{" partner-app ", "ANOTHER-APP"},
+	}}
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
+	for _, identity := range []string{"partner-app", "another-app", "cli", "unlisted-app", "partner-app-extra", ""} {
+		t.Run(identity, func(t *testing.T) {
+			headers := confirmedClaudeCodeHeaders()
+			headers.Set("User-Agent", "claude-cli/2.1.280 (external, "+identity+")")
+			want := identity == "partner-app" || identity == "another-app" || identity == "cli"
+			for _, countTokens := range []bool{false, true} {
+				detection := DetectClaudeCodeRequest(headers, payload, countTokens, cfg)
+				if detection.Confirmed != want {
+					t.Fatalf("countTokens=%t: detection = %#v, want confirmed %t", countTokens, detection, want)
+				}
+			}
+			headers.Del("X-App")
+			if detection := DetectClaudeCodeRequest(headers, payload, false, cfg); detection.Confirmed {
+				t.Fatalf("missing X-App accepted: %#v", detection)
+			}
+		})
+	}
+	cfg.ClaudeHeaderDefaults.OAuthSafeguard = false
+	headers := confirmedClaudeCodeHeaders()
+	headers.Set("User-Agent", "claude-cli/2.1.280 (external, partner-app)")
+	if detection := DetectClaudeCodeRequest(headers, payload, false, cfg); detection.NativeClient || detection.Confirmed {
+		t.Fatalf("custom identity accepted with safeguard disabled: %#v", detection)
+	}
+}

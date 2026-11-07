@@ -451,3 +451,23 @@ func TestResolveClaudeDeviceProfileRequiredNonHomeKeepsLocalCache(t *testing.T) 
 		t.Fatalf("KV calls = get %d set %d setnx %d, want all zero", client.getCount, client.setCount, client.setNXCount)
 	}
 }
+
+func TestResolveClaudeDeviceProfileSeparatesCustomClientIdentities(t *testing.T) {
+	ResetClaudeDeviceProfileCache()
+	t.Cleanup(ResetClaudeDeviceProfileCache)
+	auth := &cliproxyauth.Auth{ID: "auth-custom-identities"}
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		OAuthSafeguard:                 true,
+		OAuthSafeguardClientIdentities: []string{"partner-app", "another-app"},
+	}}
+	for _, identity := range cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities {
+		userAgent := "claude-cli/2.1.280 (external, " + identity + ")"
+		profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders(userAgent), cfg)
+		if errProfile != nil {
+			t.Fatal(errProfile)
+		}
+		if profile.UserAgent != userAgent {
+			t.Fatalf("%s UserAgent = %q, want %q", identity, profile.UserAgent, userAgent)
+		}
+	}
+}

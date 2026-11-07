@@ -969,9 +969,17 @@ destination, bearer authentication, OAuth beta, request shape, and session
 identity before any inference request reaches upstream. The incoming User-Agent
 must use the `claude-cli/X.X.X` shape, but its version may differ from the
 captured release. Native entrypoints include `cli`, `sdk`, `sdk-cli`, `sdk-ts`,
-`sdk-py`, `claude-vscode`, and `claude-desktop`. Package, runtime, OS, and
-architecture headers are not compared to the capture. The captured profile
-does not replace configured `Claude Header Defaults`;
+`sdk-py`, `claude-vscode`, and `claude-desktop`.
+`upstream.claude.header-defaults.oauth-safeguard-client-identities` accepts a
+list of additional entrypoint names, such as `["partner-app", "another-app"]`.
+Names match the identity in `claude-cli/X.X.X (external, <identity>)` without
+case sensitivity and extend the built-in list only while the direct OAuth
+safeguard is active. All other header, beta, format, and session checks remain
+required. Stabilized header cache entries distinguish each custom entrypoint
+so one identity cannot reuse another identity's cached User-Agent. CPAMC can
+add, edit, and remove multiple identities in Claude Header Defaults. Package,
+runtime, OS, and architecture headers are not compared to the capture. The
+captured profile does not replace configured `Claude Header Defaults`;
 configured package and runtime versions supply the outgoing values. Optional
 fields and beta values vary across legitimate Claude Code requests, so one
 capture does not define an exhaustive request shape. This guard compares
@@ -1006,7 +1014,19 @@ from the installed T3 Agent SDK and Claude Code launched with the Desktop
 entrypoint. Both returned `OK`; the temporary instance and credential copy were
 removed afterward.
 
-**Last updated:** 2026-09-24
+**Custom identity validation:** On the final code, `go test ./...` and
+`go build -o test-output ./cmd/server && unlink test-output` pass. The canonical
+`ALLOW_DIRTY_PANEL=1 ./scripts/build-management-center.sh` Docker build passes.
+CPAMC's `bun run verify` passes all 2,979 tests, lint, TypeScript, and the
+production build; a Docker rerun with pinned Bun 1.4.3 also passes all 2,979 tests.
+Chrome CDP verified the embedded CPA panel by editing, adding, and deleting list
+rows, saving through the review dialog, reloading, and checking that the v8
+config API returned the same list. Inspected screenshots at desktop 1440px and
+mobile 390px show no horizontal overflow. The independent finish review found
+no material issues and returned SHIP. Executor acceptance tests use a simulated
+Anthropic transport; no real partner inference was attempted.
+
+**Last updated:** 2026-11-07
 
 ### DL026 — Image generation tool injection covers metadata-only responses-lite requests
 
