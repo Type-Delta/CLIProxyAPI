@@ -2684,6 +2684,47 @@ refreshes across four dry-run/Execute cycles.
 
 **Last updated:** 2026-11-06
 
+### DL071 — ClickHouse transcript and system-log storage reductions
+
+A production audit found that most ClickHouse growth came from data stored more than once.
+Kiro upstream bodies had no transcript format, so each attempt kept its full history and
+base64 images in `attempts.request_body_raw`; 84% of those bytes were images resent every
+turn. In envelopes, 97% of the bytes were the `tools` array, and only about 93 distinct
+arrays appeared per day. Stock ClickHouse system logs also had no TTL.
+
+- `internal/telemetry/transcript` adds the `kiro` format. `conversationState.history`
+  items and `currentMessage` become elements; the user and assistant roles, tool use IDs and
+  tool names are extracted. History items that do not change deduplicate across turns.
+- The request `tools` array (top level, Gemini `request.tools`, or Kiro's
+  `currentMessage.userInputMessage.userInputMessageContext.tools`) is replaced with a
+  `$cpa_tools_v1` marker and stored as its own content item. It appears as the final
+  `request_contexts.content_ids` position with an empty entry ID, so it creates no
+  transcript entry, and context-based garbage collection already covers it. Non-compact
+  arrays record their separators, so rebuilt bodies stay byte-exact. Envelopes stored
+  before this change keep tools inline and still rebuild unchanged.
+- Migration 0005 sets `response_body` and `websocket_timeline` on `requests` and
+  `attempts` to ZSTD(6) with 8 MiB compression blocks, the same as `transcript_content`.
+  It changes codecs only and applies on merge; point lookups on those tables cost about
+  10 ms more. Migration 0006 updates schema comments.
+- `deploy/clickhouse/config.d/cpa-system-logs.xml`, mounted by
+  `docker-compose.clickhouse.yml`, gives the system logs a 7-day TTL, sets `text_log` to
+  `warning`, and removes `trace_log`. `docs/clickhouse.md` explains how existing
+  deployments reclaim space.
+
+**Recorded validation:** 15 and 12 consecutive real production Claude requests from two
+Kiro sessions were run through the real Kiro payload builder. Every body rebuilt
+byte-exact in both the client and Kiro views. Stored bytes fell 14.4× (text-only) and 9.4×
+(image-heavy) over those windows, and envelopes fell from 541 KB to 3.1 KB. On one real
+125-response session, response bodies compressed 1.97× smaller with the 0005 settings.
+Element tool IDs and names are deduplicated in one pass, so a Kiro message with 64,000
+distinct tool results now parses in 1 s instead of 10 s. An end-to-end run of the built server
+against ClickHouse 26.8 and an OpenAI-compatible stub applied migrations 0005 and 0006,
+stored each turn's 21 KB tools array once per format, and closed every context with an
+empty-entry tools item. Transcript, ingest, store, agentdocs, ClickHouse, and management
+tests pass against real ClickHouse.
+
+**Last updated:** 2026-11-07
+
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.

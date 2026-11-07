@@ -23,6 +23,7 @@ const (
 	FormatOpenAIResponses Format = "openai-responses"
 	FormatClaude          Format = "claude"
 	FormatGemini          Format = "gemini"
+	FormatKiro            Format = "kiro"
 )
 
 var ErrNotTranscript = errors.New("transcript: not a transcript")
@@ -43,6 +44,8 @@ type Request struct {
 	Envelope           []byte
 	EnvelopeID         string
 	Elements           []Element
+	Tools              []byte
+	ToolsID            string
 	Model              string
 	Stream             bool
 	PreviousResponseID string
@@ -66,6 +69,9 @@ func DetectFormat(urlPath string, body []byte) Format {
 		}
 	}
 	r := gjson.ParseBytes(body)
+	if r.Get("conversationState.currentMessage.userInputMessage").IsObject() {
+		return FormatKiro
+	}
 	if r.Get("request.contents").IsArray() || r.Get("request.systemInstruction").Exists() || r.Get("response.candidates").IsArray() || r.Get("contents").IsArray() || r.Get("systemInstruction").Exists() || r.Get("candidates").IsArray() {
 		return FormatGemini
 	}
@@ -121,6 +127,8 @@ func fields(f Format, body []byte) []string {
 			return []string{"request.systemInstruction", "request.contents"}
 		}
 		return []string{"systemInstruction", "contents"}
+	case FormatKiro:
+		return []string{"conversationState.history", "conversationState.currentMessage"}
 	}
 	return nil
 }
@@ -142,11 +150,35 @@ func replace(body []byte, changes []replacement) []byte {
 // Placeholders carry cardinality and scalar/array shape. The rest of the body is
 // left byte-for-byte intact, including property order and number spelling.
 const marker = "$cpa_transcript_v1"
+const toolsMarker = "$cpa_tools_v1"
+
+func toolsPath(f Format, body []byte) string {
+	switch f {
+	case FormatClaude, FormatOpenAIChat, FormatOpenAIResponses:
+		return "tools"
+	case FormatGemini:
+		if gjson.GetBytes(body, "request").IsObject() {
+			return "request.tools"
+		}
+		return "tools"
+	case FormatKiro:
+		return "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools"
+	}
+	return ""
+}
 
 func ParseRequest(f Format, body []byte) (Request, error) {
 	out := Request{Format: f}
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return out, ErrNotTranscript
+	}
+	if p := toolsPath(f, body); p != "" {
+		v := gjson.GetBytes(body, p)
+		if v.IsArray() {
+			out.Tools = []byte(v.Raw)
+			out.ToolsID = digest(out.Tools)
+			body = replace(body, []replacement{{v.Index, v.Index + len(v.Raw), []byte(`{"` + toolsMarker + `":true}`)}})
+		}
 	}
 	var changes []replacement
 	for _, path := range fields(f, body) {
@@ -159,7 +191,7 @@ func ParseRequest(f Format, body []byte) (Request, error) {
 			return out, ErrNotTranscript
 		}
 		pseudo := strings.HasSuffix(path, "system") || strings.HasSuffix(path, "instructions") || strings.HasSuffix(path, "systemInstruction")
-		if !array && !pseudo && !(f == FormatOpenAIResponses && value.Type == gjson.String) {
+		if !array && !pseudo && !(f == FormatOpenAIResponses && value.Type == gjson.String) && !(f == FormatKiro && path == "conversationState.currentMessage") {
 			return out, ErrNotTranscript
 		}
 		if !array && value.Type != gjson.String && !value.IsObject() {
@@ -182,6 +214,25 @@ func ParseRequest(f Format, body []byte) (Request, error) {
 			out.Elements = append(out.Elements, element(f, []byte(v.Raw), role, pseudo))
 		}
 		placeholder := []byte(fmt.Sprintf(`{"%s":{"count":%d,"array":%t}}`, marker, len(vals), array))
+		if array {
+			separators := make([]string, 0, len(vals)+1)
+			pos := value.Index + 1
+			for _, v := range vals {
+				separators = append(separators, string(body[pos:v.Index]))
+				pos = v.Index + len(v.Raw)
+			}
+			separators = append(separators, string(body[pos:value.Index+len(value.Raw)-1]))
+			compact := true
+			for n, s := range separators {
+				if (n == 0 || n == len(separators)-1) && s != "" || n > 0 && n < len(separators)-1 && s != "," {
+					compact = false
+				}
+			}
+			if !compact {
+				b, _ := json.Marshal(separators)
+				placeholder = []byte(fmt.Sprintf(`{"%s":{"count":%d,"array":true,"separators":%s}}`, marker, len(vals), b))
+			}
+		}
 		changes = append(changes, replacement{value.Index, value.Index + len(value.Raw), placeholder})
 	}
 	if len(changes) == 0 {
@@ -193,6 +244,9 @@ func ParseRequest(f Format, body []byte) (Request, error) {
 	out.Stream = gjson.GetBytes(body, "stream").Bool()
 	if f == FormatGemini && out.Model == "" {
 		out.Model = gjson.GetBytes(body, "request.model").String()
+	}
+	if f == FormatKiro {
+		out.Model = gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.modelId").String()
 	}
 	out.PreviousResponseID = gjson.GetBytes(body, "previous_response_id").String()
 	return out, nil
@@ -223,7 +277,21 @@ func Rebuild(f Format, envelope []byte, raws [][]byte) ([]byte, error) {
 		}
 		var raw []byte
 		if m.Get("array").Bool() {
-			raw = append([]byte{'['}, bytes.Join(selected, []byte(","))...)
+			seps := m.Get("separators")
+			if seps.Exists() {
+				ss := seps.Array()
+				if len(ss) != len(selected)+1 {
+					return nil, fmt.Errorf("transcript: invalid separators")
+				}
+				raw = []byte{'['}
+				for n, item := range selected {
+					raw = append(raw, ss[n].String()...)
+					raw = append(raw, item...)
+				}
+				raw = append(raw, ss[len(selected)].String()...)
+			} else {
+				raw = append([]byte{'['}, bytes.Join(selected, []byte(","))...)
+			}
 			raw = append(raw, ']')
 		} else {
 			raw = selected[0]
@@ -233,10 +301,21 @@ func Rebuild(f Format, envelope []byte, raws [][]byte) ([]byte, error) {
 	if len(changes) == 0 {
 		return nil, ErrNotTranscript
 	}
+	out := replace(envelope, changes)
+	if p := toolsPath(f, out); p != "" {
+		v := gjson.GetBytes(out, p)
+		if cursor < len(raws) && v.Get(toolsMarker).Bool() {
+			if !gjson.ParseBytes(raws[cursor]).IsArray() || !json.Valid(raws[cursor]) {
+				return nil, fmt.Errorf("transcript: invalid tools")
+			}
+			out = replace(out, []replacement{{v.Index, v.Index + len(v.Raw), raws[cursor]}})
+			cursor++
+		}
+	}
 	if cursor != len(raws) {
 		return nil, fmt.Errorf("transcript: unused elements")
 	}
-	return replace(envelope, changes), nil
+	return out, nil
 }
 
 func decode(raw []byte) interface{} {
@@ -270,7 +349,7 @@ func volatileSemanticField(x map[string]interface{}, key, parent string) bool {
 // volatile annotations. Prefer an extra occurrence over merging distinct data.
 func conservativeSemantic(v interface{}, parent string) interface{} {
 	switch parent {
-	case "input", "arguments", "args", "output", "response":
+	case "input", "arguments", "args", "output", "response", "toolResults":
 		return v
 	}
 	switch x := v.(type) {
@@ -459,6 +538,13 @@ func element(f Format, raw []byte, role string, pseudo bool) Element {
 	e := Element{Raw: bytes.Clone(raw), ContentID: digest(raw), Role: role, ItemType: "message"}
 	v := decode(raw)
 	r := gjson.ParseBytes(raw)
+	if f == FormatKiro {
+		if r.Get("userInputMessage").IsObject() {
+			e.Role = "user"
+		} else if r.Get("assistantResponseMessage").IsObject() {
+			e.Role = "assistant"
+		}
+	}
 	if e.Role == "" {
 		e.Role = r.Get("role").String()
 	}
@@ -475,7 +561,20 @@ func element(f Format, raw []byte, role string, pseudo bool) Element {
 			e.Role = "assistant"
 		}
 	}
-	semantic := normalize(decode(raw), f, true)
+	semanticInput := decode(raw)
+	if f == FormatKiro {
+		if root, ok := semanticInput.(map[string]interface{}); ok {
+			if user, ok := root["userInputMessage"].(map[string]interface{}); ok {
+				if ctx, ok := user["userInputMessageContext"].(map[string]interface{}); ok {
+					delete(ctx, "tools")
+					if len(ctx) == 0 {
+						delete(user, "userInputMessageContext")
+					}
+				}
+			}
+		}
+	}
+	semantic := normalize(semanticInput, f, true)
 	canonical, _ := json.Marshal(struct {
 		Role    string      `json:"role"`
 		Content interface{} `json:"content"`
@@ -506,12 +605,15 @@ func element(f Format, raw []byte, role string, pseudo bool) Element {
 			}
 			for _, k := range keys {
 				val := x[k]
+				if f == FormatKiro && k == "bytes" && parent == "source" {
+					continue
+				}
 				if s, ok := val.(string); ok {
-					if (k == "id" && (parent == "functionCall" || parent == "functionResponse")) || k == "tool_use_id" || k == "tool_call_id" || k == "call_id" || (k == "id" && (x["type"] == "tool_use" || x["type"] == "server_tool_use" || x["type"] == "mcp_tool_use" || x["type"] == "function")) {
-						e.ToolCallIDs = unique(e.ToolCallIDs, s)
+					if (k == "id" && (parent == "functionCall" || parent == "functionResponse")) || k == "toolUseId" || k == "tool_use_id" || k == "tool_call_id" || k == "call_id" || (k == "id" && (x["type"] == "tool_use" || x["type"] == "server_tool_use" || x["type"] == "mcp_tool_use" || x["type"] == "function")) {
+						e.ToolCallIDs = append(e.ToolCallIDs, s)
 					}
-					if k == "name" && (x["type"] == "tool_use" || x["type"] == "server_tool_use" || x["type"] == "mcp_tool_use" || x["type"] == "function_call" || x["type"] == "custom_tool_call" || parent == "function" || parent == "functionCall" || parent == "functionResponse" || parent == "function_call") {
-						e.ToolNames = unique(e.ToolNames, s)
+					if k == "name" && (x["type"] == "tool_use" || x["type"] == "server_tool_use" || x["type"] == "mcp_tool_use" || x["type"] == "function_call" || x["type"] == "custom_tool_call" || parent == "toolUses" || parent == "function" || parent == "functionCall" || parent == "functionResponse" || parent == "function_call") {
+						e.ToolNames = append(e.ToolNames, s)
 					}
 				}
 				if k == "signature" || k == "encrypted_content" || k == "thoughtSignature" || k == "thought_signature" {
@@ -539,12 +641,30 @@ func element(f Format, raw []byte, role string, pseudo bool) Element {
 	e.Text = strings.Join(texts, "\n")
 	// Chat tool-call IDs are siblings of the function object.
 	for _, tc := range r.Get("tool_calls").Array() {
-		e.ToolCallIDs = unique(e.ToolCallIDs, tc.Get("id").String())
+		e.ToolCallIDs = append(e.ToolCallIDs, tc.Get("id").String())
 	}
 	if e.ItemType == "function_call" || e.ItemType == "custom_tool_call" {
-		e.ToolNames = unique(e.ToolNames, r.Get("name").String())
+		e.ToolNames = append(e.ToolNames, r.Get("name").String())
 	}
+	e.ToolCallIDs, e.ToolNames = dedupe(e.ToolCallIDs), dedupe(e.ToolNames)
 	return e
+}
+
+// dedupe drops empty and repeated values in one pass, keeping first-occurrence order.
+func dedupe(a []string) []string {
+	seen := make(map[string]struct{}, len(a))
+	out := a[:0]
+	for _, s := range a {
+		if _, ok := seen[s]; ok || s == "" {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 func unique(a []string, s string) []string {
 	if s == "" {

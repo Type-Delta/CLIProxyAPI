@@ -12,6 +12,8 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      # Bound ClickHouse system log growth; see docs/clickhouse.md.
+      - ./deploy/clickhouse/config.d/cpa-system-logs.xml:/etc/clickhouse-server/config.d/cpa-system-logs.xml:ro
     ulimits:
       nofile:
         soft: 262144
