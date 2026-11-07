@@ -2033,18 +2033,18 @@ Stored aggregates are not rebuilt. A read-only audit of 10,507 failed production
 
 Vertex API-key, service-account, and native interactions streams, xAI Responses streams, and AI Studio relay streams retain observed usage when an upstream read/reset error ends the stream. Failure publication uses the existing stream usage buffer.
 
-Known limitation: the direct native Codex Images stream can publish success when cancellation interrupts a downstream send after partial usage. Its deferred success publication wins because that return branch does not publish failure. An audit using the actual executor reproduced `succeeded` with 5 input, 7 output, and 12 total tokens after typed client cancellation. This gap exists in the pre-merge fork and remains pending a separate follow-up; the cancellation guarantees above cover the other tested stream paths. The affected branch is in `internal/runtime/executor/codex_openai_images.go`.
+Direct native Codex Images streams finish the usage observer and publish cancellation when a downstream send is interrupted. Typed client cancellation records `canceled/client` while retaining observed usage; the reporter publishes once, so deferred success finalization cannot replace that outcome.
 
 **Implementation evidence:** `internal/cpauk/store/migrations/019_event_outcomes.sql`,
 `internal/cpauk/model/event_outcome.go`, `internal/cpauk/collector/{adapter.go,sanitizer.go}`,
 `sdk/cliproxy/usage/{manager.go,client_context.go}`, `sdk/api/handlers/handlers.go`,
 `internal/runtime/executor/helps/usage_helpers.go`, and the Claude, Codex, and
-OpenAI-compatible stream executors. `internal/runtime/executor/{gemini_vertex_executor.go,aistudio_executor.go,xai_executor_stream.go,stream_partial_usage_test.go}` cover these stream paths.
+OpenAI-compatible stream executors. `internal/runtime/executor/{gemini_vertex_executor.go,aistudio_executor.go,xai_executor_stream.go,stream_partial_usage_test.go}` cover these stream paths. `internal/runtime/executor/{codex_openai_images.go,codex_openai_images_cancellation_test.go}` and `TestCodexDirectImageClientCancellationRetainsObservedUsage` cover interrupted direct image delivery.
 
 **Recorded validation:** regression tests cover each misclassified category, client disconnect, internal
 cancellation followed by request closure, a provider error followed by disconnect, Codex
 blocked-read cancellation, and retained partial usage. A real client abort through a local CPA
-recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa`. All five stream regressions recorded failed events with zero tokens before the fix. The actual executor stream paths now record failed events with 5 input, 7 output, and 12 total tokens; the uncached executor suite passes.
+recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa`. All five stream regressions recorded failed events with zero tokens before the fix. The actual executor stream paths now record failed events with 5 input, 7 output, and 12 total tokens; the uncached executor suite passes. The direct image cancellation regression recorded `succeeded` before the fix and `canceled/client` afterward, retaining 5 input, 7 output, and 12 total tokens with one usage record.
 
 **Last updated:** 2026-11-07
 

@@ -493,6 +493,10 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
 				case <-ctx.Done():
+					usageObserver.Finish()
+					if !streamUsage.PublishFailure(ctx, reporter, ctx.Err()) {
+						reporter.PublishFailure(ctx, ctx.Err())
+					}
 					return
 				}
 			}
