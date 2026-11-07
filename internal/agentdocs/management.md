@@ -93,6 +93,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `GET /v8/management/analytics/dimensions` | Read values for a dimension | Analytics GET range; required `dimension`: `provider`, `model`, `credential`, `key`, `endpoint`, `failure`, `latency`, `cache`, `service_tier`, `source`; filters |
 | `GET /v8/management/analytics/events` | Page through sanitized upstream attempts | Analytics GET range, filters, `page_size`, `cursor`; list omits routing trace |
 | `GET /v8/management/analytics/events/:attempt_id` | Read one attempt including routing trace and credential filename | Path `attempt_id`; required RFC3339 `start`, `end`, IANA `time_zone`; no pagination; trace may be null |
+| `GET /v8/management/analytics/attempts/:attempt_id` | Read the same attempt detail through a URL that avoids privacy-filter false positives | Same range, filters, authentication, and response as `/analytics/events/:attempt_id`; preferred for browser clients |
 | `GET /v8/management/analytics/pricing` | Read effective pricing, overrides and missing prices | No params |
 | `GET /v8/management/analytics/pricing/catalog-providers` | List pricing catalog providers | No params |
 | `PUT /v8/management/analytics/pricing` | Replace manual pricing overrides | JSON `rules` or `overrides`; optional `currency_unit`, `rounding`, `kiro_usd_per_credit` |

@@ -79,6 +79,11 @@ tooltips, and overlapping, unstacked duration lines for Output window. Model col
 highlighting persist across modes; the chart and ranking fit narrow screens after viewport changes.
 All three Top Models modes use straight segments with smoothing explicitly disabled.
 
+Event detail sheets finish one close animation across parent re-renders and delayed URL updates.
+The client prefers `/v8/management/analytics/attempts/:attempt_id`, an equivalent detail route
+whose path avoids privacy-list matches against `/analytics/event`. Older servers retain a
+missing-route fallback to the original event URL. CPAMC DL080 records the reproduction and checks.
+
 **Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and the CPAMC `AGENTS.md` and `FORK.md`.
 
 **Recorded validation:** CPAMC verification, lint, TypeScript compilation, the Vite production build, and independent desktop/mobile browser journeys cover the Analytics routes, configuration contracts, viewer isolation, responsive layout, and runtime diagnostics. Top Models verification includes 2,138 passing frontend tests, all three modes with synthetic analytics responses on desktop/mobile, the canonical Docker panel build, and a compiled-server smoke check serving the bundled `/management.html` with HTTP 200. Detailed CPAMC validation remains in the submodule's `FORK.md`.

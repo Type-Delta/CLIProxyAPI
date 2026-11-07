@@ -38,7 +38,7 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 		"/plugins/:id/quota", "/session", "/capabilities", "/storage", "/credentials", "/credentials/models",
 		"/routing/model-definitions/:channel", "/telemetry/health", "/telemetry/schema",
 		"/analytics/health", "/analytics/summary", "/analytics/timeseries", "/analytics/dimensions",
-		"/analytics/events", "/analytics/events/:attempt_id", "/analytics/pricing",
+		"/analytics/events", "/analytics/events/:attempt_id", "/analytics/attempts/:attempt_id", "/analytics/pricing",
 		"/analytics/pricing/catalog-providers", "/analytics/providers", "/analytics/quotas",
 		"/analytics/quota-history", "/analytics/keys", "/analytics/leaderboard", "/analytics/query":
 		return true

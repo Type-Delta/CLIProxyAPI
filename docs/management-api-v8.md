@@ -141,6 +141,12 @@ Analytics administration is exposed under `/analytics/*`, including
 operations. These routes accept the same management credential and keep key
 identity filters in bounded request bodies or the conditional query header.
 
+Event details use `GET /analytics/attempts/<attempt_id>` with `start`, `end`,
+and `time_zone` query parameters. This route shares the event-detail handler and
+access rules with the compatible `/analytics/events/<attempt_id>` route. The
+`attempts` path avoids privacy-list rules that mistake `/analytics/event` URLs
+for tracking requests. Both full-access and read-only management keys may read it.
+
 ### Analytics response reuse
 
 Analytics query operations and the key catalog share successful responses after

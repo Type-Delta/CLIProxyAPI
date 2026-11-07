@@ -50,6 +50,7 @@ func (s *Server) registerManagementV8Routes() {
 	analytics.GET("/dimensions", s.mgmt.GetAnalyticsDimensions)
 	analytics.GET("/events", s.mgmt.GetAnalyticsEvents)
 	analytics.GET("/events/:attempt_id", s.mgmt.GetAnalyticsEvent)
+	analytics.GET("/attempts/:attempt_id", s.mgmt.GetAnalyticsEvent)
 	analytics.GET("/pricing", s.mgmt.GetAnalyticsPricing)
 	analytics.GET("/pricing/catalog-providers", s.mgmt.GetAnalyticsPricingCatalogProviders)
 	analytics.PUT("/pricing", s.mgmt.PutAnalyticsPricing)
