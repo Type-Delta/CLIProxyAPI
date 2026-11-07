@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -321,7 +322,13 @@ func kiroRequestPayload(req cliproxyexecutor.Request, opts cliproxyexecutor.Opti
 	if len(req.Payload) == 0 || opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatClaude {
 		return req.Payload
 	}
-	return sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatClaude, req.Model, req.Payload, opts.Stream)
+	ctx := context.Background()
+	if opts.SourceFormat == sdktranslator.FormatOpenAIResponse {
+		ctx = responsesclaude.WithTopLevelSystemItems(ctx, true)
+	}
+	return sdktranslator.TranslateRequestEnvelope(ctx, opts.SourceFormat, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+		Model: req.Model, Body: req.Payload, Stream: opts.Stream,
+	}).Body
 }
 
 func (e *KiroExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

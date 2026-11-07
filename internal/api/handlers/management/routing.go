@@ -98,6 +98,7 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 }
 
 type routingDryRunInput struct {
+	SourceFormat        string            `json:"source_format"`
 	DownstreamWebsocket bool              `json:"downstream_websocket"`
 	Model               string            `json:"model"`
 	APIKey              string            `json:"api_key_label"`
@@ -129,6 +130,10 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		return
 	}
 
+	if err = (routing.DryRunRequest{SourceFormat: input.SourceFormat}).ValidateSourceFormat(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "path": "source_format"})
+		return
+	}
 	cfg := h.routingConfigSnapshot()
 	keyID, found, ambiguous := routingAPIKeyID(cfg, input.APIKey)
 	if ambiguous {
@@ -168,6 +173,7 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		headers.Add(name, value)
 	}
 	trace, err := h.authManager.DryRunRoute(c.Request.Context(), routing.DryRunRequest{
+		SourceFormat:        input.SourceFormat,
 		DownstreamWebsocket: input.DownstreamWebsocket,
 		Model:               input.Model,
 		KeyID:               keyID,

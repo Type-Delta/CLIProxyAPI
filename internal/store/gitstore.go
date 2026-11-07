@@ -543,6 +543,12 @@ func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		if cliproxyauth.IsRuntimeStatePath(dir, path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}

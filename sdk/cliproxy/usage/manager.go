@@ -121,6 +121,10 @@ type Record struct {
 // accepted upstream stream that ended without its terminal frame.
 const FailureStreamTruncatedCode = "stream_truncated"
 
+// FailureRequestScopedCode marks failures belonging to the request rather than
+// the selected credential, including local capability validation failures.
+const FailureRequestScopedCode = "request_scoped"
+
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
 	// Canceled preserves typed error identity before diagnostic serialization.
@@ -163,6 +167,8 @@ type Detail struct {
 	VideoInputTokens         *int64
 	FileInputTokens          *int64
 	CachedTextTokens         *int64
+	CachedImageTokens        *int64
+	CachedAudioTokens        *int64
 	TextOutputTokens         *int64
 	ImageOutputTokens        *int64
 	AudioOutputTokens        *int64

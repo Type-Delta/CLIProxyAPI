@@ -2,6 +2,7 @@ package config
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
@@ -57,15 +58,16 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 }
 
 // SanitizeClaudeHeaderDefaults trims surrounding whitespace from the
-// configured Claude fingerprint baseline values, normalizes the beta override
-// lists and custom identity list, and resets an unknown client-request-id mode to the default.
+// configured Claude fingerprint baseline values and normalizes native
+// entrypoints, safeguard identities, beta overrides, and client-request-id mode.
 func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	if cfg == nil {
 		return
 	}
-	cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities)
-	cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.AnthropicBetaStrip)
-	cfg.ClaudeHeaderDefaults.AnthropicBetaAppend = normalizeClaudeHeaderValues(cfg.ClaudeHeaderDefaults.AnthropicBetaAppend)
+	cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities = normalizeClaudeEntrypointNames(cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities)
+	cfg.ClaudeHeaderDefaults.NativeEntrypoints = normalizeClaudeEntrypointNames(cfg.ClaudeHeaderDefaults.NativeEntrypoints)
+	cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaStrip)
+	cfg.ClaudeHeaderDefaults.AnthropicBetaAppend = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaAppend)
 	mode := strings.ToLower(strings.TrimSpace(cfg.ClaudeHeaderDefaults.ClientRequestID))
 	switch mode {
 	case "", ClaudeClientRequestIDOn, ClaudeClientRequestIDOff, ClaudeClientRequestIDPassthrough:
@@ -83,9 +85,34 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
 }
 
-// normalizeClaudeHeaderValues trims header values and drops empty and duplicate
+// normalizeClaudeEntrypointNames trims and lowercases entrypoint names,
+// dropping empty and duplicate entries while keeping the configured order.
+func normalizeClaudeEntrypointNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeClaudeBetaNames trims beta names and drops empty and duplicate
 // entries while keeping the configured order.
-func normalizeClaudeHeaderValues(names []string) []string {
+func normalizeClaudeBetaNames(names []string) []string {
 	if len(names) == 0 {
 		return nil
 	}
@@ -434,6 +461,28 @@ func formatGeminiKeyDedupID(entry GeminiKey) string {
 	b.WriteString(entry.Prefix)
 	b.WriteByte(0)
 	b.WriteString(FormatSortedHeaders(entry.Headers))
+	b.WriteByte(0)
+	b.WriteString(FormatConnectionPoolDedupID(entry.ConnectionPool))
+	return b.String()
+}
+
+// FormatConnectionPoolDedupID serializes a per-credential connection-pool override
+// deterministically for credential deduplication and auth-index mapping.
+func FormatConnectionPoolDedupID(pool *ProxyConnectionPoolConfig) string {
+	if pool == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("pool:")
+	if pool.Enabled != nil {
+		b.WriteString(strconv.FormatBool(*pool.Enabled))
+	}
+	b.WriteByte(0)
+	b.WriteString(strings.TrimSpace(pool.IdleConnTimeout))
+	b.WriteByte(0)
+	if pool.MaxIdleConnsPerHost != nil {
+		b.WriteString(strconv.Itoa(*pool.MaxIdleConnsPerHost))
+	}
 	return b.String()
 }
 

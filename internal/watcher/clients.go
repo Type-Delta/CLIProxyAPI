@@ -109,7 +109,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 						continue
 					}
 					name := entry.Name()
-					if !strings.HasSuffix(strings.ToLower(name), ".json") {
+					if !strings.HasSuffix(strings.ToLower(name), ".json") || coreauth.IsRuntimeStatePath(resolvedAuthDir, filepath.Join(resolvedAuthDir, name)) {
 						continue
 					}
 					fullPath := filepath.Join(resolvedAuthDir, name)

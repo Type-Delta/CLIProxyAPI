@@ -133,7 +133,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `POST /v8/management/routing/model-definitions/refresh` | Refresh model catalogs immediately | No body; returns catalog status, sources and `changed_providers`; invalid sources return 400, refresh failures return 502 |
 | `POST /v8/management/models/refresh` | Refresh model catalogs immediately | Alias of `/routing/model-definitions/refresh` |
 | `GET /v8/management/routing/credentials` | List secret-free routable credentials | Returns `credentials` with `cooldowns`, `observed_at`, `client_types`; covers config API keys and OAuth; IDs are Auth.ID, not analytics HMAC IDs |
-| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, draft `rules`; returns `trace`, `warnings` |
+| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, `source_format` (`"openai-image"` simulates the native Images API; invalid values return 400 with `path:"source_format"`), draft `rules`; returns `trace`, `warnings` |
 
 ## Observability
 

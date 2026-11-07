@@ -557,6 +557,10 @@ func TestFileTokenStoreListSkipsForkStateDirectory(t *testing.T) {
 	baseDir := t.TempDir()
 	files := map[string]string{
 		"codex.json":                      `{"type":"codex"}`,
+		"kv.db":                           `{"type":"codex"}`,
+		"kv.db.lock":                      `{"type":"codex"}`,
+		"kv.db.lock.json":                 `{"type":"codex"}`,
+		"kv.db-shm":                       `{"type":"codex"}`,
 		"team/claude.json":                `{"type":"claude"}`,
 		"state/usage-limits.json":         `{"version":1,"keys":{}}`,
 		"state/analytics/viewers.json":    `{"viewers":[]}`,
@@ -593,6 +597,20 @@ func TestFileTokenStoreListSkipsForkStateDirectory(t *testing.T) {
 	for name, provider := range want {
 		if got[name] != provider {
 			t.Fatalf("List() files = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestFileTokenStoreReadSkipsKVState(t *testing.T) {
+	store := NewFileTokenStore()
+	baseDir := t.TempDir()
+	for _, name := range []string{"kv.db", "kv.db.lock", "kv.db.lock.json", "kv.db-shm"} {
+		path := filepath.Join(baseDir, name)
+		if err := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if auths, err := store.readAuthFiles(path, baseDir); err != nil || len(auths) != 0 {
+			t.Fatalf("readAuthFiles(%q) = %v, %v; want no credentials", name, auths, err)
 		}
 	}
 }

@@ -14,10 +14,14 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // DryRunRoute evaluates a hypothetical request without advancing routing state.
 func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*routing.Trace, error) {
+	if err := req.ValidateSourceFormat(); err != nil {
+		return nil, err
+	}
 	if req.DownstreamWebsocket {
 		ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
 	}
@@ -58,7 +62,8 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		headers.Set("X-Session-ID", req.SessionID)
 		primaryID, fallbackID = extractExplicitSessionIDs(headers, nil, metadata)
 	}
-	opts := cliproxyexecutor.Options{Headers: headers, Metadata: metadata}
+	opts := cliproxyexecutor.Options{Headers: headers, Metadata: metadata, SourceFormat: sdktranslator.FromString(req.SourceFormat)}
+	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx, _ = routing.WithTraceHolder(ctx)
 	ctx, capture := m.beginRoutingCapture(ctx, providers, model, opts, nil)
 	trace := capture.trace
@@ -109,7 +114,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 	if affinityEnabled {
 		selector = affinity.fallback
 		preserveCtx := selectorContextForAvailableAuths(ctx, affinity, model)
-		transientIDs := m.transientlyUnavailableSessionAffinityAuthIDs(affinity, affinityCandidates, model, time.Now())
+		transientIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, affinity, affinityCandidates, model, time.Now(), opts.Headers)
 		preserveCtx = withSessionAffinityTransientAuthIDs(preserveCtx, transientIDs)
 		if primaryID != "" {
 			trace.Affinity.State = routing.AffinityNew
@@ -165,7 +170,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 
 	legacy := affinityEnabled || (rules != nil && rules.Len() > 0)
 	for _, a := range eligible {
-		if m.routeAwareSelectionRequired(a, model) {
+		if m.routeAwareSelectionRequired(a, model) || requestAwareCredSelectionRequired(ctx, a, opts.Headers) {
 			legacy = true
 			break
 		}

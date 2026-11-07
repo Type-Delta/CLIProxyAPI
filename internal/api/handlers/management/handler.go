@@ -77,6 +77,7 @@ type Handler struct {
 	pluginReleases           pluginReleaseCache
 	siwcOAuthFactory         func(*config.Config) siwcOAuthService
 	siwcCommitMu             sync.Mutex
+	pluginLoginSaveMu        sync.Mutex
 }
 
 // getQuotaCache returns the handler-local quota request cache, creating it on

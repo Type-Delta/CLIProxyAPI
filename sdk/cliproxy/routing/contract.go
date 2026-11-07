@@ -11,7 +11,9 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -257,6 +259,9 @@ type Decision struct {
 
 // DryRunRequest describes a simulated request for Manager.DryRunRoute.
 type DryRunRequest struct {
+	// SourceFormat identifies the inbound protocol. Empty preserves text-route behavior;
+	// openai-image represents both native Images API endpoints.
+	SourceFormat string `json:"source_format,omitempty"`
 	// DownstreamWebsocket enables the same transport preference as live WebSocket requests.
 	DownstreamWebsocket bool `json:"downstream_websocket,omitempty"`
 	Model               string
@@ -267,6 +272,16 @@ type DryRunRequest struct {
 	SessionID string
 	// Rules overrides the live rules (for unsaved drafts); nil uses the live rules.
 	Rules *RuleSet
+}
+
+// ValidateSourceFormat rejects unknown simulated protocols instead of silently using text routing.
+func (r DryRunRequest) ValidateSourceFormat() error {
+	switch strings.ToLower(strings.TrimSpace(r.SourceFormat)) {
+	case "", "openai", "openai-response", "claude", "gemini", "codex", "antigravity", "interactions", "openai-image":
+		return nil
+	default:
+		return fmt.Errorf("unknown source_format %q", r.SourceFormat)
+	}
 }
 
 type traceKey struct{}

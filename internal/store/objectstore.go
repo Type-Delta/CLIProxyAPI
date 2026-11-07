@@ -44,13 +44,15 @@ type ObjectStoreConfig struct {
 // ObjectTokenStore persists configuration and authentication metadata using an S3-compatible object storage backend.
 // Files are mirrored to a local workspace so existing file-based flows continue to operate.
 type ObjectTokenStore struct {
-	client      *minio.Client
-	cfg         ObjectStoreConfig
-	spoolRoot   string
-	configPath  string
-	authDir     string
-	mu          sync.Mutex
-	putObjectFn func(ctx context.Context, key string, data []byte, contentType string) error
+	client            *minio.Client
+	cfg               ObjectStoreConfig
+	spoolRoot         string
+	configPath        string
+	authDir           string
+	mu                sync.Mutex
+	putObjectFn       func(ctx context.Context, key string, data []byte, contentType string) error
+	refreshProbeMu    sync.Mutex
+	refreshProbeReady bool
 }
 
 // NewObjectTokenStore initializes an object storage backed token store.
@@ -260,6 +262,12 @@ func (s *ObjectTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error)
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if cliproxyauth.IsRuntimeStatePath(dir, path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil

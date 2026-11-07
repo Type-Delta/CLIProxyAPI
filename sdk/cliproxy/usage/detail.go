@@ -286,6 +286,8 @@ func (d Detail) Clone() Detail {
 	out.VideoInputTokens = cloneInt64Ptr(d.VideoInputTokens)
 	out.FileInputTokens = cloneInt64Ptr(d.FileInputTokens)
 	out.CachedTextTokens = cloneInt64Ptr(d.CachedTextTokens)
+	out.CachedImageTokens = cloneInt64Ptr(d.CachedImageTokens)
+	out.CachedAudioTokens = cloneInt64Ptr(d.CachedAudioTokens)
 	out.TextOutputTokens = cloneInt64Ptr(d.TextOutputTokens)
 	out.ImageOutputTokens = cloneInt64Ptr(d.ImageOutputTokens)
 	out.AudioOutputTokens = cloneInt64Ptr(d.AudioOutputTokens)

@@ -380,3 +380,55 @@ func TestPostRoutingDryRunRequiresModel(t *testing.T) {
 		})
 	}
 }
+
+func TestPostRoutingDryRunSourceFormat(t *testing.T) {
+	const model = "routing-image-format"
+	const authID = "routing-image-format-auth"
+	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
+	manager.RegisterExecutor(&refreshRecordExecutor{provider: "codex"})
+	now := time.Now()
+	if _, err := manager.Register(coreauth.WithSkipPersist(t.Context()), &coreauth.Auth{
+		ID: authID, Provider: "codex", Status: coreauth.StatusActive, Metadata: map[string]any{
+			"type": "codex", "access_token": "outer", "expired": now.Add(time.Hour).Format(time.RFC3339), "use_siwc": true,
+			"siwc": map[string]any{"access_token": "inner", "expired": now.Add(-time.Hour).Format(time.RFC3339)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+	handler := &Handler{authManager: manager, cfg: &config.Config{}}
+	for _, tc := range []struct {
+		body    string
+		status  int
+		allowed bool
+	}{
+		{`{"model":"routing-image-format"}`, http.StatusOK, false},
+		{`{"model":"routing-image-format","source_format":"openai"}`, http.StatusOK, false},
+		{`{"model":"routing-image-format","source_format":"openai-image"}`, http.StatusOK, true},
+		{`{"model":"routing-image-format","source_format":"invalid"}`, http.StatusBadRequest, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			ctx, response := v2Request(http.MethodPost, "/v8/management/routing/dry-run", tc.body)
+			handler.PostRoutingDryRun(ctx)
+			if response.Code != tc.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if tc.status != http.StatusOK {
+				if !strings.Contains(response.Body.String(), `"path":"source_format"`) {
+					t.Fatalf("body=%s", response.Body.String())
+				}
+				return
+			}
+			var result struct {
+				Trace routing.Trace `json:"trace"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Trace.Candidates) != 1 || (result.Trace.Pick >= 0) != tc.allowed {
+				t.Fatalf("trace=%+v", result.Trace)
+			}
+		})
+	}
+}

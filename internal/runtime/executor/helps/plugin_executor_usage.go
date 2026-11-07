@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/tidwall/gjson"
 )
 
 // ParsePluginExecutorResponseUsage extracts token usage from a non-streaming plugin executor response.
@@ -120,10 +121,10 @@ func ObservePluginExecutorStreamTTFT(protocol string, reporter *UsageReporter, p
 }
 
 func parseClaudePayloadUsage(payload []byte) usage.Detail {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return usage.Detail{}
 	}
-	root := gjson.ParseBytes(payload)
+	root := util.ParseGJSONBytesNoCopy(payload)
 	usageNode := root.Get("usage")
 	if !usageNode.Exists() {
 		usageNode = root.Get("message.usage")
@@ -138,12 +139,12 @@ func parseClaudePayloadUsage(payload []byte) usage.Detail {
 
 func parseClaudeStreamLine(line []byte) (usage.Detail, bool) {
 	payload := ExtractStreamJSONPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 || !ojson.ValidBytes(payload) {
 		return usage.Detail{}, false
 	}
-	usageNode := gjson.GetBytes(payload, "usage")
+	usageNode := ojson.GetBytesNoCopy(payload, "usage")
 	if !usageNode.Exists() {
-		usageNode = gjson.GetBytes(payload, "message.usage")
+		usageNode = ojson.GetBytesNoCopy(payload, "message.usage")
 	}
 	if !usageNode.Exists() {
 		return usage.Detail{}, false
@@ -303,6 +304,8 @@ func mergeStreamStructuredFields(merged *usage.Detail, existing, update usage.De
 	merged.VideoInputTokens = mergeInt64Ptr(existing.VideoInputTokens, update.VideoInputTokens)
 	merged.FileInputTokens = mergeInt64Ptr(existing.FileInputTokens, update.FileInputTokens)
 	merged.CachedTextTokens = mergeInt64Ptr(existing.CachedTextTokens, update.CachedTextTokens)
+	merged.CachedImageTokens = mergeInt64Ptr(existing.CachedImageTokens, update.CachedImageTokens)
+	merged.CachedAudioTokens = mergeInt64Ptr(existing.CachedAudioTokens, update.CachedAudioTokens)
 	merged.TextOutputTokens = mergeInt64Ptr(existing.TextOutputTokens, update.TextOutputTokens)
 	merged.ImageOutputTokens = mergeInt64Ptr(existing.ImageOutputTokens, update.ImageOutputTokens)
 	merged.AudioOutputTokens = mergeInt64Ptr(existing.AudioOutputTokens, update.AudioOutputTokens)

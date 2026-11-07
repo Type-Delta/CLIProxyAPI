@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type routingCapture struct {
 	trace       *routing.Trace
 	indexes     map[string]int
 	eligibility authSelectionEligibility
+	headers     http.Header
 }
 
 func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (context.Context, *routingCapture) {
@@ -42,7 +44,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	if last := holder.Last(); last != nil {
 		trace.Selection = last.Selection + 1
 	}
-	capture := &routingCapture{trace: trace, indexes: make(map[string]int)}
+	capture := &routingCapture{trace: trace, indexes: make(map[string]int), headers: opts.Headers.Clone()}
 	if m.HomeEnabled() {
 		trace.Mode = routing.ModeHome
 		trace.DecidedBy = routing.DecidedByHome
@@ -92,8 +94,8 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	for _, a := range auths {
 		clone := a.Clone()
 		c := routing.Candidate{ID: a.ID, Provider: a.Provider, Priority: authPriority(a), AuthIndex: clone.EnsureIndex()}
-		blocked, reason, until := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), now)
-		expiresAt, hasExpiry := a.AccessTokenExpirationTime()
+		blocked, reason, until := isAuthBlockedForModelForRequest(ctx, a, m.selectionModelForAuth(a, model), now, opts.Headers)
+		expiresAt, hasExpiry := a.AccessTokenExpirationTimeForRequest(ctx, opts.Headers)
 		expired := hasExpiry && !expiresAt.IsZero() && !expiresAt.After(now)
 		switch {
 		case a.Disabled || reason == blockReasonDisabled:
@@ -239,8 +241,8 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 		return
 	}
 	now := time.Now()
-	blocked, reason, until := isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, model), now)
-	expiresAt, hasExpiry := auth.AccessTokenExpirationTime()
+	blocked, reason, until := isAuthBlockedForModelForRequest(ctx, auth, m.selectionModelForAuth(auth, model), now, c.headers)
+	expiresAt, hasExpiry := auth.AccessTokenExpirationTimeForRequest(ctx, c.headers)
 	expired := hasExpiry && !expiresAt.IsZero() && !expiresAt.After(now)
 	switch {
 	case auth.Disabled || reason == blockReasonDisabled:
