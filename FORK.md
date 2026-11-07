@@ -2873,13 +2873,14 @@ and excluded models are the previously triaged upstream default behavior.
 
 Not verified: SQLite-to-ClickHouse migration on a real database, since this merge
 adds no CPAUK migrations; corresponding CLIProxyAPIHome repository changes for
-upstream `internal/home` updates; DL026 live image generation on the merged
-build. Its live proof is from the pre-merge build with the same injection behavior;
-the merged helper and execution paths have regression coverage.
+upstream `internal/home` updates. DL026 was rechecked live on the merge commit:
+the metadata-only Lite websocket request on `gpt-6.1-sol` carried the injected
+tool and returned a valid PNG, and the header-Lite HTTP request carried no image
+tool and returned 200.
 
 Follow-up commits, oldest first:
 
-- Pending: fix direct Codex image-stream cancellation classification while retaining observed usage (DL058).
+- `a534d7c1d`: record canceled direct Codex image streams as client cancellations while retaining observed usage (DL058). This gap predates the merge.
 
 ### 2026-10-31 - Merge upstream `main` at `dbb70621`
 
