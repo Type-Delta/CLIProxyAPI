@@ -88,16 +88,13 @@ func TestGetStaticModelDefinitionsByChannelSupportsKimiAndKimiAI(t *testing.T) {
 	}
 }
 
-func TestGetStaticModelDefinitionsByChannelServesClaudeCatalogForKiro(t *testing.T) {
-	kiro := GetStaticModelDefinitionsByChannel("kiro")
-	claude := GetClaudeModels()
-	if len(kiro) == 0 || len(kiro) != len(claude) {
-		t.Fatalf("GetStaticModelDefinitionsByChannel(kiro) returned %d models, want the %d Claude models", len(kiro), len(claude))
-	}
-	for i := range kiro {
-		if kiro[i].ID != claude[i].ID {
-			t.Fatalf("kiro model %d = %q, want %q", i, kiro[i].ID, claude[i].ID)
-		}
+func TestGetStaticModelDefinitionsByChannelServesDiscoveredKiroModels(t *testing.T) {
+	reg := GetGlobalRegistry()
+	reg.RegisterClient(t.Name(), "kiro", []*ModelInfo{{ID: "kiro-catalog-model", Type: "claude"}})
+	t.Cleanup(func() { reg.UnregisterClient(t.Name()) })
+	models := GetStaticModelDefinitionsByChannel("kiro")
+	if len(models) != 1 || models[0].ID != "kiro-catalog-model" {
+		t.Fatalf("Kiro definitions = %+v, want only the discovered Kiro model", models)
 	}
 }
 

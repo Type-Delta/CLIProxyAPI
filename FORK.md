@@ -1888,9 +1888,8 @@ such as `claude-opus-5-20260724` resolves to `claude-opus-5` instead of treating
 the date as a minor version. Both current and historical user messages receive
 the normalized ID before payload rules run.
 
-Kiro registration still uses the shared Claude catalog, which can advertise
-models absent from a credential's Kiro catalog. Those availability restrictions
-remain enforced by Kiro.
+Kiro registration uses its credential-scoped live catalog, described in DL072.
+The normalizer translates the public Claude names back to their Kiro wire IDs.
 
 **Implementation evidence:** `internal/runtime/executor/kiro_translator.go`,
 `internal/runtime/executor/kiro_translator_test.go`, and
@@ -1905,7 +1904,7 @@ through all three public protocols, streaming and buffered, plus Opus 5.5 with
 a reasoning suffix. Every response contained the requested text and streaming
 responses reached their terminal event.
 
-**Last updated:** 2026-10-26
+**Last updated:** 2026-11-12
 
 ### DL055 — Local storage usage in Config Panel
 
@@ -2768,6 +2767,40 @@ empty-entry tools item. Transcript, ingest, store, agentdocs, ClickHouse, and ma
 tests pass against real ClickHouse.
 
 **Last updated:** 2026-11-07
+
+### DL072 — Credential-scoped Kiro model discovery
+
+Kiro credentials register only models returned by their authenticated
+`ListAvailableModels` endpoint. Registration includes the credential's region
+and profile, follows pagination, and preserves advertised names and token limits.
+Claude dotted minor versions become CPA's existing dashed public names; other
+model IDs, including `auto`, remain unchanged. Known static metadata enriches
+discovered entries without granting access to models missing from Kiro's list.
+Every entry retains Claude-compatible translation through the Kiro executor.
+
+Successful catalogs are cached for three hours. A minute scan refreshes due
+accounts through the existing bounded registration workers and publication
+fences. Failed refreshes retain the last successful catalog and retry after a
+minute; failed first discovery advertises no inferred models. Empty catalogs
+remove prior registrations, and incomplete paginated responses never replace a
+successful snapshot. Cache identities separate credentials, registration epochs,
+profiles, regions, and configured proxy routes. Model exclusions, OAuth aliases,
+settings, prefixes, scheduler updates, and credential-removal fences still apply.
+The Kiro management model-definition list also uses discovered registrations.
+
+**Implementation evidence:** `internal/runtime/executor/helps/kiro_models.go`,
+`sdk/cliproxy/kiro_models.go`, `sdk/cliproxy/service_models.go`,
+`internal/registry/model_definitions.go`, and their Kiro regression tests.
+
+**Recorded validation:** the SDK, executor, helper, and registry package suites,
+targeted Kiro race tests, `go vet`, and server build pass. An isolated Docker
+instance discovered 21 live Kiro models, completed buffered and streaming Fable
+5.1 requests and a Qwen3 Coder Next request with HTTP 200 and the requested text.
+Its shared Claude catalog explicitly included Fable 5.2, while Kiro registration
+excluded it; a Fable 5.2 request made zero upstream attempts. Public and
+credential-specific management model lists matched the live discovery result.
+
+**Last updated:** 2026-11-12
 
 ## Sync Checklist
 

@@ -240,6 +240,7 @@ func (s *Service) Run(ctx context.Context) error {
 	if !homeEnabled {
 		go s.runAntigravityModelRefresh(ctx)
 	}
+	go s.runKiroModelRefresh(ctx)
 	s.startClaudeReferenceUpdater(ctx)
 
 	select {

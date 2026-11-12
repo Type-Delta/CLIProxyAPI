@@ -551,12 +551,13 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 	return out
 }
 
-// GetStaticModelDefinitionsByChannel returns static model definitions for a given channel/provider.
+// GetStaticModelDefinitionsByChannel returns model definitions for a channel/provider,
+// using discovered account catalogs for Kiro.
 // It returns nil when the channel is unknown.
 //
 // Supported channels:
 //   - claude
-//   - kiro (serves the Claude catalog)
+//   - kiro (serves discovered account catalogs)
 //   - gemini
 //   - gemini-interactions
 //   - vertex
@@ -570,9 +571,10 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
-	case "claude", "kiro":
-		// Kiro registers the Claude catalog at runtime, so its exclusions pick from it.
+	case "claude":
 		return GetClaudeModels()
+	case "kiro":
+		return GetGlobalRegistry().GetAvailableModelsByProvider("kiro")
 	case "gemini":
 		return GetGeminiModels()
 	case "gemini-interactions":

@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -157,10 +158,11 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
-		// Kiro exposes Claude-compatible model IDs through its runtime API.
-		// Keep the model type as Claude so both Messages and Chat translations
-		// use the native Claude-compatible request/response formats.
-		models = registry.GetClaudeModels()
+		var err error
+		models, err = s.kiroModelCatalog.ModelsForAuth(ctx, cfg, a)
+		if err != nil {
+			log.WithError(err).WithField("auth_id", a.ID).Warn("kiro: model discovery failed; using only previously discovered models")
+		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
 		if authKind == "apikey" {
