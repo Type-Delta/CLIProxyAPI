@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/MoeForge/moego/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
@@ -217,8 +217,9 @@ func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	}
 }
 
-func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T) {
+func TestApplyClaudeHeaders_LearnsObservedSoftwareTuplesWithoutDowngrading(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	cfg := &config.Config{
@@ -246,8 +247,10 @@ func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T)
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(firstReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(firstReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.62 (external, cli)", "0.74.0", "v24.3.0", "MacOS", "arm64")
 
 	thirdPartyReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"lobe-chat/1.0"},
@@ -256,8 +259,10 @@ func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T)
 		"X-Stainless-Os":              []string{"Windows"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(thirdPartyReq, auth, "key-upgrade", false, nil, nil, cfg, nil, false)
-	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(thirdPartyReq, auth, "key-upgrade", false, nil, nil, cfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.62 (external, cli)", "0.74.0", "v24.3.0", "MacOS", "arm64")
 
 	higherReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"claude-cli/2.1.63 (external, cli)"},
@@ -266,8 +271,10 @@ func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T)
 		"X-Stainless-Os":              []string{"MacOS"},
 		"X-Stainless-Arch":            []string{"arm64"},
 	})
-	applyClaudeHeaders(higherReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, higherReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(higherReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, higherReq.Header, "claude-cli/2.1.63 (external, cli)", "0.75.0", "v24.4.0", "MacOS", "arm64")
 
 	lowerReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"claude-cli/2.1.61 (external, cli)"},
@@ -276,12 +283,15 @@ func TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints(t *testing.T)
 		"X-Stainless-Os":              []string{"Windows"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(lowerReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, lowerReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(lowerReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, lowerReq.Header, "claude-cli/2.1.63 (external, cli)", "0.75.0", "v24.4.0", "MacOS", "arm64")
 }
 
-func TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClient(t *testing.T) {
+func TestApplyClaudeHeaders_FirstNativeClientEstablishesTupleBeforeFallbackEmission(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	cfg := &config.Config{
@@ -308,8 +318,10 @@ func TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClien
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(olderClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, olderClaudeReq.Header, "claude-cli/2.1.70 (external, cli)", "0.80.0", "v24.5.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(olderClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, olderClaudeReq.Header, "claude-cli/2.1.62 (external, cli)", "0.74.0", "v24.3.0", "MacOS", "arm64")
 
 	newerClaudeReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"claude-cli/2.1.71 (external, cli)"},
@@ -318,12 +330,15 @@ func TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClien
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(newerClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, newerClaudeReq.Header, "claude-cli/2.1.70 (external, cli)", "0.80.0", "v24.5.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(newerClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, newerClaudeReq.Header, "claude-cli/2.1.71 (external, cli)", "0.81.0", "v24.6.0", "MacOS", "arm64")
 }
 
-func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvances(t *testing.T) {
+func TestApplyClaudeHeaders_RetainsStoredSoftwareFingerprintWhenBaselineAdvances(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	oldCfg := &config.Config{
@@ -341,8 +356,8 @@ func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvance
 			UserAgent:              "claude-cli/2.1.77 (external, cli)",
 			PackageVersion:         "0.87.0",
 			RuntimeVersion:         "v24.8.0",
-			OS:                     "MacOS",
-			Arch:                   "arm64",
+			OS:                     "Windows",
+			Arch:                   "x64",
 			StabilizeDeviceProfile: &stabilize,
 		},
 	}
@@ -361,8 +376,10 @@ func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvance
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(officialReq, auth, "key-baseline-reload", false, nil, nil, oldCfg, nil, true)
-	assertClaudeFingerprint(t, officialReq.Header, "claude-cli/2.1.70 (external, cli)", "0.80.0", "v24.5.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(officialReq, auth, "key-baseline-reload", false, nil, nil, oldCfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, officialReq.Header, "claude-cli/2.1.71 (external, cli)", "0.81.0", "v24.6.0", "MacOS", "arm64")
 
 	thirdPartyReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"curl/8.7.1"},
@@ -371,12 +388,15 @@ func TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvance
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(thirdPartyReq, auth, "key-baseline-reload", false, nil, nil, newCfg, nil, false)
-	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.77 (external, cli)", "0.87.0", "v24.8.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(thirdPartyReq, auth, "key-baseline-reload", false, nil, nil, newCfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.71 (external, cli)", "0.81.0", "v24.6.0", "MacOS", "arm64")
 }
 
 func TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	cfg := &config.Config{
@@ -404,7 +424,9 @@ func TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(thirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false)
+	if errApply := applyClaudeHeaders(thirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
 	assertClaudeFingerprint(t, thirdPartyReq.Header, "my-gateway/1.0", "custom-pkg", "custom-runtime", "MacOS", "arm64")
 
 	officialReq := newClaudeHeaderTestRequest(t, http.Header{
@@ -414,8 +436,10 @@ func TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(officialReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, officialReq.Header, "my-gateway/1.0", "custom-pkg", "custom-runtime", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(officialReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, officialReq.Header, "claude-cli/2.1.77 (external, cli)", "0.87.0", "v24.8.0", "MacOS", "arm64")
 
 	postLearningThirdPartyReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"curl/8.7.1"},
@@ -424,12 +448,15 @@ func TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(postLearningThirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false)
-	assertClaudeFingerprint(t, postLearningThirdPartyReq.Header, "my-gateway/1.0", "custom-pkg", "custom-runtime", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(postLearningThirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, postLearningThirdPartyReq.Header, "claude-cli/2.1.77 (external, cli)", "0.87.0", "v24.8.0", "MacOS", "arm64")
 }
 
 func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	cfg := &config.Config{
@@ -490,9 +517,9 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 	}
 
 	highResult := helps.ResolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
-		"User-Agent":                  []string{"claude-cli/2.1.60 (external, cli)"},
-		"X-Stainless-Package-Version": []string{"0.70.0"},
-		"X-Stainless-Runtime-Version": []string{"v22.0.0"},
+		"User-Agent":                  []string{"claude-cli/2.1.61 (external, cli)"},
+		"X-Stainless-Package-Version": []string{"0.71.0"},
+		"X-Stainless-Runtime-Version": []string{"v22.1.0"},
 		"X-Stainless-Os":              []string{"MacOS"},
 		"X-Stainless-Arch":            []string{"arm64"},
 	}, cfg)
@@ -500,11 +527,11 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 
 	select {
 	case lowResult := <-lowResultCh:
-		if lowResult.UserAgent != "claude-cli/2.1.60 (external, cli)" {
-			t.Fatalf("lowResult.UserAgent = %q, want %q", lowResult.UserAgent, "claude-cli/2.1.60 (external, cli)")
+		if lowResult.UserAgent != "claude-cli/2.1.61 (external, cli)" {
+			t.Fatalf("lowResult.UserAgent = %q, want %q", lowResult.UserAgent, "claude-cli/2.1.61 (external, cli)")
 		}
-		if lowResult.PackageVersion != "0.70.0" {
-			t.Fatalf("lowResult.PackageVersion = %q, want %q", lowResult.PackageVersion, "0.70.0")
+		if lowResult.PackageVersion != "0.71.0" {
+			t.Fatalf("lowResult.PackageVersion = %q, want %q", lowResult.PackageVersion, "0.71.0")
 		}
 		if lowResult.OS != "MacOS" || lowResult.Arch != "arm64" {
 			t.Fatalf("lowResult platform = %s/%s, want %s/%s", lowResult.OS, lowResult.Arch, "MacOS", "arm64")
@@ -513,8 +540,8 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 		t.Fatal("timed out waiting for lower candidate result")
 	}
 
-	if highResult.UserAgent != "claude-cli/2.1.60 (external, cli)" {
-		t.Fatalf("highResult.UserAgent = %q, want %q", highResult.UserAgent, "claude-cli/2.1.60 (external, cli)")
+	if highResult.UserAgent != "claude-cli/2.1.61 (external, cli)" {
+		t.Fatalf("highResult.UserAgent = %q, want %q", highResult.UserAgent, "claude-cli/2.1.61 (external, cli)")
 	}
 	if highResult.OS != "MacOS" || highResult.Arch != "arm64" {
 		t.Fatalf("highResult platform = %s/%s, want %s/%s", highResult.OS, highResult.Arch, "MacOS", "arm64")
@@ -523,11 +550,11 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 	cached := helps.ResolveClaudeDeviceProfile(auth, "key-racy-upgrade", http.Header{
 		"User-Agent": []string{"curl/8.7.1"},
 	}, cfg)
-	if cached.UserAgent != "claude-cli/2.1.60 (external, cli)" {
-		t.Fatalf("cached.UserAgent = %q, want %q", cached.UserAgent, "claude-cli/2.1.60 (external, cli)")
+	if cached.UserAgent != "claude-cli/2.1.61 (external, cli)" {
+		t.Fatalf("cached.UserAgent = %q, want %q", cached.UserAgent, "claude-cli/2.1.61 (external, cli)")
 	}
-	if cached.PackageVersion != "0.70.0" {
-		t.Fatalf("cached.PackageVersion = %q, want %q", cached.PackageVersion, "0.70.0")
+	if cached.PackageVersion != "0.71.0" {
+		t.Fatalf("cached.PackageVersion = %q, want %q", cached.PackageVersion, "0.71.0")
 	}
 	if cached.OS != "MacOS" || cached.Arch != "arm64" {
 		t.Fatalf("cached platform = %s/%s, want %s/%s", cached.OS, cached.Arch, "MacOS", "arm64")
@@ -536,6 +563,7 @@ func TestResolveClaudeDeviceProfile_RechecksCacheBeforeStoringCandidate(t *testi
 
 func TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlatform(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 	stabilize := true
 
 	cfg := &config.Config{
@@ -563,7 +591,9 @@ func TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlat
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(thirdPartyReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, false)
+	if errApply := applyClaudeHeaders(thirdPartyReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
 	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.70 (external, cli)", "0.80.0", "v24.5.0", "MacOS", "arm64")
 
 	officialReq := newClaudeHeaderTestRequest(t, http.Header{
@@ -573,12 +603,15 @@ func TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlat
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(officialReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, officialReq.Header, "claude-cli/2.1.70 (external, cli)", "0.80.0", "v24.5.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(officialReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, officialReq.Header, "claude-cli/2.1.77 (external, cli)", "0.87.0", "v24.8.0", "MacOS", "arm64")
 }
 
-func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
+func TestApplyClaudeHeaders_DisabledStabilizationPreservesEachNativeTuple(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 
 	stabilize := false
 	cfg := &config.Config{
@@ -606,8 +639,10 @@ func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(firstReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.62 (external, cli)", "0.70.0", "v22.0.0", "Linux", "x64")
+	if errApply := applyClaudeHeaders(firstReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, firstReq.Header, "claude-cli/2.1.62 (external, cli)", "0.74.0", "v24.3.0", "Linux", "x64")
 
 	thirdPartyReq := newClaudeHeaderTestRequest(t, http.Header{
 		"User-Agent":                  []string{"lobe-chat/1.0"},
@@ -616,7 +651,9 @@ func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
 		"X-Stainless-Os":              []string{"Windows"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(thirdPartyReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, false)
+	if errApply := applyClaudeHeaders(thirdPartyReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, false); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
 	assertClaudeFingerprint(t, thirdPartyReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
 
 	olderReq := newClaudeHeaderTestRequest(t, http.Header{
@@ -626,12 +663,15 @@ func TestApplyClaudeHeaders_DisableDeviceProfileStabilization(t *testing.T) {
 		"X-Stainless-Os":              []string{"Windows"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(olderReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true)
-	assertClaudeFingerprint(t, olderReq.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "MacOS", "arm64")
+	if errApply := applyClaudeHeaders(olderReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
+	assertClaudeFingerprint(t, olderReq.Header, "claude-cli/2.1.59 (external, cli)", "0.73.0", "v24.2.0", "Windows", "x64")
 }
 
-func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients(t *testing.T) {
+func TestApplyClaudeHeaders_DisabledStabilizationPreservesNativeTupleWithExplicitUserAgentOverride(t *testing.T) {
 	resetClaudeDeviceProfileCache()
+	t.Cleanup(resetClaudeDeviceProfileCache)
 
 	stabilize := false
 	cfg := &config.Config{
@@ -657,9 +697,11 @@ func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForCla
 		"X-Stainless-Os":              []string{"Linux"},
 		"X-Stainless-Arch":            []string{"x64"},
 	})
-	applyClaudeHeaders(req, auth, "key-legacy-ua-override", false, nil, nil, cfg, nil, true)
+	if errApply := applyClaudeHeaders(req, auth, "key-legacy-ua-override", false, nil, nil, cfg, nil, true); errApply != nil {
+		t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+	}
 
-	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.70.0", "v22.0.0", "Linux", "x64")
+	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.74.0", "v24.3.0", "Linux", "x64")
 }
 
 func TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch(t *testing.T) {
@@ -1050,6 +1092,7 @@ func TestClaudeExecutor_ConfirmedCLIForwardsNativeOpus55Shape(t *testing.T) {
 
 func TestClaudeExecutor_ConfirmedVSCodeAgentSDKRequestPreservesIdentity(t *testing.T) {
 	helps.ResetClaudeDeviceProfileCache()
+	t.Cleanup(helps.ResetClaudeDeviceProfileCache)
 	var seenBody []byte
 	var seenHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1063,7 +1106,7 @@ func TestClaudeExecutor_ConfirmedVSCodeAgentSDKRequestPreservesIdentity(t *testi
 	const sessionID = "22222222-3333-4444-8555-666666666666"
 	const userID = `{"device_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","account_uuid":"","session_id":"22222222-3333-4444-8555-666666666666"}`
 	const vscodeUA = "claude-cli/2.1.280 (external, claude-vscode, agent-sdk/0.3.220)"
-	const billingHeader = "x-anthropic-billing-header: cc_version=2.1.258.9cb; cc_entrypoint=claude-vscode;"
+	const billingHeader = "x-anthropic-billing-header: cc_version=2.1.280.9cb; cc_entrypoint=claude-vscode;"
 	payload := []byte(`{"model":"claude-opus-4-6","system":[{"type":"text","text":` + fmt.Sprintf("%q", billingHeader) + `},{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK.","cache_control":{"type":"ephemeral","ttl":"1h"}},{"type":"text","text":"vscode-agent-system"}],"messages":[{"role":"user","content":"x"}],"metadata":{"user_id":` + fmt.Sprintf("%q", userID) + `}}`)
 	incoming := http.Header{
 		"User-Agent":     {vscodeUA},
@@ -1117,8 +1160,13 @@ func TestClaudeExecutor_ConfirmedVSCodeAgentSDKRequestPreservesIdentity(t *testi
 	if got := ojson.GetBytes(seenBody, "system.#").Int(); got != 3 {
 		t.Fatalf("system block count = %d, want 3", got)
 	}
-	if got := ojson.GetBytes(seenBody, "metadata.user_id").String(); got != userID {
-		t.Fatalf("metadata.user_id = %q, want preserved %q", got, userID)
+	profile, errProfile := helps.ResolveClaudeDeviceProfileRequired(t.Context(), auth, "", incoming, executor.cfg)
+	if errProfile != nil {
+		t.Fatal(errProfile)
+	}
+	identity := ojson.GetBytes(seenBody, "metadata.user_id").String()
+	if ojson.Get(identity, "device_id").String() != profile.DeviceID || ojson.Get(identity, "session_id").String() != sessionID || ojson.Get(identity, "account_uuid").String() != "" {
+		t.Fatalf("signature device/account/session mismatch: %s", identity)
 	}
 }
 
@@ -1588,7 +1636,7 @@ func TestClaudeExecutor_CloakModeNeverUsesConfiguredHeaderDefaultsBaseline(t *te
 	if errExecute != nil {
 		t.Fatalf("Execute() fallback headers error = %v", errExecute)
 	}
-	assertClaudeFingerprint(t, seenHeaders, callerUA, "0.95.0", "v26.4.0", "MacOS", "arm64")
+	assertClaudeFingerprint(t, seenHeaders, callerUA, "0.80.0", "v26.4.0", "MacOS", "arm64")
 }
 
 func TestClaudeDeviceProfileStabilizationEnabled_DefaultFalse(t *testing.T) {

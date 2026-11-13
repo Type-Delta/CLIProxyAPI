@@ -114,8 +114,8 @@ func TestDetectClaudeCodeRequestAcceptsConfiguredMeasuredBaseline(t *testing.T) 
 	headers := confirmedClaudeCodeHeaders()
 	headers.Set("User-Agent", "claude-cli/2.2.0 (external, cli)")
 	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
-	if detection := DetectClaudeCodeRequest(headers, payload, false); detection.Confirmed {
-		t.Fatalf("default detection = %#v, want unconfigured 2.2.0 rejected", detection)
+	if detection := DetectClaudeCodeRequest(headers, payload, false); !detection.Confirmed {
+		t.Fatalf("default detection = %#v, want native minor upgrade accepted", detection)
 	}
 
 	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
@@ -128,9 +128,9 @@ func TestDetectClaudeCodeRequestAcceptsConfiguredMeasuredBaseline(t *testing.T) 
 	}
 }
 
-func TestPlausibleClaudeCodeUserAgentKeepsLegacyBaselineMatch(t *testing.T) {
-	if plausibleClaudeCodeUserAgent("claude-cli/999.0.0 (external, cli)", nil) {
-		t.Fatal("unguarded detector accepted a non-baseline Claude CLI version")
+func TestPlausibleClaudeCodeUserAgentAcceptsVersionIndependentOfFallback(t *testing.T) {
+	if !plausibleClaudeCodeUserAgent("claude-cli/3.0.0 (external, cli)", nil) {
+		t.Fatal("detector rejected native major upgrade")
 	}
 }
 
@@ -433,9 +433,6 @@ func TestDetectClaudeCodeRequestRejectsMalformedNativeSignals(t *testing.T) {
 		{name: "uppercase device", headers: confirmedClaudeCodeHeaders(), userID: `{"device_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","account_uuid":"","session_id":"11111111-2222-4333-8444-555555555555"}`},
 		{name: "invalid session", headers: confirmedClaudeCodeHeaders(), userID: `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"session"}`},
 		{name: "malformed user agent", headers: http.Header{"User-Agent": {"claude-cli/not-a-version (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
-		{name: "older patch user agent", headers: http.Header{"User-Agent": {"claude-cli/2.1.257 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
-		{name: "unmeasured next-minor user agent", headers: http.Header{"User-Agent": {"claude-cli/2.2.0 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
-		{name: "implausible future user agent", headers: http.Header{"User-Agent": {"claude-cli/999.0.0 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"claude-code-20250219"}}, userID: validClaudeCodeMetadataUserID},
 		{name: "unrelated beta", headers: http.Header{"User-Agent": {"claude-cli/2.1.280 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {"anything"}}, userID: validClaudeCodeMetadataUserID},
 	}
 	for _, test := range tests {
@@ -720,5 +717,17 @@ func TestDetectClaudeCodeRequestAcceptsConfiguredNativeEntrypoints(t *testing.T)
 	missingBetaHeaders.Del("Anthropic-Beta")
 	if unconfirmed := DetectClaudeCodeRequest(missingBetaHeaders, payload, false, cfg); unconfirmed.Confirmed || unconfirmed.StrongSignals {
 		t.Fatalf("configured entrypoint without strong signals = %#v, want unconfirmed", unconfirmed)
+	}
+}
+
+func TestClaudeMeasuredHelperKeepsValidOlderSoftware(t *testing.T) {
+	h := measuredClaudeCodeHelperHeaders(claudeCodeHelperBetaProfile(true))
+	h.Set("User-Agent", "claude-cli/2.1.258 (external, cli)")
+	h.Set("X-Stainless-Package-Version", "0.112.1")
+	h.Set("X-Stainless-Runtime-Version", "v26.3.0")
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{UserAgent: "claude-cli/2.1.322 (external, cli)", PackageVersion: "0.128.0", RuntimeVersion: "v26.12.1"}}
+	det := DetectClaudeCodeRequest(h, measuredClaudeCodeMinimalHelperPayload(), false, cfg)
+	if !det.Confirmed || !det.HelperProfile {
+		t.Fatalf("measured native helper reclassified by fallback defaults: %+v", det)
 	}
 }

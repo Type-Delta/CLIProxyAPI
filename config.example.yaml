@@ -594,16 +594,22 @@ upstream:
     # anything else is dropped so the outgoing set stays one a real client could produce.
     # Other Anthropic-compatible upstreams still forward caller betas verbatim.
     #
-    # Shared Claude CLI fingerprint defaults. Update only after measuring a new Claude Code release.
-    # Unconfirmed clients use this CLI baseline. Verified native Claude Code CLI, sdk-cli,
-    # sdk-ts, and VSCode requests preserve their measured entrypoint when the Claude Code version is a
-    # patch release in the configured major/minor line at or above this baseline. Older versions
-    # and newer major/minor lines fall back to the baseline until measured. In legacy mode,
-    # timeout is a fallback and
-    # verified native OS/arch values remain client-supplied. When stabilize-device-profile is
-    # enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
-    # the same exact software baseline rather than learning newer client versions (unless the
-    # credential resolves to cloak_mode: never, which preserves the confirmed caller's headers).
+    # Shared Claude CLI fingerprint defaults for reconstructed requests.
+    # Confirmed native clients preserve their User-Agent, SDK/Node versions and OS/arch
+    # when stabilization is off. Timeout remains a fallback.
+    # With Signature Stabilization on, each credential keeps a distinct device ID,
+    # one client identity and a pinned platform. Existing credential device IDs are
+    # retained; exact copies of the same account/device share one identity across
+    # file renames. Distinct credentials receive different device signatures.
+    # The first complete native profile establishes the client; later coherent tuples
+    # from that client may upgrade software versions, but no component may downgrade.
+    # Other client identities do not replace it. Existing billing version/entrypoint
+    # is normalized before payload rules and signing. A final billing override that
+    # contradicts the stable profile is rejected without rewriting the rule. Token-count
+    # requests share its headers without gaining a billing block.
+    # Profiles persist without expiration in the configured local/Home KV store.
+    # With KV disabled, they last for the process lifetime. Explicit cloak_mode: never
+    # retains its native passthrough behavior.
     # header-defaults:
     #   oauth-safeguard: false  # privately install/capture Claude Code, check updates every 24h, and block unmatched direct Anthropic OAuth requests
     #   oauth-safeguard-client-identities: ["partner-app", "another-app"]  # additional entrypoints in (external, <identity>); only with safeguard enabled; all other checks still apply
@@ -614,7 +620,8 @@ upstream:
     #   arch: "arm64"
     #   timeout: "600"
     #   timezone: "Asia/Singapore"  # fallback IANA timezone for cloaked currentDate; a credential JSON "timezone" takes priority
-    #   stabilize-device-profile: false  # optional, default false; set true to enable per-auth fingerprint pinning
+    #   signature-stabilization: false  # optional, default false; credential-unique device/client, upgrade-only software
+    #   # Legacy input alias: stabilize-device-profile
     #   # Additional Claude Code entrypoint labels (beyond built-in cli, sdk-cli, sdk-ts, claude-vscode)
     #   # treated as native Claude Code for passthrough when strong signals match (e.g. T3 Code's "t3-code").
     #   native-entrypoints: ["t3-code"]

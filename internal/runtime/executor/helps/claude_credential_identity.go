@@ -27,6 +27,23 @@ func ClaudeAgentSessionUUID(headers http.Header, originalPayload, translatedPayl
 // for a confirmed native caller. Other callers use protocol session fields,
 // execution metadata, or the stable derived conversation root.
 func ClaudeAgentSessionUUIDForRequest(headers http.Header, originalPayload, translatedPayload []byte, confirmedClaudeCode bool, metadataSets ...map[string]any) string {
+	if confirmedClaudeCode {
+		// The agent-qualified routing key remains internal. Anthropic receives
+		// the native root UUID even when routing isolates an individual agent.
+		if parsed, errParse := uuid.Parse(strings.TrimSpace(headerValue(headers, ClaudeCodeSessionHeader))); errParse == nil {
+			return parsed.String()
+		}
+		for _, payload := range [][]byte{originalPayload, translatedPayload} {
+			userID := ojson.GetBytesNoCopy(payload, "metadata.user_id")
+			identity := userID
+			if userID.Type == ojson.String {
+				identity = ojson.Parse(userID.String())
+			}
+			if parsed, errParse := uuid.Parse(identity.Get("session_id").String()); errParse == nil {
+				return parsed.String()
+			}
+		}
+	}
 	if !confirmedClaudeCode {
 		headers = headers.Clone()
 		for key := range headers {
@@ -975,4 +992,34 @@ func rebuildClaudeMetadataUserID(existing, deviceID, accountUUID, sessionID stri
 func writeClaudeJSONQuoted(output *bytes.Buffer, value string) {
 	encoded, _ := json.Marshal(value)
 	output.Write(encoded)
+}
+
+// ReconcileClaudeCredentialContinuityDoc drops credential-bound links only when
+// the original identity positively names a different selected account. Missing
+// provenance is not evidence of a switch.
+func ReconcileClaudeCredentialContinuityDoc(doc *ojson.Doc, original []byte, auth *cliproxyauth.Auth) bool {
+	userID := ojson.GetBytesNoCopy(original, "metadata.user_id")
+	identity := userID
+	if userID.Type == ojson.String {
+		identity = ojson.Parse(userID.String())
+	}
+	previousAccount := strings.TrimSpace(identity.Get("account_uuid").String())
+	selectedAccount := ClaudeCredentialAccountUUID(auth)
+	if previousAccount == "" || selectedAccount == "" || strings.EqualFold(previousAccount, selectedAccount) {
+		return false
+	}
+	StripClaudePreviousRequestLinksDoc(doc)
+	return true
+}
+
+// ClaudeRequestHistoryChangedDoc reports whether request preparation changed a
+// field participating in the signed history prefix. Check before credential
+// metadata replacement and billing signature preparation.
+func ClaudeRequestHistoryChangedDoc(doc *ojson.Doc, original []byte) bool {
+	for _, path := range []string{"model", "messages", "system", "tools"} {
+		if doc.Get(path).Raw != ojson.GetBytesNoCopy(original, path).Raw {
+			return true
+		}
+	}
+	return false
 }

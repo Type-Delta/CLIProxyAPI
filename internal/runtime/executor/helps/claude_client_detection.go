@@ -27,9 +27,7 @@ const (
 )
 
 var (
-	claudeCodeUserAgentPattern        = regexp.MustCompile(`(?i)^claude-cli/`)
-	claudeCodeUserAgentDetailsPattern = regexp.MustCompile(`(?i)^claude-cli/\S+\s+\(external,\s*([^,)]+)(?:,\s*agent-sdk/([^,)]+))?`)
-	claudeCodeNativeUserAgentPattern  = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
+	claudeCodeUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/`)
 )
 
 var claudeCodeSubclientByEntrypoint = map[string]string{
@@ -186,7 +184,7 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(userAgent)
 	subclient := claudeSubclientForEntrypoint(entrypoint, cfg)
 	detection := ClaudeCodeRequestDetection{
-		XAppCLI:         headerValue(headers, "X-App") == "cli",
+		XAppCLI:         (headerValue(headers, "X-App") == "cli" || headerValue(headers, "X-App") == "cli-bg"),
 		UserAgent:       plausibleClaudeCodeUserAgent(userAgent, cfg),
 		BetasPresent:    headerContainsClaudeCodeBeta(headers),
 		Entrypoint:      entrypoint,
@@ -269,7 +267,6 @@ func matchesMeasuredClaudeCodeHaiku55HelperProfile(
 }
 
 func measuredClaudeCodeHaiku55HelperHeadersMatch(headers http.Header, cfg *config.Config) bool {
-	profile := defaultClaudeDeviceProfile(cfg)
 	expected := map[string]string{
 		"Accept":                  "application/json",
 		"Content-Type":            "application/json",
@@ -296,8 +293,8 @@ func measuredClaudeCodeHaiku55HelperHeadersMatch(headers http.Header, cfg *confi
 		}
 	}
 	if !plausibleClaudeCodeUserAgent(headerValue(headers, "User-Agent"), cfg) ||
-		!plausibleClaudePackageVersion(headerValue(headers, "X-Stainless-Package-Version"), profile.PackageVersion) ||
-		!plausibleClaudeRuntimeVersion(headerValue(headers, "X-Stainless-Runtime-Version"), profile.RuntimeVersion) {
+		!claudePackageVersionPattern.MatchString(headerValue(headers, "X-Stainless-Package-Version")) ||
+		!claudeRuntimeVersionPattern.MatchString(headerValue(headers, "X-Stainless-Runtime-Version")) {
 		return false
 	}
 	if headerValue(headers, "X-Stainless-Async") != "" {
@@ -467,17 +464,8 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 	if !plausibleClaudeCodeUserAgent(userAgent, cfg) {
 		return false
 	}
-	if cfg != nil && cfg.ClaudeHeaderDefaults.OAuthSafeguard {
-		if !claudePackageVersionPattern.MatchString(packageVersion) || !claudeRuntimeVersionPattern.MatchString(runtimeVersion) {
-			return false
-		}
-	} else {
-		baseline := defaultClaudeDeviceProfile(cfg)
-		candidate := ClaudeDeviceProfile{UserAgent: userAgent, PackageVersion: packageVersion, RuntimeVersion: runtimeVersion}
-		candidate.version, candidate.hasVersion = parseClaudeCLIVersion(userAgent)
-		if !meetsClaudeDeviceProfileBaseline(candidate, baseline) {
-			return false
-		}
+	if !claudePackageVersionPattern.MatchString(packageVersion) || !claudeRuntimeVersionPattern.MatchString(runtimeVersion) {
+		return false
 	}
 	// Claude Code 2.1.258 (@anthropic-ai/sdk 0.112.1), measured 2026-09-02 on the
 	// quota probe and the session-title helper: X-Stainless-Async is never sent
@@ -698,29 +686,13 @@ func IsClaudeCodeUserAgent(userAgent string) bool {
 }
 
 func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
-	userAgent = strings.TrimSpace(userAgent)
-	if !claudeCodeUserAgentPattern.MatchString(userAgent) || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
-		return false
-	}
-	if cfg != nil && cfg.ClaudeHeaderDefaults.OAuthSafeguard {
-		return true
-	}
-	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
-	baseline, okBaseline := parseClaudeCLIVersion(defaultClaudeDeviceProfile(cfg).UserAgent)
-	// Patch releases (>= baseline.patch) within the release line preserve native passthrough.
-	return okCandidate && okBaseline && plausibleClaudeCLIVersion(candidate, baseline)
+	_, ok := parseClaudeCodeUserAgent(userAgent)
+	return ok
 }
 
 func parseClaudeCodeUserAgentDetails(userAgent string) (entrypoint, agentSDKVersion string) {
-	matches := claudeCodeUserAgentDetailsPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
-	if len(matches) < 2 {
-		return "", ""
-	}
-	entrypoint = strings.ToLower(strings.TrimSpace(matches[1]))
-	if len(matches) >= 3 {
-		agentSDKVersion = strings.TrimSpace(matches[2])
-	}
-	return entrypoint, agentSDKVersion
+	parsed, _ := parseClaudeCodeUserAgent(userAgent)
+	return parsed.entrypoint, parsed.agentSDKVersion
 }
 
 func headerValue(headers http.Header, name string) string {

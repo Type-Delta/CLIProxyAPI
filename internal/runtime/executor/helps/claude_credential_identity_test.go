@@ -337,3 +337,19 @@ func TestApplyClaudeCredentialMetadataDocMutatesInPlace(t *testing.T) {
 		}
 	})
 }
+
+func TestClaudeNativeWireRootIgnoresAgentRoutingSuffix(t *testing.T) {
+	const root = "11111111-2222-4333-8444-555555555555"
+	for _, headerRoot := range []bool{false, true} {
+		headers := http.Header{"X-Claude-Code-Agent-Id": {"worker-123"}}
+		if headerRoot {
+			headers.Set("X-Claude-Code-Session-Id", root)
+		}
+		body := []byte(`{"metadata":{"user_id":"{\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"}}`)
+		for i := 0; i < 2; i++ {
+			if got := ClaudeAgentSessionUUIDForRequest(headers, body, nil, true); got != root {
+				t.Fatalf("headerRoot=%v got=%q", headerRoot, got)
+			}
+		}
+	}
+}

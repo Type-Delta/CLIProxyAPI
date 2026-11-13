@@ -995,10 +995,86 @@ observable request properties; a client that copies them can impersonate Claude
 Code. TLS fingerprints are outside its scope. Rejections return a request-scoped
 403 with the reason and log the same non-secret reason.
 
-Upstream `upstream.claude.header-defaults.native-entrypoints` independently extends general native-client detection, including bypass paths where the safeguard is inactive. Safeguard-only identities apply only to direct guarded OAuth. Both lists still require strong request signals and use separate stabilized profile keys for custom identities. `claudeOAuthDetectionConfig` preserves the general list when disabling safeguard-only identities. Session-date pins use upstream local or Home KV with zero TTL and remain separate from executable captures. With KV active, `session-date-pin-days` is ignored; disabling local KV restores the standalone memory policy. `internal/runtime/executor/helps/{claude_client_detection.go,claude_client_detection_test.go,claude_device_profile_test.go,claude_diagnostics.go}` and `sdk/cliproxy/service_claude_reference.go` cover detection, pinning, and retry cadence.
+Signature Stabilization (`upstream.claude.header-defaults.signature-stabilization`)
+keeps one coherent client/software tuple and a distinct device ID per credential.
+The old `stabilize-device-profile` key remains an input alias; canonical values,
+including explicit `false`, win. The legacy Go field name remains source-compatible.
+A valid persisted device ID stays fixed. New profiles seed from the credential's
+existing stored device pool; an ID is allocated only when it is missing or
+collides with a distinct credential. Exact copies of the same account and stored
+device are aliases of one credential identity, independent of file names, and
+share learned software state. Startup preflights known credential records and
+migrates their existing filename-scoped profiles before opening the listener,
+so an alias cannot initialize shared state below a known learned tuple.
+OFF-to-ON reloads run the same preflight before publishing the enabled config. Requests
+also reconcile later-seen original records without downgrading canonical state. This preserves the existing device across
+renames and stabilization toggles, without inventing software versions.
+Existing metadata device IDs are
+normalized before payload rules; selected account and root session values remain
+intact. Token-count requests retain their metadata-free native shape.
+A confirmed native request establishes the client identity and
+software versions while the configured platform stays pinned. Later observed
+software tuples may upgrade the same client only when every version component
+is nondecreasing; another entrypoint or an older client cannot replace it.
+Request-specific User-Agent fields such as `workload/cron` remain per-request.
+Profiles have no expiration in local/Home KV; disabling KV limits persistence
+to the process lifetime. Concurrent upgrades use compare-and-swap, and each
+request shares one resolved profile snapshot between billing and headers.
+Confirmed native API-key requests share this snapshot too. Existing native CCH
+signatures are recomputed on the final first-party Messages body after adaptation,
+without injecting billing into requests that did not supply it.
+When an unlearned fallback remains active, coherent configuration upgrades are
+accepted without downgrades or changing its device; persisted custom fallback
+values remain readable until a native client establishes a valid tuple.
+Existing billing version and entrypoint are normalized before user payload
+rules and CCH signing. A changed billing version also recomputes its prompt-
+dependent three-character fingerprint. A read-only final check examines billing
+fields independently of order and rejects payload-rule overrides
+that contradict the stabilized billing version or entrypoint instead of
+overwriting configured values. Token-count requests use the same profile without
+receiving billing attribution. Explicit `cloak_mode: never` keeps native
+passthrough semantics. With stabilization disabled, confirmed native callers
+retain valid User-Agent, SDK, runtime, OS, and architecture values, including
+older software and newer release lines.
+
+Confirmed native subagent requests retain their root session UUID on the wire.
+The per-agent routing key remains internal, so `routing.session-affinity-subagents`
+continues to control parent-credential inheritance independently. Native requests
+do not receive the thinking-prefix `drop_block` adaptation unless credential
+metadata establishes that CPA selected a different account. Explicit caller
+thinking settings remain authoritative. Native caller feature betas are retained;
+required credential/body betas still apply. Body betas are lifted to headers
+only after payload rules, consistently for Messages and token counting; confirmed
+native managed feature betas receive the same treatment as header equivalents. When
+original native account metadata proves a credential switch, predecessor request
+and message links are cleared before payload rules, while same-account and
+unknown-provenance links are preserved.
+
+Upstream `upstream.claude.header-defaults.native-entrypoints` independently extends general native-client detection, including bypass paths where the safeguard is inactive. Safeguard-only identities apply only to direct guarded OAuth. Both lists still require strong request signals; stabilized profiles are credential-scoped across client identities. `claudeOAuthDetectionConfig` preserves the general list when disabling safeguard-only identities. Session-date pins use upstream local or Home KV with zero TTL and remain separate from executable captures. With KV active, `session-date-pin-days` is ignored; disabling local KV restores the standalone memory policy. `internal/runtime/executor/helps/{claude_client_detection.go,claude_client_detection_test.go,claude_device_profile_test.go,claude_diagnostics.go}` and `sdk/cliproxy/service_claude_reference.go` cover detection, pinning, and retry cadence.
+
+**Stabilization and native-forwarding validation:** the full Go suite and server
+build pass, as do focused race tests covering local/Home profile CAS, concurrent
+upgrades, the request snapshot, native sessions, betas, and continuity. A real
+Claude Code 2.1.322 process completed a turn through an isolated CPA HTTP server
+and an intercepted Anthropic transport with stabilization both off and on.
+The runtime Docker image also passes a private-network smoke test: the profile
+upgrades coherently, survives a container restart, rejects an older replay, and
+forwards the caller tuple after stabilization is disabled.
+The captured outbound requests preserve the native software/platform when off,
+and use coherent normalized billing and a pinned platform when on. This fixture
+validates the client/proxy path. A separate live request through the final
+Signature Stabilization executor reached Anthropic and returned `OK.` after the
+provider quota reset, without refreshing credentials or changing production. Regression tests
+also cover all three executor paths, signed-body integrity, payload overrides and
+filters, subagent affinity on/off, and workload/background native identities.
+Alias migration regressions cover account-field aliases, copy-first startup, late
+original reconciliation, and OFF-to-ON configuration reload before publication.
+Independent final council review approved the requested scope at 9.5/10 and 9/10.
 
 **Implementation evidence:** `internal/claudecapture/`,
 `internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,
+`internal/runtime/executor/helps/claude_device_profile.go`,
+`internal/runtime/executor/{claude_executor_stabilized_billing_test.go,claude_stabilization_integration_test.go,claude_native_fidelity_test.go}`,
 `cmd/server/main.go`, config, and the CPAMC toggle.
 
 **Recorded validation:** focused capture/config/executor tests, `go test ./...`,
@@ -1036,7 +1112,18 @@ mobile 390px show no horizontal overflow. The independent finish review found
 no material issues and returned SHIP. Executor acceptance tests use a simulated
 Anthropic transport; no real partner inference was attempted.
 
-**Last updated:** 2026-11-07
+Stabilized-billing regressions verify per-request versions, confirmed native
+entrypoints and Agent SDK suffixes, case-insensitive client prefixes, pinned
+software/platform fields, malformed-billing fallbacks, and unchanged body bytes.
+Loopback HTTP checks exercise execute, streaming, and upstream token counting
+with original, overridden, and filtered billing blocks; Messages checks also
+validate credential identity and CCH. Live Anthropic requests passed the outgoing
+header and CCH assertions, but successful inference could not be verified:
+one existing credential returned revoked-token 401 and another returned account
+rate-limit 429. Neither credential was refreshed or changed. The full Go suite,
+canonical panel Docker build, and disposable server build pass.
+
+**Last updated:** 2026-11-12
 
 ### DL026 — Image generation tool injection covers metadata-only responses-lite requests
 

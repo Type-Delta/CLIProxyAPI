@@ -3,8 +3,6 @@ package executor
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +11,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/MoeForge/moego/ojson"
@@ -145,25 +142,9 @@ func injectFakeUserIDDoc(ctx context.Context, doc *ojson.Doc, apiKey string, use
 	return false, nil
 }
 
-// fingerprintSalt is the salt used by Claude Code to compute the 3-char build fingerprint.
-const fingerprintSalt = "59cf53e54c78"
-
-// computeFingerprint computes the 3-char build fingerprint that Claude Code embeds in cc_version.
-// Algorithm: SHA256(salt + messageText[4] + messageText[7] + messageText[20] + version)[:3].
-// JavaScript indexes UTF-16 code units; an isolated surrogate becomes U+FFFD
-// when Node encodes the sampled string as UTF-8 for hashing.
+// computeFingerprint shares the native version checksum with profile normalization.
 func computeFingerprint(messageText, version string) string {
-	units := utf16.Encode([]rune(messageText))
-	var sampled [3]uint16
-	for i, idx := range [...]int{4, 7, 20} {
-		sampled[i] = '0'
-		if idx < len(units) {
-			sampled[i] = units[idx]
-		}
-	}
-	input := fingerprintSalt + string(utf16.Decode(sampled[:])) + version
-	h := sha256.Sum256([]byte(input))
-	return hex.EncodeToString(h[:])[:3]
+	return helps.ClaudeBillingFingerprint(messageText, version)
 }
 
 // generateBillingHeader creates the x-anthropic-billing-header text block that

@@ -182,6 +182,15 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	}
 	initialPolicy, initialSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, claudeCodeDetection.Confirmed)
 	confirmedClaudeCode := isEffectiveConfirmedClaudeCode(claudeCodeDetection, initialPolicy)
+	if helps.ClaudeSignatureStabilizationEnabled(safeguardCfg) &&
+		!initialPolicy.Uncloak && !(initialPolicy.ExplicitNever && confirmedClaudeCode) &&
+		(fp.ProfileClaudeCodeCLI || initialPolicy.Cloak || confirmedClaudeCode) {
+		profileCtx, errProfile := helps.PrepareClaudeDeviceProfile(ctx, auth, apiKey, incomingHeaders, safeguardCfg, confirmedClaudeCode)
+		if errProfile != nil {
+			return cliproxyexecutor.Response{}, fmt.Errorf("prepare Claude stabilized profile: %w", errProfile)
+		}
+		ctx = profileCtx
+	}
 	ctx = e.pinResponsesSystemItemPlacement(ctx, auth, from, upstreamModel, initialPolicy, initialSettings)
 	claudeSessionID := ""
 	if fp.ProfileClaudeCodeCLI {
@@ -239,16 +248,16 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		normalizeCacheControlTTLDoc(doc)
 	}
 
-	// Extract betas from body and convert to header (for count_tokens too)
-	extraBetas, _ := extractAndRemoveBetasDoc(doc)
-	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
-	extraBetas = append(extraBetas, claudeTokenCountingBeta)
 	if fp.MCPAlias && cloaked {
 		mcpAliases := resolveClaudeMCPAliasOptions(ctx, opts.Metadata, req.Metadata)
 		prepareClaudeOAuthToolNamesForUpstreamDoc(doc, mcpAliases)
 	}
 	sanitizeClaudeMessagesForClaudeUpstreamWithDebugDoc(ctx, doc, baseModel, helps.APIKeyModelIsCompat(req))
-	applyClaudePreservedThinkingBindingDoc(doc)
+	historyReshaped := !confirmedClaudeCode || cloaked || helps.ClaudeRequestHistoryChangedDoc(doc, originalPayload)
+	credentialSwitched := confirmedClaudeCode && helps.ReconcileClaudeCredentialContinuityDoc(doc, originalPayload, auth)
+	if historyReshaped || credentialSwitched {
+		applyClaudePreservedThinkingBindingDoc(doc)
+	}
 	stripPromptCacheOptionsDoc(doc)
 	// Two different reasons converge on the same deletions, and they must stay
 	// separable.
@@ -273,12 +282,19 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if alignCLICountTokensShape {
 		stripClaudeCodeAttributionSystemDoc(doc)
 	}
+	if profile, okProfile := helps.ClaudeDeviceProfileFromContext(ctx); okProfile {
+		helps.ApplyClaudeSignatureMetadataDoc(doc, profile)
+		helps.ApplyClaudeDeviceProfileBillingDoc(doc, profile, claudeBillingFingerprintMessageTextDoc(doc))
+	}
 	// Runs on the finished body: payload rules can rewrite model and messages
 	// long after translation, so an earlier check would not describe the request
 	// that is about to be sent.
 	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	helps.FinalizePayloadDoc(ctx, doc)
+	// Body betas are SDK transport options. Lift only the final configured value.
+	extraBetas, _ := extractAndRemoveBetasDoc(doc)
+	extraBetas = append(extraBetas, claudeTokenCountingBeta)
 	stripPromptCacheOptionsDoc(doc)
 	body = doc.Bytes()
 	if errMidSystem := validateClaudeMidSystemMessageModel(body, confirmedClaudeCode, directAnthropic); errMidSystem != nil {

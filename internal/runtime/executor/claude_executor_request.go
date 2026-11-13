@@ -1203,7 +1203,7 @@ func applyClaudeHeadersWithNativeProfile(
 			incomingHeaders = ginCtx.Request.Header
 		}
 	}
-	stabilizeDeviceProfile := helps.ClaudeDeviceProfileStabilizationEnabled(cfg)
+	stabilizeDeviceProfile := helps.ClaudeSignatureStabilizationEnabled(cfg)
 	var deviceProfile helps.ClaudeDeviceProfile
 
 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
@@ -1259,7 +1259,7 @@ func applyClaudeHeadersWithNativeProfile(
 	if preserveCallerFingerprint && advisorNeeded {
 		baseBetas = withClaudeAdvisorToolBeta(baseBetas)
 	}
-	if !claudeRequestSupportsEffort(body, nil) {
+	if !confirmedClaudeCode && !claudeRequestSupportsEffort(body, nil) {
 		baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
 	}
 	existingSet := make(map[string]bool)
@@ -1279,6 +1279,9 @@ func applyClaudeHeadersWithNativeProfile(
 			baseBetas += "," + beta
 		}
 		existingSet[beta] = true
+	}
+	if confirmedClaudeCode && requestedMap[claudeEffortBeta] && ojson.GetBytesNoCopy(body, "output_config.effort").Exists() {
+		appendBeta(claudeEffortBeta)
 	}
 	if preserveCallerFingerprint {
 		// Caller-owned mode preserves both header and body-lifted betas verbatim.
@@ -1310,8 +1313,8 @@ func applyClaudeHeadersWithNativeProfile(
 				appendBeta(beta)
 			}
 		}
-		if !isAnthropicBase {
-			for _, beta := range extraBetas {
+		for _, beta := range extraBetas {
+			if confirmedClaudeCode || !isAnthropicBase || !isManagedClaudeBeta(beta) {
 				appendBeta(beta)
 			}
 		}
@@ -1333,17 +1336,17 @@ func applyClaudeHeadersWithNativeProfile(
 			}
 		}
 		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
-		if !claudeRequestSupportsEffort(body, nil) {
+		if !confirmedClaudeCode && !claudeRequestSupportsEffort(body, nil) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)
 		}
 		reqProbeOrHelper := helps.IsClaudeProbeOrHelperRequest(body)
-		if reqProbeOrHelper && !helperProfile {
+		if !confirmedClaudeCode && reqProbeOrHelper && !helperProfile {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeServerSideFallbackBeta)
 			baseBetas = withoutClaudeBeta(baseBetas, claudeThinkingDisplayUpdatesBeta)
 			baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
 		}
 		reqThinkingType := ojson.GetBytesNoCopy(body, "thinking.type").String()
-		if reqThinkingType == "disabled" {
+		if !confirmedClaudeCode && reqThinkingType == "disabled" {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeThinkingDisplayUpdatesBeta)
 		}
 		if helps.IsClaudeSubagentRequest(incomingHeaders, body) && !helps.ClaudeSubagentRequests1h(incomingHeaders, body) {
@@ -1353,7 +1356,7 @@ func applyClaudeHeadersWithNativeProfile(
 			baseBetas = withClaudeExtendedCacheTTLBeta(baseBetas)
 		}
 		reqModel := strings.ToLower(strings.TrimSpace(ojson.GetBytesNoCopy(body, "model").String()))
-		if isClaudeHaikuModel(reqModel) && !ojson.GetBytesNoCopy(body, "fallbacks").Exists() && !helperProfile {
+		if !confirmedClaudeCode && isClaudeHaikuModel(reqModel) && !ojson.GetBytesNoCopy(body, "fallbacks").Exists() && !helperProfile {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeServerSideFallbackBeta)
 		}
 		// A body carrying thinking.block_binding is rejected upstream unless
@@ -1562,22 +1565,29 @@ func applyClaudeHeadersWithNativeProfile(
 		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
 	applyTransportNegotiation()
-	// Confirmed Claude Code requests may contribute their real software profile.
-	// Unconfirmed clients always receive the CLI baseline instead of being
-	// allowed to populate or reuse another client's software profile.
+	// One request snapshot keeps billing and software headers coherent even if
+	// a concurrent request upgrades the credential's persisted client profile.
 	if wirePolicy.ExplicitNever && confirmedClaudeCode {
 		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, true, true)
 	} else if stabilizeDeviceProfile {
-		if confirmedClaudeCode {
+		var okProfile bool
+		deviceProfile, okProfile = helps.ClaudeDeviceProfileFromContext(r.Context())
+		if !okProfile {
+			profileHeaders := incomingHeaders
+			if !confirmedClaudeCode {
+				profileHeaders = nil
+			}
 			var errDeviceProfile error
-			deviceProfile, errDeviceProfile = helps.ResolveClaudeDeviceProfileRequired(r.Context(), auth, apiKey, incomingHeaders, cfg)
+			deviceProfile, errDeviceProfile = helps.ResolveClaudeDeviceProfileRequired(r.Context(), auth, apiKey, profileHeaders, cfg)
 			if errDeviceProfile != nil {
 				return errDeviceProfile
 			}
-			helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile)
-		} else {
-			helps.ApplyClaudeDefaultDeviceProfileHeaders(r, cfg)
 		}
+		callerUserAgent := ""
+		if confirmedClaudeCode {
+			callerUserAgent = helps.HeaderValueCaseInsensitive(incomingHeaders, "User-Agent")
+		}
+		helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile, body, callerUserAgent)
 	} else {
 		helps.ApplyClaudeLegacyDeviceHeaders(r, incomingHeaders, cfg, confirmedClaudeCode)
 	}
@@ -1599,6 +1609,16 @@ func applyClaudeHeadersWithNativeProfile(
 		// Elsewhere only streaming is protected, so an Accept override cannot
 		// silently disable event negotiation.
 		applyTransportNegotiation()
+	}
+	if stabilizeDeviceProfile {
+		if snapshot, hasSnapshot := helps.ClaudeDeviceProfileFromContext(r.Context()); hasSnapshot {
+			if errIdentity := helps.ValidateClaudeSignatureMetadata(body, snapshot); errIdentity != nil {
+				return statusErr{code: http.StatusBadRequest, msg: errIdentity.Error()}
+			}
+			if errBilling := helps.ValidateClaudeDeviceProfileBilling(body, r.UserAgent()); errBilling != nil {
+				return statusErr{code: http.StatusBadRequest, msg: errBilling.Error()}
+			}
+		}
 	}
 	return nil
 }

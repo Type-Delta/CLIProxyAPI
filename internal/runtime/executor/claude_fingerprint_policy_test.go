@@ -1518,8 +1518,17 @@ func TestClaudeExecutor_GlobalDisableClaudeCloakModePreservesConfirmedCallerIden
 		t.Fatalf("Execute() error = %v", errExec)
 	}
 
-	if got := ojson.GetBytes(seenBody, "system.0.text").String(); got != billing {
-		t.Fatalf("system.0.text = %q, want preserved caller billing header %q", got, billing)
+	unsigned := bytes.Clone(seenBody)
+	if offset, found := claudeBillingCCHDigitsOffset(unsigned); found {
+		copy(unsigned[offset:offset+claudeCCHLength], claudeCCHZero)
+	} else {
+		t.Fatal("caller billing signature was lost")
+	}
+	if got := ojson.GetBytes(unsigned, "system.0.text").String(); got != billing {
+		t.Fatalf("system.0.text = %q, want caller attribution %q except final signature", got, billing)
+	}
+	if signed, errSign := signAnthropicMessagesBody(seenBody); errSign != nil || !bytes.Equal(signed, seenBody) {
+		t.Fatalf("final native signature is invalid: %v", errSign)
 	}
 	if got := ojson.GetBytes(seenBody, "system.1.text").String(); got != claudeCodeCLIIdentity {
 		t.Fatalf("system.1.text = %q, want preserved caller CLI identity", got)

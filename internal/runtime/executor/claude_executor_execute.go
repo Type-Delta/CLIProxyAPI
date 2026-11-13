@@ -82,6 +82,17 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	wirePolicy, wireSettings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, claudeCodeDetection.Confirmed)
 	confirmedClaudeCode := isEffectiveConfirmedClaudeCode(claudeCodeDetection, wirePolicy)
+	_, hasNativeCCH := claudeBillingCCHDigitsOffset(originalPayload)
+	resignNativeCCH := confirmedClaudeCode && hasNativeCCH && isAnthropicUpstreamBase(baseURL)
+	if helps.ClaudeSignatureStabilizationEnabled(safeguardCfg) &&
+		!wirePolicy.Uncloak && !(wirePolicy.ExplicitNever && confirmedClaudeCode) &&
+		(fp.ProfileClaudeCodeCLI || wirePolicy.Cloak || confirmedClaudeCode) {
+		profileCtx, errProfile := helps.PrepareClaudeDeviceProfile(ctx, auth, apiKey, incomingHeaders, safeguardCfg, confirmedClaudeCode)
+		if errProfile != nil {
+			return resp, fmt.Errorf("prepare Claude stabilized profile: %w", errProfile)
+		}
+		ctx = profileCtx
+	}
 	ctx = e.pinResponsesSystemItemPlacement(ctx, auth, from, upstreamModel, wirePolicy, wireSettings)
 	claudeSessionID := ""
 	if fp.ProfileClaudeCodeCLI {
@@ -235,6 +246,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}
 	sanitizeClaudeMessagesForClaudeUpstreamWithDebugDoc(ctx, doc, baseModel, helps.APIKeyModelIsCompat(req))
+	historyReshaped := !confirmedClaudeCode || cloaked || helps.ClaudeRequestHistoryChangedDoc(doc, originalPayload)
+	credentialSwitched := confirmedClaudeCode && helps.ReconcileClaudeCredentialContinuityDoc(doc, originalPayload, auth)
 	if fp.ApplyCLIIdentity {
 		err = applyClaudeCLIIdentityDoc(doc, auth, apiKey, url, claudeSessionID, fp.SynthesizeIdentity)
 		if err != nil {
@@ -259,7 +272,15 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if claudeCompactionSummaryFromContext(ctx) {
 		finalizeClaudeCompactionSummaryBodyDoc(doc)
 	}
-	applyClaudePreservedThinkingBindingDoc(doc)
+	// Native signed history is caller-owned. Adapt only if CPA changed its
+	// message prefix or the selected account is known to have changed.
+	if historyReshaped || credentialSwitched {
+		applyClaudePreservedThinkingBindingDoc(doc)
+	}
+	if profile, okProfile := helps.ClaudeDeviceProfileFromContext(ctx); okProfile {
+		helps.ApplyClaudeSignatureMetadataDoc(doc, profile)
+		helps.ApplyClaudeDeviceProfileBillingDoc(doc, profile, claudeBillingFingerprintMessageTextDoc(doc))
+	}
 	// User rules match the fully prepared business body and are applied only once.
 	touchedPayloadPaths := helps.ApplyPayloadConfigWithTrackedPathsDoc(
 		e.cfg, baseModel, to.String(), from.String(), "", doc, stripTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated),
@@ -274,7 +295,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	bodyForUpstream := doc.Bytes()
 	body = bodyForUpstream
 	bodyForTranslation := bodyForUpstream
-	if cchSigning {
+	if cchSigning || resignNativeCCH {
 		bodyForUpstream, err = signAnthropicMessagesBody(bodyForUpstream)
 		if err != nil {
 			return resp, fmt.Errorf("sign Claude CCH: %w", err)

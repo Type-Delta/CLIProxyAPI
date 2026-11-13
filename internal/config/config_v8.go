@@ -53,11 +53,19 @@ var v8SharedPaths = []configPath{
 	{"oauth.providers.claude.header-defaults.arch", "upstream.claude.header-defaults.arch"},
 	{"oauth.providers.claude.header-defaults.timeout", "upstream.claude.header-defaults.timeout"},
 	{"oauth.providers.claude.header-defaults.timezone", "upstream.claude.header-defaults.timezone"},
-	{"oauth.providers.claude.header-defaults.stabilize-device-profile", "upstream.claude.header-defaults.stabilize-device-profile"},
 	{"oauth.providers.xai.inject-x-search", "upstream.xai.inject-x-search"},
 }
 
-var v8Aliases = append(append([]configPath(nil), v8ClientPaths...), v8SharedPaths...)
+// Canonical Signature Stabilization spellings win before legacy input aliases.
+var v8ClaudeSignaturePaths = []configPath{
+	{"oauth.providers.claude.header-defaults.signature-stabilization", "upstream.claude.header-defaults.signature-stabilization"},
+	{"claude-header-defaults.signature-stabilization", "upstream.claude.header-defaults.signature-stabilization"},
+	{"upstream.claude.header-defaults.stabilize-device-profile", "upstream.claude.header-defaults.signature-stabilization"},
+	{"oauth.providers.claude.header-defaults.stabilize-device-profile", "upstream.claude.header-defaults.signature-stabilization"},
+	{"claude-header-defaults.stabilize-device-profile", "upstream.claude.header-defaults.signature-stabilization"},
+}
+
+var v8Aliases = append(append(append([]configPath(nil), v8ClientPaths...), v8ClaudeSignaturePaths...), v8SharedPaths...)
 
 var v8SharedStructPaths = []configPath{
 	{"oauth.providers.claude.header-defaults", "upstream.claude.header-defaults"},

@@ -989,3 +989,28 @@ func ExtractClaudeBillingTags(body []byte) (prevReq, promptID string) {
 	}
 	return prevReq, promptID
 }
+
+// StripClaudePreviousRequestLinksDoc removes links to messages and requests
+// belonging to a different upstream credential, preserving the prompt identity.
+func StripClaudePreviousRequestLinksDoc(doc *ojson.Doc) {
+	if doc == nil {
+		return
+	}
+	_ = doc.Delete("diagnostics.previous_message_id")
+	_ = doc.Delete("thread.previous_message_id")
+	system := doc.Get("system")
+	if system.Type == ojson.String {
+		text := system.String()
+		if strings.HasPrefix(text, "x-anthropic-billing-header:") {
+			_ = doc.Set("system", claudePrevReqBillingPattern.ReplaceAllString(text, ""))
+		}
+		return
+	}
+	system.ForEach(func(index, block ojson.Result) bool {
+		text := block.Get("text").String()
+		if strings.HasPrefix(text, "x-anthropic-billing-header:") {
+			_ = doc.Set(fmt.Sprintf("system.%d.text", index.Int()), claudePrevReqBillingPattern.ReplaceAllString(text, ""))
+		}
+		return true
+	})
+}

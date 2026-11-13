@@ -122,6 +122,17 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 }
 
 func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) bool {
+	if s != nil && s.coreManager != nil && newCfg != nil && !newCfg.Home.Enabled && helps.ClaudeSignatureStabilizationEnabled(newCfg) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		// Existing state must migrate before the enabled config becomes visible,
+		// including OFF-to-ON reloads. This does not seed new fallback profiles.
+		if errMigration := helps.MigrateClaudeSignatureProfiles(ctx, s.coreManager.List(), newCfg); errMigration != nil {
+			log.WithError(errMigration).Warn("rejected config update before Claude signature migration")
+			return false
+		}
+	}
 	commit := s.commitConfigUpdate(newCfg)
 	if commit.cfg == nil {
 		return false

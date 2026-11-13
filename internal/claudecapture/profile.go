@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
 const schemaVersion = 1
@@ -17,7 +19,6 @@ const schemaVersion = 1
 var versionPattern = regexp.MustCompile(`\b[0-9]+\.[0-9]+\.[0-9]+\b`)
 var exactVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 var bodyKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-var claudeCodeUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
 
 var allowedHeaders = map[string]bool{
 	"User-Agent":                  true,
@@ -157,7 +158,7 @@ func (p *Profile) CheckHeaders(headers http.Header) error {
 	if err := p.validate(p.ClaudeVersion); err != nil {
 		return err
 	}
-	if !claudeCodeUserAgentPattern.MatchString(strings.TrimSpace(headers.Get("User-Agent"))) {
+	if !helps.ValidClaudeCodeUserAgent(headers.Get("User-Agent")) {
 		return errors.New("Claude Code OAuth header User-Agent must match claude-cli/X.X.X")
 	}
 	for key, want := range p.Headers {

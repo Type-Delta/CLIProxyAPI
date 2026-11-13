@@ -155,25 +155,27 @@ func (c ClaudeConfig) SessionDatePinRetention() time.Duration {
 	return time.Duration(days) * 24 * time.Hour
 }
 
-// ClaudeHeaderDefaults configures the measured Claude Code software baseline.
-// Verified native requests preserve their entrypoint and software shape only when their
-// Claude Code, package, and runtime versions exactly match this baseline; unmeasured
-// versions use the configured values. Timeout remains a fallback. Stabilized profiles
-// also pin OS and Arch and never learn newer software versions automatically.
+// ClaudeHeaderDefaults configures fallback Claude Code software and platform values.
+// Confirmed native requests preserve their software and platform when stabilization
+// is disabled. Stabilization keeps one client and platform per credential, accepts
+// coherent software upgrades without downgrading any component, and normalizes
+// existing billing attribution before user payload rules and signing.
 // NativeEntrypoints extends the built-in native Claude Code entrypoint allowlist.
 // AnthropicBetaStrip and AnthropicBetaAppend are exact-name operator overrides applied
 // to the final Anthropic-Beta set; InjectDiagnostics and ClientRequestID tune the
 // first-party Claude Code CLI request shape.
 type ClaudeHeaderDefaults struct {
-	OAuthSafeguard         bool     `yaml:"oauth-safeguard" json:"oauth-safeguard"`
-	UserAgent              string   `yaml:"user-agent" json:"user-agent"`
-	PackageVersion         string   `yaml:"package-version" json:"package-version"`
-	RuntimeVersion         string   `yaml:"runtime-version" json:"runtime-version"`
-	OS                     string   `yaml:"os" json:"os"`
-	Arch                   string   `yaml:"arch" json:"arch"`
-	Timeout                string   `yaml:"timeout" json:"timeout"`
-	Timezone               string   `yaml:"timezone" json:"timezone"`
-	StabilizeDeviceProfile *bool    `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	OAuthSafeguard bool   `yaml:"oauth-safeguard" json:"oauth-safeguard"`
+	UserAgent      string `yaml:"user-agent" json:"user-agent"`
+	PackageVersion string `yaml:"package-version" json:"package-version"`
+	RuntimeVersion string `yaml:"runtime-version" json:"runtime-version"`
+	OS             string `yaml:"os" json:"os"`
+	Arch           string `yaml:"arch" json:"arch"`
+	Timeout        string `yaml:"timeout" json:"timeout"`
+	Timezone       string `yaml:"timezone" json:"timezone"`
+	// StabilizeDeviceProfile retains its Go name for SDK source compatibility.
+	// Its canonical configuration name is signature-stabilization.
+	StabilizeDeviceProfile *bool    `yaml:"signature-stabilization,omitempty" json:"signature-stabilization,omitempty"`
 	NativeEntrypoints      []string `yaml:"native-entrypoints,omitempty" json:"native-entrypoints,omitempty"`
 	AnthropicBetaStrip     []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
 	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`

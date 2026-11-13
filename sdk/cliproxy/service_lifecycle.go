@@ -92,6 +92,11 @@ func (s *Service) Run(ctx context.Context) error {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), cfg)
+		// Migrate every known legacy profile before an alias can become the first
+		// request to initialize shared account/device state.
+		if errSignature := helps.MigrateClaudeSignatureProfiles(ctx, s.coreManager.List(), cfg); errSignature != nil {
+			return fmt.Errorf("migrate Claude signature profiles before serving: %w", errSignature)
+		}
 		if cfg != nil && cfg.SaveCooldownStatus {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
