@@ -139,14 +139,17 @@ func TestRoutingDryRunWeightedPredictionAndState(t *testing.T) {
 				}
 				m.scheduler.rebuild(pool)
 				pick := func() *Auth {
-					a, _, err := m.pickNext(context.Background(), "zai", model, cliproxyexecutor.Options{}, nil)
+					a, _, _, err := m.pickNextMixed(context.Background(), []string{"zai"}, model, cliproxyexecutor.Options{}, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
 					return a
 				}
 				pick()
-				snapshot := func() []byte {
+				snapshot := func() any {
+					if weighted, ok := selector.(*WeightedRoundRobinSelector); ok {
+						return snapshotWeightedSelectorForTest(weighted)
+					}
 					var v any
 					if legacy || gsr {
 						switch s := selector.(type) {
@@ -173,12 +176,12 @@ func TestRoutingDryRunWeightedPredictionAndState(t *testing.T) {
 					b, _ := json.Marshal(v)
 					return b
 				}
-				before := string(snapshot())
+				before := snapshot()
 				trace, err := m.DryRunRoute(context.Background(), routing.DryRunRequest{Model: model})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if before != string(snapshot()) {
+				if !reflect.DeepEqual(before, snapshot()) {
 					t.Fatal("dry run mutated live state")
 				}
 				if trace.StrategyStep == nil || len(trace.StrategyStep.Next) != 10 || !trace.PickPredicted {

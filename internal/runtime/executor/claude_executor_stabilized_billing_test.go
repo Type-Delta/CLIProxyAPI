@@ -38,7 +38,7 @@ func TestApplyClaudeHeaders_StabilizedHeadersUseObservedTuple(t *testing.T) {
 		{"newer billing version", "x-anthropic-billing-header: cc_version=2.1.322.245; cc_entrypoint=t3-code; cch=e9cc0;", true, incomingUA},
 		{"older version on same credential", "x-anthropic-billing-header: cc_version=2.1.318.abc; cc_entrypoint=t3-code;", true, incomingUA},
 		{"version without fingerprint", "x-anthropic-billing-header: cc_version=2.2.5; cc_entrypoint=t3-code;", true, incomingUA},
-		{"unconfirmed caller keeps baseline entrypoint", "x-anthropic-billing-header: cc_version=2.1.322.245; cc_entrypoint=cli;", false, "claude-cli/2.1.280 (external, cli)"},
+		{"unconfirmed caller keeps baseline entrypoint", "x-anthropic-billing-header: cc_version=2.1.322.245; cc_entrypoint=cli;", false, "claude-cli/2.1.321 (external, cli)"},
 		{"missing billing", "", true, incomingUA},
 		{"unrelated text", "cc_version=2.1.322.245;", true, incomingUA},
 		{"malformed version", "x-anthropic-billing-header: cc_version=2.1.322.bad-version;", true, incomingUA},
@@ -61,7 +61,7 @@ func TestApplyClaudeHeaders_StabilizedHeadersUseObservedTuple(t *testing.T) {
 				if err := applyClaudeHeaders(req, auth, "sk-ant-oat-stabilized-billing", false, nil, body, cfg, incoming, tt.confirmed); err != nil {
 					t.Fatal(err)
 				}
-				wantUA, wantSDK, wantNode := tt.wantUA, "0.112.1", "v26.3.0"
+				wantUA, wantSDK, wantNode := tt.wantUA, "0.128.0", "v26.12.1"
 				if tt.confirmed {
 					wantUA = strings.Replace(wantUA, "claude-cli", prefix, 1)
 					wantSDK, wantNode = "0.128.0", "v26.12.1"

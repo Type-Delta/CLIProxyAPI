@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -8,8 +9,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
+
+const codexResponsesLiteHeaderName = "X-OpenAI-Internal-Codex-Responses-Lite"
 
 // CodexModelUsesResponsesLite identifies models whose native Codex route uses Responses Lite.
 func CodexModelUsesResponsesLite(model string) bool {
@@ -22,7 +26,7 @@ func CodexModelUsesResponsesLite(model string) bool {
 
 // CodexResponsesLiteRequestDoc reads the route hints without changing the payload.
 func CodexResponsesLiteRequestDoc(doc *ojson.Doc, headers http.Header) bool {
-	if strings.EqualFold(strings.TrimSpace(headers.Get("X-OpenAI-Internal-Codex-Responses-Lite")), "true") {
+	if strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeaderName)), "true") {
 		return true
 	}
 	if doc == nil {
@@ -32,25 +36,109 @@ func CodexResponsesLiteRequestDoc(doc *ojson.Doc, headers http.Header) bool {
 	return value.Type == ojson.True || (value.Type == ojson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true"))
 }
 
-// CodexHostedImagesUseResponsesLite resolves Lite policy for hosted image tools.
-func CodexHostedImagesUseResponsesLite(doc *ojson.Doc, model string, headers http.Header) bool {
-	// DL026: metadata-only Lite requests support hosted images, even on Lite models.
-	// Remove this branch to retire the exception for both injection and validation.
-	if !strings.EqualFold(strings.TrimSpace(headers.Get("X-OpenAI-Internal-Codex-Responses-Lite")), "true") && CodexResponsesLiteRequestDoc(doc, nil) {
+// CodexResponsesLiteRequestForAuthDoc reports whether the request uses the
+// Codex Responses-Lite protocol after resolving client_metadata, client
+// headers, credential header: attributes, and models.json override_header.
+func CodexResponsesLiteRequestForAuthDoc(doc *ojson.Doc, modelName string, auth *cliproxyauth.Auth, headers http.Header) bool {
+	var effective string
+	if headers != nil {
+		effective = strings.TrimSpace(headers.Get(codexResponsesLiteHeaderName))
+	}
+	if auth != nil && len(auth.Attributes) > 0 {
+		resolved := (&http.Request{Header: http.Header{}}).WithContext(context.Background())
+		util.ApplyCustomHeadersFromAttrs(resolved, auth.Attributes, headers)
+		if opLite := strings.TrimSpace(resolved.Header.Get(codexResponsesLiteHeaderName)); opLite != "" {
+			effective = opLite
+		}
+	}
+	if overrides := registry.ModelOverrideHeaders(modelName); len(overrides) > 0 {
+		for key, value := range overrides {
+			if strings.EqualFold(strings.TrimSpace(key), codexResponsesLiteHeaderName) {
+				effective = strings.TrimSpace(value)
+			}
+		}
+	}
+	return strings.EqualFold(effective, "true")
+}
+
+// CodexRequestHasReasoningForHostedImageDoc reports whether the request carries
+// a reasoning configuration (top-level reasoning.effort, configuration_update
+// input item, or model thinking suffix). Upstream Codex /responses binds hosted
+// image_generation to gpt-image-2-codex, which rejects complexity whenever
+// reasoning effort is present on Responses-Lite models (#7270), whereas
+// standard Responses requests without reasoning effort succeed (#7384).
+func CodexRequestHasReasoningForHostedImageDoc(doc *ojson.Doc, model string) bool {
+	var get func(string) ojson.Result
+	if doc != nil {
+		get = doc.Get
+	}
+	return codexRequestHasReasoningForHostedImage(get, model)
+}
+
+func codexRequestHasReasoningForHostedImage(get func(string) ojson.Result, model string) bool {
+	if thinking.HasThinkingSuffix(model) {
+		return true
+	}
+	if get == nil {
 		return false
 	}
-	return CodexModelUsesResponsesLite(model) || CodexResponsesLiteRequestDoc(doc, headers)
+	if thinking.HasThinkingSuffix(get("model").String()) {
+		return true
+	}
+	if reasoning := get("reasoning"); reasoning.Exists() && reasoning.Type != ojson.Null {
+		if reasoning.IsObject() {
+			if effort := reasoning.Get("effort"); effort.Exists() && effort.Type != ojson.Null && strings.TrimSpace(effort.String()) != "" {
+				return true
+			}
+		} else if strings.TrimSpace(reasoning.String()) != "" {
+			return true
+		}
+	}
+	if input := get("input"); input.IsArray() {
+		for _, item := range input.Array() {
+			if strings.TrimSpace(item.Get("type").String()) != "configuration_update" {
+				continue
+			}
+			if effort := item.Get("reasoning.effort"); effort.Exists() && effort.Type != ojson.Null && strings.TrimSpace(effort.String()) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CodexHostedImagesBlockedDoc applies the hosted image policy after header precedence.
+func CodexHostedImagesBlockedDoc(doc *ojson.Doc, model string, auth *cliproxyauth.Auth, headers http.Header) bool {
+	var get func(string) ojson.Result
+	if doc != nil {
+		get = doc.Get
+	}
+	return codexHostedImagesBlocked(get, model, auth, headers)
+}
+
+func codexHostedImagesBlocked(get func(string) ojson.Result, model string, auth *cliproxyauth.Auth, headers http.Header) bool {
+	if CodexResponsesLiteRequestForAuthDoc(nil, model, auth, headers) {
+		return true
+	}
+	if get != nil {
+		value := get("client_metadata.ws_request_header_x_openai_internal_codex_responses_lite")
+		if value.Type == ojson.True || (value.Type == ojson.String && strings.EqualFold(strings.TrimSpace(value.String()), "true")) {
+			return false
+		}
+	}
+	return CodexModelUsesResponsesLite(model) && codexRequestHasReasoningForHostedImage(get, model)
 }
 
 // ValidateCodexHostedImageGenerationDoc checks the final, configured Responses payload
 // after all outbound headers, including credential and model overrides, are resolved.
-// Native Codex Responses Lite cannot serve forced hosted images. API-key, SIWC,
+// Native Codex Responses Lite cannot serve forced hosted images, while API-key, SIWC,
 // explicit passthrough, and standalone Images API requests retain their own contracts.
 func ValidateCodexHostedImageGenerationDoc(doc *ojson.Doc, upstreamHeaders http.Header, cfg *config.Config, nativeCodex bool) error {
 	if !nativeCodex || doc == nil || (cfg != nil && cfg.DisableImageGeneration == config.DisableImageGenerationPassthrough) {
 		return nil
 	}
-	if !CodexHostedImagesUseResponsesLite(doc, doc.Get("model").String(), upstreamHeaders) {
+	model := doc.Get("model").String()
+	if !CodexHostedImagesBlockedDoc(doc, model, nil, upstreamHeaders) {
 		return nil
 	}
 	if !codexRequestForcesImageGenerationDoc(doc) {

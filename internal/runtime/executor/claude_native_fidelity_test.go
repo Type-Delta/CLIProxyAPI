@@ -57,6 +57,30 @@ func captureNativeFidelity(t *testing.T, mode string, cfg *config.Config, payloa
 	engine := NewClaudeExecutor(cfg)
 	req := ex.Request{Model: "claude-sonnet-5-5", Payload: payload}
 	opts := ex.Options{SourceFormat: tr.FormatClaude, OriginalRequest: payload, Headers: headers}
+	// A continuation must refer to a profile learned from an actual successful turn.
+	if mode != "count" {
+		previous := ojson.GetBytes(payload, "thread.previous_message_id").String()
+		for _, rule := range cfg.Payload.Override {
+			if value, ok := rule.Params["thread.previous_message_id"].(string); ok {
+				previous = value
+			}
+		}
+		if previous != "" {
+			seedCfg := cfg.CloneForRuntime()
+			seedCfg.Payload = config.PayloadConfig{}
+			seedPayload := ojson.NewDoc(payload)
+			_ = seedPayload.SetRaw("thread", `{"type":"create"}`)
+			seedResponseID := previous
+			seedTransport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				response := fmt.Sprintf(`{"id":%q,"type":"message","model":"claude-sonnet-5-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`, seedResponseID)
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(response)), Request: r}, nil
+			})
+			seedCtx := context.WithValue(ctx, "cliproxy.roundtripper", http.RoundTripper(seedTransport))
+			if _, err := engine.WithConfig(seedCfg).Execute(seedCtx, a, ex.Request{Model: req.Model, Payload: seedPayload.Bytes()}, ex.Options{SourceFormat: tr.FormatClaude, Headers: headers}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	var err error
 	switch mode {
 	case "count":
@@ -206,12 +230,12 @@ func TestClaudeNativeFidelityUnmanagedBetaParity(t *testing.T) {
 				headers := http.Header{"User-Agent": {"AuditClient/1.0"}}
 				payload := `{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`
 				if bodyBeta {
-					payload = `{"model":"claude-sonnet-5-5","max_tokens":16,"betas":["message-threads-2026-08-12","token-counting-2024-11-01"],"messages":[{"role":"user","content":"hello"}]}`
+					payload = `{"model":"claude-sonnet-5-5","max_tokens":16,"betas":["future-client-2026-11-13","token-counting-2024-11-01"],"messages":[{"role":"user","content":"hello"}]}`
 				} else {
-					headers.Set("Anthropic-Beta", "message-threads-2026-08-12,token-counting-2024-11-01")
+					headers.Set("Anthropic-Beta", "future-client-2026-11-13,token-counting-2024-11-01")
 				}
 				_, h := captureNativeFidelity(t, mode, &config.Config{}, []byte(payload), headers)
-				if !strings.Contains(h.Get("Anthropic-Beta"), "message-threads-2026-08-12") {
+				if !strings.Contains(h.Get("Anthropic-Beta"), "future-client-2026-11-13") {
 					t.Error("unmanaged requested beta lost")
 				}
 				if mode != "count" && strings.Contains(h.Get("Anthropic-Beta"), claudeTokenCountingBeta) {

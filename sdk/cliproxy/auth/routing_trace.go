@@ -150,7 +150,7 @@ func finishRoutingCapture(ctx context.Context, capture *routingCapture, selected
 			capture.indexes[selected.ID] = i
 		}
 		t.Pick = i
-		if t.StrategyStep != nil {
+		if t.StrategyStep != nil && t.StrategyStep.Wanted < 0 {
 			t.StrategyStep.Wanted = i
 		}
 		if t.DecidedBy == routing.DecidedByNone {

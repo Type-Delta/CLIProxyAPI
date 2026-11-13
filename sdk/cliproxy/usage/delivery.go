@@ -597,6 +597,10 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if record.HomeSelection == nil {
+		record.HomeSelection = HomeSelectionFromContext(ctx)
+	}
+	record = cloneRecord(record)
 	record = normalizeRecordRequestID(ctx, record)
 	record = normalizeExecutionIDs(ctx, record)
 	if strings.TrimSpace(record.SelectionID) == "" {
@@ -880,6 +884,12 @@ func freezeObserverSnapshot(ctx context.Context, record Record) (Record, context
 	record.BaseURL = copyString(record.BaseURL)
 	record.ResponseModel = copyString(record.ResponseModel)
 	record.SelectionID = copyString(record.SelectionID)
+	if record.HomeSelection != nil {
+		selection := *record.HomeSelection
+		selection.Model = copyString(selection.Model)
+		selection.CredentialPolicy = copyString(selection.CredentialPolicy)
+		record.HomeSelection = &selection
+	}
 	record.EffectiveServiceTier = copyString(record.EffectiveServiceTier)
 	record.ProxyRequestID = copyString(record.ProxyRequestID)
 	record.Provider = copyString(record.Provider)
@@ -1037,6 +1047,10 @@ func (s contextSnapshot) context() context.Context {
 }
 
 func cloneRecord(record Record) Record {
+	if record.HomeSelection != nil {
+		selection := *record.HomeSelection
+		record.HomeSelection = &selection
+	}
 	record.Detail = record.Detail.Clone()
 	record.ResponseHeaders = record.ResponseHeaders.Clone()
 	if record.OutputTiming != nil {

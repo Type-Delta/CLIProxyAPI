@@ -36,11 +36,13 @@ The TUI API Keys tab accepts mixed bare and structured key representations and d
 
 Credential listing, direct parsing, mirrored-store scans, and watcher scans and events exclude `<auth-dir>/state` and reserved `kv.db`, `kv.db.*`, and `kv.db-*` files. Upstream's default local KV database and its sidecars therefore cannot become credentials or routing candidates, even if their contents resemble credential JSON.
 
+The TUI uses canonical v8 transport with the fork's revision/index key contract, rather than replacing the list as strings. An open form captures its row index and revision, so a background refresh cannot retarget an edit or deletion. Labels, structured limits and unknown limit fields survive key rotation and label edits. `internal/tui/client_revision_merge_test.go` exercises these journeys through actual Gin handlers over HTTP. The new authenticated tunnel adapts entries through `APIKeyStrings()` and remains outside inference quota charging.
+
 **Implementation evidence:** `internal/config/{api_key_entry.go,config_load.go,config_v8.go,parse.go,sdk_config.go}`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/{server.go,server_routes.go,server_reload.go,server_management.go,server_middleware.go}`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,config_v8.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go,i18n.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`. `internal/api/middleware/usage_limit_test.go` covers Gemini discovery, token counting, and generation; `sdk/auth/{filestore.go,filestore_test.go}` cover `FileTokenStore.List`, `TestFileTokenStoreListSkipsForkStateDirectory`, and `TestFileTokenStoreReadSkipsKVState`. `sdk/cliproxy/auth/store.go` defines the shared exclusion used by `internal/store/{gitstore.go,objectstore.go}` and `internal/watcher/{events.go,clients.go,synthesizer/file.go}`; `internal/watcher/synthesizer/runtime_state_test.go` covers scans and direct synthesis.
 
 **Recorded validation:** KV listing, direct-read, and synthesis regressions pass with credential-shaped JSON in reserved state files. A live temporary server creates `kv.db` without listing it as a credential. Focused config, usage-limit tracker, middleware, management API, server API, TUI, revision-conflict, duplicate-key, compatibility-guard, weak-key, and server-entrypoint tests pass, along with `go test ./...`, the focused race suite, and the required disposable `cmd/server` compile check. Earlier validation also includes a live management-API run against a temporary config covering create, rotate, limit edit, limit clear, rejected limit values, out-of-range index, usage reset, and the resulting `config.yaml`. Gemini discovery and token-counting regressions recorded `RequestsUsed=1` before the fix; the middleware package passes with `-count=1`. A live pre-fix binary listed both state files through `/v8/management/credentials` and `/v8/management/routing/credentials`; the fixed binary lists only the real credential.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 ### DL002 — Two-service web-console Docker deployment
 
@@ -214,11 +216,13 @@ The regression uses `testing/synctest` to expire a synthetic startup budget befo
 
 Shutdown drains the fork's bounded usage delivery before closing upstream's local KV store and retiring publisher-scoped connection pools. Retirement fences stale pool snapshots and closes idle connections without waiting for active requests. The fresh drain budget does not impose a deadline on stalled bbolt close I/O.
 
+The upstream optional HTTP shutdown drain composes with the fresh SDK shutdown budget and honors a tighter parent deadline. Owned hijacked WebSockets are reclaimed through their raw transport, including no-ALPN TLS wrappers, before capture finalization. Closure does not introduce post-upgrade read/write deadlines or wait for TLS close_notify.
+
 **Implementation evidence:** `sdk/cliproxy/{service_lifecycle.go,service_stop_test.go,kv_store.go,kv_store_test.go,proxy_pool_publisher_test.go}`, including `TestServiceRun_ShutdownContextFreshAtExit` and `TestServiceRun_ClosesListenerAtExit`.
 
 **Recorded validation:** `TestServiceRun_ShutdownContextFreshAtExit` passes ten consecutive runs. Both mutation overlays fail: an already expired final shutdown deadline, and a 30-second shutdown context created before the deferred function is installed. The full SDK service package passes with `-count=1`; the full build, disposable server compile, and touched-package vet pass.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 
 ### DL009 — Configured analytics storage time zone and exact retained reads
@@ -709,7 +713,7 @@ share the same header preparation path.
 
 Transport and body-framing headers, hop-by-hop headers and their
 `Connection`-scoped fields, `Host`, `Accept-Encoding`, and downstream CPA
-credentials are omitted. The selected provider credential replaces
+`Authorization`, `X-Api-Key`, `Api-Key`, and `X-Goog-Api-Key` credentials are omitted. The selected provider credential replaces
 `Authorization`, the downstream `User-Agent` is retained with the existing
 fallback, and configured custom headers are applied last so they retain
 precedence.
@@ -717,13 +721,13 @@ precedence.
 **Implementation evidence:** `internal/runtime/executor/openai_compat_executor.go`
 and `internal/runtime/executor/openai_compat_executor_headers_test.go`.
 
-**Recorded validation:** focused execute/stream regressions preserve the Codex
+**Recorded validation:** The 2026-11-13 audit reproduced `X-Goog-Api-Key` leakage in actual Execute and ExecuteStream HTTP requests and in the no-provider-key helper. The extended regressions pass after adding it to the existing exclusion list. Focused execute/stream regressions preserve the Codex
 and OpenCode session headers, multiple arbitrary header values, and the client
 User-Agent while replacing credentials and dropping transport or connection
 headers. The full `internal/runtime/executor` package, `go test ./...`, and the
 disposable server build pass.
 
-**Last updated:** 2026-09-16
+**Last updated:** 2026-11-13
 
 ### DL019 — Credential-labelled distributions, quota window gating, and Analysis chart metrics
 
@@ -1071,6 +1075,8 @@ Alias migration regressions cover account-field aliases, copy-first startup, lat
 original reconciliation, and OFF-to-ON configuration reload before publication.
 Independent final council review approved the requested scope at 9.5/10 and 9/10.
 
+Cloaked Claude cross-model refusal fallbacks follow upstream's explicit opt-in `upstream.claude.server-side-fallback`, default false. Explicit caller and payload fallbacks remain authoritative. Opus 5.5 to Opus 4.8 and Fable 5.1 to Opus 5 are injected only when opted in before user payload rules; later model rewrites do not rerun built-ins. Actual serving models and fallback transitions remain visible in usage and translated responses. The measured fallback client tuple is CLI 2.1.321, SDK 0.128.0 and Node v26.12.1; the fork's coherent identity, alias migration, monotonic profile and CAS design remain intact. `TestClaudeFallbackPayloadBarrierMergedPaths` checks 13 cases through Execute and ExecuteStream, including model rewrites, explicit overrides, filtered fallbacks, final beta headers and one rule evaluation.
+
 **Implementation evidence:** `internal/claudecapture/`,
 `internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,
 `internal/runtime/executor/helps/claude_device_profile.go`,
@@ -1123,52 +1129,21 @@ one existing credential returned revoked-token 401 and another returned account
 rate-limit 429. Neither credential was refreshed or changed. The full Go suite,
 canonical panel Docker build, and disposable server build pass.
 
-**Last updated:** 2026-11-12
+**Last updated:** 2026-11-13
 
-### DL026 — Image generation tool injection covers metadata-only responses-lite requests
+### DL026 — Hosted images on standard Responses and metadata-only Lite requests
 
-Eligible native Codex Responses requests can receive the built-in `image_generation`
-tool when their only true Lite hint is
-`client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`.
-The marker accepts boolean `true` or the string `"true"`. This preserves image
-support for Codex websocket clients that send the marker without a Lite header.
+Eligible native Codex Responses requests receive an automatic `image_generation` tool on standard Responses routes without reasoning, including catalog-Lite models. The fork also preserves hosted images when the only true Lite hint is `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite`, accepting boolean `true` or the string `"true"`, including requests with reasoning.
 
-`CodexHostedImagesUseResponsesLite` applies one precedence rule to automatic
-injection and final hosted-image validation. An explicit
-`X-OpenAI-Internal-Codex-Responses-Lite: true` header takes precedence and uses
-upstream's Lite policy. Without that header, a true metadata marker allows
-hosted images even for a catalog-Lite model. Without a true marker, model-derived
-Lite detection applies, including GPT-6 models and the registry's Lite models;
-false hints do not override it. Under Lite policy, CPA skips automatic injection
-and rejects a final payload that forces hosted image generation with a
-request-scoped 400 directing the caller to the Images API. Optional image tools
-retain upstream's policy.
+An effective explicit `X-OpenAI-Internal-Codex-Responses-Lite: true` header takes precedence after client, credential and model-header resolution. Otherwise a true metadata marker permits the fork exception; without it, reasoning and model-derived Lite restrictions apply. False hints do not bypass those restrictions. HTTP and WebSocket execute/stream paths share injection, configured-payload policy and read-only final validation. Forced image tools on an incompatible Lite route produce a request-scoped 400 directing the caller to the Images API; optional tools retain upstream policy.
 
-HTTP and websocket execute/stream paths share the helper. Final validation reads
-the configured payload and resolved outbound headers without mutating them.
-Existing image tools, `image_gen` namespace tools, Spark models, free-plan
-credentials, disabled image generation, and compact requests keep their existing
-injection exclusions. API-key, SIWC, explicit passthrough, and standalone Images
-requests retain their own upstream contracts.
+Existing caller tools and tool choices, `image_gen` namespace tools, Spark/free credentials, disabled image generation and compact requests retain their exclusions. API-key, SIWC, passthrough and standalone Images paths retain their own contracts. The user-approved Codex automatic-image exception in AGENTS.md applies only to requests carrying an automatically injected image tool. Rules evaluate once against a private prepared projection, so conditions and queries may observe the automatic tool even if compatibility cleanup removes it before sending. Conditional effects and encoded values are retained, cleanup runs before those operations commit once, and final filters preserve an explicit empty tools array. Configured values remain authoritative and no business mutation follows that commit. Caller-supplied image tools and other executors keep the general ordering contract.
 
-**Implementation evidence:** `internal/runtime/executor/helps/{codex_hosted_images.go,codex_hosted_images_test.go}`,
-`internal/runtime/executor/codex_executor_request.go`,
-`internal/runtime/executor/codex_executor_{execute,stream}.go`,
-`internal/runtime/executor/codex_websockets_{execute,stream}.go`,
-`internal/runtime/executor/codex_executor_imagegen_test.go`, and
-`internal/runtime/executor/codex_websockets_executor_test.go`.
+**Implementation evidence:** `internal/runtime/executor/helps/{codex_hosted_images.go,codex_hosted_images_test.go,payload_helpers.go,payload_finalizer.go,payload_rule_plan.go,payload_image_plan_test.go}`, `internal/runtime/executor/codex_executor_request.go`, `internal/runtime/executor/codex_executor_{execute,stream}.go`, `internal/runtime/executor/codex_websockets_{execute,stream}.go`, `internal/runtime/executor/codex_executor_imagegen_test.go`, and `internal/runtime/executor/payload_barrier_test.go`.
 
-**Recorded validation:** executor and helper regressions cover metadata-only
-injection, catalog-Lite models, header precedence, false hints, forced versus
-optional tools, passthrough, existing tools, free/Spark exclusions, compact
-requests, and HTTP/websocket paths. A live 2026-11-07 pre-merge test used Codex
-OAuth Pro-lite and `gpt-6.1-sol` over websocket with the marker only in metadata.
-Upstream accepted the injected tool, returned HTTP 200, and produced a valid
-1254×1254 PNG. A header-Lite HTTP request returned 200 without an injected tool
-and required `reasoning.context: all_turns`. The merged build has regression
-coverage for the same exception; its live image path has not been rerun.
+**Recorded validation:** HTTP/WebSocket regressions exercise no-reasoning catalog-Lite injection, metadata-only reasoning, effective header precedence, false hints, forced/optional and explicit tools, payload filters, and provider/transport exclusions. A live 2026-11-13 Codex OAuth WebSocket request on `gpt-6.1-sol` with low reasoning and the Lite marker only in metadata confirms an injected image tool and a valid 1254×1254 PNG in `response.output_item.done`. The final completion omitted repeated output items; the original smoke reader missed this earlier event, and verification extracted the returned image from the captured stream without another paid generation.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 
 ### DL027 — Quota report persistence releases the manager lock during store I/O
@@ -1687,11 +1662,13 @@ build pass.
 
 CPA assembles multiline SSE `data:` fields before classifying token and usage events, keeps provider, TTFT, and first-token latency metrics non-decreasing, and forces `stream: true` for Claude streaming requests even when the client already uses Claude's native format. This preserves usage telemetry and stream framing without changing the selected response protocol.
 
+Claude usage and serving-model observers read valid source events before Thread buffering. Terminal withholding cannot lose observed usage on a reset or missing message_stop. Buffered and streaming failures retain partial tokens exactly once. Source-reader timing precedes buffering and ends at a complete message_stop, so a delayed terminal event does not compress or extend the arrival window.
+
 **Implementation evidence:** `internal/runtime/executor/helps/generation_body.go`, `internal/runtime/executor/helps/usage_helpers.go`, and `internal/runtime/executor/claude_executor_stream.go`.
 
 **Recorded validation:** focused executor, usage, stream-observation, and live OpenAI/Claude streaming checks pass.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-13
 
 ### DL047 — Claude safeguard capture failures fall back across providers
 
@@ -1755,8 +1732,9 @@ The shared skeleton uses distinct theme-derived gradient colors, including White
 themes whose hover and tertiary backgrounds are identical, and respects reduced-motion settings.
 
 The collector hashes the trimmed upstream session identifier into a nullable `session_digest`
-field and never persists the raw value. Migration 12 adds the column to existing databases while
-leaving historic rows null. Throughput reuses the qualified event arrival-window calculation from DL052. The canonical `normalized-v1` output total already includes
+field for distinct-session ranking. Migration 12 leaves historical rows null. Separately,
+DL057 stores a bounded session display identifier for authenticated event diagnostics; the digest
+is not a promise that event storage contains no session identifier. Throughput reuses the qualified event arrival-window calculation from DL052. The canonical `normalized-v1` output total already includes
 reasoning for every provider accounting style, so the talkative award adds reasoning only for
 legacy or imported schemas that store separate output buckets. When a valid token breakdown
 cannot supply its output total and the intake adapter falls back to the provider's raw output,
@@ -1767,15 +1745,12 @@ toward the other awards.
 **Implementation evidence:** `internal/cpauk/{collector,model,store}`, `internal/cpauk/service.go`,
 and `internal/api/handlers/management/analytics.go`.
 
-**Recorded validation:** sanitizer, query-contract, fresh-migration, v11-upgrade, empty-store,
-partial-podium, reliability-floor, speed-floor, missing-TPS, tie-break, six-row cap, distinct
-provider session, inclusive-reasoning, and raw-output-fallback tests pass. The disposable
-`cmd/server` build passes.
-The requested CPAUK, API, and usage suites are green except for the previously recorded
-`TestV0RepeatedSavesKeepLegacyClientAlias` config compatibility failure; the management package
-passes when that unrelated test is skipped.
+**Recorded validation:** On 2026-11-13, the analytics/storage/config audit passes all 18 tested
+packages against real isolated ClickHouse databases. Sanitizer and leaderboard regressions cover
+serialized display IDs and digests, qualification floors, distinct provider sessions, six-row ranks,
+inclusive reasoning and raw-fallback exclusions. Management handlers and focused API checks pass.
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-11-13
 
 ### DL050 — Management panel bundle is build output; mascots ship as separate assets
 
@@ -2121,6 +2096,8 @@ Vertex API-key, service-account, and native interactions streams, xAI Responses 
 
 Direct native Codex Images streams finish the usage observer and publish cancellation when a downstream send is interrupted. Typed client cancellation records `canceled/client` while retaining observed usage; the reporter publishes once, so deferred success finalization cannot replace that outcome.
 
+Claude Thread streaming and buffered SSE failures preserve observed input/output usage before terminal validation or source errors. Actual executor regressions retain 5 input, 7 output and 12 total tokens as one failed attempt for both Claude and OpenAI targets. The existing once-only reporter and client-cancellation precedence remain authoritative.
+
 **Implementation evidence:** `internal/cpauk/store/migrations/019_event_outcomes.sql`,
 `internal/cpauk/model/event_outcome.go`, `internal/cpauk/collector/{adapter.go,sanitizer.go}`,
 `sdk/cliproxy/usage/{manager.go,client_context.go}`, `sdk/api/handlers/handlers.go`,
@@ -2132,7 +2109,7 @@ cancellation followed by request closure, a provider error followed by disconnec
 blocked-read cancellation, and retained partial usage. A real client abort through a local CPA
 recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa`. All five stream regressions recorded failed events with zero tokens before the fix. The actual executor stream paths now record failed events with 5 input, 7 output, and 12 total tokens; the uncached executor suite passes. The direct image cancellation regression recorded `succeeded` before the fix and `canceled/client` afterward, retaining 5 input, 7 output, and 12 total tokens with one usage record.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 ### DL059 — Quota window history and hourly collection
 
@@ -2284,6 +2261,8 @@ Request capture records every upstream dispatch, including the plaintext retry a
 
 Telemetry preserves committed HTTP status across later classified stream errors. `TelemetryStreamingWriter.WriteAPIResponseErrors` is intentionally a no-op because middleware already records those errors in `req.Errors` for the final record. Upstream response-writer initialization and finalization therefore compose with the fork's capture without duplicating terminal errors. `internal/api/middleware/request_stream_telemetry_test.go` covers an HTTP-200 stream followed by a classified 400.
 
+Upstream bounded deferred response capture when full request logging is off composes with per-dispatch telemetry and no-DSN file logs. Unrouted 404 requests do not create dumps. Owned WebSocket transports close before capture finalization, and read-only log projection discards upstream request/response sections. A live local ClickHouse-mode server imports the real analytics snapshot, serves inference, captures a request and exposes it through the restricted SQL endpoint; plain mode writes file logs and omits telemetry routes.
+
 **Implementation evidence:** `internal/clickhouse/`, `internal/config/clickhouse.go`,
 `internal/telemetry/{record,outbox,ingest,transcript,store,legacylog}`,
 `internal/logging/{telemetry_*.go,global_logger.go,log_dir_cleaner.go}`,
@@ -2313,7 +2292,7 @@ SQLite store. Live checks ran in Docker, with the Compose override where ClickHo
 
 Before the route fix, authenticated schema/query requests returned 503 in plain mode. Mode tests now verify all three telemetry routes return 404 without a DSN, real ClickHouse schema/query/health return 200, and DSN reloads preserve startup route availability. The configured agent-doc inventory parity test passes. Disconnect fixtures install their database handle before route registration; the conversation fixture expects plain-mode 404s, and fixtures wait for ingestion startup before cleanup.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 ### DL061 — Rule-based routing, routing traces, and routing dry run
 
@@ -2715,7 +2694,7 @@ build, CPA compile check, and desktop/mobile browser dry runs against a local CP
 Routing traces explain the built-in strategy's preferred credential independently of
 session affinity. `strategy_step` records the applied algorithm, GSR's missing-data
 round-robin fallback, previous cursor pick, per-candidate scheduling shares, effective
-weights, and smooth credits before selection. GSR includes cached recovery deadlines
+weights, and accounting credits before selection. GSR includes cached recovery deadlines
 and their source, delay, decay, base weight, allowance tier and source, tier multiplier,
 and configured weight. Legacy selectors and single/mixed-provider scheduler picks
 share the same GSR factor calculation. Live explanations consume the picker's prepared
@@ -2725,7 +2704,17 @@ Existing exported timestamp and tier APIs remain compatible. GSR keeps its exist
 comment now describes that arithmetic rather than rounding.
 
 Dry runs copy live credits and cursors and predict ten selections for RR, WRR, fill-first,
-and GSR. They use cached quota observations only, report GSR's fallback when observations
+and GSR. WRR clones the selector's exact or dynamic accounting pool, including pending and
+settled reservations, member epochs and generations, collision-chain identities and active
+subsets, then runs production reservation and settlement on that private copy. It creates no
+live pool and cannot change live credits, cursors, membership or quota observations.
+WRR predictions use the same `mixed` accounting namespace as public Execute/Stream/Count
+execution with or without affinity. The one-provider affinity cache remains provider-scoped,
+independently of accounting. Direct SelectAuth callers retain their separate provider-scoped
+WRR pools and are outside this dry-run prediction contract. Kept affinity traces retain the
+strategy's wanted pick
+separately from the bound credential. Unavailable `never` bindings do not predict replacements.
+Dry runs use cached quota observations only, report GSR's fallback when observations
 are missing, and show the strategy's wanted credential even when affinity keeps another.
 When missing cached recovery data would need refreshing, `strategy_step.fallback` is
 `missing_recovery_data_refresh_pending` and `pick_predicted` is false. Weights and
@@ -2777,6 +2766,9 @@ Dry runs accept optional `source_format`; `openai-image` selects the native Imag
 QA regressions in `sdk/cliproxy/auth/routing_explanation_regression_test.go` cover
 expiry after factor preparation, quota refresh uncertainty, inherited LCP provenance,
 WebSocket priority and view cursor parity, and the pre-explanation allocation baseline.
+`sdk/cliproxy/auth/routing_weighted_merge_test.go` covers exact/dynamic pool parity, pending
+reservations, changed weights and epochs, collisions, sticky saturation, public execute/stream/count,
+Thread ownership gates and unavailable `never` bindings.
 `sdk/cliproxy/auth/routing_dry_run_parity_test.go` adds GSR fallback cursor/credit and
 probe-observation regressions; `internal/api/handlers/management/usage_probe_gsr_identity_test.go`
 checks shared-key probe caching, persistence, and dry-run/live execution parity.
@@ -2790,29 +2782,14 @@ against the next manager selection, no quota refresh during simulation, kept/hel
 affinity provenance, alias merges, truncation order, query validation, real ClickHouse
 request filtering and trace round trips, and management detail resolution.
 
-**Recorded validation:** `gofmt -w` was applied to changed Go files and
-`git diff --check` passes. QA expiry, LCP fork, WebSocket, and raw-wanted-matrix
-reproducers pass across five runs. The deterministic expiry test uses already-expired
-wall-clock deadlines with factors prepared at a fixed historical time. The allocation
-regression and benchmark both report 62 allocations per call before and after tracing
-support, down from the reported regression of 64. The cancellation regression passes
-100 runs under the race detector. The final full auth race run passes in 17.460s.
- `go build -o test-output ./cmd/server && unlink test-output`,
-`go test ./sdk/cliproxy/... ./internal/cpauk/... ./internal/api/...`, and
-`go test -race ./sdk/cliproxy/auth` all pass on the final implementation. Real ClickHouse
-tests ran successfully, including proxy-request filtering and raw trace persistence through
-detail/list/export and rewrite paths. Focused routing tests also pass. Earlier runs exposed
-and corrected a dry-run affinity/rule trace regression and obsolete tests that expected
-WRR/GSR to remain unpredicted. No known pre-existing flakes appeared in the final requested
-suite. One intermediate full-suite rerun was externally terminated with exit 143 and an
-empty log; the standalone rerun completed successfully.
+**Recorded validation:** On 2026-11-13, all 1,312 top-level auth tests pass, including ten-pick
+prediction comparisons against actual public execute, stream and count paths after pinned traffic
+and scheduler rebuilds. Full private selector-state snapshots prove repeated dry runs leave live
+state unchanged. A focused race run passes 127 top-level tests covering routing, GSR, reserves,
+quota persistence, retry exclusions and cooldowns. Auth vet, formatting and server compilation pass.
+Fresh independent review confirms the final reload repair, including pending reservations, alias/model normalization and public Execute/dry-run parity. The real-service matrix covers 50 affinity enable/disable/TTL/rebind/rule/provider/transport cases, repeated three times.
 
-Follow-up WebSocket, fallback cursor/credit, and probe-retention regressions pass.
-The requested SDK/CPAUK/API suite and server build pass; the auth race run passes
-in 17.788s. The shared-key HTTP fixture makes two initial quota calls and no further
-refreshes across four dry-run/Execute cycles.
-
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-13
 
 ### DL071 — ClickHouse transcript and system-log storage reductions
 
@@ -2906,6 +2883,29 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.
+
+### 2026-11-13 - Merge upstream `main` at `1aaf56bc6`
+
+Target: `upstream/main` at `1aaf56bc6a0fc6fce19049ba7ae8554c882304a6`.
+Parents: fork `8bab456cfdd97ced1ccabba71e6083de8d2a9573` and upstream target. Merged 101 upstream commits since the previous `base` merge `e603442162035ae7d5a15efeb7b613f085cc29ac`, without rebasing or squashing. The first parent preserves the existing local Signature Stabilization commits. The panel pin advances to CPAMC `3fad6d14a2d0269ca83681973480b8637a43bcd1`, its pushed two-parent sync through upstream `7a662031df9810f7b4168583529dfdd34a8779a8`, 22 incoming commits.
+
+User decisions: adopt upstream's default-off Claude server-side refusal fallback, preserving opt-in and explicit caller/payload fallbacks. Adopt standard-Responses image-tool injection without reasoning on catalog-Lite models while retaining the fork's metadata-only Lite exception, including reasoning-capable requests and explicit effective Lite=true header precedence. Approve the narrow Codex automatic-image evaluation-order exception in AGENTS.md: rule conditions may observe the prepared automatic tool even if cleanup later removes it before the single commit; configured values and final filters remain authoritative. No divergence was retired.
+
+Other decisions: keep every logged fork behavior alongside upstream's Thread ownership, served-model diagnostics, local compaction, WRR reservation accounting, affinity never-mode, explicit forced cooldowns, refresh/reload changes, tunnel service and opt-in HTTP shutdown drain. GSR remains a distinct recovery-weighted algorithm; its tiers, additive weights, reserves, routing rules and fallback cursor remain intact. Structured TUI keys retain labels, limits, original indexes and revisioned v8 writes. Temporary 429/5xx failures keep models listed. The newer coherent Claude identity/CAS design remains on the updated client tuple.
+
+Integration repairs: copy the actual WRR pool state for pure ten-pick simulations and separate public mixed-provider accounting from provider-scoped affinity cache keys, preserving progress and pending reservations across affinity reloads. Fix xAI WebSocket prediction preference. Preserve partial Claude usage and source timing before Thread terminal buffering. Deep-copy and bound HomeSelection in fork delivery without changing trusted accounting. Reclaim owned TLS/WebSocket raw transports without adding post-connect deadlines. Exclude downstream X-Goog-Api-Key credentials from compatible-provider forwarding after a failing HTTP regression. Synchronize tunnel test registration through an actual control response rather than treating a completed upgrade as a committed peer. Update the panel credit-row flex ordering while preserving the fork layout and locale union. The payload-ordering repair retains evaluated operations, performs automatic cleanup before their final commit, and preserves final empty-tools filters; fresh review confirms its mechanics and the user explicitly approved the documented evaluation-order exception.
+
+Validation:
+
+- The pre-merge full Go baseline passed 127 packages. Final `go test -p 2 ./... -count=1` passes all 128 tested packages with real isolated ClickHouse integration tests. `go vet ./...`, `gofmt`, the required disposable server build and actionlint pass. All 23 nested example modules build. Focused auth, service reload, usage, identity, Thread, payload and tunnel race suites pass. The full tunnel suite passes ten consecutive race runs after readiness synchronization.
+- An initial concurrent root run tripped an unchanged 20 ms cache-control timing assertion. Twenty isolated merged runs, 100 isolated pre-merge runs and the merged full executor package passed; the final full suite passes without changing that assertion. A subsequent run exposed two more tunnel registration-test races, repaired in the shared helper and covered by the final suite.
+- The real SQLite online snapshot migrates schema 9 to 19 with all 6,004 original events, fields, token totals and costs preserved. Reopening is a logical no-op, quick_check is ok and foreign-key checks are clean. A separate source snapshot imports into real ClickHouse; rerun changes neither totals nor physical event count and leaves the source file unchanged. No new CPAUK migration file was introduced.
+- Paid live Codex and Claude OAuth checks pass Chat, Messages and Responses in buffered and streaming modes. The API-key provider passes Chat and Messages in both modes. Per-key admission/rejection passes. A final merged-binary metadata-only Lite WebSocket request with low reasoning produces a valid 1254 by 1254 PNG, confirming automatic image injection. Actual TUI interaction renders structured keys, saves a label edit through v8 and preserves its request cap.
+- A plain-mode local server writes file request logs and has no telemetry route. A ClickHouse-mode server imports the real snapshot, serves inference, captures a request and exposes it through restricted SQL. Both images build with pinned toolchains. The disposable Compose stack serves the exact canonical panel digest, management and analytics through Nginx, executes a real inference, captures it, and supports authenticated WebSocket tunnel discovery. Its fresh ClickHouse applies ZSTD(6), 8 MiB blocks and seven-day system-log TTLs; trace_log is absent.
+- CPAMC passes 3,163 tests, lint, TypeScript and production build with pinned Bun 1.4.3. Fresh panel QA covers all 80 entries and verifies the 4,043-key union in all seven locales. Forty-four integrated desktop/mobile and light/dark route checks have no page errors or horizontal overflow; quota reads, credit-dialog opening and read-only restrictions pass. Separate backend audits cover all 72 entries; final independent repair review confirms credential-header filtering, tunnel readiness synchronization and the retained-plan mechanics. Its sole contract objection was resolved by the explicit Codex-only exception approved above. No upstream account setting was changed.
+- Temporary servers, Compose containers/volume/network, copied credentials and identity/database copies were removed after verification. Existing user services were left untouched.
+
+Limits: the selected Kiro account returns monthly-quota exhaustion, so its paid cross-protocol happy path was not certified; shared translator/executor regressions pass. The historical database predates quota-history rows, so populated historical quota preservation is covered by synthetic real-ClickHouse tests rather than that real snapshot. Native macOS/Windows behavior, legacy animation details and native-speaker translation review were not rerun. CLIProxyAPIHome main `f31b149c18c50a84fdb9f6ba5194a45754ad0749` supports PONG liveness, core cloak metadata and CAS transport, but needs matching reused-turn scheduling compensation and kind-aware scheduling work; no live Home cluster is certified or changed here.
 
 ### 2026-11-07 - Merge upstream `main` at `c5251b57`
 

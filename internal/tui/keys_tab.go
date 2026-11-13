@@ -63,6 +63,8 @@ type keysTabModel struct {
 	// editRow is the displayed row being edited; the server index comes from
 	// the entry itself.
 	editRow            int
+	formIndex          int
+	formClient         *Client
 	formInputs         [keyTextFieldCount]textinput.Model
 	formLabel          textinput.Model
 	formField          int
@@ -291,9 +293,11 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				}
 				// Delete the entry at its original server position, which is not
 				// the displayed row once blank entries were filtered out.
-				serverIdx := m.entries[row].Index
+				entry := m.entries[row]
+				serverIdx := entry.Index
+				client := m.client.withAPIKeyRevision(entry.Revision)
 				return m, func() tea.Msg {
-					err := m.client.DeleteAPIKey(serverIdx)
+					err := client.DeleteAPIKey(serverIdx)
 					if err != nil {
 						return keyActionMsg{err: err}
 					}
@@ -332,6 +336,8 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				entry := m.entries[m.cursor]
 				m.editRow = m.cursor
 				m.openKeyForm(false, entry.Key, entry.Limits, entry.Label)
+				m.formIndex = entry.Index
+				m.formClient = m.client.withAPIKeyRevision(entry.Revision)
 				m.viewport.SetContent(m.renderContent())
 				return m, textinput.Blink
 			}
@@ -515,9 +521,12 @@ func (m *keysTabModel) submitKeyForm() (keysTabModel, tea.Cmd) {
 			m.viewport.SetContent(m.renderContent())
 			return *m, nil
 		}
-		serverIdx = m.entries[m.editRow].Index
+		serverIdx = m.formIndex
 	}
 	client := m.client
+	if !isAdding && m.formClient != nil {
+		client = m.formClient
+	}
 	m.closeKeyForm()
 	m.viewport.SetContent(m.renderContent())
 	if isAdding {

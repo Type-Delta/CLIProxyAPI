@@ -180,16 +180,16 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
-	userAgent := headerValue(headers, "User-Agent")
-	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(userAgent)
+	userAgent, validUserAgent := parseClaudeCodeUserAgent(headerValue(headers, "User-Agent"))
+	entrypoint := userAgent.entrypoint
 	subclient := claudeSubclientForEntrypoint(entrypoint, cfg)
 	detection := ClaudeCodeRequestDetection{
 		XAppCLI:         (headerValue(headers, "X-App") == "cli" || headerValue(headers, "X-App") == "cli-bg"),
-		UserAgent:       plausibleClaudeCodeUserAgent(userAgent, cfg),
+		UserAgent:       validUserAgent,
 		BetasPresent:    headerContainsClaudeCodeBeta(headers),
 		Entrypoint:      entrypoint,
 		Subclient:       subclient,
-		AgentSDKVersion: agentSDKVersion,
+		AgentSDKVersion: userAgent.agentSDKVersion,
 	}
 
 	metadataUserID := ojson.GetBytesNoCopy(payload, "metadata.user_id")
@@ -205,6 +205,15 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 			measuredClaudeCodeHaiku55HelperSessionMatches(headers, payload) &&
 			measuredClaudeCodeBillingAndIdentityMatch(payload, entrypoint))
 	return detection
+}
+
+func isNativeClaudeXApp(value string) bool {
+	switch value {
+	case "cli", "cli-bg":
+		return true
+	default:
+		return false
+	}
 }
 
 func claudeCodeHelperBetaProfile(redactThinking bool, trailing ...string) string {

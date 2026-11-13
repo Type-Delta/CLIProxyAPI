@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -14,7 +15,69 @@ func cloneSmoothState(state *smoothWeightedState) smoothWeightedState {
 	if state == nil {
 		return smoothWeightedState{}
 	}
-	return smoothWeightedState{current: maps.Clone(state.current), weights: maps.Clone(state.weights)}
+	return smoothWeightedState{current: maps.Clone(state.current), weights: maps.Clone(state.weights), peak: state.peak}
+}
+
+// weightedStrategySimulationLocked copies only the competing pool. Reservations
+// and commits below belong to the copy, including credit already pending live.
+// The selector mutex must be held.
+func (s *WeightedRoundRobinSelector) weightedStrategySimulationLocked(c *routingCapture, route string, priority int, transport string, pool []*Auth) (*routing.StrategyStep, *strategySimulation) {
+	weights := authWeightVector(pool)
+	ids := sortedWeightedIDs(weights)
+	vector := make([]int64, len(ids))
+	for i, id := range ids {
+		vector[i] = weights[id]
+	}
+	versions := extractWeightedAuthVersions(pool, ids)
+	local := &WeightedRoundRobinSelector{}
+	var state *weightedPoolState
+	dynamicKey := dynamicWeightedPoolKey(route, priority, transport)
+	if live := s.largeStates[dynamicKey]; live != nil {
+		copy := *live
+		copy.members = slices.Clone(live.members)
+		copy.lastActiveIDs = slices.Clone(live.lastActiveIDs)
+		copy.next = nil
+		copy.syncDynamicMembers(ids, vector, versions)
+		state = &copy
+		local.largeStates = map[string]*weightedPoolState{dynamicKey: state}
+	} else {
+		key := weightedPoolDigest(route, ids)
+		for live := s.states[key]; live != nil; live = live.next {
+			if !live.matches(route, ids) {
+				continue
+			}
+			copy := *live
+			copy.members = slices.Clone(live.members)
+			copy.lastActiveIDs = slices.Clone(live.lastActiveIDs)
+			copy.next = nil
+			copy.prepareWithVersions(vector, versions)
+			state = &copy
+			local.states = map[[32]byte]*weightedPoolState{key: state}
+			local.stateCount = 1
+			break
+		}
+	}
+	step, sim := strategyStep(c, routing.StrategyWeightedRoundRobin, pool, "", 0, "", nil)
+	if state != nil {
+		for i, auth := range pool {
+			if member, ok := state.findMember(auth.ID); ok {
+				value := state.members[member]
+				step.Weights[i].Credit = saturatingAddInt64(value.current, value.pending)
+			}
+		}
+	}
+	sim.next = func() *Auth {
+		picked, reservation := local.reservePoolScoped(route, priority, transport, pool, vector, ids, "")
+		reservation.finish(true)
+		return picked
+	}
+	return step, sim
+}
+
+func (s *WeightedRoundRobinSelector) weightedStrategySimulation(c *routingCapture, route string, priority int, transport string, pool []*Auth) (*routing.StrategyStep, *strategySimulation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.weightedStrategySimulationLocked(c, route, priority, transport, pool)
 }
 
 func (c *routingCapture) candidateIndex(a *Auth) int {
@@ -180,6 +243,19 @@ func (s *authScheduler) scheduledStrategySimulation(c *routingCapture, shards []
 		}
 	}
 	sort.Slice(pool, func(i, j int) bool { return pool[i].ID < pool[j].ID })
+	if strategy == schedulerStrategyWeightedRoundRobin && s.weightedSelector != nil {
+		namespace, transport := "mixed", ""
+		if len(providers) == 1 {
+			namespace = providers[0]
+			if preferWS {
+				transport = "http"
+				if len(pool) > 0 && authWebsocketsEnabled(pool[0]) {
+					transport = "ws"
+				}
+			}
+		}
+		return s.weightedSelector.weightedStrategySimulation(c, namespace+":"+canonicalModelLookupKey(model), priority, transport, pool)
+	}
 	name := routing.StrategyRoundRobin
 	switch strategy {
 	case schedulerStrategyFillFirst:
@@ -189,7 +265,7 @@ func (s *authScheduler) scheduledStrategySimulation(c *routingCapture, shards []
 	case schedulerStrategyGreedySoonestRecovery:
 		name = routing.StrategyGreedySoonestRecovery
 	}
-	cursorKey := strings.Join(providers, ",") + ":" + canonicalModelKey(model)
+	cursorKey := strings.Join(providers, ",") + ":" + canonicalModelLookupKey(model)
 	if len(shards) > 1 {
 		state = s.mixedWeightedStates[cursorKey]
 	}

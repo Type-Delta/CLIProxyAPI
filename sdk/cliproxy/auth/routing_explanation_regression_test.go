@@ -60,17 +60,17 @@ func TestRoutingRegressionDryRunWebsocket(t *testing.T) {
 					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(a.ID) })
 				}
 				ctx := ex.WithDownstreamWebsocket(context.Background())
-				if _, _, err := m.pickNext(ctx, provider, model, ex.Options{}, nil); err != nil {
+				if _, _, _, err := m.pickNextMixed(ctx, []string{provider}, model, ex.Options{}, nil); err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := m.pickNext(context.Background(), provider, model, ex.Options{}, nil); err != nil {
+				if _, _, _, err := m.pickNextMixed(context.Background(), []string{provider}, model, ex.Options{}, nil); err != nil {
 					t.Fatal(err)
 				}
 				trace, err := m.DryRunRoute(context.Background(), routing.DryRunRequest{Model: model, DownstreamWebsocket: true})
 				if err != nil {
 					t.Fatal(err)
 				}
-				live, _, err := m.pickNext(ctx, provider, model, ex.Options{}, nil)
+				live, _, _, err := m.pickNextMixed(ctx, []string{provider}, model, ex.Options{}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}

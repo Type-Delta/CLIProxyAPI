@@ -162,3 +162,33 @@ func TestAIStudioStreamErrorRetainsObservedUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClaudeBufferedStreamFailureRetainsUsage(t *testing.T) {
+	for _, readFailure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "truncated", true: "read reset"}[readFailure], func(t *testing.T) {
+			records := make(chan usage.Record, 4)
+			unregister, err := usage.RegisterSanitizerTapNamedPlugin(t.Name(), partialUsageTap(func(r usage.Record) { records <- r }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unregister(context.Background())
+			payload := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_partial\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n"
+			transport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				var body io.ReadCloser = io.NopCloser(strings.NewReader(payload))
+				if readFailure {
+					body = resetStreamBody{strings.NewReader(payload)}
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: body, Request: r}, nil
+			})
+			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			_, err = NewClaudeExecutor(&config.Config{}).Execute(ctx, &cliproxyauth.Auth{ID: t.Name(), Attributes: map[string]string{"api_key": "partial-key"}}, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}]}`)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: sdktranslator.FormatOpenAI})
+			if err == nil {
+				t.Fatal("incomplete upstream accepted")
+			}
+			record := <-records
+			if record.Outcome != "failed" || record.Detail.InputTokens != 5 || record.Detail.OutputTokens != 7 || record.Detail.TotalTokens != 12 {
+				t.Fatalf("outcome=%s usage=%d/%d/%d", record.Outcome, record.Detail.InputTokens, record.Detail.OutputTokens, record.Detail.TotalTokens)
+			}
+		})
+	}
+}

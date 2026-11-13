@@ -67,6 +67,7 @@ func TestOpenAICompatExecutorForwardsClientHeaders(t *testing.T) {
 					"X-Static":            {"downstream-value"},
 					"Authorization":       {"Bearer downstream-cpa-key"},
 					"X-Api-Key":           {"downstream-cpa-key"},
+					"X-Goog-Api-Key":      {"downstream-cpa-key"},
 					"Api-Key":             {"downstream-cpa-key"},
 					"Proxy-Authorization": {"Basic downstream-cpa-key"},
 					"Proxy-Authenticate":  {"Basic realm=downstream"},
@@ -128,6 +129,7 @@ func TestOpenAICompatExecutorForwardsClientHeaders(t *testing.T) {
 			}
 			for _, name := range []string{
 				"X-Api-Key",
+				"X-Goog-Api-Key",
 				"Api-Key",
 				"Proxy-Authorization",
 				"Proxy-Authenticate",
@@ -158,9 +160,10 @@ func TestOpenAICompatExecutorForwardsClientHeaders(t *testing.T) {
 func TestOpenAICompatRequestHeadersDropDownstreamCredentialWithoutProviderKey(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", nil)
 	clientHeaders := http.Header{
-		"Authorization": {"Bearer downstream-cpa-key"},
-		"X-Api-Key":     {"downstream-cpa-key"},
-		"Api-Key":       {"downstream-cpa-key"},
+		"Authorization":  {"Bearer downstream-cpa-key"},
+		"X-Api-Key":      {"downstream-cpa-key"},
+		"X-Goog-Api-Key": {"downstream-cpa-key"},
+		"Api-Key":        {"downstream-cpa-key"},
 	}
 
 	applyOpenAICompatRequestHeaders(req, "", "application/json", nil, clientHeaders)
@@ -173,5 +176,8 @@ func TestOpenAICompatRequestHeadersDropDownstreamCredentialWithoutProviderKey(t 
 	}
 	if got := req.Header.Get("Api-Key"); got != "" {
 		t.Errorf("Api-Key = %q, want omitted", got)
+	}
+	if got := req.Header.Get("X-Goog-Api-Key"); got != "" {
+		t.Errorf("X-Goog-Api-Key = %q, want omitted", got)
 	}
 }

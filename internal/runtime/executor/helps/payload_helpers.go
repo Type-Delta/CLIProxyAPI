@@ -6,13 +6,23 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
+
+var payloadConfigEvaluations atomic.Int64
+
+// PayloadConfigEvaluationCount returns the cumulative number of payload rule
+// engine evaluations across the process.
+func PayloadConfigEvaluationCount() int64 {
+	return payloadConfigEvaluations.Load()
+}
 
 // ApplyPayloadConfigWithRoot behaves like applyPayloadConfig but treats all parameter
 // paths as relative to the provided root path and restricts matches to the given
@@ -91,6 +101,11 @@ func ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 }
 
 func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, trackedPaths ...string) (map[string]bool, bool) {
+	return applyPayloadConfigWithTrackedPathsForExecutorAndAuthDoc(cfg, targetExecutor, model, protocol, fromProtocol, root, doc, original, requestedModel, requestPath, headers, nil, trackedPaths...)
+}
+
+func applyPayloadConfigWithTrackedPathsForExecutorAndAuthDoc(cfg *config.Config, targetExecutor, model, protocol, fromProtocol, root string, doc *ojson.Doc, original []byte, requestedModel, requestPath string, headers http.Header, auth *cliproxyauth.Auth, trackedPaths ...string) (map[string]bool, bool) {
+	payloadConfigEvaluations.Add(1)
 	touched := make(map[string]bool)
 	if doc == nil || doc.Len() == 0 {
 		return touched, false
@@ -133,6 +148,66 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 		model = strings.TrimSpace(model)
 		requestedModel = strings.TrimSpace(requestedModel)
 		if model != "" || requestedModel != "" {
+			toolsPath := buildPayloadPath(root, "tools")
+			toolChoicePath := buildPayloadPath(root, "tool_choice")
+			autoInjectedToolIdx := -1
+			if isCodexTargetExecutor(targetExecutor) &&
+				cfg.DisableImageGeneration == config.DisableImageGenerationOff &&
+				len(original) > 0 &&
+				!rawToolsContainImageGeneration(original, toolsPath) {
+				autoInjectedToolIdx = findLastImageGenerationToolIndexDoc(doc, toolsPath)
+			}
+			businessDoc := doc
+			originalAutoInjectedToolIdx := autoInjectedToolIdx
+			var plan *payloadRulePlan
+			var effects payloadRuleDocument = doc
+			if autoInjectedToolIdx >= 0 {
+				plan = newPayloadRulePlan(doc, &autoInjectedToolIdx)
+				effects = plan
+			}
+			origTools := ojson.GetBytesNoCopy(original, toolsPath)
+			originalHadEmptyTools := len(original) > 0 && origTools.Exists() && origTools.IsArray() && len(origTools.Array()) == 0
+			userWroteToolChoice := false
+			noteRuleWrite := func(resolvedPath string) {
+				markTouched(resolvedPath)
+				if toolChoicePath != "" && payloadRuleTargetsPath(resolvedPath, toolChoicePath) {
+					userWroteToolChoice = true
+				}
+				if autoInjectedToolIdx < 0 || toolsPath == "" || !payloadRuleTargetsPath(resolvedPath, toolsPath) {
+					return
+				}
+				if resolvedPath == toolsPath || strings.HasPrefix(toolsPath, resolvedPath+".") {
+					autoInjectedToolIdx = -1
+					return
+				}
+				rest := strings.TrimPrefix(resolvedPath, toolsPath+".")
+				if idx := strings.IndexByte(rest, '.'); idx >= 0 {
+					rest = rest[:idx]
+				}
+				if elemIdx, errIdx := strconv.Atoi(rest); errIdx == nil && elemIdx == autoInjectedToolIdx {
+					autoInjectedToolIdx = -1
+				}
+			}
+			noteRuleDelete := func(resolvedPath string) {
+				if autoInjectedToolIdx < 0 || toolsPath == "" || !payloadRuleTargetsPath(resolvedPath, toolsPath) {
+					return
+				}
+				if resolvedPath == toolsPath || strings.HasPrefix(toolsPath, resolvedPath+".") {
+					autoInjectedToolIdx = -1
+					return
+				}
+				rest := strings.TrimPrefix(resolvedPath, toolsPath+".")
+				if strings.Contains(rest, ".") {
+					return
+				}
+				if delIdx, errIdx := strconv.Atoi(rest); errIdx == nil {
+					if delIdx == autoInjectedToolIdx {
+						autoInjectedToolIdx = -1
+					} else if delIdx >= 0 && delIdx < autoInjectedToolIdx {
+						autoInjectedToolIdx--
+					}
+				}
+			}
 			candidates := payloadModelCandidates(model, requestedModel)
 			appliedDefaults := make(map[string]struct{})
 			var createdByDefault map[string]struct{}
@@ -169,7 +244,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 						}
 					}
 				}
-				return doc.Get(resolvedPath).Exists()
+				return effects.Get(resolvedPath).Exists()
 			}
 			recordDefaultCreation := func(resolvedPath string) {
 				if len(original) > 0 {
@@ -181,7 +256,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 				for idx := 0; idx < len(resolvedPath); idx++ {
 					if resolvedPath[idx] == '.' && (idx == 0 || resolvedPath[idx-1] != '\\') {
 						prefix := resolvedPath[:idx]
-						prefixNode := doc.Get(prefix)
+						prefixNode := effects.Get(prefix)
 						if !prefixNode.Exists() {
 							createdByDefault[prefix] = struct{}{}
 						} else if prefixNode.IsArray() {
@@ -194,7 +269,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 						}
 					}
 				}
-				if !doc.Get(resolvedPath).Exists() {
+				if !effects.Get(resolvedPath).Exists() {
 					createdByDefault[resolvedPath] = struct{}{}
 				}
 			}
@@ -202,7 +277,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply default rules: first write wins per field across all matching rules.
 			for i := range rules.Default {
 				rule := &rules.Default[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, effects, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -210,7 +285,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(effects, fullPath) {
 						if sourcePathExists(resolvedPath) {
 							continue
 						}
@@ -218,19 +293,19 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 							continue
 						}
 						recordDefaultCreation(resolvedPath)
-						if errSet := doc.Set(resolvedPath, value); errSet != nil {
+						if errSet := effects.Set(resolvedPath, value); errSet != nil {
 							continue
 						}
 						mutated = true
 						appliedDefaults[resolvedPath] = struct{}{}
-						markTouched(resolvedPath)
+						noteRuleWrite(resolvedPath)
 					}
 				}
 			}
 			// Apply default raw rules: first write wins per field across all matching rules.
 			for i := range rules.DefaultRaw {
 				rule := &rules.DefaultRaw[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, effects, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -238,7 +313,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(effects, fullPath) {
 						if sourcePathExists(resolvedPath) {
 							continue
 						}
@@ -250,19 +325,19 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 							continue
 						}
 						recordDefaultCreation(resolvedPath)
-						if errSet := doc.SetRawBytes(resolvedPath, rawValue); errSet != nil {
+						if errSet := effects.SetRawBytes(resolvedPath, rawValue); errSet != nil {
 							continue
 						}
 						mutated = true
 						appliedDefaults[resolvedPath] = struct{}{}
-						markTouched(resolvedPath)
+						noteRuleWrite(resolvedPath)
 					}
 				}
 			}
 			// Apply override rules: last write wins per field across all matching rules.
 			for i := range rules.Override {
 				rule := &rules.Override[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, effects, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -270,13 +345,13 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 					if fullPath == "" {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
-						changed, applied := setPayloadValueIfDifferentDocTracked(doc, resolvedPath, value)
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(effects, fullPath) {
+						changed, applied := setPayloadValueIfDifferentDocTracked(effects, resolvedPath, value)
 						if changed {
 							mutated = true
 						}
 						if applied {
-							markTouched(resolvedPath)
+							noteRuleWrite(resolvedPath)
 						}
 					}
 				}
@@ -284,7 +359,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply override raw rules: last write wins per field across all matching rules.
 			for i := range rules.OverrideRaw {
 				rule := &rules.OverrideRaw[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, effects, root, candidates) {
 					continue
 				}
 				for path, value := range rule.Params {
@@ -296,13 +371,13 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 					if !ok {
 						continue
 					}
-					for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, fullPath) {
-						changed, applied := setPayloadRawValueIfDifferentDocTracked(doc, resolvedPath, rawValue)
+					for _, resolvedPath := range resolvePayloadRulePathsDoc(effects, fullPath) {
+						changed, applied := setPayloadRawValueIfDifferentDocTracked(effects, resolvedPath, rawValue)
 						if changed {
 							mutated = true
 						}
 						if applied {
-							markTouched(resolvedPath)
+							noteRuleWrite(resolvedPath)
 						}
 					}
 				}
@@ -310,7 +385,7 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 			// Apply filter rules: remove matching paths from payload.
 			for i := range rules.Filter {
 				rule := &rules.Filter[i]
-				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, doc, root, candidates) {
+				if !payloadModelRulesMatchDoc(rule.Models, protocol, fromProtocol, headers, effects, root, candidates) {
 					continue
 				}
 				for _, path := range rule.Params {
@@ -318,23 +393,139 @@ func applyPayloadConfigWithTrackedPathsForExecutorDoc(cfg *config.Config, target
 					if fullPath == "" {
 						continue
 					}
-					resolvedPaths := resolvePayloadRulePathsDoc(doc, fullPath)
+					resolvedPaths := resolvePayloadRulePathsDoc(effects, fullPath)
 					for idx := len(resolvedPaths) - 1; idx >= 0; idx-- {
 						resolvedPath := resolvedPaths[idx]
-						existed := doc.Get(resolvedPath).Exists()
-						if errDel := doc.Delete(resolvedPath); errDel != nil {
+						existed := effects.Get(resolvedPath).Exists()
+						if errDel := effects.Delete(resolvedPath); errDel != nil {
 							continue
 						}
 						if existed {
 							mutated = true
+							noteRuleDelete(resolvedPath)
 						}
 						markTouched(resolvedPath)
 					}
 				}
 			}
+			if plan != nil {
+				removedAutoImage := false
+				if autoInjectedToolIdx >= 0 &&
+					effects.Get(toolsPath+"."+strconv.Itoa(autoInjectedToolIdx)+".type").String() == "image_generation" &&
+					!(userWroteToolChoice && docToolChoiceSelectsImageGeneration(effects, toolChoicePath)) &&
+					codexConfiguredPayloadIncompatibleWithAutoImageGenDoc(effects, root, model, auth, headers) {
+					removedAutoImage = retractAutoInjectedImageGenerationToolAtIndexDoc(businessDoc, toolsPath, originalAutoInjectedToolIdx, originalHadEmptyTools)
+					mutated = mutated || removedAutoImage
+				}
+				// This is the final business-payload barrier. Nothing may rewrite
+				// its values or restore its filtered fields after the commit.
+				return touched, plan.apply(businessDoc, toolsPath, removedAutoImage) || mutated
+			}
 		}
 	}
 	return touched, mutated
+}
+
+func findLastImageGenerationToolIndexDoc(doc *ojson.Doc, toolsPath string) int {
+	if doc == nil {
+		return -1
+	}
+	tools := doc.Get(toolsPath)
+	if !tools.Exists() || !tools.IsArray() {
+		return -1
+	}
+	items := tools.Array()
+	for idx := len(items) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(items[idx].Get("type").String()) == "image_generation" {
+			return idx
+		}
+	}
+	return -1
+}
+
+func rawToolsContainImageGeneration(raw []byte, toolsPath string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	tools := ojson.GetBytesNoCopy(raw, toolsPath)
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	for _, tool := range tools.Array() {
+		if strings.TrimSpace(tool.Get("type").String()) == "image_generation" {
+			return true
+		}
+	}
+	return false
+}
+
+func docToolChoiceSelectsImageGeneration(doc payloadRuleDocument, toolChoicePath string) bool {
+	if doc == nil || toolChoicePath == "" {
+		return false
+	}
+	choice := doc.Get(toolChoicePath)
+	if !choice.Exists() {
+		return false
+	}
+	if choice.Type == ojson.String {
+		return strings.EqualFold(strings.TrimSpace(choice.String()), "image_generation")
+	}
+	if !choice.IsObject() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(choice.Get("type").String())) {
+	case "image_generation":
+		return true
+	case "tool":
+		return strings.EqualFold(strings.TrimSpace(choice.Get("name").String()), "image_generation")
+	case "allowed_tools":
+		allowed := choice.Get("tools")
+		if !allowed.IsArray() {
+			return false
+		}
+		for _, tool := range allowed.Array() {
+			if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "image_generation") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexConfiguredPayloadIncompatibleWithAutoImageGenDoc(doc payloadRuleDocument, root, fallbackModel string, auth *cliproxyauth.Auth, headers http.Header) bool {
+	if doc == nil {
+		return false
+	}
+	configuredModel := strings.TrimSpace(doc.Get(buildPayloadPath(root, "model")).String())
+	if configuredModel == "" {
+		configuredModel = strings.TrimSpace(fallbackModel)
+	}
+	modelName := strings.TrimSpace(thinking.ParseSuffix(configuredModel).ModelName)
+	if codexHostedImagesBlocked(func(path string) ojson.Result { return doc.Get(buildPayloadPath(root, path)) }, configuredModel, auth, headers) {
+		return true
+	}
+	if strings.HasSuffix(strings.ToLower(modelName), "spark") {
+		return true
+	}
+	return false
+}
+
+func retractAutoInjectedImageGenerationToolAtIndexDoc(doc *ojson.Doc, toolsPath string, targetIdx int, originalHadEmptyTools bool) bool {
+	tools := doc.Get(toolsPath)
+	if !tools.Exists() || !tools.IsArray() {
+		return false
+	}
+	toolItems := tools.Array()
+	if targetIdx < 0 || targetIdx >= len(toolItems) {
+		return false
+	}
+	if strings.TrimSpace(toolItems[targetIdx].Get("type").String()) != "image_generation" {
+		return false
+	}
+	if len(toolItems) == 1 && !originalHadEmptyTools {
+		return doc.Delete(toolsPath) == nil
+	}
+	return doc.Delete(toolsPath+"."+strconv.Itoa(targetIdx)) == nil
 }
 
 // ApplyPayloadConfigWithRequestTracked applies payload config and reports whether
@@ -386,7 +577,7 @@ func shouldStripImageGeneration(mode config.DisableImageGenerationMode, requestP
 	}
 }
 
-func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, doc *ojson.Doc, root string, models []string) bool {
+func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, doc payloadRuleDocument, root string, models []string) bool {
 	if len(rules) == 0 || len(models) == 0 || doc == nil {
 		return false
 	}
@@ -416,7 +607,7 @@ func payloadModelRulesMatchDoc(rules []config.PayloadModelRule, protocol string,
 	return false
 }
 
-func payloadModelRuleConditionsMatchDoc(doc *ojson.Doc, root string, rule config.PayloadModelRule) bool {
+func payloadModelRuleConditionsMatchDoc(doc payloadRuleDocument, root string, rule config.PayloadModelRule) bool {
 	if !payloadMatchConditionsMatchDoc(doc, root, rule.Match) {
 		return false
 	}
@@ -432,7 +623,7 @@ func payloadModelRuleConditionsMatchDoc(doc *ojson.Doc, root string, rule config
 	return true
 }
 
-func payloadMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions []map[string]any) bool {
+func payloadMatchConditionsMatchDoc(doc payloadRuleDocument, root string, conditions []map[string]any) bool {
 	for _, condition := range conditions {
 		for path, value := range condition {
 			if strings.TrimSpace(path) == "" {
@@ -446,7 +637,7 @@ func payloadMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions []ma
 	return true
 }
 
-func payloadNotMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions []map[string]any) bool {
+func payloadNotMatchConditionsMatchDoc(doc payloadRuleDocument, root string, conditions []map[string]any) bool {
 	for _, condition := range conditions {
 		for path, value := range condition {
 			if strings.TrimSpace(path) == "" {
@@ -460,7 +651,7 @@ func payloadNotMatchConditionsMatchDoc(doc *ojson.Doc, root string, conditions [
 	return true
 }
 
-func payloadExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []string) bool {
+func payloadExistConditionsMatchDoc(doc payloadRuleDocument, root string, paths []string) bool {
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -472,7 +663,7 @@ func payloadExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []string)
 	return true
 }
 
-func payloadNotExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []string) bool {
+func payloadNotExistConditionsMatchDoc(doc payloadRuleDocument, root string, paths []string) bool {
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -484,7 +675,7 @@ func payloadNotExistConditionsMatchDoc(doc *ojson.Doc, root string, paths []stri
 	return true
 }
 
-func payloadPathMatchesValueDoc(doc *ojson.Doc, path string, value any) bool {
+func payloadPathMatchesValueDoc(doc payloadRuleDocument, path string, value any) bool {
 	for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, path) {
 		result := doc.Get(resolvedPath)
 		if !result.Exists() {
@@ -497,7 +688,7 @@ func payloadPathMatchesValueDoc(doc *ojson.Doc, path string, value any) bool {
 	return false
 }
 
-func payloadPathExistsDoc(doc *ojson.Doc, path string) bool {
+func payloadPathExistsDoc(doc payloadRuleDocument, path string) bool {
 	for _, resolvedPath := range resolvePayloadRulePathsDoc(doc, path) {
 		result := doc.Get(resolvedPath)
 		if result.Exists() && result.Type != ojson.Null {
@@ -699,7 +890,7 @@ func payloadRuleTargetsPath(path, trackedPath string) bool {
 	return path == trackedPath || strings.HasPrefix(path, trackedPath+".") || strings.HasPrefix(trackedPath, path+".")
 }
 
-func resolvePayloadRulePathsDoc(doc *ojson.Doc, path string) []string {
+func resolvePayloadRulePathsDoc(doc payloadRuleDocument, path string) []string {
 	if doc == nil {
 		return nil
 	}
@@ -1073,7 +1264,7 @@ func setPayloadValueIfDifferentTracked(payload []byte, path string, value any) (
 	return updated, true
 }
 
-func setPayloadValueIfDifferentDocTracked(doc *ojson.Doc, path string, value any) (bool, bool) {
+func setPayloadValueIfDifferentDocTracked(doc payloadRuleDocument, path string, value any) (bool, bool) {
 	if doc == nil {
 		return false, false
 	}
@@ -1092,11 +1283,11 @@ func setPayloadValueIfDifferentDocTracked(doc *ojson.Doc, path string, value any
 			return false, true
 		}
 	default:
-		expectedJSON, errSet := ojson.SetBytes([]byte(`{}`), "value", value)
-		if errSet != nil {
+		expectedDoc := ojson.NewDocString(`{}`)
+		if errSet := expectedDoc.Set("value", value); errSet != nil {
 			return false, false
 		}
-		expected := ojson.GetBytesNoCopy(expectedJSON, "value")
+		expected := expectedDoc.Get("value")
 		if expected.Raw == "" {
 			return false, false
 		}
@@ -1114,7 +1305,7 @@ func setPayloadValueIfDifferentDocTracked(doc *ojson.Doc, path string, value any
 	return true, true
 }
 
-func setPayloadRawValueIfDifferentDocTracked(doc *ojson.Doc, path string, value []byte) (bool, bool) {
+func setPayloadRawValueIfDifferentDocTracked(doc payloadRuleDocument, path string, value []byte) (bool, bool) {
 	if doc == nil {
 		return false, false
 	}

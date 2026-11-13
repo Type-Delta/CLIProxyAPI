@@ -51,11 +51,12 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		}
 
 		loggerEnabled := logger.IsEnabled()
-		if telemetry, ok := logger.(*logging.TelemetryRequestLogger); ok {
+		hasMatchedRoute := c.FullPath() != ""
+		if telemetry, ok := logger.(*logging.TelemetryRequestLogger); ok && hasMatchedRoute {
 			c.Set(logging.TelemetryCaptureContextKey, telemetry.NewCapture())
 		}
-		captureBody := shouldCaptureRequestBody(loggerEnabled, c.Request)
-		if _, ok := logger.(*logging.TelemetryRequestLogger); ok {
+		captureBody := hasMatchedRoute && shouldCaptureRequestBody(loggerEnabled, c.Request)
+		if _, ok := logger.(*logging.TelemetryRequestLogger); ok && hasMatchedRoute {
 			captureBody = true
 		}
 
@@ -71,9 +72,13 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		wrapper.ginContext = c
 		if !loggerEnabled {
 			wrapper.logOnErrorOnly = true
+			deferredAPICapture := logging.NewDeferredAPICapture()
+			wrapper.deferredAPICapture = deferredAPICapture
+			c.Request = c.Request.WithContext(logging.WithDeferredAPICapture(c.Request.Context(), deferredAPICapture))
+			c.Set(logging.DeferredAPIResponseContextKey, deferredAPICapture)
 		}
 		c.Writer = wrapper
-		attachRequestLogSources(c, logger, loggerEnabled)
+		attachRequestLogSources(c, logger, loggerEnabled && hasMatchedRoute)
 		deferredCapture := attachDeferredRequestBodyCapture(c.Request, logger, requestInfo, false, false)
 		if captureBody {
 			c.Set(authenticatedRequestBodyCapturerContextKey, func() {

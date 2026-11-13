@@ -323,7 +323,7 @@ func TestQAPluginBuiltinDelegationKeepsEligibleAffinity(t *testing.T) {
 	}
 }
 
-func TestRoutingLegacyWRRWithoutRulesPreservesHighestTierBehavior(t *testing.T) {
+func TestRoutingLegacyWRRWithoutRulesExcludesZeroWeightBeforePriority(t *testing.T) {
 	m := NewManager(nil, &WeightedRoundRobinSelector{}, nil)
 	m.RegisterExecutor(schedulerTestExecutor{provider: "qa-wrr-legacy"})
 	for _, a := range []*Auth{
@@ -335,8 +335,8 @@ func TestRoutingLegacyWRRWithoutRulesPreservesHighestTierBehavior(t *testing.T) 
 		}
 	}
 	selected, _, err := m.pickNextLegacy(context.Background(), "qa-wrr-legacy", "", ex.Options{}, nil)
-	if selected != nil || err == nil {
-		t.Fatalf("selected=%v err=%v; legacy highest tier has no positive weight", selected, err)
+	if err != nil || selected == nil || selected.ID != "positive-low" {
+		t.Fatalf("selected=%v err=%v; zero-weight tiers must not hide weighted peers", selected, err)
 	}
 }
 

@@ -39,6 +39,7 @@ func TestValidateCodexHostedImageGenerationDoc(t *testing.T) {
 			for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-reserve", "codex/gpt-6-astra(high)"} {
 				doc := ojson.NewDocString(tc.body)
 				_ = doc.Set("model", model)
+				_ = doc.Set("reasoning.effort", "medium")
 				before := doc.String()
 				errValidate := ValidateCodexHostedImageGenerationDoc(doc, nil, nil, true)
 				if (errValidate != nil) != tc.reject {
@@ -82,7 +83,7 @@ func TestValidateCodexHostedImageGenerationRouteAndPassthrough(t *testing.T) {
 		{name: "false_hints", model: "gpt-5.4", header: "false", metadata: false, nativeCodex: true},
 		{name: "api_key_or_siwc", model: "gpt-6-sol"},
 		{name: "explicit_passthrough", model: "gpt-6-sol", mode: config.DisableImageGenerationPassthrough, nativeCodex: true},
-		{name: "configured_tool_restored_in_chat_mode", model: "gpt-6-sol", mode: config.DisableImageGenerationChat, nativeCodex: true, reject: true},
+		{name: "configured_tool_restored_in_chat_mode", model: "gpt-6-sol", mode: config.DisableImageGenerationChat, nativeCodex: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := ojson.NewDocString(`{"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)

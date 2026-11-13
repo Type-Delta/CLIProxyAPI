@@ -61,7 +61,7 @@ func TestGetAPIKeysMixedEntries(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &Client{baseURL: server.URL, http: server.Client()}
+			client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 			got, err := client.GetAPIKeys()
 			if err != nil {
 				t.Fatalf("GetAPIKeys() error = %v", err)
@@ -86,7 +86,7 @@ func TestGetAPIKeyEntriesDecodesLimits(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	entries, err := client.GetAPIKeyEntries()
 	if err != nil {
 		t.Fatalf("GetAPIKeyEntries() error = %v", err)
@@ -115,7 +115,7 @@ func TestGetAPIKeyEntriesDecodesLabelsAndIdentityCatalog(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	entries, err := client.GetAPIKeyEntries()
 	if err != nil {
 		t.Fatalf("GetAPIKeyEntries() error = %v", err)
@@ -149,7 +149,7 @@ func TestDeleteAPIKeyUsesRevisionWithoutRawKeyURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	if _, err := client.GetAPIKeyEntries(); err != nil {
 		t.Fatalf("GetAPIKeyEntries() error = %v", err)
 	}
@@ -229,7 +229,7 @@ func TestAPIKeyPatchBodies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ""
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+				if r.Method != http.MethodPatch || r.URL.Path != "/v8/management/api-keys" {
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
 					return
@@ -242,7 +242,7 @@ func TestAPIKeyPatchBodies(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &Client{baseURL: server.URL, http: server.Client()}
+			client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 			if err := tt.call(client); err != nil {
 				t.Fatalf("request error = %v", err)
 			}
@@ -264,7 +264,7 @@ func TestAPIKeyPatchSurfacesServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	err := client.AddAPIKey("key", &APIKeyLimitConfig{Resets: "yearly"})
 	if err == nil || err.Error() != "invalid resets value: yearly" {
 		t.Fatalf("error = %v", err)
@@ -276,7 +276,7 @@ func TestAPIKeyLimitsAndReset(t *testing.T) {
 	resetKey := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v0/management/api-key-limits":
+		case r.Method == http.MethodGet && r.URL.Path == "/v8/management/api-key-limits":
 			w.Header().Set("Content-Type", "application/json")
 			if errWrite := json.NewEncoder(w).Encode(map[string]any{
 				"api-key-limits": []map[string]any{{
@@ -293,7 +293,7 @@ func TestAPIKeyLimitsAndReset(t *testing.T) {
 			}); errWrite != nil {
 				t.Errorf("write limits response: %v", errWrite)
 			}
-		case r.Method == http.MethodPost && r.URL.Path == "/v0/management/api-key-limits/reset":
+		case r.Method == http.MethodPost && r.URL.Path == "/v8/management/api-key-limits/reset":
 			var body struct {
 				Key string `json:"key"`
 			}
@@ -308,7 +308,7 @@ func TestAPIKeyLimitsAndReset(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	limits, err := client.GetAPIKeyLimits()
 	if err != nil {
 		t.Fatalf("GetAPIKeyLimits() error = %v", err)

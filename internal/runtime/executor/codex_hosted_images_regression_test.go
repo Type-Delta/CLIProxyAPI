@@ -113,6 +113,7 @@ func TestCodexHostedImageRejectionDoesNotRotateCooldownOrHideModel(t *testing.T)
 					}
 					doc := ojson.NewDocString(`{"input":"draw a cat","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)
 					_ = doc.Set("model", model)
+					_ = doc.Set("reasoning.effort", "medium")
 					req := cliproxyexecutor.Request{Model: model, Payload: doc.Bytes()}
 					selected := 0
 					opts := cliproxyexecutor.Options{
@@ -222,7 +223,7 @@ func TestCodexHostedImageContinuationRejectsBeforeWritingUpstream(t *testing.T) 
 		}
 		if !completed && ojson.GetBytes(chunk.Payload, "type").String() == "response.completed" {
 			completed = true
-			input <- cliproxyexecutor.WebsocketInput{Payload: []byte(`{"type":"response.create","previous_response_id":"started","input":[],"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)}
+			input <- cliproxyexecutor.WebsocketInput{Payload: []byte(`{"type":"response.create","previous_response_id":"started","input":[],"reasoning":{"effort":"medium"},"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)}
 		}
 	}
 	if !completed {
@@ -260,6 +261,7 @@ func TestCodexHostedImageValidationUsesFinalPayload(t *testing.T) {
 		check     func(*testing.T, []byte)
 	}{
 		{name: "forced", reject: true},
+		{name: "standard_no_reasoning_forced"},
 		{name: "metadata_only_injects", model: "gpt-6.1-sol", body: `{"input":"draw a cat","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`, check: func(t *testing.T, body []byte) {
 			if ojson.GetBytes(body, "tools.0.type").String() != "image_generation" || ojson.GetBytes(body, "tools.0.output_format").String() != "png" {
 				t.Fatalf("metadata-only Lite model did not receive hosted image tool: %s", body)
@@ -272,9 +274,9 @@ func TestCodexHostedImageValidationUsesFinalPayload(t *testing.T) {
 				t.Fatalf("header Lite request received injected tools: %s", body)
 			}
 		}},
-		{name: "model_only_no_injection", model: "gpt-6.1-sol", body: `{"input":"hello"}`, check: func(t *testing.T, body []byte) {
-			if ojson.GetBytes(body, "tools.#").Int() != 0 {
-				t.Fatalf("model-derived Lite request received injected tools: %s", body)
+		{name: "standard_no_reasoning_injects", model: "gpt-6.1-sol", body: `{"input":"hello"}`, check: func(t *testing.T, body []byte) {
+			if ojson.GetBytes(body, "tools.0.type").String() != "image_generation" {
+				t.Fatalf("standard Responses request did not receive image tool: %s", body)
 			}
 		}},
 		{name: "metadata_only_filtered", model: "gpt-6.1-sol", body: `{"input":"hello","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":true}}`, cfg: config.Config{Payload: config.PayloadConfig{Filter: []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "*"}}, Params: []string{"tools"}}}}}, check: func(t *testing.T, body []byte) {
@@ -333,6 +335,9 @@ func TestCodexHostedImageValidationUsesFinalPayload(t *testing.T) {
 					}
 					doc := ojson.NewDocString(body)
 					_ = doc.Set("model", model)
+					if !strings.HasPrefix(tc.name, "standard_no_reasoning") {
+						_ = doc.Set("reasoning.effort", "medium")
+					}
 					req := cliproxyexecutor.Request{Model: model, Payload: doc.Bytes()}
 					auth := &cliproxyauth.Auth{ID: t.Name(), Provider: "codex", Attributes: map[string]string{"base_url": server.URL, "plan_type": "pro"}, Metadata: map[string]any{"access_token": "test-token", "account_id": "test-account"}}
 					for key, value := range tc.attrs {

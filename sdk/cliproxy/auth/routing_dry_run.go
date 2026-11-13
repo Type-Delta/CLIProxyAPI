@@ -83,7 +83,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		if c.Gate == "" {
 			eligible = append(eligible, a.Clone())
 		}
-		if affinityEnabled && affinity.rebindOnQuotaOnly && !a.Disabled && eligibility.allows(a) &&
+		if affinityEnabled && (affinity.rebindOnQuotaOnly || affinity.rebindOnNever) && !a.Disabled && eligibility.allows(a) &&
 			(strings.TrimSpace(model) == "" || m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model)) {
 			if _, ok := m.executorLocked(executorKeyFromAuth(a)); ok {
 				affinityCandidates = append(affinityCandidates, a.Clone())
@@ -110,6 +110,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		ctx = context.WithValue(ctx, routingPoolKey{}, &routingPool{decide: rules.Decide, attrs: attrs})
 	}
 	var heldBinding string
+	refusedBinding := false
 	keptPick := -1
 	if affinityEnabled {
 		selector = affinity.fallback
@@ -149,6 +150,10 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 				if keptPick >= 0 {
 					break
 				}
+				if affinity.rebindOnNever && (identity == primaryID || (!isSubagent && !isFork)) {
+					refusedBinding = true
+					break
+				}
 				if (identity == primaryID || (!isSubagent && !isFork)) && affinity.shouldPreserveBindingWhenUnavailable(preserveCtx, affinityCandidates, model, entry.authID, time.Now()) {
 					heldBinding = entry.authID
 					break
@@ -159,6 +164,10 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 				}
 			}
 		}
+	}
+	if refusedBinding {
+		trace.Error = "no_eligible"
+		return trace, nil
 	}
 	keptRules := trace.Rules
 	if rules != nil && rules.Len() > 0 {
@@ -182,7 +191,11 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 	}
 	tier := highestPriorityAuths(tierCandidates)
 	if preferWS {
-		tier = preferCodexWebsocketAuths(ctx, provider, tier)
+		if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+			tier = preferWebsocketAuths(ctx, provider, tier)
+		} else {
+			tier = preferCodexWebsocketAuths(ctx, provider, tier)
+		}
 	}
 	if len(tier) == 0 {
 		if keptPick >= 0 {
@@ -211,7 +224,13 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		}
 		return trace, nil
 	}
-	step, sim := m.dryRunStrategy(capture, selector, tier, providers, provider, model, strategyModel, legacy, preferWS)
+	strategyProvider := provider
+	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+		// Execute, ExecuteStream, and ExecuteCount use the mixed WRR namespace
+		// even with one provider or an affinity wrapper.
+		strategyProvider = "mixed"
+	}
+	step, sim := m.dryRunStrategy(capture, selector, tier, providers, strategyProvider, model, strategyModel, legacy, preferWS)
 	trace.StrategyStep = step
 	if step != nil {
 		for range 10 {
@@ -238,6 +257,16 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 }
 
 func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*Auth, providers []string, provider, model, strategyModel string, legacy, preferWS bool) (*routing.StrategyStep, *strategySimulation) {
+	if weighted, ok := selector.(*WeightedRoundRobinSelector); ok {
+		transport := ""
+		if preferWS {
+			transport = "http"
+			if authWebsocketsEnabled(tier[0]) {
+				transport = "ws"
+			}
+		}
+		return weighted.weightedStrategySimulation(c, provider+":"+canonicalModelLookupKey(model), authPriority(tier[0]), transport, tier)
+	}
 	if !legacy && m.useSchedulerFastPath() && m.scheduler != nil {
 		// Build ready views privately, including deadlines that have expired since the
 		// live shard was last visited. Copy only cursor state from the live scheduler.
@@ -247,7 +276,7 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 		shards := make([]*modelScheduler, len(normalized))
 		m.scheduler.mu.Lock()
 		defer m.scheduler.mu.Unlock()
-		key := canonicalModelKey(model)
+		key := canonicalModelLookupKey(model)
 		for i, p := range normalized {
 			if ps := local.providers[p]; ps != nil {
 				shards[i] = ps.ensureModelLocked(key, time.Now())
@@ -276,16 +305,11 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 	last := ""
 	var state smoothWeightedState
 	halfLife := time.Duration(0)
-	key := provider + ":" + canonicalModelKey(strategyModel)
+	key := provider + ":" + canonicalModelLookupKey(strategyModel)
 	switch s := selector.(type) {
 	case *RoundRobinSelector:
 		s.mu.Lock()
 		last = s.lastPicked[key]
-		s.mu.Unlock()
-	case *WeightedRoundRobinSelector:
-		key = provider + ":" + canonicalModelKey(model)
-		s.mu.Lock()
-		state = cloneSmoothState(s.states[key])
 		s.mu.Unlock()
 	case *GreedySoonestRecoverySelector:
 		halfLife = s.recoveryHalfLife()
@@ -296,7 +320,7 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 		s.mu.Unlock()
 		if fallback != nil {
 			fallback.mu.Lock()
-			last = fallback.lastPicked[provider+":"+canonicalModelKey(strategyModel)]
+			last = fallback.lastPicked[provider+":"+canonicalModelLookupKey(strategyModel)]
 			fallback.mu.Unlock()
 		}
 	case *FillFirstSelector:

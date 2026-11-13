@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/wstunnel"
 )
 
 type ownedHijackedConn struct {
@@ -19,7 +20,7 @@ type ownedHijackedConn struct {
 
 func (c *ownedHijackedConn) Close() error {
 	c.once.Do(func() {
-		c.err = c.Conn.Close()
+		c.err = wstunnel.CloseTransport(c.Conn)
 		c.owner.hijackedMu.Lock()
 		delete(c.owner.hijacked, c)
 		c.owner.hijackedMu.Unlock()
