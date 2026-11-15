@@ -2188,6 +2188,29 @@ warning that gives the files and bytes lost. Ingestion is replay-idempotent and 
 ClickHouse outages or low disk. It quarantines a record to `telemetry-outbox/failed/` only for
 decode failures, or for classified deterministic data errors after three attempts.
 
+HTTP header diagnostics are available in CPAMC's event detail sheet through
+`GET /v8/management/analytics/attempts/:attempt_id/headers`, with the event's range and
+one of the four hop names. The full-access-only endpoint reads header columns without
+loading bodies or transcripts and returns `no-store`. All retained HTTP dispatches for
+the proxy request are identified separately because telemetry dispatches and usage
+attempts are not one-to-one. WebSocket exchanges are omitted. Header names and repeated
+values are retained with existing credential/cookie masking. Successful correlated HTTP
+requests retain `detail=headers` records when full request logging is off; their client
+and upstream bodies, WebSocket timelines, and free-form errors are removed before publication.
+Existing full/error capture and commercial-mode upstream restrictions remain in effect.
+Historical or expired captures return no header blocks. Each CPAMC accordion loads on
+expansion, prefetches on hover or focus, and clears cached data across connection changes.
+
+Validation: the full Go suite passes 128 packages; focused API, middleware, logging,
+telemetry, schema-migration, and agent-documentation suites pass after the final changes.
+The disposable server build and focused `go vet` pass. CPAMC passes 3,169 tests, lint,
+TypeScript, and its single-file build. Chrome checks at 1440×1050 and 390×844 verify lazy
+reads, hover/focus prefetch, keyboard expansion, repeated values, and no overflow. A
+Docker image built with the pinned CPAMC commit serves the panel and proxies buffered
+and SSE HTTP requests through a test upstream and real ClickHouse. All four header sets
+are readable with request logging off; retained client and upstream body bytes are zero.
+The panel omits the masking note.
+
 Transcripts are parsed from client and upstream bodies and stored once. Content is addressed by
 hash and entries chain by semantic ID. Elements whose provider tool-call IDs pass a uniqueness
 guard are anchored independently of earlier history. Resent history and retries therefore add no

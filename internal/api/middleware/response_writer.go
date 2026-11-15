@@ -445,7 +445,8 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 			attempts = capture.Finish()
 		}
 		telemetryForceLog := w.logOnErrorOnly && hasAPIError
-		if w.logOnErrorOnly && !telemetryForceLog {
+		headersOnly := w.logOnErrorOnly && !telemetryForceLog
+		if headersOnly && (c.Request == nil || isResponsesWebsocketUpgrade(c.Request) || coreusage.ProxyRequestIDFromContext(c.Request.Context()) == "") {
 			return nil
 		}
 		var response = w.extractResponseBody(c)
@@ -488,8 +489,24 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 		if info, ok := session.ExtractSessionInfo(http.Header(w.requestInfo.Headers), req.Body, nil); ok {
 			req.SessionID = info.SessionID
 		}
+		if headersOnly {
+			req.Detail = record.DetailHeaders
+			req.Body, req.Response, req.WebsocketTimeline = nil, nil, nil
+			req.ResponseTruncated = false
+			httpAttempts := req.Attempts[:0]
+			for _, attempt := range req.Attempts {
+				if attempt.Transport == record.TransportWebsocket {
+					continue
+				}
+				attempt.Body, attempt.Response, attempt.WebsocketTimeline = nil, nil, nil
+				attempt.Errors = nil
+				attempt.ResponseTruncated = false
+				httpAttempts = append(httpAttempts, attempt)
+			}
+			req.Attempts = httpAttempts
+		}
 		for _, apiErr := range slicesAPIResponseError {
-			if apiErr != nil && apiErr.Error != nil {
+			if !headersOnly && apiErr != nil && apiErr.Error != nil {
 				message := apiErr.Error.Error()
 				if capture != nil {
 					message = capture.Redact(message)

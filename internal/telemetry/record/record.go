@@ -24,6 +24,8 @@ const (
 	// DetailError is a forced capture of a failed request while detailed
 	// request logging is off.
 	DetailError = "error"
+	// DetailHeaders retains HTTP diagnostics without bodies when request logging is off.
+	DetailHeaders = "headers"
 )
 
 // Sources describe where a Request came from.
