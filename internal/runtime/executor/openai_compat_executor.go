@@ -104,9 +104,11 @@ var openAICompatBlockedForwardHeaders = map[string]struct{}{
 	"Accept-Encoding":     {},
 	"Api-Key":             {},
 	"Authorization":       {},
+	"Cdn-Loop":            {},
 	"Connection":          {},
 	"Content-Encoding":    {},
 	"Content-Length":      {},
+	"Forwarded":           {},
 	"Host":                {},
 	"Keep-Alive":          {},
 	"Proxy-Authenticate":  {},
@@ -115,9 +117,12 @@ var openAICompatBlockedForwardHeaders = map[string]struct{}{
 	"Te":                  {},
 	"Trailer":             {},
 	"Transfer-Encoding":   {},
+	"True-Client-Ip":      {},
 	"Upgrade":             {},
 	"X-Api-Key":           {},
+	"X-Client-Ip":         {},
 	"X-Goog-Api-Key":      {},
+	"X-Real-Ip":           {},
 }
 
 // applyOpenAICompatRequestHeaders forwards client request headers that are not
@@ -130,7 +135,8 @@ func applyOpenAICompatRequestHeaders(r *http.Request, apiKey, contentType string
 	connectionScoped := openAICompatConnectionScopedHeaders(clientHeaders)
 	for key, values := range clientHeaders {
 		canonicalKey := http.CanonicalHeaderKey(key)
-		if _, blocked := openAICompatBlockedForwardHeaders[canonicalKey]; blocked {
+		if _, blocked := openAICompatBlockedForwardHeaders[canonicalKey]; blocked ||
+			strings.HasPrefix(canonicalKey, "Cf-") || strings.HasPrefix(canonicalKey, "X-Forwarded-") {
 			continue
 		}
 		if _, blocked := connectionScoped[canonicalKey]; blocked {

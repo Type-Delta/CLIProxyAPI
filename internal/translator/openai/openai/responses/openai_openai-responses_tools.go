@@ -1,6 +1,8 @@
 package responses
 
 import (
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -9,6 +11,26 @@ import (
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
+
+type unsupportedHostedWebSearchError struct {
+	toolType string
+}
+
+func (e *unsupportedHostedWebSearchError) Error() string {
+	return fmt.Sprintf("hosted tool %q is not supported by Chat Completions; use a provider with native Responses web search support", e.toolType)
+}
+
+func (e *unsupportedHostedWebSearchError) StatusCode() int { return http.StatusBadRequest }
+
+func (e *unsupportedHostedWebSearchError) IsRequestScoped() bool { return true }
+
+func checkResponsesHostedWebSearch(toolType string) error {
+	toolType = strings.TrimSpace(toolType)
+	if toolType == "web_search" || strings.HasPrefix(toolType, "web_search_") {
+		return &unsupportedHostedWebSearchError{toolType: toolType}
+	}
+	return nil
+}
 
 // responsesToolDeclaration is one Responses tool declaration paired with the
 // Chat Completions function name it produces. Namespace children carry both
@@ -29,15 +51,24 @@ type responsesToolDeclaration struct {
 // Codex Desktop (Responses Lite) "additional_tools" input items, namespace
 // children in declaration order. Declarations that produce no Chat Completions
 // tool are skipped. Visiting stops early once visit returns false.
+// Hosted web search declarations return a request-scoped error rather than
+// silently removing the requested capability.
 //
 // The emitted chatName is namespace-qualified, capped to the Chat Completions
 // function-name limit, and disambiguated when two distinct declarations flatten
 // onto the same name. Request conversion, reverse name resolution and freeform
 // tool classification all traverse through here, so they cannot disagree about
 // which declaration backs a given Chat Completions tool name.
-func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) {
+func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) error {
 	var declarations []responsesToolDeclaration
+	var unsupported error
 	emit := func(tool ojson.Result, namespaceName string) {
+		if err := checkResponsesHostedWebSearch(tool.Get("type").String()); err != nil {
+			if unsupported == nil {
+				unsupported = err
+			}
+			return
+		}
 		var custom, shell, search bool
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
@@ -148,6 +179,7 @@ func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDe
 		}
 		proceed = visit(declaration)
 	}
+	return unsupported
 }
 
 // disambiguateResponsesChatToolNames rewrites flattened names in place when

@@ -43,6 +43,12 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	toolIndex := newResponsesToolIndex(root)
+	if toolIndex.err != nil {
+		return nil, toolIndex.err
+	}
+	if err := checkResponsesHostedWebSearch(root.Get("tool_choice.type").String()); err != nil {
+		return nil, err
+	}
 
 	messages := make([][]byte, 0)
 	appendMessage := func(message []byte) {

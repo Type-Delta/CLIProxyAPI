@@ -718,6 +718,11 @@ Transport and body-framing headers, hop-by-hop headers and their
 fallback, and configured custom headers are applied last so they retain
 precedence.
 
+Automatic forwarding also omits `Forwarded`, `X-Forwarded-*`, `X-Real-IP`,
+`True-Client-IP`, `X-Client-IP`, `Cf-*`, and `Cdn-Loop`. These describe the
+client-to-CPA proxy chain and can expose client addresses to unrelated providers.
+An explicit configured custom header may still opt into forwarding one of them.
+
 **Implementation evidence:** `internal/runtime/executor/openai_compat_executor.go`
 and `internal/runtime/executor/openai_compat_executor_headers_test.go`.
 
@@ -727,7 +732,7 @@ User-Agent while replacing credentials and dropping transport or connection
 headers. The full `internal/runtime/executor` package, `go test ./...`, and the
 disposable server build pass.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-16
 
 ### DL019 — Credential-labelled distributions, quota window gating, and Analysis chart metrics
 
@@ -2888,6 +2893,38 @@ excluded it; a Fable 5.2 request made zero upstream attempts. Public and
 credential-specific management model lists matched the live discovery result.
 
 **Last updated:** 2026-11-12
+
+### DL073 — Reject unsupported hosted web search on Chat Completions routes
+
+Responses-to-Chat Completions translation rejects hosted `web_search` and
+`web_search_*` tools with a request-scoped HTTP 400 naming the unsupported tool
+and directing the caller to a provider with native Responses search support.
+This includes top-level, namespace and Responses Lite `additional_tools`
+declarations, loaded tool-search declarations, and explicit hosted search
+`tool_choice` values. Previously the declaration was silently removed, and a
+mixed-tool request could retain a search choice with no matching tool.
+
+Caller-defined functions named `web_search` continue to translate normally.
+Native Responses routes keep their existing hosted-tool behavior. The error
+propagates through streaming, non-streaming and token-count translation before
+an upstream request is sent.
+
+**Implementation evidence:**
+`internal/translator/openai/openai/responses/{openai_openai-responses_tools.go,responses_tool_index.go,openai_openai-responses_request.go}`
+and `internal/runtime/executor/openai_compat_executor_hosted_tools_test.go`.
+
+**Recorded validation:** regression tests reproduce both silent tool removal and
+proxy-header forwarding before the fixes. Local HTTP execute and stream tests
+verify header exclusions, configured overrides, and supported `web_search`
+functions. Executor tests verify hosted-tool rejections make zero upstream calls.
+The executor, helper, translator, SDK translator and client-error test suites,
+focused `go vet`, and server build pass. An isolated Docker instance returned
+400 for hosted search with zero upstream attempts, then completed streamed and
+non-streamed Responses requests containing a caller-defined `web_search`
+function. Captured upstream requests retained session headers and explicit
+overrides while excluding automatic proxy/CDN headers.
+
+**Last updated:** 2026-11-16
 
 ## Sync Checklist
 
