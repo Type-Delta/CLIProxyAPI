@@ -59,14 +59,18 @@ func TestHomeV8CompatOptionsReachUpstream(t *testing.T) {
 	for _, enabled := range []bool{true, false, true} {
 		auth := &cpaauth.Auth{Provider: "home-compat", Attributes: map[string]string{"compat_name": "home-compat", "api_key": "fixture", "base_url": server.URL + "/v1"}, Metadata: map[string]any{"credential_options": map[string]any{
 			"support-prompt-cache-key": enabled,
+			"instruction-role-wrapper": enabled,
 			"models":                   []any{map[string]any{"name": "upstream", "use-max-completion-tokens": enabled}},
 		}}}
-		payload := []byte(`{"model":"upstream","input":[{"role":"user","content":"hi"}],"max_output_tokens":512,"prompt_cache_key":"fixture-cache"}`)
+		payload := []byte(`{"model":"upstream","input":[{"role":"developer","content":"session"},{"role":"user","content":"hi"}],"max_output_tokens":512,"prompt_cache_key":"fixture-cache"}`)
 		_, err := e.Execute(context.Background(), auth, cpaexecutor.Request{Model: "upstream", Payload: payload}, cpaexecutor.Options{SourceFormat: translator.FromString("openai-response")})
 		if err != nil {
 			t.Fatal(err)
 		}
 		body := <-bodies
+		if gotDeveloper := ojson.GetBytes(body, `messages.#(role=="developer")`).Exists(); gotDeveloper == enabled {
+			t.Fatalf("Home credential wrapper option was not applied: enabled=%v body=%s", enabled, body)
+		}
 		field := "max_tokens"
 		if enabled {
 			field = "max_completion_tokens"

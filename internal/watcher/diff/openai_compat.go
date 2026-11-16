@@ -80,6 +80,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if oldEntry.Disabled != newEntry.Disabled {
 		details = append(details, fmt.Sprintf("disabled %t -> %t", oldEntry.Disabled, newEntry.Disabled))
 	}
+	if oldEntry.InstructionRoleWrapper != newEntry.InstructionRoleWrapper {
+		details = append(details, fmt.Sprintf("instruction-role-wrapper %t -> %t", oldEntry.InstructionRoleWrapper, newEntry.InstructionRoleWrapper))
+	}
 	if oldEntry.SupportPromptCacheKey != newEntry.SupportPromptCacheKey {
 		details = append(details, fmt.Sprintf("support-prompt-cache-key %t -> %t", oldEntry.SupportPromptCacheKey, newEntry.SupportPromptCacheKey))
 	}

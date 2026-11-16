@@ -38,8 +38,9 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 
 	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{{
-			Name:                  "compat",
-			SupportPromptCacheKey: true,
+			Name:                   "compat",
+			SupportPromptCacheKey:  true,
+			InstructionRoleWrapper: true,
 		}},
 	})
 	auth := &cliproxyauth.Auth{
@@ -51,7 +52,7 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 			"provider_key": "compat",
 		},
 	}
-	payload := []byte(`{"model":"gpt-5.1-codex-max","input":[{"role":"user","content":"hi"}]}`)
+	payload := []byte(`{"model":"gpt-5.1-codex-max","input":[{"role":"developer","content":"session"},{"role":"user","content":"hi"}]}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gpt-5.1-codex-max",
 		Payload: payload,
@@ -68,6 +69,9 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 	if !ojson.GetBytes(gotBody, "input").Exists() {
 		t.Fatalf("expected input in body")
+	}
+	if ojson.GetBytes(gotBody, "input.0.role").String() != "developer" {
+		t.Fatalf("native compaction roles were wrapped: %s", gotBody)
 	}
 	if ojson.GetBytes(gotBody, "messages").Exists() {
 		t.Fatalf("unexpected messages in body")

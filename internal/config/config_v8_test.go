@@ -1068,3 +1068,35 @@ func TestV8ExampleDocumentsSessionAffinityCompactionGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestV8InstructionRoleWrapperRoundTrip(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			data := []byte(fmt.Sprintf("config-version: 8\napi-keys:\n  openai-compatibility:\n    - name: fixture\n      base-url: https://example.invalid/v1\n      instruction-role-wrapper: %t\n      keys: [{api-key: test-key}]\n      models: [{name: test-model}]\n", enabled))
+			if errValidate := ValidateV8Config(data); errValidate != nil {
+				t.Fatal(errValidate)
+			}
+			cfg, errParse := ParseConfigBytes(data)
+			if errParse != nil {
+				t.Fatal(errParse)
+			}
+			if len(cfg.OpenAICompatibility) != 1 || cfg.OpenAICompatibility[0].InstructionRoleWrapper != enabled {
+				t.Fatal("provider wrapper option did not load")
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if errWrite := os.WriteFile(path, data, 0600); errWrite != nil {
+				t.Fatal(errWrite)
+			}
+			if errSave := SaveConfigPreserveComments(path, cfg); errSave != nil {
+				t.Fatal(errSave)
+			}
+			loaded, errLoad := LoadConfig(path)
+			if errLoad != nil {
+				t.Fatal(errLoad)
+			}
+			if loaded.OpenAICompatibility[0].InstructionRoleWrapper != enabled {
+				t.Fatal("provider wrapper option did not survive save/reload")
+			}
+		})
+	}
+}

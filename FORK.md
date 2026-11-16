@@ -2926,6 +2926,49 @@ overrides while excluding automatic proxy/CDN headers.
 
 **Last updated:** 2026-11-16
 
+### DL074 — Opt-in instruction role wrapping for OpenAI-compatible providers
+
+Each `api-keys.openai-compatibility` provider can set `instruction-role-wrapper: true`
+when its Chat Completions upstream rejects developer messages. The default is false.
+When developer messages are present, CPA adds an explicit system/developer/user
+precedence policy and wraps each system/developer text instruction as a labeled
+system message at its original position. The JSON record retains the original role,
+position, and text content, including text-part arrays. Other message fields and
+conversation/tool order are preserved. Requests without developer messages are unchanged.
+
+The wrapper expresses priority through text; it does not provide native role
+isolation. It adds input tokens and changes prompt serialization and cache reuse.
+Non-text instruction parts are rejected instead of being dropped. Native
+`/responses/compact` and image payloads remain unchanged. Wrapping runs before
+user payload rules in streaming and nonstream requests and before final token
+counting, so final overrides and filters remain authoritative. Home credential
+options can carry the same flag. CPAMC exposes a provider behavior checkbox with
+its default off and preserves explicit false and untouched absence on save.
+
+**Implementation evidence:** `internal/config/config_types.go`,
+`internal/runtime/executor/helps/openai_instruction_roles.go`,
+`internal/runtime/executor/openai_compat_executor.go`,
+`internal/watcher/diff/openai_compat.go`, and `config.example.yaml`.
+Executor regressions cover both client formats, streaming, opt-in behavior,
+message/tool order, text arrays, payload-rule ordering, token counts, and Home
+credential options. Config regressions cover v8 validation and save/reload.
+
+**Recorded validation:** `go test ./...` and the disposable server build pass.
+CPAMC passes its Bun 1.4.3 verification suite with 3,170 tests, lint, TypeScript,
+and production build, and the canonical Docker panel bundle builds. Isolated
+Chrome checks at 1440px and 390px confirm the checkbox starts off, saves, and
+reopens enabled, with no page errors or horizontal page overflow. A temporary
+loopback CPA reproduces Z.ai's HTTP 400/code 1214 with the flag off and returns
+HTTP 200/OK for the identical request after enabling it through CPAMC. Sixteen
+live Z.ai code probes cover both client formats, both stream modes, original
+system/developer precedence, developer-over-user precedence, text-array session
+updates, and a user role-spoofing attempt. All generated functions follow the
+expected priority; three low-effort nonstream replies add explanatory prose and
+fail the stricter code-only formatting check. All eight streaming probes pass
+that stricter check. No production deployment or configuration was changed.
+
+**Last updated:** 2026-11-16
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

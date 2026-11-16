@@ -1079,6 +1079,10 @@ upstream:
 #       prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #       base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #       support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
+#       instruction-role-wrapper: false # optional: for chat upstreams that reject developer messages; wrap system/developer text with original role and position
+#       # The wrapper approximates SYSTEM > DEVELOPER > USER through text. It activates only with developer messages,
+#       # adds input tokens, and preserves conversation/tool order. Final payload rules remain authoritative.
+#       # Non-text instruction parts are rejected. Native /responses/compact and image requests are unchanged.
 #       disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
 #       request-retry: 3 # optional per-provider override; 0 disables additional rounds; omit or set < 0 to inherit global
 #       request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns

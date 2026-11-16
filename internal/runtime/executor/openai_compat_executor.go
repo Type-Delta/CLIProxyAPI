@@ -251,6 +251,11 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 		_ = doc.Delete("stream")
 		sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "openai compat executor", doc, true, resolveResponsesSignatureTargetModel(baseModel, req, opts), baseURL)
 	}
+	if opts.Alt != "responses/compact" && compat != nil && compat.InstructionRoleWrapper {
+		if errWrap := helps.WrapOpenAIInstructionRolesDoc(doc); errWrap != nil {
+			return resp, statusErr{code: http.StatusBadRequest, msg: errWrap.Error()}
+		}
+	}
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
@@ -486,6 +491,11 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	helps.SetBoolIfDifferentDoc(doc, "stream_options.include_usage", true)
 
+	if compat != nil && compat.InstructionRoleWrapper {
+		if errWrap := helps.WrapOpenAIInstructionRolesDoc(doc); errWrap != nil {
+			return nil, statusErr{code: http.StatusBadRequest, msg: errWrap.Error()}
+		}
+	}
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
@@ -958,6 +968,12 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 		return cliproxyexecutor.Response{}, err
 	}
 
+	if compat := e.resolveCompatConfig(auth, req); compat != nil && compat.InstructionRoleWrapper {
+		if errWrap := helps.WrapOpenAIInstructionRolesDoc(doc); errWrap != nil {
+			return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: errWrap.Error()}
+		}
+	}
+
 	ctxWithFinalizer := helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts))
 	helps.FinalizePayloadDoc(ctxWithFinalizer, doc)
 	translated = doc.Bytes()
@@ -1214,8 +1230,9 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 		// Home excludes provider credentials from the global configuration. These
 		// non-secret options belong to the credential selected for this attempt.
 		var options struct {
-			SupportPromptCacheKey bool                              `json:"support-prompt-cache-key"`
-			Models                []config.OpenAICompatibilityModel `json:"models"`
+			SupportPromptCacheKey  bool                              `json:"support-prompt-cache-key"`
+			InstructionRoleWrapper bool                              `json:"instruction-role-wrapper"`
+			Models                 []config.OpenAICompatibilityModel `json:"models"`
 		}
 		present := false
 		if rawOptions, exists := auth.Metadata["credential_options"]; exists {
@@ -1235,9 +1252,10 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth, req 
 		}
 		if present {
 			return &config.OpenAICompatibility{
-				Name:                  auth.Attributes["compat_name"],
-				SupportPromptCacheKey: options.SupportPromptCacheKey,
-				Models:                options.Models,
+				Name:                   auth.Attributes["compat_name"],
+				InstructionRoleWrapper: options.InstructionRoleWrapper,
+				SupportPromptCacheKey:  options.SupportPromptCacheKey,
+				Models:                 options.Models,
 			}
 		}
 	}
