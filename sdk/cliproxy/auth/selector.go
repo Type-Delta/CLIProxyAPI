@@ -2064,6 +2064,8 @@ type SessionAffinityConfig struct {
 	TTL              time.Duration
 	SubagentAffinity *bool
 	RebindOn         string
+	// Persistent uses the existing local KV store for restart continuity.
+	Persistent bool
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -2089,8 +2091,8 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	rebindMode := normalizeSessionAffinityRebindOn(cfg.RebindOn)
 	return &SessionAffinitySelector{
 		fallback:          cfg.Fallback,
-		cache:             NewSessionCache(cfg.TTL),
-		matcher:           cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
+		cache:             newSessionCache(cfg.TTL, defaultMaxSessionEntries, cfg.Persistent),
+		matcher:           cliproxysession.NewMerklePrefixMatcherWithConfig(cliproxysession.MerklePrefixMatcherConfig{TTL: cfg.TTL, Persistent: cfg.Persistent}),
 		subagentAffinity:  subagentAffinity,
 		rebindOnQuotaOnly: rebindMode == SessionAffinityRebindOnQuota,
 		rebindOnNever:     rebindMode == SessionAffinityRebindOnNever,
@@ -2669,7 +2671,7 @@ func (s *SessionAffinitySelector) Stop() {
 		s.cache.Stop()
 	}
 	if s.matcher != nil {
-		s.matcher.Clear()
+		s.matcher.Stop()
 	}
 }
 

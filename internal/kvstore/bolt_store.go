@@ -87,6 +87,8 @@ func WithSweepBatchSize(batchSize int) BoltStoreOption {
 
 // BoltStore implements KVClient backed by a local bbolt database file.
 type BoltStore struct {
+	cacheMu           sync.Mutex
+	cacheEpochs       map[string]uint64
 	db                *bbolt.DB
 	path              string
 	nowFunc           func() time.Time

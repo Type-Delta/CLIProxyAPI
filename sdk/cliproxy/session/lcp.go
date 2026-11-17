@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -651,6 +652,8 @@ type MerklePrefixMatcherConfig struct {
 	MaxPrefixes int
 	// NowFunc provides a mockable clock for deterministic TTL/expiration tests.
 	NowFunc func() time.Time
+	// Persistent enables the existing local KV store when it is available.
+	Persistent bool
 }
 
 // MerklePrefixMatcher stores rolling Merkle prefixes and their selected auth bindings.
@@ -658,19 +661,22 @@ type MerklePrefixMatcherConfig struct {
 // prompt is not enough evidence that two requests belong to the same conversation.
 // It is safe for concurrent use and has no background goroutine.
 type MerklePrefixMatcher struct {
-	mu            sync.Mutex
-	ttl           time.Duration
-	maxTurns      int
-	maxGroups     int
-	maxPrefixes   int
-	nowFunc       func() time.Time
-	groups        map[string]*lcpNamespace
-	lru           *list.List
-	lruElements   map[*lcpGroup]*list.Element
-	groupCount    int
-	prefixCount   int
-	accessCounter uint64
-	operations    uint64
+	mu                 sync.Mutex
+	ttl                time.Duration
+	maxTurns           int
+	maxGroups          int
+	maxPrefixes        int
+	nowFunc            func() time.Time
+	groups             map[string]*lcpNamespace
+	lru                *list.List
+	lruElements        map[*lcpGroup]*list.Element
+	groupCount         int
+	prefixCount        int
+	accessCounter      uint64
+	operations         uint64
+	persistent         bool
+	persistence        *kvstore.PersistentMap
+	persistenceStopped bool
 }
 
 type lcpNamespace struct {
@@ -732,6 +738,7 @@ func NewMerklePrefixMatcherWithConfig(cfg MerklePrefixMatcherConfig) *MerklePref
 		groups:      make(map[string]*lcpNamespace),
 		lru:         list.New(),
 		lruElements: make(map[*lcpGroup]*list.Element),
+		persistent:  cfg.Persistent,
 	}
 }
 
@@ -863,6 +870,7 @@ func (m *MerklePrefixMatcher) MatchFingerprintsWithContext(namespace string, fin
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	match, matchOK := m.matchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, m.now())
 	if !matchOK {
@@ -920,6 +928,7 @@ func (m *MerklePrefixMatcher) BindFingerprintsWithContext(namespace string, fing
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	return m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, strings.TrimSpace(authID), m.now())
 }
@@ -952,6 +961,7 @@ func (m *MerklePrefixMatcher) TouchFingerprintsWithContext(namespace string, fin
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	return m.touchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, strings.TrimSpace(authID), m.now())
 }
@@ -982,6 +992,7 @@ func (m *MerklePrefixMatcher) RemoveFingerprintsBefore(namespace string, fingerp
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	ns := m.groups[namespace]
 	if ns == nil {
@@ -1011,6 +1022,7 @@ func (m *MerklePrefixMatcher) RemoveSessionBefore(namespace, sessionID, authID s
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	ns := m.groups[namespace]
 	if ns == nil {
@@ -1039,6 +1051,8 @@ func (m *MerklePrefixMatcher) InvalidateAuth(authID string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
+	m.prepareLocked()
 	for _, namespace := range m.groups {
 		for _, group := range namespace.groups {
 			if group.authID == authID {
@@ -1054,6 +1068,18 @@ func (m *MerklePrefixMatcher) Clear() {
 		return
 	}
 	m.mu.Lock()
+	m.prepareLocked()
+	for _, namespace := range m.groups {
+		for _, group := range namespace.groups {
+			m.removeGroupLocked(group)
+		}
+	}
+	m.resetIndexLocked()
+	m.persistence.Flush()
+	m.mu.Unlock()
+}
+
+func (m *MerklePrefixMatcher) resetIndexLocked() {
 	m.groups = make(map[string]*lcpNamespace)
 	m.lru = list.New()
 	m.lruElements = make(map[*lcpGroup]*list.Element)
@@ -1062,7 +1088,18 @@ func (m *MerklePrefixMatcher) Clear() {
 	// Do NOT reset accessCounter to 0. Keeping accessCounter monotonically increasing
 	// across Clear() ensures that in-flight requests with pre-clear generations cannot
 	// accidentally evict newly created post-clear bindings.
+}
+
+// Stop releases the in-memory index while retaining durable bindings for restart.
+func (m *MerklePrefixMatcher) Stop() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.persistenceStopped = true
+	m.persistence = nil
 	m.mu.Unlock()
+	m.Clear()
 }
 
 // LookupSession observes the bound authIDs for an LCP sessionID without side effects or TTL refresh.
@@ -1073,6 +1110,8 @@ func (m *MerklePrefixMatcher) LookupSession(sessionID string) (authIDs []string,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
+	m.prepareLocked()
 	now := m.now()
 
 	var expired []*lcpGroup
@@ -1140,6 +1179,7 @@ func (m *MerklePrefixMatcher) prepareLocked() {
 	if m.lruElements == nil {
 		m.lruElements = make(map[*lcpGroup]*list.Element)
 	}
+	m.restorePersistenceLocked()
 	m.operations++
 	if m.operations%128 == 0 {
 		m.cleanupLocked(m.now())
@@ -1189,6 +1229,7 @@ func (m *MerklePrefixMatcher) touchLocked(namespace string, fingerprints, tailFi
 		if element := m.lruElements[existing]; element != nil {
 			m.lru.MoveToBack(element)
 		}
+		m.persistGroupLocked(existing)
 		return true
 	}
 	m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, authID, now)
@@ -1343,12 +1384,14 @@ func (m *MerklePrefixMatcher) addGroupLocked(group *lcpGroup) {
 		}
 		m.removeGroupLocked(oldGroup)
 	}
+	m.persistGroupLocked(group)
 }
 
 func (m *MerklePrefixMatcher) removeGroupLocked(group *lcpGroup) {
 	if group == nil {
 		return
 	}
+	m.persistence.Set(lcpPersistenceKey(group), nil, time.Time{})
 	ns := m.groups[group.namespace]
 	if ns != nil {
 		if current := ns.groups[group.key]; current == group {
@@ -1422,6 +1465,7 @@ func (m *MerklePrefixMatcher) matchLocked(namespace string, fingerprints, tailFi
 		if element := m.lruElements[best]; element != nil {
 			m.lru.MoveToBack(element)
 		}
+		m.persistGroupLocked(best)
 
 		sessionID := best.sessionID
 		parentSessionID := best.parentSessionID
@@ -1561,6 +1605,7 @@ func (m *MerklePrefixMatcher) matchCompactionLocked(ns *lcpNamespace, namespace 
 	if element := m.lruElements[best]; element != nil {
 		m.lru.MoveToBack(element)
 	}
+	m.persistGroupLocked(best)
 
 	parentSessionID := best.sessionID
 	seqKey := sequenceKey(fingerprints)

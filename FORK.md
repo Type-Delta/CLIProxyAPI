@@ -2969,6 +2969,48 @@ that stricter check. No production deployment or configuration was changed.
 
 **Last updated:** 2026-11-16
 
+### DL075 — Session affinity survives restarts through the existing KV store
+
+When session affinity and the local KV store are enabled, explicit session bindings
+and history-prefix affinity groups persist in the configured bbolt database.
+No additional path or persistence timer is required. Disabling local KV retains
+memory-only behavior; Home continues to own its own routing state. SDK callers
+constructing selectors directly can opt in with `SessionAffinityConfig.Persistent`.
+
+Each cache operation commits its changed groups and deletions atomically before
+returning. Recovery retains aliases, original binding provenance, parent/fork and
+compaction metadata, selection order, eviction order, and access generations used
+to reject delayed failures. Expired bindings stay expired, shorter configured TTLs
+cap restored lifetimes, and normal credential eligibility and failover policy still
+apply. Restores are bounded by entry and byte limits. A replacement cache fences
+the previous cache's durable writes, preventing late operations from overwriting
+newer routing state after a reload. Storage errors are logged without session or
+credential values, and routing continues with its in-memory state.
+
+This implements the restart-continuity goal of upstream
+[PR #6775](https://github.com/router-for-me/CLIProxyAPI/pull/6775) using the existing
+KV store instead of its separate JSON snapshot file and periodic/shutdown flushes.
+It prevents restart-driven account reassignment; it does not make encrypted
+reasoning portable across organizations or prevent intentional failover.
+
+**Implementation evidence:** `internal/kvstore/persistent_map.go`,
+`sdk/cliproxy/auth/session_cache_persistence.go`,
+`sdk/cliproxy/session/lcp_persistence.go`, and `sdk/cliproxy/service_config.go`.
+Regressions reopen the KV database without stopping the selector, preserve both
+explicit and history-based bindings, cover routing reload and disabled KV, and
+exercise alias/provenance restoration, expiry, eviction, compaction, generation
+fencing, durable invalidation, transaction rollback, and superseded writers.
+
+**Recorded validation:** A temporary loopback proxy with two upstream account
+fixtures kept both explicit-ID and history-only conversations on their original
+account after a forced process kill and restart. Replayed reasoning reached that
+account without removals, while a new control session chose the higher-priority
+account. The full Go suite, targeted affinity/KV race suite, focused `go vet`,
+canonical panel build, and disposable server compile pass. No production
+deployment or configuration was changed.
+
+**Last updated:** 2026-11-17
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

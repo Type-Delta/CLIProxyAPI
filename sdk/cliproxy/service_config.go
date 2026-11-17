@@ -58,11 +58,13 @@ type configCommit struct {
 }
 
 type routingRuntimeState struct {
-	strategy                 string
-	sessionAffinity          bool
-	sessionAffinityTTL       time.Duration
-	sessionAffinitySubagents bool
-	sessionAffinityRebindOn  string
+	strategy                  string
+	sessionAffinity           bool
+	sessionAffinityTTL        time.Duration
+	sessionAffinitySubagents  bool
+	sessionAffinityRebindOn   string
+	sessionAffinityPersistent bool
+	sessionAffinityKVPath     string
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -80,6 +82,10 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 		state.strategy = strategy
 	}
 	state.sessionAffinity = cfg.Routing.SessionAffinity
+	state.sessionAffinityPersistent = state.sessionAffinity && !cfg.Home.Enabled && !cfg.KVStore.Disabled
+	if state.sessionAffinityPersistent {
+		state.sessionAffinityKVPath = cfg.EffectiveKVStorePath()
+	}
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
 			if parsed < time.Second {
@@ -129,6 +135,7 @@ func newRoutingSelectorWithExisting(state routingRuntimeState, existing coreauth
 			TTL:              state.sessionAffinityTTL,
 			SubagentAffinity: &subagents,
 			RebindOn:         state.sessionAffinityRebindOn,
+			Persistent:       state.sessionAffinityPersistent,
 		})
 	}
 	return selector

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 )
 
 const (
@@ -27,21 +29,26 @@ type sessionEntry struct {
 	expiresAt time.Time
 	aliases   []string
 	binding   sessionBinding
+	recency   uint64
 }
 
 // SessionCache provides TTL-based session to auth mapping with automatic cleanup.
 type SessionCache struct {
-	mu               sync.RWMutex
-	entries          map[string]sessionEntry
-	groups           map[string]sessionEntry
-	evictionOrder    *list.List
-	evictionElements map[string]*list.Element
-	maxEntries       int
-	ttl              time.Duration
-	stopCh           chan struct{}
-	stopOnce         sync.Once
-	sessionGroups    map[string]map[string]struct{}
-	bindingSequence  uint64
+	mu                 sync.RWMutex
+	entries            map[string]sessionEntry
+	groups             map[string]sessionEntry
+	evictionOrder      *list.List
+	evictionElements   map[string]*list.Element
+	maxEntries         int
+	ttl                time.Duration
+	stopCh             chan struct{}
+	stopOnce           sync.Once
+	sessionGroups      map[string]map[string]struct{}
+	bindingSequence    uint64
+	persistent         bool
+	persistence        *kvstore.PersistentMap
+	persistenceStopped bool
+	accessSequence     uint64
 }
 
 // NewSessionCache creates a cache with the specified TTL.
@@ -52,6 +59,10 @@ func NewSessionCache(ttl time.Duration) *SessionCache {
 
 // NewSessionCacheWithCapacity creates a cache with the specified TTL and max entries limit.
 func NewSessionCacheWithCapacity(ttl time.Duration, maxEntries int) *SessionCache {
+	return newSessionCache(ttl, maxEntries, false)
+}
+
+func newSessionCache(ttl time.Duration, maxEntries int, persistent bool) *SessionCache {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
@@ -66,6 +77,7 @@ func NewSessionCacheWithCapacity(ttl time.Duration, maxEntries int) *SessionCach
 		maxEntries:       maxEntries,
 		ttl:              ttl,
 		stopCh:           make(chan struct{}),
+		persistent:       persistent,
 	}
 	go c.cleanupLoop()
 	return c
@@ -87,6 +99,7 @@ func (c *SessionCache) ensureInitializedLocked() {
 	if c.evictionElements == nil {
 		c.evictionElements = make(map[string]*list.Element)
 	}
+	c.restorePersistenceLocked()
 }
 
 // Get retrieves the auth ID bound to a session, if still valid.
@@ -95,6 +108,7 @@ func (c *SessionCache) Get(sessionID string) (string, bool) {
 	if c == nil || sessionID == "" {
 		return "", false
 	}
+	c.preparePersistence()
 	c.mu.RLock()
 	now := time.Now()
 	entry, ok := c.entries[sessionID]
@@ -109,6 +123,7 @@ func (c *SessionCache) Get(sessionID string) (string, bool) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	entry, ok = c.entries[sessionID]
 	if !ok {
@@ -129,6 +144,7 @@ func (c *SessionCache) GetAndRefresh(sessionID string) (string, bool) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	entry, ok := c.entries[sessionID]
 	if !ok {
@@ -171,6 +187,7 @@ func (c *SessionCache) setAliases(authID string, binding sessionBinding, session
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	now := time.Now()
 	createdAt, requestID := binding.boundAt, binding.requestID
@@ -234,7 +251,8 @@ func (c *SessionCache) replaceAliasGroupsLocked(authID string, expiresAt time.Ti
 	if existing, ok := c.groups[primaryKey]; ok {
 		c.removeAliasGroupLocked(existing)
 	}
-	entry := sessionEntry{authID: authID, expiresAt: expiresAt, aliases: append([]string(nil), aliases...), binding: binding}
+	c.accessSequence++
+	entry := sessionEntry{authID: authID, expiresAt: expiresAt, aliases: append([]string(nil), aliases...), binding: binding, recency: c.accessSequence}
 	c.groups[primaryKey] = entry
 	if binding.sequence != 0 {
 		if c.sessionGroups[binding.sessionID] == nil {
@@ -249,6 +267,7 @@ func (c *SessionCache) replaceAliasGroupsLocked(authID string, expiresAt time.Ti
 	if c.maxEntries > 0 && len(c.entries) > c.maxEntries {
 		c.evictExcessLocked()
 	}
+	c.persistEntryLocked(entry)
 }
 
 func (c *SessionCache) evictExcessLocked() {
@@ -274,6 +293,7 @@ func (c *SessionCache) removeAliasGroupLocked(entry sessionEntry) {
 	}
 	primaryKey := entry.aliases[0]
 	if currentGroup, ok := c.groups[primaryKey]; ok && sameSessionEntryGroup(currentGroup, entry) {
+		c.persistence.Set(kvstore.HashKeyPart(primaryKey), nil, time.Time{})
 		delete(c.groups, primaryKey)
 		if groups := c.sessionGroups[entry.binding.sessionID]; groups != nil {
 			delete(groups, primaryKey)
@@ -380,6 +400,7 @@ func (c *SessionCache) latestSessionAuth(sessionID string, providers map[string]
 	if c == nil || sessionID == "" || len(providers) == 0 {
 		return ""
 	}
+	c.preparePersistence()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	now := time.Now()
@@ -403,6 +424,7 @@ func (c *SessionCache) Touch(sessionID, expectedAuthID string) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	now := time.Now()
 	entry, ok := c.entries[sessionID]
@@ -421,6 +443,7 @@ func (c *SessionCache) CompareAndDelete(sessionID, expectedAuthID string) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	entry, ok := c.entries[sessionID]
 	if !ok || entry.authID != expectedAuthID {
@@ -448,6 +471,7 @@ func (c *SessionCache) Invalidate(sessionID string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	entry, ok := c.entries[sessionID]
 	if !ok {
@@ -474,6 +498,7 @@ func (c *SessionCache) InvalidateAuth(authID string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	for _, group := range c.groups {
 		if group.authID == authID {
@@ -488,6 +513,10 @@ func (c *SessionCache) Stop() {
 		return
 	}
 	c.stopOnce.Do(func() {
+		c.mu.Lock()
+		c.persistenceStopped = true
+		c.persistence = nil
+		c.mu.Unlock()
 		if c.stopCh != nil {
 			close(c.stopCh)
 		}
@@ -516,6 +545,7 @@ func (c *SessionCache) Len() int {
 	if c == nil {
 		return 0
 	}
+	c.preparePersistence()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
@@ -525,6 +555,7 @@ func (c *SessionCache) cleanup() {
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { c.persistence.Flush() }()
 	c.ensureInitializedLocked()
 	for _, group := range c.groups {
 		if !now.Before(group.expiresAt) {
@@ -538,6 +569,7 @@ func (c *SessionCache) LookupBinding(key string) (string, time.Time, string, boo
 	if c == nil {
 		return "", time.Time{}, "", false
 	}
+	c.preparePersistence()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.entries[key]
