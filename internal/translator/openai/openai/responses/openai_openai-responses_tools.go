@@ -50,25 +50,17 @@ type responsesToolDeclaration struct {
 // request in one canonical order: the top-level "tools" field first, then
 // Codex Desktop (Responses Lite) "additional_tools" input items, namespace
 // children in declaration order. Declarations that produce no Chat Completions
-// tool are skipped. Visiting stops early once visit returns false.
-// Hosted web search declarations return a request-scoped error rather than
-// silently removing the requested capability.
+// tool, such as hosted web search, are skipped. Visiting stops early once visit
+// returns false.
 //
 // The emitted chatName is namespace-qualified, capped to the Chat Completions
 // function-name limit, and disambiguated when two distinct declarations flatten
 // onto the same name. Request conversion, reverse name resolution and freeform
 // tool classification all traverse through here, so they cannot disagree about
 // which declaration backs a given Chat Completions tool name.
-func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) error {
+func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) {
 	var declarations []responsesToolDeclaration
-	var unsupported error
 	emit := func(tool ojson.Result, namespaceName string) {
-		if err := checkResponsesHostedWebSearch(tool.Get("type").String()); err != nil {
-			if unsupported == nil {
-				unsupported = err
-			}
-			return
-		}
 		var custom, shell, search bool
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
@@ -179,7 +171,6 @@ func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDe
 		}
 		proceed = visit(declaration)
 	}
-	return unsupported
 }
 
 // disambiguateResponsesChatToolNames rewrites flattened names in place when

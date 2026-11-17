@@ -43,9 +43,8 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 	root := util.ParseGJSONBytesNoCopy(rawJSON)
 	toolIndex := newResponsesToolIndex(root)
-	if toolIndex.err != nil {
-		return nil, toolIndex.err
-	}
+	// Optional hosted web search declarations are dropped above; a choice that
+	// forces one cannot be honored by Chat Completions.
 	if err := checkResponsesHostedWebSearch(root.Get("tool_choice.type").String()); err != nil {
 		return nil, err
 	}

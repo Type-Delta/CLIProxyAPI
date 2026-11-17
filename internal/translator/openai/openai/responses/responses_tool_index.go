@@ -16,7 +16,6 @@ type responsesToolIdentity struct {
 // responsesToolIndex is scoped to one request. History and declarations are
 // scanned once; replayed calls and streaming events only consult these maps.
 type responsesToolIndex struct {
-	err          error
 	declarations []responsesToolDeclaration
 	byChat       map[string]responsesToolDeclaration
 	byIdentity   map[responsesToolIdentity]string
@@ -33,7 +32,7 @@ func newResponsesToolIndex(root ojson.Result) *responsesToolIndex {
 		byLocal:    make(map[string]string),
 		custom:     make(map[string]struct{}),
 	}
-	idx.err = walkResponsesToolDeclarations(root, func(d responsesToolDeclaration) bool {
+	walkResponsesToolDeclarations(root, func(d responsesToolDeclaration) bool {
 		idx.declarations = append(idx.declarations, d)
 		identity := responsesToolIdentity{d.namespace, d.localName}
 		if _, exists := idx.byIdentity[identity]; !exists {
