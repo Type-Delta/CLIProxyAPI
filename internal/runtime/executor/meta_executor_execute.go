@@ -143,12 +143,12 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 
 	enriched, errAuth := e.ensureAuth(ctx, auth)
 	if errAuth != nil {
-		return resp, errAuth
+		return resp, helps.PublishAttemptFailure(ctx, e, req.Model, auth, errAuth)
 	}
 
 	prepared, errPrepare := e.prepareResponsesRequest(ctx, enriched, req, opts, true)
 	if errPrepare != nil {
-		return resp, errPrepare
+		return resp, helps.PublishAttemptFailure(ctx, e, req.Model, enriched, errPrepare)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, enriched)

@@ -216,6 +216,11 @@ func (e *MetaExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
 
 // PrepareRequestAuth exchanges the DCA token for an API key before request execution,
 // allowing the conductor to atomically install and persist the credential in the manager.
+// ReportPrepareFailure records a credential whose request auth preparation failed.
+func (e *MetaExecutor) ReportPrepareFailure(ctx context.Context, auth *cliproxyauth.Auth, model string, err error) {
+	_ = helps.PublishAttemptFailure(ctx, e, model, auth, err)
+}
+
 func (e *MetaExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil || !e.ShouldPrepareRequestAuth(auth) {
 		return auth, nil

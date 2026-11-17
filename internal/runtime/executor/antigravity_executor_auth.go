@@ -38,6 +38,11 @@ func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) 
 	return antigravityProjectIDFromAuth(auth) == ""
 }
 
+// ReportPrepareFailure records a credential whose request auth preparation failed.
+func (e *AntigravityExecutor) ReportPrepareFailure(ctx context.Context, auth *cliproxyauth.Auth, model string, err error) {
+	_ = helps.PublishAttemptFailure(ctx, e, model, auth, err)
+}
+
 func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil || !e.ShouldPrepareRequestAuth(auth) {
 		return nil, nil

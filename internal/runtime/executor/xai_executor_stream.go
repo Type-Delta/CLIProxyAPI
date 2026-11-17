@@ -33,7 +33,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 
 	prepared, err := e.prepareResponsesRequestDoc(ctx, req, opts, true)
 	if err != nil {
-		return nil, err
+		return nil, helps.PublishAttemptFailure(ctx, e, req.Model, auth, err)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)

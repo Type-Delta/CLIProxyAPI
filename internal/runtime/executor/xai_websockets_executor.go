@@ -492,7 +492,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 
 	prepared, err := e.prepareResponsesWebsocketRequestDoc(ctx, req, opts)
 	if err != nil {
-		return nil, err
+		return nil, helps.PublishAttemptFailure(ctx, e, req.Model, auth, err)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)

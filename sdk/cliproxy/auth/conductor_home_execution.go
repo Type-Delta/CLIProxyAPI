@@ -169,6 +169,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		}
 		preparedAuth, errPrepare := m.prepareHomeRequestAuth(execCtx, selection.Executor, selection)
 		if errPrepare != nil {
+			reportPrepareFailure(execCtx, selection.Executor, auth, models, errPrepare)
 			stateModel := m.selectionModelKeyForAuth(auth, routeModel)
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)

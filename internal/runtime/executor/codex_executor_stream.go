@@ -45,7 +45,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
 	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
-		return nil, errSIWC
+		return nil, helps.PublishAttemptFailure(ctx, e, baseModel, auth, errSIWC)
 	}
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"

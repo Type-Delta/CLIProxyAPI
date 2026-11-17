@@ -38,7 +38,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 
 	prepared, err := e.prepareResponsesRequestDoc(ctx, req, opts, true)
 	if err != nil {
-		return resp, err
+		return resp, helps.PublishAttemptFailure(ctx, e, req.Model, auth, err)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
@@ -288,7 +288,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 
 	prepared, err := e.prepareResponsesRequestToDoc(ctx, req, opts, false, sdktranslator.FormatOpenAIResponse)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, helps.PublishAttemptFailure(ctx, e, req.Model, auth, err)
 	}
 	doc := prepared.ensureDoc()
 	_ = doc.Delete("stream")

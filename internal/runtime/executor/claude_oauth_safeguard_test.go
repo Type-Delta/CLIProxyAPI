@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -174,6 +175,33 @@ func TestClaudeOAuthSafeguardScopeAndCaptureFailure(t *testing.T) {
 	}
 	if loads != 2 {
 		t.Fatalf("capture loads = %d, want 2", loads)
+	}
+}
+
+// A missing capture refuses the credential before any upstream request; analytics must
+// still record the attempt so fallback to another credential stays visible.
+func TestClaudeOAuthSafeguardUnavailablePublishesFailedAttempt(t *testing.T) {
+	const alias = "claude-safeguard-unavailable-usage"
+	capture := newAttemptUsageCapture(t, alias)
+	executor := NewClaudeExecutor(&config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{OAuthSafeguard: true}})
+	executor.oauthSafeguardLoader = func() (*claudecapture.Profile, error) { return nil, errors.New("no reference") }
+	auth := &cliproxyauth.Auth{ID: "claude-unavailable", Provider: "claude", Attributes: map[string]string{"api_key": "sk-ant-oat-unavailable"}}
+	ctx := coreusage.WithRequestedModelAlias(context.Background(), alias)
+	req, opts := testClaudeOAuthSafeguardRequest()
+	for name, run := range map[string]func() error{
+		"execute": func() error { _, err := executor.Execute(ctx, auth, req, opts); return err },
+		"stream":  func() error { _, err := executor.ExecuteStream(ctx, auth, req, opts); return err },
+	} {
+		if err := run(); err == nil || !strings.Contains(err.Error(), "requires a current Claude Code capture") {
+			t.Fatalf("%s error = %v, want unavailable capture", name, err)
+		}
+		record := capture.takeOne(t, name)
+		if !record.Failed || record.Fail.StatusCode != http.StatusServiceUnavailable || record.UpstreamStatusCode != 0 {
+			t.Fatalf("%s record failed=%t status=%d upstream=%d, want local 503", name, record.Failed, record.Fail.StatusCode, record.UpstreamStatusCode)
+		}
+		if record.FailureHop != "cpa_to_provider" || !strings.Contains(record.Fail.Body, "requires a current Claude Code capture") {
+			t.Fatalf("%s record hop=%q body=%q", name, record.FailureHop, record.Fail.Body)
+		}
 	}
 }
 

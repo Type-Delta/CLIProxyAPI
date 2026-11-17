@@ -1656,7 +1656,8 @@ Manual refresh and the background updater use the same fallback behavior.
 `docker-compose.yml` and `docker-compose-web.yml` keep the reference root on the `claude-reference`
 named volume. Without it, every container recreation discards the capture and the OAuth safeguard
 rejects Claude OAuth requests with a local 503 until the updater reinstalls and captures again;
-callers with other eligible providers then see that provider's error instead.
+callers with other eligible providers then see that provider's error instead. DL076 records that
+refusal as a failed analytics attempt.
 
 **Implementation evidence:** `internal/claudecapture/{update.go,capture.go,private_test.go,capture_test.go}`,
 `sdk/cliproxy/service_claude_reference.go`,
@@ -3011,6 +3012,40 @@ account without removals, while a new control session chose the higher-priority
 account. The full Go suite, targeted affinity/KV race suite, focused `go vet`,
 canonical panel build, and disposable server compile pass. No production
 deployment or configuration was changed.
+
+**Last updated:** 2026-11-17
+
+### DL076 — Locally refused credential attempts appear in analytics
+
+When CPA refuses a credential before sending anything upstream, it still publishes a failed
+analytics attempt (the refusal's status, `cpa_to_provider` failure hop, no upstream status)
+so the event history shows that credential beside the fallback that follows. Previously the
+conductor moved to the next credential silently, and a request could surface only the last
+provider's error.
+
+Covered refusals: a missing Claude Code reference under the OAuth safeguard; Codex SIWC/OAuth
+token checks on HTTP, compaction, image and WebSocket execution (direct image routes record the
+image model, not the backing text model); an unavailable KV store during the Antigravity cooldown
+read; Meta credential resolution and request preparation; and xAI request preparation on HTTP,
+compaction and WebSocket streaming. The Antigravity short-cooldown skip stays unrecorded because it is a
+deliberate fast switch. When request auth preparation fails (for example a token refresh), the
+conductor hands the failure to executors implementing `PrepareFailureReporter` (Claude,
+Antigravity, Meta) for non-streaming, streaming and Home execution; token counting records no
+attempt.
+
+**Implementation evidence:** `internal/runtime/executor/helps/usage_helpers.go`
+(`PublishAttemptFailure`), the Claude, Codex, Antigravity, Meta and xAI execute/stream/WebSocket files,
+`sdk/cliproxy/auth/{conductor.go,conductor_execution.go,conductor_home_execution.go}`,
+`internal/runtime/executor/attempt_failure_usage_test.go`, and
+`sdk/cliproxy/auth/conductor_prepare_failure_report_test.go`.
+
+**Recorded validation:** each executor regression and the conductor regression failed with the
+call sites reverted and pass with them. The executor regressions capture records synchronously and
+require exactly one per attempt, so they also fail if one refusal publishes twice. Meta request
+preparation shares the tested helper call but has no dedicated failure fixture. Against ClickHouse, a Claude Code
+request whose Claude credential lacked a reference and fell back to exhausted Kiro credentials
+recorded the Claude refusal as attempt 1 beside three Kiro 402 attempts, and the CPAMC event
+detail showed it with its routing decision.
 
 **Last updated:** 2026-11-17
 

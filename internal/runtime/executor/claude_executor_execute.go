@@ -34,7 +34,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	safeguardCfg, safeguard, errSafeguard := e.loadClaudeOAuthSafeguard(baseURL, apiKey)
 	if errSafeguard != nil {
-		return resp, errSafeguard
+		return resp, helps.PublishAttemptFailure(ctx, e, baseModel, auth, errSafeguard)
 	}
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	fp := resolveClaudeFingerprintPolicy(e.cfg, auth, apiKey)

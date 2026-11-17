@@ -30,12 +30,12 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 	enriched, errAuth := e.ensureAuth(ctx, auth)
 	if errAuth != nil {
-		return nil, errAuth
+		return nil, helps.PublishAttemptFailure(ctx, e, req.Model, auth, errAuth)
 	}
 
 	prepared, errPrepare := e.prepareResponsesRequest(ctx, enriched, req, opts, true)
 	if errPrepare != nil {
-		return nil, errPrepare
+		return nil, helps.PublishAttemptFailure(ctx, e, req.Model, enriched, errPrepare)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, enriched)

@@ -702,11 +702,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
+		selectedAuth := auth
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
+			reportPrepareFailure(execCtx, executor, selectedAuth, models, errPrepare)
 			stateModel := m.selectionModelKeyForAuth(auth, routeModel)
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
@@ -1283,6 +1285,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
+		selectedAuth := auth
 		if selection != nil {
 			auth, errPrepare = m.prepareHomeRequestAuth(execCtx, executor, selection)
 		} else {
@@ -1305,6 +1308,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					return nil, errCancel
 				}
 			}
+			reportPrepareFailure(execCtx, executor, selectedAuth, models, errPrepare)
 			stateModel := m.selectionModelKeyForAuth(auth, routeModel)
 			if stateModel == "" {
 				stateModel = canonicalModelKey(routeModel)
@@ -1729,6 +1733,16 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	return prepare()
+}
+
+// reportPrepareFailure records a failed credential preparation as an attempt for the
+// first execution model, when the executor supports it.
+func reportPrepareFailure(ctx context.Context, executor ProviderExecutor, auth *Auth, models []string, err error) {
+	reporter, ok := executor.(PrepareFailureReporter)
+	if !ok || auth == nil || len(models) == 0 {
+		return
+	}
+	reporter.ReportPrepareFailure(ctx, auth, models[0], err)
 }
 
 func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {

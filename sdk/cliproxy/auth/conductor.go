@@ -45,6 +45,12 @@ type RequestAuthPreparer interface {
 	PrepareRequestAuth(ctx context.Context, auth *Auth) (*Auth, error)
 }
 
+// PrepareFailureReporter lets an executor record a credential whose request auth
+// preparation failed, so analytics shows the attempt before the next credential runs.
+type PrepareFailureReporter interface {
+	ReportPrepareFailure(ctx context.Context, auth *Auth, model string, err error)
+}
+
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)

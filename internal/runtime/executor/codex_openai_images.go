@@ -82,10 +82,15 @@ func (e *CodexExecutor) resolveGPTImage2BaseModel() string {
 func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	ctx = cliproxyauth.WithCodexClientRequest(ctx, true)
 	apiKey, baseURL := codexCredsForRequest(ctx, auth)
+	directEndpoint := codexDirectOpenAIImageEndpoint(req, opts)
 	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey); errSIWC != nil {
-		return resp, errSIWC
+		model := e.resolveGPTImage2BaseModel()
+		if directEndpoint != "" {
+			model = e.directOpenAIImageModel(auth, req, opts)
+		}
+		return resp, helps.PublishAttemptFailure(ctx, e, model, auth, errSIWC)
 	}
-	if directEndpoint := codexDirectOpenAIImageEndpoint(req, opts); directEndpoint != "" {
+	if directEndpoint != "" {
 		return e.executeDirectOpenAIImage(ctx, auth, req, opts, directEndpoint)
 	}
 
@@ -189,10 +194,15 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	ctx = cliproxyauth.WithCodexClientRequest(ctx, true)
 	apiKey, baseURL := codexCredsForRequest(ctx, auth)
+	directEndpoint := codexDirectOpenAIImageEndpoint(req, opts)
 	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey); errSIWC != nil {
-		return nil, errSIWC
+		model := e.resolveGPTImage2BaseModel()
+		if directEndpoint != "" {
+			model = e.directOpenAIImageModel(auth, req, opts)
+		}
+		return nil, helps.PublishAttemptFailure(ctx, e, model, auth, errSIWC)
 	}
-	if directEndpoint := codexDirectOpenAIImageEndpoint(req, opts); directEndpoint != "" {
+	if directEndpoint != "" {
 		return e.executeDirectOpenAIImageStream(ctx, auth, req, opts, directEndpoint)
 	}
 

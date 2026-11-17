@@ -672,6 +672,14 @@ func (r *UsageReporter) PublishFailureWithDetail(ctx context.Context, detail usa
 	r.publishWithOutcome(ctx, detail, true, r.failFromErrors(ctx, errs...))
 }
 
+// PublishAttemptFailure records a credential attempt that CPA refused before any
+// upstream request, so analytics shows it beside the fallback that follows. model may
+// carry a thinking suffix. It returns err for use in the executor's return statement.
+func PublishAttemptFailure(ctx context.Context, executor usageExecutor, model string, auth *cliproxyauth.Auth, err error) error {
+	NewExecutorUsageReporter(ctx, executor, thinking.ParseSuffix(model).ModelName, auth).PublishFailure(ctx, err)
+	return err
+}
+
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
 	if r == nil || errPtr == nil {
 		return
