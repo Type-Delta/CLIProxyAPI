@@ -1653,15 +1653,22 @@ bounded-memory behavior. Reference refresh tries every eligible direct Claude OA
 refresh order until one capture succeeds, while attempting identical access tokens only once.
 Manual refresh and the background updater use the same fallback behavior.
 
+`docker-compose.yml` and `docker-compose-web.yml` keep the reference root on the `claude-reference`
+named volume. Without it, every container recreation discards the capture and the OAuth safeguard
+rejects Claude OAuth requests with a local 503 until the updater reinstalls and captures again;
+callers with other eligible providers then see that provider's error instead.
+
 **Implementation evidence:** `internal/claudecapture/{update.go,capture.go,private_test.go,capture_test.go}`,
-`sdk/cliproxy/service_claude_reference.go`, and
-`sdk/cliproxy/service_claude_reference_test.go`.
+`sdk/cliproxy/service_claude_reference.go`,
+`sdk/cliproxy/service_claude_reference_test.go`, `docker-compose.yml`, and `docker-compose-web.yml`.
 
 **Recorded validation:** pointer recovery, legacy-layout migration, bounded capture diagnostics,
 ordered credential fallback, focused capture/executor/service suites, and the disposable server
-build pass.
+build pass. With the web stack, a Claude Code request sent right after `--force-recreate` completed
+about 2 s after container start; recreating from the stack without the volume reproduced the
+missing-`active.json` safeguard error, and the same request took 70 s.
 
-**Last updated:** 2026-10-16
+**Last updated:** 2026-11-17
 
 ### DL046 — Streaming telemetry and same-format Claude streams
 
