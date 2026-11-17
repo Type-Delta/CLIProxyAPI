@@ -1,5 +1,7 @@
 # CPA management API
 
+For a model availability check, use the [routing dry-run guide](model-availability.md).
+
 Paths are relative to your CPA base URL. Ask the user for their management key; never guess it. Send `Authorization: Bearer <key>` or `X-Management-Key: <key>`. Client inference keys are separate. Use `/v8/management`; `/v0/management` is deprecated.
 
 ## Access and errors

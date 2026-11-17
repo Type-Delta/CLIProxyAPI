@@ -4,6 +4,10 @@
 
 Paths are relative to the base URL you were given. Management and telemetry calls need the management key via `Authorization: Bearer <key>` or `X-Management-Key: <key>`. Ask the user for the key; never guess it. These documentation pages need no key. `/v0/management` is deprecated; use `/v8/management`. Home mode disables local management and these docs.
 
+## Commonly used
+
+- [Check model availability](/llms/model-availability.md): Dry-run a request without upstream inference; interpret eligibility, candidate gates and prediction limits.
+
 ## Management
 
 - [Management API](/llms/management.md): Complete route inventory, access rules, config edits, cooldowns and routing investigations.

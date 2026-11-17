@@ -16,7 +16,7 @@ const agentDocsLink = `</llms.txt>; rel="describedby"`
 var unknownManagementRouteBody = gin.H{"error": "unknown management route; see /llms.txt for the management API", "agent_docs": "/llms.txt"}
 
 func isAgentDocsPath(path string) bool {
-	return path == "/llms.txt" || path == "/llms/management.md" || path == "/llms/sql.md"
+	return path == "/llms.txt" || path == "/llms/management.md" || path == "/llms/sql.md" || path == "/llms/model-availability.md"
 }
 
 // agentDocsDiscoveryMiddleware runs before access checks, including v8 authentication.
@@ -31,7 +31,7 @@ func (s *Server) agentDocsDiscoveryMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) registerAgentDocsRoutes() {
-	for _, path := range []string{"/llms.txt", "/llms/management.md", "/llms/sql.md"} {
+	for _, path := range []string{"/llms.txt", "/llms/management.md", "/llms/sql.md", "/llms/model-availability.md"} {
 		s.engine.GET(path, s.serveAgentDocs)
 		s.engine.HEAD(path, s.serveAgentDocs)
 	}

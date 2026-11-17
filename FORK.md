@@ -2476,16 +2476,20 @@ CPAMC bundle/source revision mismatch and an intermittent
 
 ### DL062 — Embedded agent documentation and API discovery
 
-CPA serves public `/llms.txt`, `/llms/management.md` and `/llms/sql.md` from the
-binary whenever the existing local-management availability gate permits v8.
+CPA serves public `/llms.txt`, `/llms/management.md`, `/llms/sql.md` and
+`/llms/model-availability.md` from the binary whenever the existing
+local-management availability gate permits v8.
 Home mode and disabled management return 404. Disabling the panel does not
 disable API documentation. GET and HEAD work without a management key, including
 in template-key safe mode. Root JSON adds `agent_docs`; root and v8 responses,
 including authentication failures, advertise the covering llms.txt with a Link
 header. No legacy management endpoints change.
 
-The index follows the llms.txt convention. Companion pages describe every v8
-route, configuration writes, current cooldown and historical routing checks,
+The index follows the llms.txt convention. Its Commonly used section links to a
+focused model-availability guide with a curl dry-run recipe, request context,
+candidate gates and prediction limits. The guide distinguishes local eligibility
+from verified upstream access; the repository's AGENTS.md links to it too.
+Companion pages describe every v8 route, configuration writes, current cooldown and historical routing checks,
 and restricted SQL with session-error and monthly skill-occurrence recipes.
 The SQL guide explains capture coverage, retention, replacing merges, client
 versus upstream transcript views, occurrence limits, time zones and cost units.
@@ -2523,7 +2527,7 @@ Telemetry schema comments direct per-session counts through client request
 contexts. Migration `0002` updates those comments with `ALTER TABLE`, leaving the
 checksummed `0001` unchanged so existing server-mode databases keep starting.
 
-**Implementation evidence:** `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md}`,
+**Implementation evidence:** `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md,model-availability.md}`,
 `internal/api/server_agentdocs.go`, the shared availability predicate in
 `internal/api/server_management.go`, and discovery/route wiring in
 `internal/api/{server.go,server_routes.go,server_middleware.go}`,
@@ -2533,6 +2537,10 @@ and `internal/telemetry/ingest/fixes_test.go`.
 
 **Recorded validation:** `TestAgentDocsRouteParity` compares the embedded inventory in
 both directions against registered routes, including telemetry health.
+The model-availability guide passes GET/HEAD serving and availability checks;
+targeted management dry-run and read-only routing-state tests and the server compile
+check pass. A temporary CPA instance serves the guide linked from Commonly used;
+its exact curl recipe predicts an eligible credential with zero upstream calls.
 `TestSQLExamplesThroughAgentQuery` executes every SQL fence through the real
 restricted SQL handler against an isolated, migrated ClickHouse database with
 seeded incident, subagent, skill and routing rows; all five fences return rows.
@@ -2551,7 +2559,7 @@ Round 3 passes targeted tests and live SQL reference parity; its full run finds
 `TestWebsocketRetryBindFailureClearsActiveSessionState/Codex_nonstream` with four
 connections instead of three. That test passes in isolation.
 
-**Last updated:** 2026-10-29
+**Last updated:** 2026-11-17
 
 ### DL063 — Restarts never serve an empty OAuth model catalog
 

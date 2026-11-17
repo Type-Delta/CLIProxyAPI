@@ -104,7 +104,7 @@ func TestAgentDocsServing(t *testing.T) {
 				s.engine.ServeHTTP(w, r)
 				return w
 			}
-			for _, path := range []string{"/llms.txt", "/llms/management.md", "/llms/sql.md"} {
+			for _, path := range []string{"/llms.txt", "/llms/management.md", "/llms/sql.md", "/llms/model-availability.md"} {
 				for _, method := range []string{http.MethodGet, http.MethodHead} {
 					w := request(method, path, "198.51.100.2:1234")
 					want := http.StatusNotFound

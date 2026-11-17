@@ -2,6 +2,11 @@
 
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
+## Commonly used
+
+- [Check model availability with a routing dry run](internal/agentdocs/model-availability.md).
+- [Agent documentation entrypoint](internal/agentdocs/llms.txt), served at `/llms.txt` by a running CPA instance.
+
 ## Glossary
 
 - **CPA**: This CLIProxyAPI fork, including the Go proxy, its management API, and its release packaging.
