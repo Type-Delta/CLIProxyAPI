@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cpauk/model"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -33,14 +33,14 @@ type zaiQuotaResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
 		Limits []struct {
-			Type          string  `json:"type"`
-			Unit          int     `json:"unit"`
-			Number        int     `json:"number"`
-			Usage         int64   `json:"usage"`
-			CurrentValue  int64   `json:"currentValue"`
-			Remaining     int64   `json:"remaining"`
-			Percentage    float64 `json:"percentage"`
-			NextResetTime int64   `json:"nextResetTime"`
+			Type          string   `json:"type"`
+			Unit          int      `json:"unit"`
+			Number        int      `json:"number"`
+			Usage         *int64   `json:"usage"`
+			CurrentValue  *int64   `json:"currentValue"`
+			Remaining     *int64   `json:"remaining"`
+			Percentage    *float64 `json:"percentage"`
+			NextResetTime int64    `json:"nextResetTime"`
 		} `json:"limits"`
 	} `json:"data"`
 }
@@ -124,13 +124,12 @@ func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error
 				label = fmt.Sprintf("%dw", limit.Number)
 			}
 		}
-		used, remaining, percent := limit.CurrentValue, limit.Remaining, limit.Percentage
 		window := model.ProviderQuotaWindow{
 			Label:     label,
-			Limit:     &limit.Usage,
-			Used:      &used,
-			Remaining: &remaining,
-			Percent:   &percent,
+			Limit:     limit.Usage,
+			Used:      limit.CurrentValue,
+			Remaining: limit.Remaining,
+			Percent:   limit.Percentage,
 		}
 		if limit.NextResetTime != 0 {
 			reset := time.UnixMilli(limit.NextResetTime).UTC()
@@ -220,6 +219,9 @@ func providerQuotaCooldownDecision(quota *model.ProviderQuota, now time.Time) (b
 	exhausted := false
 	resetAt := time.Time{}
 	for _, window := range quota.Windows {
+		if window.Percent == nil && window.Remaining == nil && (window.Limit == nil || window.Used == nil) {
+			return false, time.Time{}, false
+		}
 		windowExhausted := false
 		if window.Percent != nil && *window.Percent >= 100 {
 			windowExhausted = true
@@ -269,7 +271,7 @@ func (h *Handler) syncUsageProbeCooldown(ctx context.Context, auth *coreauth.Aut
 		return
 	}
 	var parse func([]byte) ([]model.ProviderQuotaWindow, error)
-	switch strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe"))) {
+	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
 	case "zai":
 		if !exactQuotaURL(parsedURL, zaiUsageQuotaURL) {
 			return
@@ -294,29 +296,57 @@ func (h *Handler) syncUsageProbeCooldown(ctx context.Context, auth *coreauth.Aut
 	h.applyProviderQuotaCooldownDecision(ctx, auth, providerQuotaFromWindows(windows))
 }
 
-// syncCodexUsageCooldown only clears stale Codex cooldowns when the standard
-// request allowance reports healthy. Code-review and additional-model limits
-// are independent and must not block the whole credential.
+// syncCodexUsageCooldown reconciles each allowance independently. Code-review
+// and additional-model limits must not block the whole credential.
 func (h *Handler) syncCodexUsageCooldown(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
 	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil ||
 		!strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") || !exactQuotaURL(parsedURL, codexUsageQuotaURL) {
 		return
 	}
-	if !codexStandardAllowanceHealthy(body) {
+	if !ojson.ValidBytes(body) {
 		return
 	}
-	additional, ok := codexAdditionalModelIDs(body)
-	if !ok {
+	root := ojson.ParseBytes(body)
+	limits := firstQuotaValue(root, "additional_rate_limits", "additionalRateLimits")
+	if limits.Exists() && !limits.IsArray() {
 		return
 	}
-	if _, errApply := h.authManager.ApplyProviderQuotaReportForModels(ctx, auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, additional)); errApply != nil {
-		log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to clear Codex cooldown from healthy usage report")
+	additional := make(map[string]struct{})
+	for _, limit := range limits.Array() {
+		name := strings.TrimSpace(firstQuotaValue(limit, "limit_name", "limitName", "metered_feature", "meteredFeature").String())
+		if name == "" {
+			return
+		}
+		additional[strings.ToLower(name)] = struct{}{}
 	}
+	apply := func(raw json.RawMessage, models []string) {
+		decision := codexRateLimitDecision(raw)
+		if !decision.actionable || len(models) == 0 {
+			return
+		}
+		var errApply error
+		if !decision.exhausted {
+			_, errApply = h.authManager.ApplyProviderQuotaRecovery(ctx, auth.ID, models)
+		} else {
+			_, errApply = h.authManager.ApplyProviderQuotaReportForModels(ctx, auth.ID, decision.exhausted, decision.resetAt, models)
+		}
+		if errApply != nil {
+			log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to sync Codex quota cooldown")
+		}
+	}
+	// Exclude every independently reported family from the shared allowance.
+	apply(json.RawMessage(firstQuotaValue(root, "rate_limit", "rateLimit").Raw), h.codexStandardModelIDs(auth, additional))
+	for _, limit := range limits.Array() {
+		name := strings.TrimSpace(firstQuotaValue(limit, "limit_name", "limitName", "metered_feature", "meteredFeature").String())
+		models := h.quotaModelsForPool(auth, func(id string) bool { return strings.EqualFold(id, name) })
+		apply(json.RawMessage(firstQuotaValue(limit, "rate_limit", "rateLimit").Raw), models)
+	}
+	apply(json.RawMessage(firstQuotaValue(root, "code_review_rate_limit", "codeReviewRateLimit").Raw), h.quotaModelsForPool(auth, func(id string) bool { return strings.EqualFold(id, "codex-auto-review") }))
 }
 
 func (h *Handler) syncClaudeUsageCooldown(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
 	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil ||
-		!strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !exactQuotaURL(parsedURL, claudeUsageQuotaURL) {
+		!strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !exactQuotaURL(parsedURL, claudeUsageQuotaURL, claudeResetGrantsQuotaURL) {
 		return
 	}
 	var usage claudeUsageResponse
@@ -325,8 +355,27 @@ func (h *Handler) syncClaudeUsageCooldown(ctx context.Context, auth *coreauth.Au
 	}
 
 	baseExhausted, baseReset, baseActionable := claudeUsageBaseDecision(usage.FiveHour, usage.SevenDay, time.Now())
+	resetScope, resetRead := ctx.Value(claudeResetReconcileKey{}).(claudeResetGrantScope)
+	if resetRead && !baseExhausted && (usage.SevenDay == nil ||
+		usage.FiveHour == nil && !resetScope.fiveHour && !ojson.GetBytes(body, "five_hour").Exists()) {
+		// A healthy five-hour window alone cannot prove a weekly refund.
+		// Explicit five_hour:null is the provider's windowless Ultra response.
+		baseActionable = false
+	}
 	if baseActionable {
-		if _, errApply := h.authManager.ApplyProviderQuotaReport(ctx, auth.ID, baseExhausted, baseReset); errApply != nil {
+		var errApply error
+		if baseExhausted {
+			_, errApply = h.authManager.ApplyProviderQuotaReport(ctx, auth.ID, true, baseReset)
+		} else {
+			models := h.quotaModelsForPool(auth, func(id string) bool { return !strings.Contains(strings.ToLower(id), "fable") })
+			if resetRead {
+				// A partial grant's shared refund does not prove independent
+				// model allowances recovered. Keep their cooldowns intact.
+				models = []string{}
+			}
+			_, errApply = h.authManager.ApplyProviderQuotaRecovery(ctx, auth.ID, models)
+		}
+		if errApply != nil {
 			log.WithError(errApply).WithField("auth_id", auth.ID).Debug("failed to sync Claude base quota cooldown")
 		}
 	}
@@ -335,7 +384,7 @@ func (h *Handler) syncClaudeUsageCooldown(ctx context.Context, auth *coreauth.Au
 	if !fableFound || !fable.actionable {
 		return
 	}
-	fableModels := claudeUsageModelIDs(auth.ID, "fable")
+	fableModels := h.quotaModelsForPool(auth, func(id string) bool { return strings.Contains(strings.ToLower(id), "fable") })
 	if len(fableModels) == 0 {
 		return
 	}
@@ -357,7 +406,13 @@ func claudeUsageBaseDecision(fiveHour, sevenDay *claudeUsageWindowResponse, now 
 	}
 	resetAt := time.Time{}
 	for _, window := range windows {
-		if window == nil || window.Utilization == nil || *window.Utilization < 100 {
+		if window == nil {
+			continue
+		}
+		if window.Utilization == nil || *window.Utilization < 0 {
+			return false, time.Time{}, false
+		}
+		if *window.Utilization < 100 {
 			continue
 		}
 		reset, errParse := time.Parse(time.RFC3339, strings.TrimSpace(window.ResetsAt))
@@ -420,104 +475,12 @@ func claudeUsageWindowDecision(window *claudeUsageWindowResponse, now time.Time)
 	return claudeUsageDecision{exhausted: true, resetAt: reset, actionable: true}
 }
 
-func claudeUsageModelIDs(authID, family string) []string {
-	family = strings.ToLower(strings.TrimSpace(family))
-	if family == "" {
-		return nil
-	}
-	models := registry.GetGlobalRegistry().GetModelsForClient(authID)
-	ids := make([]string, 0, len(models))
-	for _, model := range models {
-		if model == nil || !strings.Contains(strings.ToLower(model.ID), family) {
-			continue
-		}
-		ids = append(ids, model.ID)
-	}
-	return ids
-}
-
-func codexStandardModelIDs(authID string, additional map[string]bool) []string {
-	models := registry.GetGlobalRegistry().GetModelsForClient(authID)
-	standard := make([]string, 0, len(models))
-	for _, model := range models {
-		if model == nil || strings.TrimSpace(model.ID) == "" {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(model.ID))
-		if key == "codex-auto-review" {
-			continue
-		}
-		if strings.HasSuffix(key, "-spark") {
-			healthy, reported := additional[key]
-			if !reported || !healthy {
-				continue
-			}
-		}
-		if healthy, reported := additional[key]; reported && !healthy {
-			continue
-		}
-		standard = append(standard, model.ID)
-	}
-	return standard
-}
-
-func codexAdditionalModelIDs(body []byte) (map[string]bool, bool) {
-	var usage map[string]json.RawMessage
-	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
-		return nil, false
-	}
-	raw := usage["additional_rate_limits"]
-	if len(raw) == 0 || string(raw) == "null" {
-		raw = usage["additionalRateLimits"]
-	}
-	additional := make(map[string]bool)
-	if len(raw) == 0 || string(raw) == "null" {
-		return additional, true
-	}
-	var limits []struct {
-		LimitName           string          `json:"limit_name"`
-		LimitNameCamel      string          `json:"limitName"`
-		MeteredFeature      string          `json:"metered_feature"`
-		MeteredFeatureCamel string          `json:"meteredFeature"`
-		RateLimit           json.RawMessage `json:"rate_limit"`
-		RateLimitCamel      json.RawMessage `json:"rateLimit"`
-	}
-	if errUnmarshal := json.Unmarshal(raw, &limits); errUnmarshal != nil {
-		return nil, false
-	}
-	for _, limit := range limits {
-		name := strings.TrimSpace(limit.LimitName)
-		if name == "" {
-			name = strings.TrimSpace(limit.LimitNameCamel)
-		}
-		if name == "" {
-			name = strings.TrimSpace(limit.MeteredFeature)
-		}
-		if name == "" {
-			name = strings.TrimSpace(limit.MeteredFeatureCamel)
-		}
-		if name == "" {
-			return nil, false
-		}
-		rateLimit := limit.RateLimit
-		if len(rateLimit) == 0 || string(rateLimit) == "null" {
-			rateLimit = limit.RateLimitCamel
-		}
-		additional[strings.ToLower(name)] = len(rateLimit) > 0 && string(rateLimit) != "null" && codexRateLimitFamilyHealthy(rateLimit)
-	}
-	return additional, true
-}
-
-func codexStandardAllowanceHealthy(body []byte) bool {
-	var usage map[string]json.RawMessage
-	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
-		return false
-	}
-	standard := usage["rate_limit"]
-	if len(standard) == 0 || string(standard) == "null" {
-		standard = usage["rateLimit"]
-	}
-	return len(standard) > 0 && string(standard) != "null" && codexRateLimitFamilyHealthy(standard)
+func (h *Handler) codexStandardModelIDs(auth *coreauth.Auth, additional map[string]struct{}) []string {
+	return h.quotaModelsForPool(auth, func(id string) bool {
+		key := strings.ToLower(id)
+		_, reported := additional[key]
+		return key != "codex-auto-review" && !strings.HasSuffix(key, "-spark") && !reported
+	})
 }
 
 func codexRateLimitFamilyHealthy(raw json.RawMessage) bool {
@@ -996,9 +959,6 @@ func (h *Handler) applyUsageProbes(ctx context.Context, credentials map[string]*
 		if result.err != nil {
 			log.WithError(result.err).Debug("management usage probe failed")
 			continue
-		}
-		if credential := credentials[result.key]; credential != nil {
-			h.applyProviderQuotaCooldownDecision(ctx, credential, result.quota)
 		}
 		row, ok := rows[result.key]
 		if ok {

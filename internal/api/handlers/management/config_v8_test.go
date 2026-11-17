@@ -13,8 +13,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"gopkg.in/yaml.v3"
 )
 
@@ -111,6 +113,54 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	case <-reloads:
 	case <-time.After(5 * time.Second):
 		t.Fatal("config reload hook was not called")
+	}
+}
+
+func TestConfigV8ReserveEditUpdatesRoutingBeforeReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if errWrite := os.WriteFile(path, []byte("port: 8317\nclaude-api-key:\n  - api-key: test-key\n    quota-reserve: {seven-day: 30}\n"), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(path)
+	if errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	auths, errSynth := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{Config: cfg, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator()})
+	if errSynth != nil || len(auths) != 1 {
+		t.Fatalf("synthesize auths: %d, %v", len(auths), errSynth)
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, errRegister := manager.Register(context.Background(), auths[0])
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	manager.ApplyQuotaReserveBars(auth, []coreauth.QuotaReserveBar{{ID: "seven-day", RemainingPercent: 20, ResetAt: time.Now().Add(time.Hour)}})
+	const modelID = "config-reserve-routing"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	manager.RegisterExecutor(&refreshRecordExecutor{provider: "claude"})
+	h := &Handler{cfg: cfg, configFilePath: path, authManager: manager}
+	router := gin.New()
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	for _, test := range []struct {
+		body string
+		held bool
+	}{
+		{`[{"name":"team","keys":[{"api-key":"test-key","quota-reserve":{"seven-day":10}}]}]`, false},
+		{`[{"name":"team","keys":[{"api-key":"test-key","quota-reserve":{"seven-day":40}}]}]`, true},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/claude", strings.NewReader(test.body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("reserve save status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if _, held := manager.QuotaReserveState(auth.ID); held != test.held {
+			t.Fatalf("reserve held immediately after save = %v, want %v", held, test.held)
+		}
+		_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: modelID}, cliproxyexecutor.Options{})
+		if (errExecute != nil) != test.held {
+			t.Fatalf("request immediately after reserve edit: %v, want held %v", errExecute, test.held)
+		}
 	}
 }
 

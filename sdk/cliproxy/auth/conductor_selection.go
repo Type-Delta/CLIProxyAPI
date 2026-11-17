@@ -458,6 +458,7 @@ type authSelectionEligibility struct {
 	// quotaReserve, when set, withholds credentials held for clientKeyID.
 	quotaReserve *Manager
 	clientKeyID  string
+	requestModel string
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -490,9 +491,10 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 
 // eligibilityForRequest is authSelectionEligibilityForRequest plus this
 // manager's quota-reserve filter for the requesting client key.
-func (m *Manager) eligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
+func (m *Manager) eligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options, model string) authSelectionEligibility {
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	eligibility.quotaReserve = m
+	eligibility.requestModel = model
 	return eligibility
 }
 
@@ -506,7 +508,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.credentialPolicy != "" && !credentialPolicyAllows(e.credentialPolicy, auth) {
 		return false
 	}
-	if e.quotaReserve != nil && e.quotaReserve.quotaReserveHolds(auth, e.clientKeyID) {
+	if e.quotaReserve != nil && e.quotaReserve.quotaReserveHolds(auth, e.clientKeyID, e.requestModel) {
 		return false
 	}
 	return !e.disallowFreeAuth || !isFreeCodexAuth(auth)
@@ -2263,7 +2265,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 		}
 		return *retryAfter, true
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok && affinity != nil && affinity.rebindOnNever {
 		var authErr *Error
@@ -2729,7 +2731,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	pluginScheduler, schedulerAcross := m.snapshotPluginScheduler()
 
 	m.mu.RLock()
@@ -3157,7 +3159,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	targetKey := canonicalSchedulingProvider(provider)
 	if strings.TrimSpace(model) != "" || targetKey == "codex" {
 		m.mu.RLock()
@@ -3235,7 +3237,7 @@ func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []
 	if len(providerSet) == 0 {
 		return false
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	modelKey := canonicalModelKey(model)
 	registryRef := registry.GetGlobalRegistry()
 
@@ -3293,7 +3295,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -3639,7 +3641,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	providerSet := make(map[string]struct{}, len(eligibleProviders))
 	for _, providerKey := range eligibleProviders {
 		providerSet[providerKey] = struct{}{}
@@ -3775,7 +3777,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	now := time.Now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, p := range providers {

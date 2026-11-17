@@ -872,19 +872,91 @@ five-hour and seven-day windows clear or set credential-wide cooldowns, while
 the Fable weekly allowance updates only Fable models; Opus and Sonnet fields
 remain display data because they draw from the shared weekly pool. An exhausted
 Fable allowance therefore does not hide otherwise healthy models.
-Claude, Z.ai, and OpenCode Go quota responses use the same cache-aware
-reconciliation path as Codex. A successful fresh provider response updates
-routing cooldowns; cached replay leaves the previous routing state unchanged.
+Fresh quota responses reconcile routing at the shared upstream fetch boundary,
+covering management reads, analytics and history collection, routing-recovery
+probes, and reserve checks. Cached replay leaves routing state unchanged,
+including analytics replay after a newer quota refusal. Claude reset-grant reads
+also reconcile any usage windows included in the response.
 
-Codex reset-credit consumption clears standard-model runtime and registry
-cooldowns immediately after a successful upstream response. A fresh Codex usage
-read clears stale cooldowns for models whose reported allowance has recovered;
-it preserves a separate exhausted Spark allowance and does not impose a
-credential-wide block from one exhausted model family. Cached healthy usage
-responses cannot clear a newer quota error, and incomplete reports leave
-routing state untouched. The manual reset and the Quota page's "Refresh all
-credentials" action make recovered models selectable without waiting for the
-old cooldown deadline.
+Successful Claude reset grants and Codex reset-credit consumption reconcile
+refilled pools before returning, publish updated runtime and registry
+availability, and invalidate reserve observations only for refilled windows.
+Shared quota blocks are released when grant scope or fresh usage proves that
+their allowance has recovered.
+Claude recovery follows the selected grant's declared windows, preserving quota
+and reserve windows that were not refilled. A `not_limited` result can release
+stale quota state without invalidating reserve observations or advancing the
+reset epoch; refused or unknown reset results do not release routing state.
+Codex preserves independent Spark and code-review limits.
+Grant scope evidence expires with the quota response cache. Partial or unknown
+Claude grants perform a fresh usage reconciliation without bypassing provider
+backoff; failed reads retain unproven holds. Replayed claims do not blindly
+release newer cooldowns or reserve observations. Duplicate-claim protection uses
+the stable credential identity and covers the panel's retry window independently
+of quota result cache expiry.
+Quota observations started before a reset are rejected by a runtime reset epoch,
+including their reserve-bar publication, so a late response cannot reinstate a
+pre-reset cooldown. Provider reset recovery preserves disabled models and
+independent non-quota failures.
+Fresh Codex reports reconcile standard, additional-model and code-review pools
+separately, so a healthy Spark allowance can recover even while the standard
+pool is exhausted. Claude's Fable-only reports create model state when needed
+and preserve other models' independent cooldowns. Healthy shared Claude windows
+do not erase an unreported Fable limit.
+Scoped quota reports preserve a separate persisted layer over independent model
+failures. Both that layer and the shared credential layer retain the longer
+active deadline; quota recovery removes only the applicable layer. Model-pool
+classification resolves configured aliases to upstream identities and updates
+the cooldown keys used by routing, including alias-only registrations.
+Restore merges and live results use the same layer ordering. Disabling ordinary
+cooling retains explicit force deadlines beneath either quota layer, and an
+earlier success cannot clear an active inner layer after its shared wrapper
+expires. Quota recovery preserves independent transient capacity limits.
+Registry availability is published for resolved aliases as well as direct IDs.
+Recovery loads previously unseen persisted state before writing a snapshot.
+Delayed restores apply the same selective recovery transforms, retaining
+unselected pools, independent failures and credentials awaiting registration;
+explicit removal still deletes their state. A read failure prevents an
+incomplete snapshot from replacing persisted cooldowns.
+Independent auth-level service and capacity failures retain their own deadlines
+alongside quota exhaustion. Newly written snapshots preserve that provenance;
+older mixed snapshots cannot reconstruct a shorter deadline that was never
+recorded. Delayed reads are fenced against removal and re-registration while
+legitimate late registration can still hydrate its persisted state.
+An auth record remains live through its longest independent deadline, including
+when a shorter shared quota has expired. Restore also accepts older records
+whose independent state outlives the outer quota deadline.
+
+Kiro, Kimi on both official domains, xAI billing observations, Antigravity quota
+pools, plugin quota providers and declarative probes also reconcile usable
+quota evidence. Kiro treats included and trial credits as alternative pools;
+an xAI paid health probe recovers its model allowance without clearing other
+models' independent limits.
+Antigravity keeps Gemini and Claude/GPT pools separate. Plugin fetches and
+successful resets reconcile at the host boundary, including SDK callers.
+Normalized plugin and declarative reports have no model identity, so they only
+recover stale quota when every reported bucket is positive; they cannot infer
+credential-wide exhaustion from a model-family pool. A local bookkeeping error
+after a confirmed upstream reset is logged without reporting the spent reset as
+a provider failure.
+Incomplete observations remain inconclusive, and Z.ai preserves omitted numeric
+fields instead of treating missing remaining quota as zero. Disabled credentials
+and terminal authentication failures remain protected.
+
+Reserve holds are derived from current settings and the latest observation.
+Fresh quota reads retain reserve bars even before a reserve is configured, and
+removing a reserve preserves those observations for later edits. Canonical v8
+configuration saves publish reserve and bypass edits to existing credentials
+before returning success, without waiting for the asynchronous full reload.
+Reserve and bypass edits do not lift provider quota-read rate-limit backoff.
+Claude family reserves are checked against the requested upstream model after
+alias resolution. A Fable-only reserve therefore withholds Fable without
+blocking Opus or Sonnet, including when no model execution history exists;
+shared five-hour and weekly reserves still apply to every model. Routing traces
+and dry runs use the same model-aware eligibility check.
+Partial reads merge bars by ID, preserving unreported windows until their reset
+or explicit invalidation. CPAMC relies on the confirmed upstream reset response
+and no longer follows a successful Claude claim with a blanket cooldown reset.
 
 The behavior is centralized in the auth manager and runs after successful
 management quota API calls and analytics usage probes, so the existing
@@ -894,10 +966,10 @@ When quota observations are merged into auth state, the latest observation times
 are preserved together with the fork's credential-quota cooldown fields, so refreshes cannot erase
 newer routing state.
 
-**Implementation evidence:** `sdk/cliproxy/auth/{conductor_cooldown.go,conductor_lifecycle.go}`,
-`internal/api/handlers/management/usage_probe.go`,
-`internal/api/handlers/management/api_tools.go`, and the CPAMC quota adapters
-under `web/management-center/src/features/quota/providers/`.
+**Implementation evidence:** `sdk/cliproxy/auth/{conductor_cooldown.go,conductor_lifecycle.go,cooldown_state.go,quota_observation.go,provider_quota_models.go,quota_reserve.go}`,
+`internal/api/handlers/management/{api_tools.go,usage_probe.go,quota_reconcile.go,quota_reserve_probe.go,plugin_quota.go,config_v8.go,config_auth_index.go}`,
+`internal/pluginhost/quota_provider.go`, and the CPAMC quota adapters under
+`web/management-center/src/features/quota/providers/`.
 
 **Recorded validation:** focused auth-manager tests cover exhausted-overwrite,
 healthy-clear, past-reset no-op, and credential-wide cooldown preservation;
@@ -907,7 +979,25 @@ cache-expiry recovery, and upstream usage sync. CPAMC quota tests cover normal
 cache-path refresh wiring. The focused Go tests, CPAMC type-check, lint, and
 production build pass.
 
-**Last updated:** 2026-10-19
+On 2026-11-17, regressions reproduced blocked credentials after upstream manual
+resets, fresh quota reads bypassing reconciliation, and reserve saves waiting
+for asynchronous reload. The reset happy path now sends its next request through
+the real Claude and Codex executors against local upstream fixtures. Additional
+selection tests cover Fable reserves with 99% five-hour and 21% weekly quota
+remaining, aliases, empty model history, unchanged sibling cooldowns, and
+immediate routing after reserve edits. The focused race checks, bundled panel
+build and disposable server compile pass.
+The integrated full Go suite and CPAMC's pinned-Bun verification also pass,
+including tests, lint, TypeScript and the production build. Later regressions
+cover alias-only registrations, persisted scoped quota with independent 503s,
+both shared/scoped nesting orders, late responses after reset, partial reserve
+observations, and the panel reset flow without a blanket cooldown clear.
+Browser verification covers login, quota refresh, grant selection, confirmation
+and updated quota cards at desktop and mobile sizes with synthetic management
+responses, exactly one claim and no blanket reset. A disposable Docker container
+serves the panel and authenticated APIs with a matching packaged panel digest.
+
+**Last updated:** 2026-11-17
 
 ### DL023 — Retry rounds cover transport and status-less failures
 

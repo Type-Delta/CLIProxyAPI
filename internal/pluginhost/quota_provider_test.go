@@ -2,11 +2,52 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
+	"math"
 	"testing"
+	"time"
 
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+func TestQuotaProviderRefreshAndResetReconcileRouting(t *testing.T) {
+	for _, operation := range []string{"fetch", "fetch-plugin", "reset", "reset-plugin"} {
+		t.Run(operation, func(t *testing.T) {
+			provider := &testQuotaProvider{identifier: "opencode-go"}
+			host := newHostWithRecords(capabilityRecord{id: "quota-plugin", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: provider}}})
+			manager := coreauth.NewManager(nil, nil, nil)
+			host.SetAuthManager(manager)
+			reset := time.Now().Add(time.Hour)
+			auth, errRegister := manager.Register(context.Background(), &coreauth.Auth{ID: "plugin-quota", Provider: provider.identifier, Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: reset, Quota: coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: reset}})
+			if errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			fetchReq := pluginapi.QuotaFetchRequest{AuthID: auth.ID, Provider: auth.Provider}
+			resetReq := pluginapi.QuotaResetRequest{AuthID: auth.ID, Provider: auth.Provider}
+			var handled bool
+			var err error
+			switch operation {
+			case "fetch":
+				_, handled, err = host.FetchQuota(context.Background(), fetchReq)
+			case "fetch-plugin":
+				_, handled, err = host.FetchQuotaByPlugin(context.Background(), "quota-plugin", fetchReq)
+			case "reset":
+				_, handled, err = host.ResetQuota(context.Background(), resetReq)
+			case "reset-plugin":
+				_, handled, err = host.ResetQuotaByPlugin(context.Background(), "quota-plugin", resetReq)
+			}
+			if !handled || err != nil {
+				t.Fatalf("handled %v, error %v", handled, err)
+			}
+			current, _ := manager.GetByID(auth.ID)
+			if current.Unavailable || current.Quota.Exceeded || current.Status != coreauth.StatusActive {
+				t.Fatalf("plugin %s left credential blocked: status %s unavailable %v quota %+v", operation, current.Status, current.Unavailable, current.Quota)
+			}
+		})
+	}
+}
 
 type testQuotaProvider struct {
 	identifier string
@@ -583,5 +624,71 @@ func TestQuotaProviderPluginIDsMatchesQuotaProviderRecordPrecedence(t *testing.T
 		if record == nil || record.id != pluginID {
 			t.Fatalf("quotaProviderRecord(%q) = %#v, want plugin %q", provider, record, pluginID)
 		}
+	}
+}
+
+func TestPluginQuotaAmbiguousReportsOnlyRecover(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		groups                        []pluginapi.QuotaGroup
+		initiallyBlocked, wantBlocked bool
+	}{
+		{"mixed", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: .8}}}, {Buckets: []pluginapi.QuotaBucket{{RemainingFraction: 0, ResetTime: "2099-01-01T00:00:00Z"}}}}, false, false},
+		{"missing", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{ResetTime: "2099-01-01T00:00:00Z"}}}}, false, false},
+		{"all-positive", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: .8}}}, {Buckets: []pluginapi.QuotaBucket{{RemainingFraction: .1}}}}, true, false},
+		{"mixed-does-not-recover", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: .8}, {RemainingFraction: 0}}}}, true, true},
+		{"empty", nil, true, true},
+		{"empty-group", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: .8}}}, {}}, true, true},
+		{"invalid-over-one", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: 1.1}}}}, true, true},
+		{"invalid-nan", []pluginapi.QuotaGroup{{Buckets: []pluginapi.QuotaBucket{{RemainingFraction: math.NaN()}}}}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &testQuotaProvider{identifier: "plugin-test", fetchFn: func(context.Context, pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+				return pluginapi.QuotaFetchResponse{Groups: tc.groups}, nil
+			}}
+			host := newHostWithRecords(capabilityRecord{id: "quota", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: p}}})
+			m := coreauth.NewManager(nil, nil, nil)
+			host.SetAuthManager(m)
+			auth, err := m.Register(context.Background(), &coreauth.Auth{ID: "auth", Provider: "plugin-test", Status: coreauth.StatusActive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.initiallyBlocked {
+				if _, err = m.ApplyProviderQuotaReport(context.Background(), auth.ID, true, time.Now().Add(time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, handled, err := host.FetchQuotaByPlugin(context.Background(), "quota", pluginapi.QuotaFetchRequest{AuthID: auth.ID, Provider: auth.Provider})
+			if err != nil || !handled {
+				t.Fatalf("handled %v error %v", handled, err)
+			}
+			current, _ := m.GetByID(auth.ID)
+			if current.Unavailable != tc.wantBlocked || current.Quota.Exceeded != tc.wantBlocked {
+				t.Fatalf("unexpected credential state: %+v", current.Quota)
+			}
+		})
+	}
+}
+
+type quotaResetFailingStore struct{}
+
+func (*quotaResetFailingStore) List(context.Context) ([]*coreauth.Auth, error) { return nil, nil }
+func (*quotaResetFailingStore) Save(context.Context, *coreauth.Auth) (string, error) {
+	return "", errors.New("save failed")
+}
+func (*quotaResetFailingStore) Delete(context.Context, string) error { return nil }
+
+func TestPluginResetSuccessSurvivesLocalPersistenceFailure(t *testing.T) {
+	p := &testQuotaProvider{identifier: "plugin-test"}
+	host := newHostWithRecords(capabilityRecord{id: "quota", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: p}}})
+	m := coreauth.NewManager(&quotaResetFailingStore{}, nil, nil)
+	host.SetAuthManager(m)
+	auth, err := m.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{ID: "reset-auth", Provider: "plugin-test", Metadata: map[string]any{}, Status: coreauth.StatusError, Unavailable: true, Quota: coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: time.Now().Add(time.Hour)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, handled, err := host.ResetQuotaByPlugin(context.Background(), "quota", pluginapi.QuotaResetRequest{AuthID: auth.ID, Provider: auth.Provider})
+	if err != nil || !handled || !response.Success || response.Message != "quota reset successful" {
+		t.Fatalf("response %+v handled %v err %v", response, handled, err)
 	}
 }

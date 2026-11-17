@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +12,52 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
+
+// syncConfigQuotaReservesLocked publishes reserve edits before a config save
+// returns. The full watcher reload can run later without delaying routing.
+func (h *Handler) syncConfigQuotaReservesLocked(ctx context.Context, cfg *config.Config) error {
+	if h.authManager == nil || cfg == nil {
+		return nil
+	}
+	auths, errSynth := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
+		Config: cfg, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if errSynth != nil {
+		return fmt.Errorf("synthesize config reserve settings: %w", errSynth)
+	}
+	for _, desired := range auths {
+		if desired == nil {
+			continue
+		}
+		live, ok := h.authManager.GetByID(desired.ID)
+		if !ok || !coreauth.IsConfigAPIKeyAuth(live) {
+			continue
+		}
+		reserve := desired.Attributes[coreauth.AttributeQuotaReserve]
+		bypass := desired.Attributes[coreauth.AttributeQuotaReserveBypassKeys]
+		if live.Attributes[coreauth.AttributeQuotaReserve] == reserve && live.Attributes[coreauth.AttributeQuotaReserveBypassKeys] == bypass {
+			continue
+		}
+		_, _, errModify := h.authManager.Modify(coreauth.WithSkipPersist(context.WithoutCancel(ctx)), live.ID, live.RegistrationEpoch, func(current *coreauth.Auth) error {
+			if current.Attributes == nil {
+				current.Attributes = make(map[string]string)
+			}
+			for key, value := range map[string]string{coreauth.AttributeQuotaReserve: reserve, coreauth.AttributeQuotaReserveBypassKeys: bypass} {
+				if value == "" {
+					delete(current.Attributes, key)
+				} else {
+					current.Attributes[key] = value
+				}
+			}
+			return nil
+		})
+		if errModify != nil {
+			return fmt.Errorf("apply config reserve settings: %w", errModify)
+		}
+		h.authManager.RecheckQuotaReserve(live.ID)
+	}
+	return nil
+}
 
 type geminiKeyWithAuthIndex struct {
 	config.GeminiKey

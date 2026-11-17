@@ -155,6 +155,9 @@ type Auth struct {
 	forceCooldownUntil  time.Time `json:"-"`
 	credQuotaForceUntil time.Time `json:"-"`
 	forceCooldownSeeded bool      `json:"-"`
+	// independentCooldown records a model-less failure separately from quota
+	// and model aggregates. Persisted via the auth-level record's IndependentState.
+	independentCooldown *ModelState `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
@@ -431,6 +434,10 @@ type ModelState struct {
 	// CooldownStateRecord.CredentialQuotaPropagated across restarts,
 	// including for shadow-less reporting models.
 	credentialQuotaPropagated bool `toml:"credential_quota_propagated,omitempty"`
+	// scopedQuotaShadow retains the model's independent failure beneath a
+	// provider-reported model quota. It is persisted in CooldownStateRecord.
+	scopedQuotaShadow     *ModelState `json:"-"`
+	scopedQuotaPropagated bool        `json:"-"`
 }
 
 func recentRequestBucketID(now time.Time) int64 {
@@ -504,6 +511,7 @@ func (a *Auth) Clone() *Auth {
 	}
 	copyAuth := *a
 	copyAuth.Quota = a.Quota.Clone()
+	copyAuth.independentCooldown = a.independentCooldown.Clone()
 	if a.LastError != nil {
 		copyErr := *a.LastError
 		copyAuth.LastError = &copyErr
@@ -785,10 +793,13 @@ func (m *ModelState) Clone() *ModelState {
 	if m.credentialQuotaShadow != nil {
 		copyState.credentialQuotaShadow = m.credentialQuotaShadow.cloneShallow()
 	}
+	if m.scopedQuotaShadow != nil {
+		copyState.scopedQuotaShadow = m.scopedQuotaShadow.cloneShallow()
+	}
 	return &copyState
 }
 
-// cloneShallow copies a shadow state one level deep; shadows never nest.
+// cloneShallow copies a credential shadow and its optional scoped shadow.
 func (m *ModelState) cloneShallow() *ModelState {
 	if m == nil {
 		return nil
@@ -796,6 +807,10 @@ func (m *ModelState) cloneShallow() *ModelState {
 	copyState := *m
 	copyState.Quota = m.Quota.Clone()
 	copyState.credentialQuotaShadow = nil
+	copyState.scopedQuotaShadow = nil
+	if m.scopedQuotaShadow != nil {
+		copyState.scopedQuotaShadow = m.scopedQuotaShadow.cloneShallow()
+	}
 	if m.LastError != nil {
 		copyState.LastError = &Error{
 			Code:       m.LastError.Code,

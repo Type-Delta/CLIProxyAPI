@@ -299,6 +299,9 @@ func mergeRuntimeCooldownSaveDelta(target, before, after *Auth, preserveConcurre
 	if target == nil || before == nil || after == nil {
 		return
 	}
+	if !reflect.DeepEqual(after.independentCooldown, before.independentCooldown) && (!preserveConcurrent || reflect.DeepEqual(target.independentCooldown, before.independentCooldown)) {
+		target.independentCooldown = after.independentCooldown.Clone()
+	}
 	if !after.forceCooldownUntil.Equal(before.forceCooldownUntil) && (!preserveConcurrent || target.forceCooldownUntil.Equal(before.forceCooldownUntil)) {
 		target.forceCooldownUntil = after.forceCooldownUntil
 	}
@@ -324,6 +327,7 @@ func mergeRuntimeCooldownSaveDelta(target, before, after *Auth, preserveConcurre
 		(!target.Quota.Exceeded || target.Quota.NextRecoverAt.IsZero()) {
 		target.forceCooldownUntil = time.Time{}
 		target.credQuotaForceUntil = time.Time{}
+		target.independentCooldown = nil
 	}
 }
 

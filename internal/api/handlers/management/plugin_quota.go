@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -218,17 +220,6 @@ func (h *Handler) ResetCredentialQuota(c *gin.Context) {
 		return
 	}
 
-	if h.authManager != nil {
-		updated, _, errResetCore := h.authManager.ResetQuota(c.Request.Context(), auth.ID)
-		if errResetCore != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reset routing quota: %v", errResetCore)})
-			return
-		}
-		if updated != nil {
-			updated.EnsureIndex()
-		}
-	}
-
 	resp := gin.H{
 		"status":     "ok",
 		"auth_index": auth.Index,
@@ -384,17 +375,6 @@ func (h *Handler) ResetPluginQuota(c *gin.Context) {
 		return
 	}
 
-	if h.authManager != nil {
-		updated, _, errResetCore := h.authManager.ResetQuota(c.Request.Context(), auth.ID)
-		if errResetCore != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reset routing quota: %v", errResetCore)})
-			return
-		}
-		if updated != nil {
-			updated.EnsureIndex()
-		}
-	}
-
 	resp := gin.H{
 		"status":     "ok",
 		"auth_index": auth.Index,
@@ -405,7 +385,22 @@ func (h *Handler) ResetPluginQuota(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe map[string]any) (pluginapi.QuotaFetchResponse, bool, error) {
+func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe map[string]any) (result pluginapi.QuotaFetchResponse, handled bool, err error) {
+	ctx := c.Request.Context()
+	if h.authManager != nil && auth != nil {
+		ctx = h.authManager.CaptureQuotaObservation(ctx, auth.ID)
+	}
+	completeQuota := false
+	defer func() {
+		if !handled || err != nil || h.authManager == nil || auth == nil || !completeQuota {
+			return
+		}
+		if pluginhost.QuotaResponseFullyPositive(result) {
+			if _, errApply := h.authManager.ApplyProviderQuotaRecovery(context.WithoutCancel(ctx), auth.ID, nil); errApply != nil {
+				log.WithError(errApply).WithField("auth_id", auth.ID).Warn("failed to sync declarative quota cooldown")
+			}
+		}
+	}()
 	urlStr, _ := probe["url"].(string)
 	urlStr = strings.TrimSpace(urlStr)
 	if urlStr == "" {
@@ -502,7 +497,7 @@ func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe m
 	}
 
 	if mappingRaw, okMapping := probe["mapping"].(map[string]any); okMapping {
-		mappedResp, errMap := mapProbeResponse(respBytes, mappingRaw)
+		mappedResp, errMap := mapProbeResponseWithCompleteness(respBytes, mappingRaw, &completeQuota)
 		if errMap != nil {
 			return pluginapi.QuotaFetchResponse{}, true, fmt.Errorf("probe response mapping failed: %w", errMap)
 		}
@@ -526,16 +521,21 @@ func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe m
 				// Filter groups to retain only buckets with an actual valid numeric remaining fraction in raw JSON
 				filteredGroups := make([]pluginapi.QuotaGroup, 0, len(quotaResp.Groups))
 				groupsRes := ojson.GetBytesNoCopy(respBytes, "groups")
+				completeQuota = groupsRes.IsArray() && len(groupsRes.Array()) > 0 && len(groupsRes.Array()) == len(quotaResp.Groups)
 				if groupsRes.IsArray() {
 					for gIdx, grp := range groupsRes.Array() {
 						if gIdx >= len(quotaResp.Groups) {
 							break
 						}
 						bucketsRes := grp.Get("buckets")
-						if !bucketsRes.IsArray() {
+						if !bucketsRes.IsArray() || len(bucketsRes.Array()) == 0 {
+							completeQuota = false
 							continue
 						}
 						origGroup := quotaResp.Groups[gIdx]
+						if len(bucketsRes.Array()) != len(origGroup.Buckets) {
+							completeQuota = false
+						}
 						validBuckets := make([]pluginapi.QuotaBucket, 0, len(origGroup.Buckets))
 						for bIdx, bkt := range bucketsRes.Array() {
 							if bIdx >= len(origGroup.Buckets) {
@@ -549,6 +549,8 @@ func (h *Handler) executeQuotaProbe(c *gin.Context, auth *coreauth.Auth, probe m
 								bucket := origGroup.Buckets[bIdx]
 								bucket.RemainingFraction = fracVal
 								validBuckets = append(validBuckets, bucket)
+							} else {
+								completeQuota = false
 							}
 						}
 						if len(validBuckets) > 0 {
@@ -657,6 +659,12 @@ func parseNumericFraction(res ojson.Result) (float64, bool) {
 }
 
 func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.QuotaFetchResponse, error) {
+	var complete bool
+	return mapProbeResponseWithCompleteness(respBytes, mapping, &complete)
+}
+
+func mapProbeResponseWithCompleteness(respBytes []byte, mapping map[string]any, complete *bool) (pluginapi.QuotaFetchResponse, error) {
+	*complete = true
 	out := pluginapi.QuotaFetchResponse{}
 	if planPath, ok := mapping["plan"].(string); ok && planPath != "" {
 		if res := ojson.GetBytesNoCopy(respBytes, planPath); res.Exists() && strings.TrimSpace(res.String()) != "" {
@@ -702,6 +710,7 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 		for _, rg := range rawGroups {
 			gm, okGM := rg.(map[string]any)
 			if !okGM {
+				*complete = false
 				continue
 			}
 			group := pluginapi.QuotaGroup{}
@@ -721,6 +730,9 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 
 			if bucketsPath, okBP := gm["buckets_path"].(string); okBP && bucketsPath != "" {
 				arrayRes := ojson.GetBytesNoCopy(respBytes, bucketsPath)
+				if !arrayRes.IsArray() || len(arrayRes.Array()) == 0 {
+					*complete = false
+				}
 				if arrayRes.IsArray() && len(arrayRes.Array()) > 0 {
 					winKey, _ := gm["window_key"].(string)
 					if winKey == "" {
@@ -759,6 +771,7 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 							}
 						}
 						if !hasFraction {
+							*complete = false
 							continue
 						}
 						bucket := pluginapi.QuotaBucket{
@@ -773,9 +786,13 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 			}
 
 			if rawBuckets, okRB := gm["buckets"].([]any); okRB {
+				if len(rawBuckets) == 0 {
+					*complete = false
+				}
 				for _, rb := range rawBuckets {
 					bm, okBM := rb.(map[string]any)
 					if !okBM {
+						*complete = false
 						continue
 					}
 					var hasFraction bool
@@ -799,6 +816,7 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 						}
 					}
 					if !hasFraction {
+						*complete = false
 						continue
 					}
 					bucket := pluginapi.QuotaBucket{
@@ -830,6 +848,8 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 			}
 			if len(group.Buckets) > 0 {
 				out.Groups = append(out.Groups, group)
+			} else {
+				*complete = false
 			}
 		}
 	}

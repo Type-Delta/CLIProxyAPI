@@ -1038,11 +1038,9 @@ func applyDevinQuotaRestoration(auth, existing *Auth, now time.Time) bool {
 		auth.Unavailable = false
 		auth.NextRetryAfter = time.Time{}
 	}
-	if len(auth.ModelStates) > 0 {
-		updateAggregatedAvailability(auth, now)
-		if auth.Unavailable && auth.Status == StatusActive {
-			auth.Status = StatusError
-		}
+	updateAggregatedAvailability(auth, now)
+	if auth.Unavailable && auth.Status == StatusActive {
+		auth.Status = StatusError
 	}
 	return true
 }

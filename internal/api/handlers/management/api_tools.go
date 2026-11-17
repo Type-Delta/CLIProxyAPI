@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
@@ -167,26 +168,8 @@ func (h *Handler) APICall(c *gin.Context) {
 	switch requestKind {
 	case quotaRequestCacheable:
 		outcome = h.getQuotaCache().do(c.Request.Context(), cacheKey, execute)
-	case quotaRequestCodexConsume, quotaRequestClaudeReset:
-		outcome = execute(c.Request.Context())
-		if outcome.successfulResponse() {
-			h.getQuotaCache().invalidateAuth(cacheKey.authHash)
-			if requestKind == quotaRequestCodexConsume && auth != nil && h.authManager != nil {
-				if _, errReset := h.authManager.ApplyProviderQuotaReportForModels(context.WithoutCancel(c.Request.Context()), auth.ID, false, time.Time{}, codexStandardModelIDs(auth.ID, nil)); errReset != nil {
-					log.WithError(errReset).WithField("auth_id", auth.ID).Debug("failed to clear Codex standard cooldown after reset-credit consume")
-				}
-			}
-		}
 	default:
 		outcome = execute(c.Request.Context())
-	}
-	if requestKind == quotaRequestCacheable && outcome.successfulResponse() && !outcome.fromCache && auth != nil {
-		h.syncUsageProbeCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
-		h.syncCodexUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
-		h.syncClaudeUsageCooldown(context.WithoutCancel(c.Request.Context()), auth, parsedURL, []byte(outcome.response.Body))
-	}
-	if outcome.successfulResponse() && auth != nil && strings.EqualFold(method, http.MethodGet) {
-		h.applyQuotaReserveFromQuotaRead(auth, parsedURL, []byte(outcome.response.Body))
 	}
 
 	if isReadOnlyManagement(c) {
@@ -198,6 +181,17 @@ func (h *Handler) APICall(c *gin.Context) {
 func (h *Handler) executeAPICall(ctx context.Context, method, urlStr, authIndex string, auth *coreauth.Auth, requestProxyURL string, requestHeaders map[string]string, data string) quotaCallOutcome {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	var quotaEpoch uint64
+	if h.authManager != nil && auth != nil {
+		quotaEpoch = h.authManager.QuotaObservationEpoch(auth.ID)
+		ctx = h.authManager.CaptureQuotaObservation(ctx, auth.ID)
+	}
+	var claudeResetScope claudeResetGrantScope
+	if h.authManager != nil && auth != nil {
+		if target, errParse := url.Parse(urlStr); errParse == nil && classifyQuotaRequest(auth, method, target, data) == quotaRequestClaudeReset {
+			claudeResetScope = h.getQuotaCache().claudeResetScope(quotaAuthIdentityHash(auth), data, quotaEpoch)
+		}
 	}
 	reqHeaders := make(map[string]string, len(requestHeaders))
 	for key, value := range requestHeaders {
@@ -318,6 +312,33 @@ func (h *Handler) executeAPICall(ctx context.Context, method, urlStr, authIndex 
 			Header:     cloneResponseHeader(resp.Header),
 			Body:       string(respBody),
 		},
+	}
+	if outcome.successfulResponse() && auth != nil {
+		parsedURL := req.URL
+		updateCtx := context.WithoutCancel(ctx)
+		requestKind := classifyQuotaRequest(auth, method, parsedURL, data)
+		if requestKind == quotaRequestCodexConsume {
+			h.getQuotaCache().invalidateAuth(quotaAuthIdentityHash(auth))
+		}
+		switch requestKind {
+		case quotaRequestClaudeReset:
+			result := ojson.GetBytes(respBody, "result").String()
+			h.reconcileClaudeReset(updateCtx, auth, claudeResetScope, result, data, requestProxyURL, requestHeaders)
+		case quotaRequestCodexConsume:
+			if h.authManager != nil {
+				if _, errReset := h.authManager.ApplyProviderQuotaReset(updateCtx, auth.ID, h.codexStandardModelIDs(auth, nil), []string{"five-hour", "weekly", "monthly"}); errReset != nil {
+					log.WithError(errReset).WithField("auth_id", auth.ID).Warn("failed to clear Codex cooldown after manual reset")
+				}
+			}
+		case quotaRequestCacheable:
+			if h.authManager != nil && exactQuotaURL(parsedURL, claudeResetGrantsQuotaURL) {
+				outcome.claudeResetGrants = parseClaudeResetGrantCatalog(respBody, quotaEpoch)
+				if outcome.claudeResetGrants == nil {
+					outcome.claudeResetGrants = &claudeResetGrantCatalog{epoch: quotaEpoch}
+				}
+			}
+			h.syncQuotaRead(updateCtx, auth, parsedURL, respBody)
+		}
 	}
 	if ctx.Value(readOnlyQuotaContextKey{}) == true {
 		sanitizeReadOnlyQuota(&outcome, auth, token)

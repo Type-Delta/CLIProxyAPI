@@ -75,7 +75,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	default:
 		trace.Strategy = "custom"
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	capture.eligibility = eligibility
 	defaultRetry := m.retrySettingsDefault()
 	if snapshot, ok := ctx.Value(routingRetryDefaultKey{}).(int); ok {
@@ -275,7 +275,7 @@ func (e authSelectionEligibility) setRejectedGate(candidate *routing.Candidate, 
 	if e.quotaReserve == nil || !withoutReserve.allows(auth) {
 		return
 	}
-	if until, held := e.quotaReserve.quotaReserveHeldUntil(auth, e.clientKeyID); held {
+	if until, held := e.quotaReserve.quotaReserveHeldUntil(auth, e.clientKeyID, e.requestModel); held {
 		candidate.Gate = routing.GateReserve
 		if !until.IsZero() {
 			candidate.UntilMs = until.UnixMilli()

@@ -27,13 +27,17 @@ type CooldownStateRecord struct {
 	Quota          QuotaState `json:"quota,omitempty"`
 	LastError      *Error     `json:"last_error,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`
-	// IndependentState preserves a model's own cooldown beneath an
-	// auth-level credential-quota layer so a restart cannot lose the
-	// distinction and quota restoration keeps reinstate-exactly semantics.
+	// IndependentState preserves a model's own cooldown beneath shared quota.
+	// On auth-level records, it preserves a model-less independent cause
+	// separately from quota and model aggregates.
 	IndependentState *ModelState `json:"independent_state,omitempty"`
 	// CredentialQuotaPropagated preserves wrap provenance for models that
 	// carry no independent layer (e.g. the reporting model itself).
-	CredentialQuotaPropagated bool `json:"credential_quota_propagated,omitempty"`
+	CredentialQuotaPropagated        bool              `json:"credential_quota_propagated,omitempty"`
+	ScopedQuotaPropagated            bool              `json:"scoped_quota_propagated,omitempty"`
+	ScopedQuotaIndependentState      *ModelState       `json:"scoped_quota_independent_state,omitempty"`
+	ScopedQuotaIndependentForceUntil time.Time         `json:"scoped_quota_independent_force_until,omitempty"`
+	ScopedQuotaIndependentSignals    map[string]string `json:"scoped_quota_independent_signals,omitempty"`
 	// CooldownSignals persists bounded rejected quota headers captured when
 	// this cooldown was recorded without touching passive Quota.Signals watermarks.
 	CooldownSignals map[string]string `json:"cooldown_signals,omitempty"`

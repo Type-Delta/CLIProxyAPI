@@ -106,8 +106,8 @@ func (h *Handler) quotaReserveFetch(ctx context.Context, auth *coreauth.Auth, ta
 
 // applyQuotaReserveFromQuotaRead evaluates reserves from a management quota read so a
 // quota-page refresh updates routing without waiting for the next request.
-func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
-	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil || len(coreauth.QuotaReservesForAuth(auth)) == 0 {
+func (h *Handler) applyQuotaReserveFromQuotaRead(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil {
 		return
 	}
 	var (
@@ -116,7 +116,7 @@ func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL 
 	)
 	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
 	case "claude":
-		if !exactQuotaURL(parsedURL, claudeUsageQuotaURL) {
+		if !exactQuotaURL(parsedURL, claudeUsageQuotaURL, claudeResetGrantsQuotaURL) {
 			return
 		}
 		bars, err = claudeQuotaReserveBars(body)
@@ -144,7 +144,7 @@ func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL 
 		return
 	}
 	if err == nil {
-		h.authManager.ApplyQuotaReserveBars(auth, bars)
+		h.authManager.ApplyQuotaReserveBarsWithContext(ctx, auth, bars)
 	}
 }
 
@@ -364,6 +364,9 @@ func zaiQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	}
 	bars := make([]coreauth.QuotaReserveBar, 0, len(response.Data.Limits))
 	for index, limit := range response.Data.Limits {
+		if limit.Percentage == nil {
+			continue
+		}
 		id := fmt.Sprintf("zai-window-%d", index)
 		switch limit.Unit {
 		case 3:
@@ -371,7 +374,7 @@ func zaiQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 		case 6:
 			id = fmt.Sprintf("zai-week-%d", limit.Number)
 		}
-		bar := coreauth.QuotaReserveBar{ID: id, RemainingPercent: clampRemaining(100 - limit.Percentage)}
+		bar := coreauth.QuotaReserveBar{ID: id, RemainingPercent: clampRemaining(100 - *limit.Percentage)}
 		if limit.NextResetTime > 0 {
 			bar.ResetAt = time.UnixMilli(limit.NextResetTime).UTC()
 		}

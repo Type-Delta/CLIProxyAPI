@@ -74,7 +74,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 	eligible := make([]*Auth, 0, len(trace.Candidates))
 	var affinityCandidates []*Auth
 	affinity, affinityEnabled := selector.(*SessionAffinitySelector)
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	for _, c := range trace.Candidates {
 		a := m.auths[c.ID]
 		if a == nil {

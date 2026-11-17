@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -418,6 +419,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	cooldownStateChanged := false
 	now := time.Now()
 	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
+		if !credChanged || mode == updateModeRefresh {
+			auth.independentCooldown = existing.independentCooldown.Clone()
+		}
 		if isFileSnapshot {
 			auth.ModelStates = existing.ModelStates
 			auth.LastRefreshedAt = existing.LastRefreshedAt
@@ -448,6 +452,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.forceCooldownUntil = existing.forceCooldownUntil
 			auth.credQuotaForceUntil = existing.credQuotaForceUntil
 			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			auth.independentCooldown = existing.independentCooldown.Clone()
 		}
 		if credChanged || mode == updateModeRefresh {
 			applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
@@ -476,6 +481,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 					auth.NextRetryAfter = time.Time{}
 					auth.cooldownRecordedSeq = 0
 					auth.forceCooldownUntil = time.Time{}
+					auth.independentCooldown = nil
 					auth.LastError = nil
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
@@ -540,16 +546,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.forceCooldownUntil = existing.forceCooldownUntil
 			auth.credQuotaForceUntil = existing.credQuotaForceUntil
 			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			auth.independentCooldown = existing.independentCooldown.Clone()
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status
 			}
-		} else if !credChanged && mode == updateModeReplace && existing.forceCooldownUntil.After(now) && !auth.NextRetryAfter.After(now) {
+		} else if !credChanged && mode == updateModeReplace && effectiveAuthCooldownUntil(existing).After(now) && !auth.NextRetryAfter.After(now) {
 			auth.Unavailable = existing.Unavailable
 			auth.NextRetryAfter = existing.NextRetryAfter
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
 			auth.forceCooldownUntil = existing.forceCooldownUntil
 			auth.credQuotaForceUntil = existing.credQuotaForceUntil
 			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			auth.independentCooldown = existing.independentCooldown.Clone()
 			if auth.LastError == nil && existing.LastError != nil {
 				auth.LastError = cloneError(existing.LastError)
 			}
@@ -733,6 +741,9 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
+	m.cooldownUnregistered = slices.DeleteFunc(m.cooldownUnregistered, func(record CooldownStateRecord) bool {
+		return strings.TrimSpace(record.AuthID) == id
+	})
 	m.notifyAuthChangeLocked(id)
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)
@@ -754,6 +765,9 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 	}
 	m.authEpochs[id]++
 	tombstoneEpoch := m.authEpochs[id]
+	recovery := m.beginQuotaRecoveryPublicationLocked(id, []string{}, false)
+	recovery.removedVersion = recovery.recoveryVersion
+	defer m.finishQuotaResetPublication(id)
 	m.mu.Unlock()
 	m.forgetWeightedAuthUpTo(id, tombstoneEpoch, ^uint64(0))
 	releaseMutation()

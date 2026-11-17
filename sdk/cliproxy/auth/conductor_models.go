@@ -278,6 +278,10 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	}
 
 	var authFallbackUntil time.Time
+	if until := effectiveAuthCooldownUntil(auth); until.After(now) && auth.NextRetryAfter.After(now) {
+		isSuspended = true
+		authFallbackUntil = until
+	}
 	if len(auth.ModelStates) == 0 {
 		// With no per-model states, scheduling falls back to the credential-wide
 		// cooldown (isAuthBlockedForModel); the projection must agree with it.
@@ -322,6 +326,8 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
 	}
 	if openEnded || !isSuspended {
 		suspendUntil = time.Time{}
+	} else if authFallbackUntil.After(suspendUntil) {
+		suspendUntil = authFallbackUntil
 	}
 
 	return registry.ClientModelProjection{

@@ -185,6 +185,8 @@ type resultPolicyHolder struct {
 type Manager struct {
 	store                     Store
 	cooldownStore             CooldownStateStore
+	cooldownReadStore         CooldownStateStore
+	cooldownUnregistered      []CooldownStateRecord
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
@@ -196,13 +198,15 @@ type Manager struct {
 	syncSchedulerMu           sync.Mutex
 	// executionSeq stamps upstream dispatches with a monotonic sequence used
 	// to reject cooldown clears from executions dispatched before the cooldown.
-	executionSeq       atomic.Uint64
-	structuralEpoch    atomic.Uint64
-	syncedVersion      atomic.Uint64
-	auths              map[string]*Auth
-	authEpochs         map[string]uint64
-	authChangeWatchers map[string]map[chan struct{}]struct{}
-	scheduler          *authScheduler
+	executionSeq           atomic.Uint64
+	structuralEpoch        atomic.Uint64
+	syncedVersion          atomic.Uint64
+	auths                  map[string]*Auth
+	authEpochs             map[string]uint64
+	quotaObservationEpochs map[string]uint64
+	quotaResetStates       map[string]*quotaResetState
+	authChangeWatchers     map[string]map[chan struct{}]struct{}
+	scheduler              *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// quotaRecoveryRefresher synchronously refreshes provider quota before
