@@ -3145,14 +3145,24 @@ serving (Home mode, or no management secret). These re-checks do not
 count as failed logins, so revoked streams cannot get their address banned. Credential labels are
 read from the auth manager when each frame is built, so a credential renamed during a long request
 shows its new name, and the delta resends a request whose decorated key or credential label changed.
+The label is read under the manager's read lock without cloning the auth entry
+(`Manager.CredentialLabelByID`). Finished requests are kept in end order, so retention and the
+200-request cap drop from the front instead of scanning and sorting the registry on every request
+start and finish; a clock that steps back slides a finishing request into place, a reused
+request ID replaces its finished entry without counting twice, a request started already finished
+joins the same order with its own copy of the end time, and pruning clears the slots it vacates so dropped requests are not kept
+reachable.
 
 **Implementation evidence:** `internal/livehandle/` (`registry.go`, `stream.go`),
 `internal/api/server_middleware.go`, `internal/api/server_management_v8.go`,
 `internal/api/handlers/management/{live_requests.go,management_keys.go}`,
-`sdk/cliproxy/auth/{conductor_execution.go,types.go}`, and
+`sdk/cliproxy/auth/{conductor_execution.go,conductor_selection.go,types.go}`, and
 `internal/runtime/executor/helps/{usage_helpers.go,output_observation.go}`. Registry, middleware,
 handler, and reporter tests cover lifecycle, late usage, post-header stream failure, request totals
-beyond the attempt window, retention, privacy, and the read-only routes. Deterministic race-enabled
+beyond the attempt window, retention, the cap evicting the earliest end across a clock step back and
+a reused ID, requests started already finished counting toward the cap and retention with no
+dropped request left referenced, labels of removed credentials, privacy, and the read-only routes;
+`BenchmarkLifecycle` measures one request's registry work with the finished window full. Deterministic race-enabled
 stream tests cover session and parent digests, acknowledgements kept at the first answer, and revisions, one snapshot and one shared frame per tick, cached
 full-to-delta consistency, additions, changes, progress-only growth, removals, label updates,
 slow-subscriber eviction, and idle shutdown and restart. A route test revokes the viewer's key
@@ -3162,7 +3172,10 @@ labels; a stream test resends a renamed credential that carries no new revision.
 Management API off mid-stream and expects the stream to close, and a race-enabled test decorates
 while API keys are edited.
 
-**Recorded validation:** focused registry, stream, reporter, conductor, API, and management handler
+**Recorded validation:** with 200 finished requests retained and 50 in flight, one request's
+registry work fell from about 55 µs, 9.8 KB, and 36 allocations to 1.5 µs, 776 B, and 14 allocations
+(`BenchmarkLifecycle`, i7-7700); the cap test fails with either the reorder or the reused-ID
+handling removed. Focused registry, stream, reporter, conductor, API, and management handler
 tests pass with `-race`, and the progress test fails if output growth advances the shape. With the
 panel bundle built, the full suite passes apart from two load-sensitive tests
 (`TestPricingDiscoveryThroughManagementAPI`, `TestC4bBulkRetentionDropsMonthsAndKeepsReceipts`)

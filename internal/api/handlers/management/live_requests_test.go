@@ -85,6 +85,12 @@ func TestLiveRequestsShowCurrentCredentialLabels(t *testing.T) {
 	if got := snapshot.Requests[0].Attempts[0].Credential.Label; got != "After" {
 		t.Fatalf("credential label %q", got)
 	}
+	// A credential removed since keeps the label the attempt started with.
+	gone := livehandle.Snapshot{Requests: []livehandle.Request{{ID: "r", Attempts: []livehandle.Attempt{{AuthID: "removed", Credential: livehandle.Credential{Label: "Kept"}}}}}}
+	h.decorateLiveRequests(&gone)
+	if got := gone.Requests[0].Attempts[0].Credential.Label; got != "Kept" {
+		t.Fatalf("removed credential label %q", got)
+	}
 }
 
 func TestLiveRequestDecorationDoesNotRaceKeyEdits(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func (h *Handler) GetLiveRequests(c *gin.Context) {
@@ -39,8 +38,8 @@ func (h *Handler) decorateLiveRequests(snapshot *livehandle.Snapshot) {
 		}
 		for j := range req.Attempts {
 			attempt := &req.Attempts[j]
-			if auth, ok := manager.GetByID(attempt.AuthID); ok && attempt.AuthID != "" {
-				attempt.Credential.Label = coreauth.CredentialLabel(auth)
+			if label, ok := manager.CredentialLabelByID(attempt.AuthID); ok {
+				attempt.Credential.Label = label
 			}
 		}
 	}

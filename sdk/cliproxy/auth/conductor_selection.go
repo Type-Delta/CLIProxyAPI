@@ -2509,6 +2509,20 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+// CredentialLabelByID returns the management display label of an auth entry without cloning it.
+func (m *Manager) CredentialLabelByID(id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	auth, ok := m.auths[id]
+	if !ok {
+		return "", false
+	}
+	return CredentialLabel(auth), true
+}
+
 // PublishIfRegistrationCurrent serializes the final model-registration
 // publication against identity mutations for this auth, then calls publish
 // only if the manager still holds auth with the same model-registration

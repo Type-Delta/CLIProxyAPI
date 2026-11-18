@@ -4,6 +4,7 @@ package livehandle
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -76,11 +77,13 @@ type Snapshot struct {
 	Requests         []Request `json:"requests"`
 }
 type Registry struct {
-	revision     uint64
-	streamOnce   sync.Once
-	stream       *Broadcaster
-	mu           sync.Mutex
-	requests     map[string]*Request
+	revision   uint64
+	streamOnce sync.Once
+	stream     *Broadcaster
+	mu         sync.Mutex
+	requests   map[string]*Request
+	// ended holds the finished requests in the map, earliest EndedAt first.
+	ended        []*Request
 	nowFunc      func() time.Time
 	droppedUntil time.Time
 }
@@ -93,25 +96,30 @@ type Handle struct {
 func NewRegistry() *Registry {
 	return &Registry{requests: make(map[string]*Request), nowFunc: time.Now}
 }
+
+// prune drops finished requests past retention, then the earliest-ended beyond the cap.
 func (r *Registry) prune(now time.Time) {
-	finished := make([]*Request, 0)
-	for id, req := range r.requests {
-		if req.EndedAt != nil {
-			if !req.EndedAt.Add(Retention).After(now) {
-				delete(r.requests, id)
-			} else {
-				finished = append(finished, req)
-			}
+	n := 0
+	for ; n < len(r.ended); n++ {
+		req := r.ended[n]
+		expired := !req.EndedAt.Add(Retention).After(now)
+		if !expired && len(r.ended)-n <= maxFinished {
+			break
 		}
-	}
-	sort.Slice(finished, func(i, j int) bool { return finished[i].EndedAt.Before(*finished[j].EndedAt) })
-	for len(finished) > maxFinished {
-		req := finished[0]
-		finished = finished[1:]
 		delete(r.requests, req.ID)
-		if until := req.EndedAt.Add(Retention); until.After(r.droppedUntil) {
+		if until := req.EndedAt.Add(Retention); !expired && until.After(r.droppedUntil) {
 			r.droppedUntil = until
 		}
+	}
+	// Delete clears the vacated slots, so dropped requests can be collected.
+	r.ended = slices.Delete(r.ended, 0, n)
+}
+
+// addEnded files a finished request in end order; a clock that stepped back slides it into place.
+func (r *Registry) addEnded(req *Request) {
+	r.ended = append(r.ended, req)
+	for i := len(r.ended) - 1; i > 0 && req.EndedAt.Before(*r.ended[i-1].EndedAt); i-- {
+		r.ended[i], r.ended[i-1] = r.ended[i-1], r.ended[i]
 	}
 }
 func (r *Registry) Start(req Request) {
@@ -126,9 +134,23 @@ func (r *Registry) Start(req Request) {
 		req.ReceivedAt = now
 	}
 	req.ReceivedAt = req.ReceivedAt.UTC()
+	if req.EndedAt != nil {
+		// A copy, so the caller cannot move the request within the end order later.
+		ended := req.EndedAt.UTC()
+		req.EndedAt = &ended
+	}
 	req.Attempts = []Attempt{}
 	r.bump(&req)
+	// A reused ID replaces its finished request, which leaves the cap's count too.
+	if old := r.requests[req.ID]; old != nil && old.EndedAt != nil {
+		if i := slices.Index(r.ended, old); i >= 0 {
+			r.ended = slices.Delete(r.ended, i, i+1)
+		}
+	}
 	r.requests[req.ID] = &req
+	if req.EndedAt != nil {
+		r.addEnded(&req)
+	}
 }
 func (r *Registry) SetModel(id, model string) {
 	r.mu.Lock()
@@ -266,6 +288,7 @@ func (r *Registry) Finish(id, outcome string, status int) {
 		req.EndedAt = &now
 		req.State = outcome
 		req.HTTPStatus = status
+		r.addEnded(req)
 		for i := range req.Attempts {
 			a := &req.Attempts[i]
 			if a.EndedAt == nil {
@@ -277,6 +300,9 @@ func (r *Registry) Finish(id, outcome string, status int) {
 	}
 	r.prune(now)
 }
+
+// Snapshot copies the registry's requests. Their time and token pointers still share values with
+// the registry, which never changes them in place; callers must treat them as read-only.
 func (r *Registry) Snapshot() Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()

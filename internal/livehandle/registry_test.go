@@ -58,6 +58,92 @@ func TestCapsAndRetention(t *testing.T) {
 	}
 }
 
+func TestFinishedCapEvictsEarliestEnd(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	r := NewRegistry()
+	r.nowFunc = func() time.Time { return now }
+	finish := func(id string, at time.Time) {
+		now = at
+		r.Start(Request{ID: id})
+		r.Finish(id, "finished", 200)
+	}
+	for i := 0; i < 199; i++ {
+		finish(fmt.Sprint(i), base.Add(time.Duration(i+10)*time.Millisecond))
+	}
+	// The clock stepped back: this request ended before every other one.
+	finish("early", base)
+	// A reused ID replaces its finished request instead of counting twice.
+	finish("5", base.Add(300*time.Millisecond))
+	if s := r.Snapshot(); len(s.Requests) != 200 || s.Truncated {
+		t.Fatalf("before cap: %d truncated %v", len(s.Requests), s.Truncated)
+	}
+	finish("new", base.Add(301*time.Millisecond))
+	s := r.Snapshot()
+	ids := map[string]bool{}
+	for _, req := range s.Requests {
+		ids[req.ID] = true
+	}
+	if len(s.Requests) != 200 || !s.Truncated || ids["early"] || !ids["0"] || !ids["5"] || !ids["new"] {
+		t.Fatalf("cap kept %d (truncated %v), early %v, 0 %v, 5 %v, new %v", len(s.Requests), s.Truncated, ids["early"], ids["0"], ids["5"], ids["new"])
+	}
+}
+
+func TestRequestsStartedFinishedCountTowardCapAndRetention(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.nowFunc = func() time.Time { return now }
+	for i := 0; i < maxFinished+1; i++ {
+		ended := now.Add(time.Duration(i) * time.Millisecond)
+		r.Start(Request{ID: fmt.Sprint(i), EndedAt: &ended, State: "failed"})
+		// The registry keeps its own copy of the end time.
+		ended = ended.Add(time.Hour)
+	}
+	now = now.Add(time.Second)
+	if s := r.Snapshot(); len(s.Requests) != maxFinished || !s.Truncated {
+		t.Fatalf("cap: %d truncated %v", len(s.Requests), s.Truncated)
+	}
+	now = now.Add(Retention)
+	if s := r.Snapshot(); len(s.Requests) != 0 || len(r.ended) != 0 {
+		t.Fatalf("retention: %d left, %d filed", len(s.Requests), len(r.ended))
+	}
+	// Pruning clears the slots it vacates, so expired requests are not kept reachable.
+	for _, req := range r.ended[:cap(r.ended)] {
+		if req != nil {
+			t.Fatalf("expired request %s still referenced", req.ID)
+		}
+	}
+}
+
+// BenchmarkLifecycle is one proxied request's registry work with the finished window full.
+func BenchmarkLifecycle(b *testing.B) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := NewRegistry()
+	r.nowFunc = func() time.Time { return now }
+	for i := 0; i < maxFinished+10; i++ {
+		id := fmt.Sprint("done", i)
+		r.Start(Request{ID: id})
+		r.Finish(id, "finished", 200)
+	}
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprint("live", i)
+		r.Start(Request{ID: id})
+		r.StartAttempt(id, Attempt{}, "", "").Output(1, now)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		now = now.Add(time.Microsecond)
+		id := fmt.Sprint("x", i)
+		r.Start(Request{ID: id})
+		h := r.StartAttempt(id, Attempt{}, "session", "")
+		h.Ack(now)
+		h.Output(64, now)
+		h.Finish("finished", 200, 10, 10)
+		r.Finish(id, "finished", 200)
+	}
+}
+
 func TestLateUsageAfterRequestEnd(t *testing.T) {
 	r := NewRegistry()
 	r.Start(Request{ID: "id"})
