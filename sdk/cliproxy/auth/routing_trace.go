@@ -75,6 +75,8 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	}
 	eligibility := m.eligibilityForRequest(ctx, opts)
 	capture.eligibility = eligibility
+	withoutReserve := eligibility
+	withoutReserve.quotaReserve = nil
 	defaultRetry := m.retrySettingsDefault()
 	if snapshot, ok := ctx.Value(routingRetryDefaultKey{}).(int); ok {
 		defaultRetry = snapshot
@@ -100,8 +102,8 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 			c.Gate = routing.GateDisabled
 		case pin != "" && a.ID != pin:
 			c.Gate = routing.GatePinned
-		case !eligibility.allows(a):
-			eligibility.setRejectedGate(&c, a)
+		case !withoutReserve.allows(a):
+			c.Gate = routing.GatePolicy
 		case strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(reg, a, model):
 			c.Gate = routing.GateUnsupported
 		case hasUnauthorizedAuthFailure(a) || expired:
@@ -116,6 +118,8 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 			}
 		case blocked:
 			c.Gate = routing.GatePolicy
+		case !eligibility.allows(a):
+			eligibility.setRejectedGate(&c, a)
 		case weighted && authWeight(a) <= 0:
 			c.Gate = routing.GateWeight
 		case trace.RetryRound > 0 && effectiveRequestRetryLimit(a, defaultRetry) < trace.RetryRound:
@@ -239,13 +243,15 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 	blocked, reason, until := isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, model), now)
 	expiresAt, hasExpiry := auth.AccessTokenExpirationTime()
 	expired := hasExpiry && !expiresAt.IsZero() && !expiresAt.After(now)
+	withoutReserve := c.eligibility
+	withoutReserve.quotaReserve = nil
 	switch {
 	case auth.Disabled || reason == blockReasonDisabled:
 		candidate.Gate = routing.GateDisabled
 	case strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(registry.GetGlobalRegistry(), auth, model):
 		candidate.Gate = routing.GateUnsupported
-	case !allow(auth):
-		c.eligibility.setRejectedGate(candidate, auth)
+	case !allow(auth) && !withoutReserve.allows(auth):
+		candidate.Gate = routing.GatePolicy
 	case hasUnauthorizedAuthFailure(auth) || expired:
 		candidate.Gate = routing.GateUnauthorized
 	case blocked && (reason == blockReasonCooldown || !until.IsZero()):
@@ -258,6 +264,8 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 		}
 	case blocked:
 		candidate.Gate = routing.GatePolicy
+	case !allow(auth):
+		c.eligibility.setRejectedGate(candidate, auth)
 	}
 }
 

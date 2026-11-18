@@ -254,3 +254,79 @@ func TestRoutingTraceNamesQuotaReserveGate(t *testing.T) {
 		t.Fatalf("policy and reserve candidate = %+v, want gate %q", got, routing.GatePolicy)
 	}
 }
+
+func TestRoutingTraceCooldownPrecedesQuotaReserve(t *testing.T) {
+	for _, revalidate := range []bool{false, true} {
+		for _, test := range []struct {
+			name     string
+			cooldown bool
+			quota    bool
+			policy   bool
+			wantGate string
+		}{
+			{name: "reserve only", wantGate: routing.GateReserve},
+			{name: "cooldown and reserve", cooldown: true, wantGate: routing.GateCooldown},
+			{name: "credential quota and reserve", cooldown: true, quota: true, wantGate: routing.GateQuota},
+			{name: "policy and cooldown and reserve", cooldown: true, policy: true, wantGate: routing.GatePolicy},
+		} {
+			phase := "initial/"
+			if revalidate {
+				phase = "revalidated/"
+			}
+			t.Run(phase+test.name, func(t *testing.T) {
+				manager := NewManager(nil, nil, nil)
+				auth := &Auth{ID: "trace-cooldown-reserve", Provider: "claude", Status: StatusActive,
+					Attributes: map[string]string{AttributeQuotaReserve: `{"weekly":30}`}}
+				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+					t.Fatal(errRegister)
+				}
+				ctx := context.Background()
+				if test.policy && !revalidate {
+					ctx = withRequiredAuthKind(ctx, "oauth")
+				}
+				ctx, _ = routing.WithTraceHolder(ctx)
+				var capture *routingCapture
+				if revalidate {
+					ctx, capture = manager.beginRoutingCapture(ctx, []string{"claude"}, "", cliproxyexecutor.Options{}, nil)
+					if capture.trace.Candidates[0].Gate != "" {
+						t.Fatal("credential must initially pass the gate")
+					}
+					if test.policy {
+						capture.eligibility.requiredKind = "oauth"
+					}
+				}
+				reserveReset := time.Now().Add(2 * time.Hour).Truncate(time.Millisecond)
+				cooldownReset := reserveReset.Add(-time.Hour)
+				manager.mu.Lock()
+				live := manager.auths[auth.ID]
+				if test.cooldown {
+					live.Unavailable = true
+					live.NextRetryAfter = cooldownReset
+					if test.quota {
+						live.Quota = QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: cooldownReset}
+					}
+				}
+				manager.mu.Unlock()
+				manager.ApplyQuotaReserveBars(live, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: reserveReset}})
+				if revalidate {
+					manager.mu.RLock()
+					captureRevalidatedGate(ctx, auth.ID, live, "", manager, capture.eligibility.allows)
+					manager.mu.RUnlock()
+				} else {
+					_, capture = manager.beginRoutingCapture(ctx, []string{"claude"}, "", cliproxyexecutor.Options{}, nil)
+				}
+				got := capture.trace.Candidates[0]
+				wantUntil := reserveReset.UnixMilli()
+				if test.cooldown {
+					wantUntil = cooldownReset.UnixMilli()
+				}
+				if test.policy {
+					wantUntil = 0
+				}
+				if got.Gate != test.wantGate || got.UntilMs != wantUntil {
+					t.Fatalf("gate = %q until %d, want %q until %d", got.Gate, got.UntilMs, test.wantGate, wantUntil)
+				}
+			})
+		}
+	}
+}

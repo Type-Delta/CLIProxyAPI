@@ -2196,7 +2196,11 @@ a warning. Rules-only config changes do not recreate the selector, so affinity c
 When CPAUK collects analytics, every selection records a versioned routing trace (candidates with
 gate reasons, matched rules with rendered conditions and status, strategy tier, affinity state,
 pick, and decider). A credential withheld only by its quota reserve reports gate `reserve` with
-the reserve's reset time instead of the generic `policy`. The trace travels on the usage record, is stored with the attempt's event in
+the reserve's reset time instead of the generic `policy`. Active cooldown and credential-quota
+gates take precedence over reserves, so a simultaneous reserve does not hide the cooldown reason
+or replace its deadline. This applies to initial capture and quota-refresh revalidation, including
+dry runs. Previously stored events keep their original trace. This changes diagnostics only;
+credential eligibility and reserve enforcement are unchanged. The trace travels on the usage record, is stored with the attempt's event in
 ClickHouse `analytics_events.routing_trace_json` as nullable String, with candidate IDs replaced
 by credential pseudonyms. `GET /v8/management/analytics/events/:attempt_id` returns the trace
 with labels resolved from loaded credentials. `GET /v8/management/routing/credentials` lists routable
@@ -2226,7 +2230,13 @@ CPAMC bundle/source revision mismatch and an intermittent
 `TestXAIWebsockets_KeepalivePingDuringUpload_WithSession` failure, which passed in isolation.
 `go build ./...`, the server compile check, `go vet ./...`, and formatting checks passed.
 
-**Last updated:** 2026-10-28
+Cooldown/reserve precedence regression tests first reproduced `reserve` hiding active cooldowns
+and credential-quota deadlines in both initial capture and revalidation. They now pass, including
+reserve-only and policy-precedence cases. Validation on 2026-11-18 passed
+`go test ./sdk/cliproxy/auth ./sdk/cliproxy/routing ./internal/api/handlers/management -count=1`,
+the server compile check, gofmt, and `git diff --check`.
+
+**Last updated:** 2026-11-18
 
 ### DL062 — Embedded agent documentation and API discovery
 
