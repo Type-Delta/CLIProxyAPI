@@ -2,8 +2,8 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"maps"
 	"reflect"
 	"strings"
@@ -362,7 +362,7 @@ func TestRoutingTraceHolderPreservesExecutionMetadata(t *testing.T) {
 		if traced {
 			ctx, _ = routing.WithTraceHolder(ctx)
 		}
-		opts := ex.Options{SourceFormat: trans.FormatOpenAI, OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{ex.CallerScopeMetadataKey: "compare-caller"}}
+		opts := ex.Options{SourceFormat: trans.FormatOpenAI, OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{ex.CallerScopeMetadataKey: "compare-caller", ex.RequestIDMetadataKey: "compare-request"}}
 		if _, err := m.Execute(ctx, []string{provider}, ex.Request{Model: model}, opts); err != nil {
 			t.Fatal(err)
 		}

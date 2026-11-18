@@ -73,10 +73,10 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	helps.NormalizeClaudeToolPropertyNamesDoc(doc)
 	sanitizeClaudeMessagesForClaudeUpstreamWithDebugDoc(ctx, doc, baseModel, helps.APIKeyModelIsCompat(req))
 	applyClaudePreservedThinkingBindingDoc(doc)
+	stripPromptCacheOptionsDoc(doc)
 	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	helps.FinalizePayloadDoc(ctx, doc)
-	stripPromptCacheOptionsDoc(doc)
 	body = doc.Bytes()
 	if errValidate := validateClaudeTokenCountRequest(body); errValidate != nil {
 		return cliproxyexecutor.Response{}, errValidate
@@ -294,10 +294,10 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
 	helps.FinalizePayloadDoc(ctx, doc)
-	// Body betas are SDK transport options. Lift only the final configured value.
+	// Convert final configured betas to headers without changing business semantics.
 	extraBetas, _ := extractAndRemoveBetasDoc(doc)
+	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
 	extraBetas = append(extraBetas, claudeTokenCountingBeta)
-	stripPromptCacheOptionsDoc(doc)
 	body = doc.Bytes()
 	if errMidSystem := validateClaudeMidSystemMessageModel(body, confirmedClaudeCode, directAnthropic); errMidSystem != nil {
 		return cliproxyexecutor.Response{}, errMidSystem

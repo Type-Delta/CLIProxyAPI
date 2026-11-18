@@ -19,6 +19,12 @@ const RequestPathMetadataKey = "request_path"
 // (never the raw key). Quota-reserve bypass lists match against it.
 const ClientKeyIDMetadataKey = "client_key_id"
 
+// RequestIDMetadataKey stores the host request lifecycle identifier in Options.Metadata.
+const RequestIDMetadataKey = "request_id"
+
+// TraceIDMetadataKey stores the inbound request trace identifier in Options.Metadata.
+const TraceIDMetadataKey = "trace_id"
+
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 
@@ -38,6 +44,8 @@ const GenerateMetadataKey = "generate"
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// ExcludedAuthIDsMetadataKey excludes specific auth IDs from selection for the current attempt.
+	ExcludedAuthIDsMetadataKey = "excluded_auth_ids"
 	// SelectionIDMetadataKey stores the per-selection ID generated for a plugin scheduler pick.
 	SelectionIDMetadataKey = "selection_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.

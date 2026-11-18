@@ -133,7 +133,7 @@ func TestIssue7442_DevinEmptyCompletionFailsOverWithoutCredentialCooldown(t *tes
 				capture := &issue7442UsageCapture{prefix: prefix, records: make(chan coreusage.Record, 8)}
 				coreusage.RegisterNamedPlugin(t.Name(), capture)
 				t.Cleanup(func() {
-					coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+					_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 				})
 
 				var badHits atomic.Int32
@@ -441,7 +441,7 @@ func TestIssue7442_DevinDanglingStreamCanceledDoesNotEmitCompletedOrRecordSucces
 		capture := &issue7442UsageCapture{prefix: prefix, records: make(chan coreusage.Record, 4)}
 		coreusage.RegisterNamedPlugin(t.Name(), capture)
 		t.Cleanup(func() {
-			coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+			_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 		})
 
 		headersFlushed := make(chan struct{})
@@ -528,7 +528,7 @@ func TestIssue7442_DevinDanglingStreamCanceledDoesNotEmitCompletedOrRecordSucces
 		capture := &issue7442UsageCapture{prefix: prefix, records: make(chan coreusage.Record, 4)}
 		coreusage.RegisterNamedPlugin(t.Name(), capture)
 		t.Cleanup(func() {
-			coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+			_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 		})
 
 		var textFrame1, textFrame2 []byte
@@ -621,7 +621,7 @@ func TestIssue7442_DevinDanglingStreamCanceledDoesNotEmitCompletedOrRecordSucces
 		capture := &issue7442UsageCapture{prefix: prefix, records: make(chan coreusage.Record, 4)}
 		coreusage.RegisterNamedPlugin(t.Name(), capture)
 		t.Cleanup(func() {
-			coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+			_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 		})
 
 		var thoughtFrame, textFrame []byte
@@ -993,7 +993,7 @@ func TestIssue7442_DevinDeclaredApplyPatchPreservesEmptyCompletionAndQuotaErrors
 				capture := &issue7442UsageCapture{prefix: prefix, records: make(chan coreusage.Record, 4)}
 				coreusage.RegisterNamedPlugin(t.Name(), capture)
 				t.Cleanup(func() {
-					coreusage.RegisterNamedPlugin(t.Name(), multiProviderNoopUsagePlugin{})
+					_ = coreusage.DefaultManager().UnregisterNamed(context.Background(), t.Name())
 				})
 
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

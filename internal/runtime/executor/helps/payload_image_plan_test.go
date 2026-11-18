@@ -1,7 +1,7 @@
 package helps
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"testing"
 
 	"github.com/MoeForge/moego/ojson"
@@ -210,5 +210,30 @@ func TestPayloadImagePlanNestedRoot(t *testing.T) {
 				t.Fatal("parent replacement lost explicit image")
 			}
 		})
+	}
+}
+
+func TestPayloadImageReplacementRetainsEffectsAndFinalFilters(t *testing.T) {
+	original := []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":"original"}],"tools":[{"type":"function","name":"caller"}]}`)
+	for _, paths := range [][]string{nil, {"input.#(role==\"user\")#.content"}} {
+		doc := ojson.NewDoc(original)
+		_ = doc.SetRaw("tools.-1", `{"type":"image_generation"}`)
+		target := config.PayloadReplaceTarget{Role: "user", All: true}
+		if paths != nil {
+			target = config.PayloadReplaceTarget{Paths: paths}
+		}
+		cfg := &config.Config{Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "*"}}, Params: map[string]any{"input.0.content": "hero", "reasoning.effort": "medium"}}},
+			Replace:  []config.PayloadReplaceRule{{Models: []config.PayloadModelRule{{Name: "*", Match: []map[string]any{{"input.0.content": "hero"}}, Exist: []string{"tools.1.type"}}}, Target: target, Replacements: []config.PayloadReplacement{{"hero": "hero!"}}}},
+			Filter:   []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "*", Match: []map[string]any{{"input.0.content": "hero!"}}}}, Params: []string{"tools.0"}}},
+		}}
+		before := PayloadConfigEvaluationCount()
+		touched := ApplyPayloadConfigWithTrackedPathsForExecutorDoc(cfg, "codex", "gpt-6-astra", "codex", "responses", "", doc, original, "gpt-6-astra", "/v1/responses", nil, "input")
+		if PayloadConfigEvaluationCount()-before != 1 || !touched["input"] || doc.Get("input.0.content").String() != "hero!" {
+			t.Fatalf("replacement not retained once: %s", doc.String())
+		}
+		if tools := doc.Get("tools"); !tools.IsArray() || len(tools.Array()) != 0 {
+			t.Fatalf("final filter lost: %s", doc.String())
+		}
 	}
 }

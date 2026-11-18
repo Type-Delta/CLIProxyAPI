@@ -38,17 +38,19 @@ Credential listing, direct parsing, mirrored-store scans, and watcher scans and 
 
 The TUI uses canonical v8 transport with the fork's revision/index key contract, rather than replacing the list as strings. An open form captures its row index and revision, so a background refresh cannot retarget an edit or deletion. Labels, structured limits and unknown limit fields survive key rotation and label edits. `internal/tui/client_revision_merge_test.go` exercises these journeys through actual Gin handlers over HTTP. The new authenticated tunnel adapts entries through `APIKeyStrings()` and remains outside inference quota charging.
 
-**Implementation evidence:** `internal/config/{api_key_entry.go,config_load.go,config_v8.go,parse.go,sdk_config.go}`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/{server.go,server_routes.go,server_reload.go,server_management.go,server_middleware.go}`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,config_v8.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go,i18n.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`. `internal/api/middleware/usage_limit_test.go` covers Gemini discovery, token counting, and generation; `sdk/auth/{filestore.go,filestore_test.go}` cover `FileTokenStore.List`, `TestFileTokenStoreListSkipsForkStateDirectory`, and `TestFileTokenStoreReadSkipsKVState`. `sdk/cliproxy/auth/store.go` defines the shared exclusion used by `internal/store/{gitstore.go,objectstore.go}` and `internal/watcher/{events.go,clients.go,synthesizer/file.go}`; `internal/watcher/synthesizer/runtime_state_test.go` covers scans and direct synthesis.
+The `/muse-code` group shares request admission: model/config discovery GETs are exempt, while search and browser actions consume a request. Relay actions carry the native client-key ID for reserve bypass and do not invent token usage.
 
-**Recorded validation:** KV listing, direct-read, and synthesis regressions pass with credential-shaped JSON in reserved state files. A live temporary server creates `kv.db` without listing it as a credential. Focused config, usage-limit tracker, middleware, management API, server API, TUI, revision-conflict, duplicate-key, compatibility-guard, weak-key, and server-entrypoint tests pass, along with `go test ./...`, the focused race suite, and the required disposable `cmd/server` compile check. Earlier validation also includes a live management-API run against a temporary config covering create, rotate, limit edit, limit clear, rejected limit values, out-of-range index, usage reset, and the resulting `config.yaml`. Gemini discovery and token-counting regressions recorded `RequestsUsed=1` before the fix; the middleware package passes with `-count=1`. A live pre-fix binary listed both state files through `/v8/management/credentials` and `/v8/management/routing/credentials`; the fixed binary lists only the real credential.
+**Implementation evidence:** `internal/api/server_routes.go`. `internal/config/{api_key_entry.go,config_load.go,config_v8.go,parse.go,sdk_config.go}`, `internal/usagelimit/`, `internal/api/middleware/usage_limit.go`, `internal/api/usage_limit.go`, `internal/api/{server.go,server_routes.go,server_reload.go,server_management.go,server_middleware.go}`, `internal/api/handlers/management/{api_key_limits.go,config_lists.go,config_v8.go,handler.go}`, `internal/access/config_access/provider.go`, `internal/tui/{client.go,keys_tab.go,i18n.go}`, `cmd/server/main.go`, `config.example.yaml`, and `docs/sdk-access.md`. `internal/api/middleware/usage_limit_test.go` covers Gemini discovery, token counting, and generation; `sdk/auth/{filestore.go,filestore_test.go}` cover `FileTokenStore.List`, `TestFileTokenStoreListSkipsForkStateDirectory`, and `TestFileTokenStoreReadSkipsKVState`. `sdk/cliproxy/auth/store.go` defines the shared exclusion used by `internal/store/{gitstore.go,objectstore.go}` and `internal/watcher/{events.go,clients.go,synthesizer/file.go}`; `internal/watcher/synthesizer/runtime_state_test.go` covers scans and direct synthesis.
 
-**Last updated:** 2026-11-13
+**Recorded validation:** On 2026-11-18, `internal/api/server_routes.go` attaches admission to inference, Realtime and new Muse actions; discovery stays exempt, trusted token accounting and state/KV exclusions remain; usage-limit, structured-key/TUI HTTP, runtime-state and Muse limit tests pass.
+
+**Last updated:** 2026-11-18
 
 ### DL002 — Two-service web-console Docker deployment
 
 `docker-compose-web.yml` runs CLIProxyAPI behind an Nginx service on port `8317`. Nginx serves the pinned Cli-Proxy-API-Management-Center artifact at `/` and proxies every other path to CLIProxyAPI, including streaming and WebSocket traffic. The public web port can be selected through `CLI_PROXY_WEB_PORT`; `CPA_WEB_NETWORK_SUBNET` selects the narrow bridge CIDR when the default overlaps another Docker network.
 
-`Dockerfile.web` copies CPA's canonical Management Center artifact and manifest into a digest-pinned Nginx image. It does not rebuild the panel from an arbitrary submodule working tree or compare generated artifacts byte-for-byte. The canonical artifact is produced separately from a clean pinned CPAMC checkout, so the web image cannot drift when the source tree contains stale or partially applied panel changes. The deployment retains the existing CLIProxyAPI configuration, auth, log, plugin, and OAuth callback mounts and ports. An optional forwarding override trusts `X-Forwarded-Proto` only from an explicitly configured immediate TLS-proxy CIDR; the default configuration overwrites spoofed forwarding headers.
+`Dockerfile.web` compiles the panel source supplied in the Docker build context with pinned Bun 1.4.3, generates a compatibility manifest using the supplied `CPAMC_COMMIT`, and copies both into a digest-pinned Nginx image. `Dockerfile` uses the same source-build contract for the embedded panel. CI verifies clean submodule pins before building; local Docker builds do not enforce the canonical builder's clean-tree check, so the manifest commit alone does not prove that the source context was clean. The deployment retains the existing CLIProxyAPI configuration, auth, log, plugin, and OAuth callback mounts and ports. An optional forwarding override trusts `X-Forwarded-Proto` only from an explicitly configured immediate TLS-proxy CIDR; the default configuration overwrites spoofed forwarding headers.
 
 Both Compose services pass the exported `CPAMC_COMMIT` to their Docker builds, matching the pinned-panel build workflow.
 
@@ -56,9 +58,9 @@ The fork's Docker publishing workflow builds CPA and the Nginx panel in four par
 
 **Implementation evidence:** `.github/workflows/docker-image.yml`, `Dockerfile`, `docker-compose-web.yml`, `docker-compose-web-published.yml`, `docker-compose.clickhouse-web.yml`, `docker-compose-web-forwarded.yml`, `Dockerfile.web`, `nginx-web.conf`, `nginx-web-forwarded.conf.template`, `docs/analytics-operations.md`, and `docs/management-center.md`.
 
-**Recorded validation:** `actionlint` accepts the publishing workflow. Docker Compose renders the published-image stack with no build definitions on either application service and with ClickHouse private on the shared web network. Both existing Compose configurations render; both digest-pinned images build from the initialized submodule; and a live two-container run serves artifact SHA-256 `e6dcb11e8d76681d6ae678c5b48fcddf4e6fb0272fffbd441c3492d8945e1be6`, proxies health and authenticated analytics, preserves a durable viewer across restart, rejects spoofed forwarded HTTPS by default, and accepts verified forwarding only through the explicit override. A configurable bridge subnet was exercised after the default correctly reported a host-network overlap. The resolved-config assertion failed before the fix; `CPAMC_COMMIT=regression-pin docker compose -f docker-compose-web.yml config --format json` now supplies that value to both services. Both images build with Go 1.26.10 and Bun 1.4.3; in the Compose stack, the panel, `/management.html`, proxy, and management API return 200 through Nginx on loopback. On 2026-11-04, branch runs of the publishing workflow took 101-168 s end to end with a warm Go cache (previous `main` runs: 230-340 s), a local `docker build` without the seed context produced a working image with the panel bundle, and the published multi-platform image ran.
+**Recorded validation:** Read-only Compose assertions confirm that both source builds receive `CPAMC_COMMIT` and the published-image override removes both build definitions. Shell syntax checks pass for the canonical builder and submodule verifier. Dockerfile inspection confirms Bun 1.4.3 source builds and generated manifests. Fresh image builds and deployed-panel checks remain pending.
 
-**Last updated:** 2026-11-04
+**Last updated:** 2026-11-18
 
 ### DL003 — Hermetic Codex Live media relay test
 
@@ -86,7 +88,9 @@ The client prefers `/v8/management/analytics/attempts/:attempt_id`, an equivalen
 whose path avoids privacy-list matches against `/analytics/event`. Older servers retain a
 missing-route fallback to the original event URL. CPAMC DL080 records the reproduction and checks.
 
-**Implementation evidence:** `.gitmodules`, the `web/management-center` gitlink, and the CPAMC `AGENTS.md` and `FORK.md`.
+The coordinated panel sync adopts InfoTips, Auth Files display modes, the Model Rules workspace, combined Plugins views and replacement editors while retaining fork quota rows, scoped sessions and Kiro/plugin OAuth. The 2026-11-18 Merge History entry records the pin and its paired-browser validation.
+
+**Implementation evidence:** `.gitmodules`. `.gitmodules`, the `web/management-center` gitlink, and the CPAMC `AGENTS.md` and `FORK.md`.
 
 **Recorded validation:** CPAMC verification, lint, TypeScript compilation, the Vite production build, and independent desktop/mobile browser journeys cover the Analytics routes, configuration contracts, viewer isolation, responsive layout, and runtime diagnostics. Top Models verification includes 2,138 passing frontend tests, all three modes with synthetic analytics responses on desktop/mobile, the canonical Docker panel build, and a compiled-server smoke check serving the bundled `/management.html` with HTTP 200. Detailed CPAMC validation remains in the submodule's `FORK.md`.
 
@@ -150,7 +154,67 @@ timestamps, and both activity sorts.
 The canonical bundle, management-asset tests, server compile, and live embedded-HTML smoke
 check pass for the updated client.
 
-**Last updated:** 2026-10-26
+The analytics upgrade adds the animated diamond cost radar, shared p95/max/median timing radar and
+scatter controls, token/cost/generation heatmap modes, cost component columns, and line-shaped
+chart tooltip markers. Quick Stats includes accumulated processing time and explained comparisons.
+The key catalog uses client-local lifetime activity dates, recent Active/Idle status, top-model tokens,
+generation duration, requests, and header help. Visible analytics refresh every minute without
+replacing charts or selections. Vite accepts all development hosts for the requested remote mock
+workspace. Provider timings and historical generation remain unavailable where measurements are
+absent; CPAMC does not estimate clock offsets from unrelated online UTC services.
+
+Browser verification covers light/dark cost gradients, radar and heatmap modes, missing timing,
+numeric alignment, comparison interactions, client-timezone dates, automatic refresh, and the
+absence of page overflow or console errors.
+
+The refinement shares Auth Files' segmented control with analytics and moves sortable headers into
+the common Table component. Custom tooltip panels replace native title hints across CPAMC and
+preserve dynamic content, accessible names, focus, and touch behavior. Key catalog header styling
+is corrected. Quick Stats uses full-width trends and places Processing time before the two-column
+Daily average card. Cost summaries sit beside the radar when space permits; paired cards share
+height. All model-cost columns sort, latency metrics explain their measurements, radar axis delays
+are more visible, and refresh spinners no longer dim existing content. Per-comparison assumptions
+replace the standalone comparison section. The user's existing spacing changes are included.
+
+Additional browser verification covers intermediate layouts, dynamic and touch tooltips, equal card
+heights, model-cost sorting, latency animation, and the Claude OAuth safeguard control.
+
+Usage cost comparisons split the 48,000 USD to 1 million USD range into Ford Mustang GT,
+Porsche 911 GT3 RS, and Lamborghini Aventador SVJ bands, using illustrative benchmarks of
+48,000, 250,000, and 520,000 USD. Explanations in all six locales disclose the model years
+and US MSRP basis, including the Aventador's historical launch price.
+The 1,000 USD to 48,000 USD range uses iPhone 17 Pro 256GB, Apple Vision Pro,
+Rolex Submariner, NVIDIA RTX PRO 6000 Blackwell, and Tesla Model 3 RWD comparisons at
+1,000, 4,000, 10,000, 17,000, and 37,000 USD, with dated price assumptions in all six locales.
+The 200 USD to 1,000 USD band uses LEGO Back to the Future DeLorean sets at a rounded
+200 USD per set, replacing months of an AI subscription.
+The 1 million USD to 25 million USD range uses Gravity Jet Suits at 500,000 USD each,
+Princess F55 yachts at 2.5 million USD each, and an illustrative 15 million USD F1-car build
+estimate. The F1 tooltip includes a partial historical component-cost breakdown, with
+research, development, and season operations excluded.
+Super Bowl airtime covers 25 million to 30 million USD. The following bands compare
+AH-64E Apache helicopters from 30 million to 40 million USD, MQ-9A Reaper drones from
+40 million to 60 million USD, and F/A-18E/F Super Hornets from 60 million to 70 million USD.
+Their benchmarks are 35 million, 50 million, and 67 million USD, with fiscal-year prices
+and the Reaper's upper-end sensor configuration disclosed in all six locales.
+Processing-time comparisons end the work-week band at 88 Earth days, then compare Mercury
+years until 210 Earth days and one-way Mars journeys until one Julian Earth year. The
+benchmarks use 88 and 210 Earth days, with favorable-launch-window assumptions and the
+Perseverance cruise reference explained in all six locales.
+
+Comparison-refresh validation: CPAMC passes all 2,126 tests, ESLint, TypeScript, and its
+production build. Desktop/mobile Chrome CDP checks cover the revised bands and all six F1
+translations, including tooltip placement and Escape dismissal. The canonical embedded
+panel builds, `go test ./...` and the disposable server compile pass, and a live loopback
+CPA serves the exact embedded HTML bytes.
+
+Keys displays Last activity before First activity in the desktop table and mobile cards.
+Client verification and desktop/mobile browser checks cover the order, matching lifetime
+timestamps, and both activity sorts.
+The canonical bundle, management-asset tests, server compile, and live embedded-HTML smoke
+check pass for the updated client.
+
+**Last updated:** 2026-11-18
 
 ### DL005 — Failure-isolated embedded CPA Usage Keeper
 
@@ -172,23 +236,25 @@ Versioned fixtures record events, token categories, deterministic credential ide
 
 A 2026-09-08 metric audit produced eleven corrections. The intake adapter now persists the canonical inclusive output total (Gemini candidate plus thought tokens) alongside the input total, so reasoning is priced. `TokenUsage.UnclassifiedTokens()` derives the remainder of the authoritative total that no bucket explains; a matched price rule reports that remainder as unpriced instead of claiming full coverage, and repricing inherits the rule. Analysis model rows, matrix cells, and activity buckets expose `unpriced_tokens`, and CPAMC uses it to qualify model efficiency as unknown or partial rather than ranking it as $0/M; token charts and the distribution add an explicit unclassified category so stacks sum to the total, and event speed follows the qualified arrival-window and separate effective-rate contract in DL052. Migration 005 adds `known_cost_nano` and `unpriced_tokens` to `daily_stats` so year activity keeps cost after retention; year activity deduplicates request identities across the raw/retained boundary; the public `success` filter maps to the `succeeded` column; retained credentials keep their auth type and actual last-observed timestamp instead of a bucket end; upstream v1.15 imports no longer force `exact` quality, so all-zero usage is inferred as `missing`; and the collector counts batches discarded at shutdown as abandoned so accepted equals written plus dropped plus abandoned. Existing stored event and rollup token buckets are unchanged; historical repair still requires the explicit provider-scoped migration noted above.
 
-**Implementation evidence:** `internal/cpauk`, `internal/cpauk/collector/adapter.go`, `internal/cpauk/collector/sanitizer_test.go`, `internal/cpauk/testdata/upstream-v1.15.0`, `sdk/cliproxy/usage/{manager.go,delivery.go}`, and `test/perf`.
+Trusted accounting and bounded observer lanes remain independent of plugin observers. Executor test registrations unregister during cleanup so repeated fixture setup cannot exhaust those lanes.
 
-**Recorded validation:** the canonical Anthropic adapter regression and OpenAI compatibility tests pass, along with the existing CPAUK, schema-v2 contract, usage-delivery, API integration, deterministic load-adapter, retention/reopen, migration, backup/restore, import/rollback, repricing, DST and fractional-zone bucketing, latency, cost reconciliation, provider-quota, and failure-containment tests. The seeded UTC fixture resolves to 5,250 requests, 68,083,696 tokens, $295.62446097 known cost, 5,070 successes, and 180 failures. The required disposable server compile and ordinary full repository suite pass. The dedicated approximately 110-minute load certification remains an environment-specific release result and is not claimed by this checkout.
+**Implementation evidence:** `sdk/cliproxy/usage/delivery.go`. `internal/cpauk`, `internal/cpauk/collector/adapter.go`, `internal/cpauk/collector/sanitizer_test.go`, `internal/cpauk/testdata/upstream-v1.15.0`, `sdk/cliproxy/usage/{manager.go,delivery.go}`, and `test/perf`.
 
-**Last updated:** 2026-10-28
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/usage/delivery.go` still runs trusted accounting before sanitizer taps and bounded observer lanes; CPAUK implementation/fixtures are unchanged. Delivery ordering, saturation, panic, sanitization and real ClickHouse suites pass.
+
+**Last updated:** 2026-11-18
 
 ### DL006 — Reproducible embedded CPAMC artifact
 
-CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.4.3 container (the version CPAMC's `packageManager` declares) and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Runtime images and release archives consume that canonical HTML and compatibility manifest directly; no product build compares generated artifacts byte-for-byte or compiles an arbitrary panel working tree. No product build clones or floats on a remote CPAMC branch. DL050 later stops committing that bundle: panel-shipping builds now produce it from the pinned submodule, and the submodule is a hard build dependency.
+CPA builds CPAMC from the pinned `web/management-center` checkout with a digest-pinned Bun 1.4.3 container (the version CPAMC's `packageManager` declares) and embeds the resulting single-file application in the Go binary. The separate canonical builder removes host-dependent Rolldown output, keys the UI version to the pinned CPAMC commit, and uses a persistent package cache for offline rebuilds. Release archives use the canonical HTML and compatibility manifest. Runtime Dockerfiles instead compile panel source from their build context with Bun 1.4.3 and generate a manifest using the nonempty `CPAMC_COMMIT` build argument. CI separately verifies clean submodule pins; local Docker builds do not perform the canonical builder's clean-tree validation. No product build compares generated artifacts byte-for-byte. No product build clones or floats on a remote CPAMC branch. DL050 later stops committing that bundle: panel-shipping builds now produce it from the pinned submodule, and the submodule is a hard build dependency.
 
 Mutable and downloaded panels require an adjacent `management-artifact.json` whose Management API range accepts this CPA build and whose SHA-256 matches the exact HTML bytes. An invalid, missing, incompatible, or tampered mutable panel falls back to the immutable bundled artifact. The former undigested network fallback is removed, and updates default to the Type-Delta CPAMC fork.
 
-**Implementation evidence:** `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
+**Implementation evidence:** `internal/managementasset/bundle.go`. `internal/managementasset/bundle.go`, `internal/managementasset/bundled`, `scripts/build-management-center.sh`, `scripts/verify-submodules.sh`, `Dockerfile.management`, both runtime Dockerfiles, `nginx-web.conf`, release workflows, `DEPENDENCY_NOTICES.md`, and `docs/management-center.md`.
 
-**Recorded validation:** on 2026-10-31 the canonical builder on Bun 1.4.3 built CPAMC `b380bea7e0757417e970468b6edcf016e7497f45` to HTML SHA-256 `5ccf480d8f1915214e5101084d578730801f88e122629d18b94be41d489cea15`, and the bundled-artifact tests pass. Before that, the builder rebuilt the checked-in bundle from CPAMC `e2cb1d6cf7fdd996010d5cebe279e971a9ff222c`; the manifest records HTML SHA-256 `bdaad2c97c31701993456fd3ca34c8024da5fff2c5174110ddd86cc959bd24a9`. Earlier main-image, cached `--network=none`, Nginx image, mutable artifact, bundled fallback, workflow, and cross-build checks passed for the preceding implementation pin. CI remains authoritative for native CGO and plugin builds.
+**Recorded validation:** Read-only Compose assertions confirm that both source builds receive `CPAMC_COMMIT` and the published-image override removes both build definitions. Shell syntax checks pass for the canonical builder and submodule verifier. Dockerfile inspection confirms Bun 1.4.3 source builds and generated manifests. Management asset tests pass with `TestBundledArtifactIsValid` explicitly excluded because the canonical bundle had not yet been rebuilt. Fresh image builds and deployed-panel checks remain pending.
 
-**Last updated:** 2026-10-31
+**Last updated:** 2026-11-18
 
 ### DL007 — Analytics management and shared-view control plane
 
@@ -202,11 +268,13 @@ CPA normalizes CRLF and lone-CR YAML input before comment-preserving writes. Thi
 
 The root `analytics` block is valid in both the legacy and v8 configuration layouts, so it never marks a file as v8. A v0 management save that writes the default analytics block keeps the legacy layout on the next save instead of migrating the whole file.
 
-**Implementation evidence:** `internal/api/analytics_*`, `internal/api/handlers/management/analytics*`, `internal/api/server*.go`, `internal/api/middleware/request_logging.go`, `internal/config/{analytics.go,config_yaml.go,config_v8.go}`, `internal/util/provider.go`, and `config.example.yaml`.
+The caller-owned interceptor host and cached legacy-secret verification compose with the analytics service, request taps and viewer lifecycle. Reload still invalidates sessions when trust settings change.
 
-**Recorded validation:** management/viewer authorization matrices, schema-v2 management handlers, named-range resolution, event filters and complete exports, stable pagination, pricing provenance and repricing, provider credential rows, production-mux loopback CORS, TLS with and without ALPN, trusted-proxy cases, logging, reload recovery, viewer persistence and revocation, URL identity rejection, throttling, maintenance API tests, the CRLF nested-scalar regression, `TestLegacyAnalyticsRootIsNotAV8Marker`, and `TestV0RepeatedSavesKeepLegacyClientAlias` pass. Raw CDP verifies the management journeys against a live seeded server.
+**Implementation evidence:** `internal/api/server_management_v8.go`. `internal/api/analytics_*`, `internal/api/handlers/management/analytics*`, `internal/api/server*.go`, `internal/api/middleware/request_logging.go`, `internal/config/{analytics.go,config_yaml.go,config_v8.go}`, `internal/util/provider.go`, and `config.example.yaml`.
 
-**Last updated:** 2026-10-30
+**Recorded validation:** On 2026-11-18, `internal/api/server_management_v8.go` retains authenticated, URL-key-rejecting analytics routes; server construction retains service/tap/viewer lifecycle and reload invalidation. Management/viewer isolation, persistence and config reload tests pass.
+
+**Last updated:** 2026-11-18
 
 ### DL008 — Fresh graceful-shutdown budget
 
@@ -291,7 +359,9 @@ development case. The shared CORS middleware also exposes `ETag`, allowing
 cross-origin v8 management clients to complete the GET-then-`If-Match`
 configuration write flow without weakening viewer origin checks.
 
-**Implementation evidence:** `internal/config/analytics.go` (`AllowedOrigins`,
+Both server and viewer registration propagate the configured allowed origins. Cookie selection and reload invalidation retain the same trust boundary alongside upstream management authentication caching.
+
+**Implementation evidence:** `internal/api/server.go`. `internal/config/analytics.go` (`AllowedOrigins`,
 `NormalizeOrigin`, `IsLoopbackHostname`), `internal/api/analytics_viewer_routes.go`
 (`AnalyticsViewerSecurityOptions.AllowedOrigins`, cookie `SameSite` selection),
 `internal/api/server_middleware.go` (`applyViewerSameOriginPolicy` allowlist
@@ -300,20 +370,9 @@ branch, `analyticsViewerCrossOriginContextKey`), `internal/api/server.go` (both
 (`markAnalyticsViewerRestartRequired` equality check), `config.example.yaml`,
 `docs/analytics-operations.md`, and `docs/analytics-api-contract-v2.md`.
 
-**Recorded validation:** `go test ./internal/config/... ./internal/api/... -count=1`
-passes, including `TestAnalyticsConfigAcceptsValidAllowedOrigins` and
-`TestNormalizeOrigin` (config), `TestAnalyticsConfigFailuresAreIsolated`'s new
-allowed-origins cases (path/query rejected, non-loopback `http` rejected,
-loopback `http` rejected without `allow-loopback-http`, normalized duplicates
-rejected), `TestApplyViewerSameOriginPolicyAllowsConfiguredCrossOrigin` /
-`...RejectsUnknownOrigin` / `...SameOriginUnchanged` (middleware), and
-`TestViewerSessionCookieSameSiteMatchesOriginDecision` (cookie attribute).
-`gofmt -l` is clean on the touched files and `go build -o test-output
-./cmd/server` succeeds. Verified live against the seeded stack: `curl -s -i -X
-OPTIONS -H 'Origin: http://127.0.0.1:15173' ... /v0/analytics/viewer/session`
-returns the allow headers while `Origin: http://evil.example` gets 403.
+**Recorded validation:** On 2026-11-18, `internal/api/server.go` and the viewer registration both pass AllowedOrigins; middleware and SameSite cookie selection remain wired, and reload marks trust changes. Origin, forwarded HTTPS, cookie and session invalidation tests pass.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-18
 
 ### DL012 — Calendar range presets and retained one-year activity
 
@@ -388,7 +447,9 @@ and activity summary values through the shared analytics metric component.
 CPAMC DL029 makes the Usage Distribution legend filter token categories with
 accessible toggles and distinguishes visible token sums from full row totals.
 
-**Implementation evidence:** `internal/config/api_key_entry.go`,
+The watcher parser carries labels through its expanded return contract; structured TUI writes retain SHA-256 key identity, limits, original indexes and revisions.
+
+**Implementation evidence:** `internal/config/api_key_entry.go`. `internal/config/api_key_entry.go`,
 `internal/api/handlers/management/config_lists.go`,
 `internal/api/handlers/management/analytics_pricing.go`,
 `internal/watcher/diff/config_diff.go`, `internal/tui/{client.go,keys_tab.go}`,
@@ -396,23 +457,9 @@ accessible toggles and distinguishes visible token sums from full row totals.
 `src/services/api/apiKeys.ts`, `src/types/apiKeys.ts`, and
 `src/utils/keyIdentity.ts`.
 
-**Recorded validation:** focused config, management, watcher, and TUI tests
-pass, including exact Unicode round-trips, duplicate-label rejection,
-create/edit/clear behavior, stable-ID usage resets, and redacted watcher
-messages. CPAMC contract tests cover exact label comparison, identity joins,
-structured-entry preservation, and create/edit payloads. No analytics schema
-or history migration is required because labels are overlaid from current
-configuration. An isolated live server verified create/rename/clear, exact
-Unicode and control characters, stable ID/authentication/limits, unknown-field
-preservation, file hot reload, and rejection of duplicate-label reloads while
-retaining the previous runtime configuration. CPAMC passed its 651-test
-verification pipeline, followed by final focused tests, lint, TypeScript, and
-production build checks. Real Chrome desktop and mobile create/edit/clear
-flows also verified short-ID fallback, blank-row targeting, key concealment,
-and metadata preservation. The bundled panel was rebuilt from CPAMC commit
-`c4ef0c26b22bbb7a0c630ef00db0cb8fc68c9391`.
+**Recorded validation:** On 2026-11-18, `internal/config/api_key_entry.go` preserves exact inbound-key labels and SHA-256 identity; management, analytics catalog, reload diff and TUI paths still consume them. Label validation and revisioned TUI HTTP journeys pass.
 
-**Last updated:** 2026-09-06
+**Last updated:** 2026-11-18
 
 ### DL014 — Shared management quota refresh protection
 
@@ -460,23 +507,19 @@ separate status and error text on desktop and mobile.
 State is held in memory per CPA management handler, shared by its clients, and
 resets when CPA restarts; separate CPA processes do not share it.
 
-**Implementation evidence:** `internal/api/handlers/management/api_tools.go`,
+Quota cache and reconciliation remain attached to the combined management handler, including fresh spending preflights and reset invalidation.
+
+**Implementation evidence:** `internal/api/handlers/management/api_tools.go`. `internal/api/handlers/management/api_tools.go`,
 `internal/api/handlers/management/api_tools_quota_cache.go`, and
 `internal/api/handlers/management/api_tools_quota_cache_test.go`.
 
-**Recorded validation:** `go test ./...`,
-`go test -race ./internal/api/handlers/management -count=1`, and the server build
-pass. Handler tests use registered credentials and a local HTTPS provider to
-verify call counts, concurrent clients, exact expiry, Retry-After parsing and
-fallback, provider backoff, mutation isolation, interrupted responses, and
-preserved countdown clock offset. Bypassing the guard through a test-only Go
-overlay makes the three-minute expiry test fail on excess provider calls.
+**Recorded validation:** On 2026-11-18, `internal/api/handlers/management/api_tools.go` selects quota cache/backoff before token resolution; three-minute coalescing, force-refresh, advanced Date and reset invalidation remain. Quota cache/concurrency/backoff tests pass.
 
 The Codex refresh regression exercises `force_refresh` against a local provider
 response and confirms the cached three-minute result is bypassed without removing
 active 429 backoff.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 Local timing follow-up validation: the full Go suite and required server build pass, including
 real HTTP executor and reused-WebSocket regressions. Independent QA generated an OpenAI-compatible
@@ -535,7 +578,9 @@ recorded.
 
 Streaming telemetry preserves the committed HTTP status when a later API error has a different classified status. Gemini and Antigravity buffering retain sanitized final generation diagnostics alongside normalized usage. `internal/api/middleware/request_stream_telemetry_test.go` and `internal/runtime/executor/helps/usage_helpers_test.go` cover HTTP-200/later-400 capture and sanitized Gemini generation chunks.
 
-**Implementation evidence:** `sdk/cliproxy/usage/{manager.go,delivery.go,proxy_response.go}`,
+Legacy request-log import accepts both unlabeled responses and upstream response sections labeled `Headers:` and `Body:` without changing body bytes or SSE framing. Local read/transport diagnostics belong to the request and do not become fabricated upstream attempt errors.
+
+**Implementation evidence:** `sdk/api/handlers/handlers.go`. `sdk/cliproxy/usage/{manager.go,delivery.go,proxy_response.go}`,
 `sdk/api/handlers/{handlers.go,handlers_auth_unavailable_usage.go}`,
 `sdk/cliproxy/auth/conductor_selection.go`, `internal/api/request_id.go`,
 `internal/api/server.go`, `internal/runtime/executor/helps/usage_helpers.go`,
@@ -544,18 +589,7 @@ Streaming telemetry preserves the committed HTTP status when a later API error h
 `internal/cpauk/store/{migrations/006_hop_details.sql,write.go,query.go}`,
 `internal/cpauk/service.go`, and `docs/analytics-api-contract-v2.md`.
 
-**Recorded validation:** `go build ./...`, `go vet`, and
-`go test ./internal/cpauk/... ./sdk/... ./internal/api/... ./internal/runtime/...
-./internal/usagecontext/... ./internal/logging/... ./test/...` pass, including
-new tests for context inheritance, proxy response publication, round-tripper
-capture, raw usage capture, sanitizer bounds, patch queue ordering, and
-first-write-wins patching. A live CPA against a local stub provider recorded
-`endpoint_class=chat_completions`, `upstream_status_code=200`, the provider
-URL, the raw usage JSON, and `proxy_status_code=200` for a success, and
-`upstream_status_code=429`, the provider error body, `proxy_status_code=429`,
-and CPA's error for a failure. A follow-up request while that credential was
-cooling down recorded an `auth-selection` event with `error_class=auth_unavailable`,
-no provider status, and the `model_cooldown` body as `proxy_error`.
+**Recorded validation:** On 2026-11-18, `sdk/api/handlers/handlers.go` still carries hop identity and publishes downstream outcomes; tracked transport and auth-selection failure reporting remain. New response-log layout is handled by legacy import; committed-status, sanitized diagnostics and capture/import tests pass.
 
 CPAMC event details now end the timeline at CPA and display its returned status and response
 timestamp there, without inferring client delivery. Responsive fact grids hide the first row
@@ -609,7 +643,7 @@ prefer arrival-to-response timing for the total, falling back to attempt latency
 Validation includes 691 frontend tests, lint, production build, desktop/mobile CDP fixture checks,
 and the CPA server compile check.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL016 — Catalog pricing, usage probes, and display labels for API-key credentials
 
@@ -686,21 +720,20 @@ failure normalization does not apply to terminal errors such as 401, 403, or
 the merged `credential_quota` accounting correction avoids counting the same
 quota state twice.
 
-**Implementation evidence:** `sdk/cliproxy/auth/conductor_models.go`,
+Transient quota and service failures retain model visibility while blocking selection. Terminal Antigravity TOS deactivation remains authoritative; healthy shared or model-scoped quota reports cannot revive that credential.
+
+**Implementation evidence:** `internal/registry/model_registry.go`. `sdk/cliproxy/auth/conductor_models.go`,
 `internal/registry/model_registry.go`, and
 `sdk/cliproxy/auth/conductor_model_list_visibility_test.go`.
 
-**Recorded validation:** focused regression tests cover credential-scoped 429
-siblings plus HTTP 500, 503, and 599, while also verifying that routing remains
-blocked during each cooldown and disabled credentials remain hidden.
-`go test ./... -count=1` and the disposable server build check pass.
+**Recorded validation:** On 2026-11-18, `internal/registry/model_registry.go` treats credential quota as quota and preserves transient listings while conductor still blocks routing. Existing model-list 429/5xx/disabled tests and new terminal-TOS recovery protection tests pass.
 
 When routing finds no ready credential, the selection warning now reports
 credentials blocked by transient upstream failures in a separate "error
 backoff" summary next to the quota cooldown summary, so mixed outage windows
 are no longer misread as missing failover.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-18
 
 ### DL018 — OpenAI-compatible providers receive downstream request headers
 
@@ -814,17 +847,15 @@ Plugin executor streams no longer flush a partial usage line at 64 KiB. Long usa
 completion lines are assembled until a complete line or valid JSON payload is available, so
 telemetry is not discarded; the generic usage delivery manager remains bounded separately.
 
-**Implementation evidence:** `internal/cpauk/model/event.go`,
+**Implementation evidence:** `internal/pluginhost/adapters_executors.go`. `internal/cpauk/model/event.go`,
 `internal/cpauk/model/throughput_test.go`, `internal/cpauk/store/timing.go`,
 `internal/cpauk/store/query.go`, `internal/cpauk/store/throughput_test.go`,
 `internal/pluginhost/adapters_executors.go`, and the CPAMC
 `src/features/analytics/views/events/eventDiagnostics.ts` and `src/types/analytics.ts`.
 
-**Recorded validation:** Current arrival-rate and telemetry validation is recorded under DL052. The
-former credential-median tests and estimated-speed UI checks documented here were superseded
-along with that estimator.
+**Recorded validation:** On 2026-11-18, `internal/pluginhost/adapters_executors.go` still assembles complete usage lines with no 64-KiB flush; the large-SSE-line test verifies 7,030 tokens. Qualified arrival/effective throughput tests pass through model and store packages.
 
-**Last updated:** 2026-10-24
+**Last updated:** 2026-11-18
 
 ### DL021 — Provider selectors and OpenCode Go usage tracking
 
@@ -849,11 +880,11 @@ Z.ai cards; the `opencode_go_quota.percent_used` string is retired.
 
 Selectors and labels survive upstream per-provider and per-key connection-pool overrides. Pool inheritance affects synthesis and credential IDs without replacing catalog or probe attributes; hot reload compares both sets of fields. The independent `oauth_provider` metadata does not change selector resolution.
 
-**Implementation evidence:** `internal/config/{config_types.go,credential_labels.go,vertex_compat.go}`, `internal/api/handlers/management/{config_lists.go,config_auth_index.go,usage_probe.go,api_tools_quota_cache.go}`, `internal/api/analytics_options.go`, `internal/cpauk/store/pricing_discovery.go`, `internal/watcher/{diff/config_diff.go,synthesizer/config.go}`, and `config.example.yaml`; tests in `internal/api/handlers/management/{config_provider_selectors_test.go,usage_probe_test.go,quota_reserve_probe_test.go}`, `internal/config/credential_labels_test.go`, `internal/watcher/diff/config_diff_test.go`, `internal/watcher/synthesizer/config_test.go`, and `internal/api/analytics_options_test.go`.
+**Implementation evidence:** `internal/watcher/synthesizer/config.go`. `internal/config/{config_types.go,credential_labels.go,vertex_compat.go}`, `internal/api/handlers/management/{config_lists.go,config_auth_index.go,usage_probe.go,api_tools_quota_cache.go}`, `internal/api/analytics_options.go`, `internal/cpauk/store/pricing_discovery.go`, `internal/watcher/{diff/config_diff.go,synthesizer/config.go}`, and `config.example.yaml`; tests in `internal/api/handlers/management/{config_provider_selectors_test.go,usage_probe_test.go,quota_reserve_probe_test.go}`, `internal/config/credential_labels_test.go`, `internal/watcher/diff/config_diff_test.go`, `internal/watcher/synthesizer/config_test.go`, and `internal/api/analytics_options_test.go`.
 
-**Recorded validation:** On 2026-10-30, the selector normalization, unknown-probe rejection, auth-index projection, synthesizer, config-diff, OpenCode Go quota parsing, and Z.ai/OpenCode Go reserve-bar tests pass.
+**Recorded validation:** On 2026-11-18, `internal/watcher/synthesizer/config.go` still propagates selectors/reserves/labels beside connection pools; parsing, v8 index and analytics bindings retain all provider families. ProviderSelectorManagement, synthesis, config diff and probe tests pass.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL022 — Usage refresh synchronizes routing cooldowns
 
@@ -966,18 +997,14 @@ When quota observations are merged into auth state, the latest observation times
 are preserved together with the fork's credential-quota cooldown fields, so refreshes cannot erase
 newer routing state.
 
-**Implementation evidence:** `sdk/cliproxy/auth/{conductor_cooldown.go,conductor_lifecycle.go,cooldown_state.go,quota_observation.go,provider_quota_models.go,quota_reserve.go}`,
+Credential retry, quota-force, independent-force and non-quota deadlines compose with shared and model-scoped provider quota layers. Persistence includes the scoped independent layer and all deadline equality checks, so recovery or restart cannot erase a shorter independent service failure. Terminal TOS deactivation survives quota recovery; the pool-wide protective pause remains opt-in with a zero default.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go`. `sdk/cliproxy/auth/{conductor_cooldown.go,conductor_lifecycle.go,cooldown_state.go,quota_observation.go,provider_quota_models.go,quota_reserve.go}`,
 `internal/api/handlers/management/{api_tools.go,usage_probe.go,quota_reconcile.go,quota_reserve_probe.go,plugin_quota.go,config_v8.go,config_auth_index.go}`,
 `internal/pluginhost/quota_provider.go`, and the CPAMC quota adapters under
 `web/management-center/src/features/quota/providers/`.
 
-**Recorded validation:** focused auth-manager tests cover exhausted-overwrite,
-healthy-clear, past-reset no-op, and credential-wide cooldown preservation;
-management tests cover the Z.ai/OpenCode Go window decision, Claude scoped
-Fable recovery, Codex manual reset, mixed-family recovery, cached usage replay,
-cache-expiry recovery, and upstream usage sync. CPAMC quota tests cover normal
-cache-path refresh wiring. The focused Go tests, CPAMC type-check, lint, and
-production build pass.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_cooldown.go` now compares every new independent deadline as well as scoped layers; save/restore and reset epochs preserve provenance. Quota reconciliation, scoped-family/reset, delayed-restore, independent-cause and terminal-TOS tests pass.
 
 On 2026-11-17, regressions reproduced blocked credentials after upstream manual
 resets, fresh quota reads bypassing reconciliation, and reserve saves waiting
@@ -997,7 +1024,7 @@ and updated quota cards at desktop and mobile sizes with synthetic management
 responses, exactly one claim and no blanket reset. A disposable Docker container
 serves the panel and authenticated APIs with a matching packaged panel digest.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-18
 
 ### DL023 — Retry rounds cover transport and status-less failures
 
@@ -1005,11 +1032,13 @@ Both the request retry gate and recorded credential cooldown gate accept status-
 
 Typed transport errors, including `*url.Error`, `net.Error`, and the EOF family, are classified as connection-lifecycle failures so a network blip does not cool the credential. Classification uses `errors.Is`/`errors.As`; message matching applies only to legacy results without typed error information. The untyped `http2: response body closed` message also skips credential and model cooldown.
 
-**Implementation evidence:** `sdk/cliproxy/auth/conductor_selection.go` (`isRequestRetryRoundError`, `credentialRetryRoundStateEligible`), `sdk/cliproxy/auth/conductor_cooldown.go`, and `sdk/cliproxy/auth/conductor_transport_retry_test.go`, including `TestTLSRecordHeaderErrorsDoNotRetry` and `TestManagerOversizedUTLSRecordDoesNotRetry`.
+Transport and status-less failures keep their retry-round eligibility beside credential retry deadlines and bounded continuity. Cancellation and permanent TLS failures remain ineligible for transport retry.
 
-**Recorded validation:** status-less request and cooldown-state regressions failed before the fix. Focused retry, transport, and configured TLS-handshake tests pass with `-count=1`, covering round exhaustion, cancellation, bounded cooldown waits, transport failures skipping credential cooldown, and permanent-error exclusions. The real-handshake uTLS regression proves that an oversized record is not retried. The disposable server build and `go vet ./...` pass.
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_selection.go`. `sdk/cliproxy/auth/conductor_selection.go` (`isRequestRetryRoundError`, `credentialRetryRoundStateEligible`), `sdk/cliproxy/auth/conductor_cooldown.go`, and `sdk/cliproxy/auth/conductor_transport_retry_test.go`, including `TestTLSRecordHeaderErrorsDoNotRetry` and `TestManagerOversizedUTLSRecordDoesNotRetry`.
 
-**Last updated:** 2026-10-31
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_selection.go` retains transport/status-less retry eligibility and permanent TLS/cancellation exclusions beside continuity. Existing retry-round, no-cooldown transport and real malformed-uTLS-handshake regressions pass.
+
+**Last updated:** 2026-11-18
 
 
 ### DL024 — Plaintext collaboration metadata for optimized Codex calls
@@ -1172,34 +1201,15 @@ Independent final council review approved the requested scope at 9.5/10 and 9/10
 
 Cloaked Claude cross-model refusal fallbacks follow upstream's explicit opt-in `upstream.claude.server-side-fallback`, default false. Explicit caller and payload fallbacks remain authoritative. Opus 5.5 to Opus 4.8 and Fable 5.1 to Opus 5 are injected only when opted in before user payload rules; later model rewrites do not rerun built-ins. Actual serving models and fallback transitions remain visible in usage and translated responses. The measured fallback client tuple is CLI 2.1.321, SDK 0.128.0 and Node v26.12.1; the fork's coherent identity, alias migration, monotonic profile and CAS design remain intact. `TestClaudeFallbackPayloadBarrierMergedPaths` checks 13 cases through Execute and ExecuteStream, including model rewrites, explicit overrides, filtered fallbacks, final beta headers and one rule evaluation.
 
-**Implementation evidence:** `internal/claudecapture/`,
+Claude uses native `output_config.format` for structured output. Identity, billing preparation and prompt-cache cleanup run before final payload rules on execute, stream and token-count paths; only beta-header extraction, signing, serialization and read-only validation follow. Explicit payload-configured prompt-cache fields survive.
+
+**Implementation evidence:** `internal/runtime/executor/claude_executor_execute.go`. `internal/claudecapture/`,
 `internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,
 `internal/runtime/executor/helps/claude_device_profile.go`,
 `internal/runtime/executor/{claude_executor_stabilized_billing_test.go,claude_stabilization_integration_test.go,claude_native_fidelity_test.go}`,
 `cmd/server/main.go`, config, and the CPAMC toggle.
 
-**Recorded validation:** focused capture/config/executor tests, `go test ./...`,
-and the disposable server build pass. The private capture tests verify the
-24-hour check boundary, a read-only active reference, a hidden host home, OAuth
-delivery by file descriptor, rejection of a mismatched credential before relay,
-compressed and JSON Messages responses, and old-version pruning. A prior real
-installed Claude Code OAuth client completed a Messages request through an
-isolated CPA server; a real
-Codex Responses client received 403 from the guard before upstream. The
-unrelated `TestSyncUsageProbeCooldown` fixture now uses a future timestamp so
-the full suite remains valid after its former fixed date passes.
-Executor regression tests confirm that `claude-cli/X.X.X (external, sdk)`,
-`sdk-ts`, `sdk-py`, and `claude-desktop` reach the upstream transport with their
-own User-Agent when the guard is enabled, while matching requests without
-`X-App: cli` are rejected before transport. A local fake-endpoint capture of
-T3 Code's installed Agent SDK observed `sdk-ts` with `X-App: cli`; a local
-Claude Code process with the Desktop entrypoint observed `claude-desktop` with
-the same `X-App` value. Neither capture sent credentials upstream. A separate
-loopback CPA instance with a private OAuth credential copy and a newly captured
-Claude Code 2.1.281 reference then completed live Anthropic Messages requests
-from the installed T3 Agent SDK and Claude Code launched with the Desktop
-entrypoint. Both returned `OK`; the temporary instance and credential copy were
-removed afterward.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/claude_executor_execute.go` prepares identity/billing and cleanup before final rules; only transport beta lifting/signing/validation follow. Safeguard, native fidelity, coherent snapshot/CAS, billing, schema and fallback barrier tests pass across execute/stream/count paths.
 
 **Custom identity validation:** On the final code, `go test ./...` and
 `go build -o test-output ./cmd/server && unlink test-output` pass. The canonical
@@ -1224,7 +1234,7 @@ one existing credential returned revoked-token 401 and another returned account
 rate-limit 429. Neither credential was refreshed or changed. The full Go suite,
 canonical panel Docker build, and disposable server build pass.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-18
 
 ### DL026 — Hosted images on standard Responses and metadata-only Lite requests
 
@@ -1234,11 +1244,13 @@ An effective explicit `X-OpenAI-Internal-Codex-Responses-Lite: true` header take
 
 Existing caller tools and tool choices, `image_gen` namespace tools, Spark/free credentials, disabled image generation and compact requests retain their exclusions. API-key, SIWC, passthrough and standalone Images paths retain their own contracts. The user-approved Codex automatic-image exception in AGENTS.md applies only to requests carrying an automatically injected image tool. Rules evaluate once against a private prepared projection, so conditions and queries may observe the automatic tool even if compatibility cleanup removes it before sending. Conditional effects and encoded values are retained, cleanup runs before those operations commit once, and final filters preserve an explicit empty tools array. Configured values remain authoritative and no business mutation follows that commit. Caller-supplied image tools and other executors keep the general ordering contract.
 
-**Implementation evidence:** `internal/runtime/executor/helps/{codex_hosted_images.go,codex_hosted_images_test.go,payload_helpers.go,payload_finalizer.go,payload_rule_plan.go,payload_image_plan_test.go}`, `internal/runtime/executor/codex_executor_request.go`, `internal/runtime/executor/codex_executor_{execute,stream}.go`, `internal/runtime/executor/codex_websockets_{execute,stream}.go`, `internal/runtime/executor/codex_executor_imagegen_test.go`, and `internal/runtime/executor/payload_barrier_test.go`.
+Ordered literal/RE2 replacements read and write the same private effects document as defaults and overrides, before final filters. They join the retained operation plan, including role and explicit-path targets, so automatic-image cleanup precedes the single final commit without reevaluating rules or restoring filtered tools.
 
-**Recorded validation:** HTTP/WebSocket regressions exercise no-reasoning catalog-Lite injection, metadata-only reasoning, effective header precedence, false hints, forced/optional and explicit tools, payload filters, and provider/transport exclusions. A live 2026-11-13 Codex OAuth WebSocket request on `gpt-6.1-sol` with low reasoning and the Lite marker only in metadata confirms an injected image tool and a valid 1254×1254 PNG in `response.output_item.done`. The final completion omitted repeated output items; the original smoke reader missed this earlier event, and verification extracted the returned image from the captured stream without another paid generation.
+**Implementation evidence:** `internal/runtime/executor/helps/payload_helpers.go`. `internal/runtime/executor/helps/{codex_hosted_images.go,codex_hosted_images_test.go,payload_helpers.go,payload_finalizer.go,payload_rule_plan.go,payload_image_plan_test.go}`, `internal/runtime/executor/codex_executor_request.go`, `internal/runtime/executor/codex_executor_{execute,stream}.go`, `internal/runtime/executor/codex_websockets_{execute,stream}.go`, `internal/runtime/executor/codex_executor_imagegen_test.go`, and `internal/runtime/executor/payload_barrier_test.go`.
 
-**Last updated:** 2026-11-13
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/payload_helpers.go` evaluates automatic-image effects privately, retracts only an unclaimed automatic tool, then commits retained operations once. Replacement is inside that plan; HTTP/WS image, Lite precedence, empty-tools and one-evaluation tests pass.
+
+**Last updated:** 2026-11-18
 
 
 ### DL027 — Quota report persistence releases the manager lock during store I/O
@@ -1248,14 +1260,14 @@ persists an auth snapshot after releasing `m.mu`, then reacquires the lock and m
 changes, avoiding a self-deadlock when the report updates a model state while the manager write
 lock is held.
 
-**Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go` and
+Unlocked store I/O and concurrency-aware state merging include upstream credential retry, force and non-quota deadlines as well as the fork scoped independent layer.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_persistence.go`. `sdk/cliproxy/auth/conductor_cooldown.go` and
 `sdk/cliproxy/auth/conductor_persistence.go`.
 
-**Recorded validation:** the targeted quota-report regression reproduces the former `RLock`
-deadlock before the fix and passes afterward; the full `sdk/cliproxy/auth` package, its race
-checked targeted tests, and the server build pass.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_persistence.go` still unlocks around Store.Save and merges after reacquisition, now including upstream deadline fields. The targeted quota-report persistence regression and concurrent-save/state tests pass.
 
-**Last updated:** 2026-10-07
+**Last updated:** 2026-11-18
 
 ### DL028 — Greedy soonest recovery credential routing
 
@@ -1298,32 +1310,17 @@ a limit still count while the account is healthy. Independent Fable, Spark, and
 code-review allowances do not inherit an expiry from a reset of the shared allowance.
 Management routing reads and writes normalize the aliases to the canonical strategy.
 
-**Implementation evidence:** `internal/config/config_types.go`,
+Plugin candidate exclusions apply before GSR refresh and delegated builtin selection. Continuity uses the same reserve-aware eligibility and ready-pool rule fall-through as ordinary selection without replacing GSR recovery weights or fallback cursors.
+
+**Implementation evidence:** `internal/api/server.go`. `internal/config/config_types.go`,
 `sdk/cliproxy/service_config.go`, `sdk/cliproxy/auth/`, `sdk/cliproxy/auth/scheduler.go`,
 `internal/api/handlers/management/config_basic.go`,
 `internal/api/handlers/management/{usage_probe,gsr_manual_reset}.go`, `internal/api/server.go`, and
 `config.example.yaml`.
 
-**Recorded validation:** focused routing normalization and service selector tests pass,
-including the canonical name, aliases, and session-affinity wrapping.
-Manual-reset regressions cover expiry selection, actual weighted shares, provider
-identity, refresh cadence, spent credits, and preservation across response headers.
-Scheduling-weight regressions cover exact addition after tier multiplication,
-attribute and auth-file metadata precedence, zero and invalid values, and
-streaming/non-streaming Manager execution with a 200:100 split. A local server
-with a Codex HTTP fixture served 60 non-streaming and 60 streaming Responses
-requests with the expected 40:20 split. The full Go suite, auth race tests,
-canonical Docker panel build, and server build pass. CPAMC focused tests, lint,
-TypeScript, and production build pass. An initial full CPAMC run passed 2,150
-tests; later runs hit an unchanged analytics SCSS-import error that also
-reproduces from the pinned CPAMC baseline. Desktop and mobile browser checks
-confirm readable help without horizontal overflow.
-Local HTTP fixtures exercise both provider reads, cached replay and the auth
-manager's selection path with the six-day weekly/two-day manual-reset example.
-The full repository suite, focused auth and management race tests, canonical
-panel build, and disposable server compile check pass.
+**Recorded validation:** On 2026-11-18, `internal/api/server.go` still installs the quota refresher; strategy parsing, service selector, recovery decay, tier multiplier and scheduler remain connected. GSR weighting/fallback/affinity and new continuity/live/dry-run parity tests pass.
 
-**Last updated:** 2026-10-31
+**Last updated:** 2026-11-18
 
 ### DL029 — CPAMC quota summary redesign
 
@@ -1365,11 +1362,13 @@ The CPAMC Kiro quota body uses the redesigned quota row layout and contributes i
 
 Kiro explicitly pins Responses system/developer items to the top-level Claude system field before translation. This adapts upstream's in-place placement default to Kiro's builder, so late instructions remain system content rather than joining the active user message. Buffered execution, streaming, and local token counting share `kiroRequestPayload`; `TestKiroResponsesLateSystemItemsRemainSeparate` exercises the buffered and streaming wire payloads; counting uses the same conversion helper.
 
-**Implementation evidence:** `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `internal/runtime/executor/kiro_system_items_test.go`, `web/management-center/src/{features/oauth,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.
+Shared Claude translators produce native structured-output schemas, but Kiro folds `output_config.format` JSON schemas into system prompt guidance before wire translation and local token estimation. Chat, Responses and native Messages inputs share that preparation in both stream modes. Ordinary and forced Kiro registration use the executor-wrapper helper. Shared media translation does not expand Kiro adapter media support.
 
-**Recorded validation:** Kiro auth and translator tests, focused executor/auth/service tests, the usage-estimation regression test, and the required `go build -o test-output ./cmd/server` pass. CPAMC type-check, tests (apart from the pre-existing legacy-backend diagnostic), ESLint, Vite build, and Dockerized `scripts/build-management-center.sh` pass. The full Go suite reaches all packages; its only failure is the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` compatibility test.
+**Implementation evidence:** `internal/runtime/executor/kiro_executor.go`. `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `internal/runtime/executor/kiro_system_items_test.go`, `web/management-center/src/{features/oauth,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.
 
-**Last updated:** 2026-11-07
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/kiro_executor.go` restores schema prompt guidance before Kiro translation; shared Responses top-level system conversion remains, and service registration wraps Kiro executors. OAuth/auth, real wire schema/system-item and wrapper-registration tests pass.
+
+**Last updated:** 2026-11-18
 
 ### DL031 — Single-pass CPAUK model timeseries aggregation
 
@@ -1434,11 +1433,13 @@ Kiro participates in greedy-soonest-recovery. The routing refresh probes `codewh
 
 The CPAMC Kiro login card offers AWS Builder ID or IAM Identity Center. Identity Center sends the organization start URL and region to the existing `start_url`/`region` backend parameters and remembers them in browser storage; the Kiro callback hint shows its real `http://127.0.0.1/oauth/callback` redirect.
 
-**Implementation evidence:** `internal/api/handlers/management/usage_probe.go`, `sdk/cliproxy/auth/{conductor_selection,gsr_tier}.go`, `internal/runtime/executor/kiro_executor.go`, the CPAMC gitlink, and the bundled management assets.
+Passive Kiro quota observations, plan tiers and Retry-After hints remain available to the combined selection/cooldown pipeline; they do not require an active refresh for each selection.
 
-**Recorded validation:** focused Go and CPAMC tests pass. A live Identity Center login through the CPAMC callback flow produced a working credential; under `greedy-soonest-recovery` a real Claude request routed through it, and the probe stored the account's `KIRO POWER` plan and monthly reset.
+**Implementation evidence:** `internal/api/handlers/management/usage_probe.go`. `internal/api/handlers/management/usage_probe.go`, `sdk/cliproxy/auth/{conductor_selection,gsr_tier}.go`, `internal/runtime/executor/kiro_executor.go`, the CPAMC gitlink, and the bundled management assets.
 
-**Last updated:** 2026-10-12
+**Recorded validation:** On 2026-11-18, `internal/api/handlers/management/usage_probe.go` retains regional/profile Kiro quota reads, monthly reset and plan signals; passive observations, allowance mapping and executor Retry-After remain. Kiro signal/tier, quota parsing, login and retry tests pass; panel login UI excluded.
+
+**Last updated:** 2026-11-18
 
 ### DL034 — Kiro executor usage reporting
 
@@ -1463,7 +1464,9 @@ estimator as inference instead of dividing serialized JSON bytes by four. Contex
 lookup reads the final wire model and profile after payload rules without changing
 the configured business payload.
 
-**Implementation evidence:** `internal/runtime/executor/kiro_executor.go`,
+Schema prompt guidance participates in the same prepared Kiro representation used by inference and local estimation. Usage remains once-only, with explicit reported zero distinct from missing usage and model/profile context derived from the final wire request.
+
+**Implementation evidence:** `internal/runtime/executor/kiro_executor.go`. `internal/runtime/executor/kiro_executor.go`,
 `internal/runtime/executor/kiro_executor_usage_test.go`,
 `internal/runtime/executor/kiro_stream_test.go`, and
 `internal/runtime/executor/helps/kiro_models.go` with its unit tests.
@@ -1512,7 +1515,7 @@ precedence within catalog pricing. Existing events keep their stored cost until 
 reprice job runs (`internal/cpauk/store/pricing_discovery.go`,
 `TestModelsDevFeedPricesKiroWithBedrockFallback`).
 
-**Recorded validation:** Kiro usage tests cover non-streaming and streaming success, a single stream record, and 429 failures. Live requests through an Identity Center credential produced one analytics event each (Claude and OpenAI-format, streaming and non-streaming), and the quota page showed matching credit percentages in the summary, row, and monthly timeline bar.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/kiro_executor.go` retains shared once-only usage and final-wire model/profile context lookup; schema guidance is included in the shared estimator representation. Reported-zero, estimated usage, streamed correction, credits/pricing and model-catalog tests pass.
 
 Context-accounting regressions cover all three public protocols in both response
 modes, final-stream corrections, catalog pagination and account/profile isolation,
@@ -1540,7 +1543,7 @@ events. CPAMC passes 2,136 tests, lint, TypeScript and production build; desktop
 mobile CDP checks cover rate editing, event details and the token-category breakdown,
 including hidden-credit totals and non-overlapping radar labels.
 
-**Last updated:** 2026-10-27
+**Last updated:** 2026-11-18
 
 ### DL035 — Kiro streamed tool-input reconstruction
 
@@ -1550,11 +1553,13 @@ Kiro reasoning events do not carry Anthropic-compatible signatures, so CPA retai
 
 Text-less turns are sent to Kiro with empty `content` rather than an `(empty placeholder)` filler. Kiro accepts empty content for tool-use and tool-result turns, empty user turns, prefill, and synthetic leading or alternation turns. The filler was imitated by the model in agent loops, which echoed `(empty placeholder)` as visible assistant text before silent tool calls.
 
-**Implementation evidence:** `internal/runtime/executor/kiro_executor.go`, `internal/runtime/executor/kiro_translator.go`, `internal/runtime/executor/kiro_executor_usage_test.go`, `internal/runtime/executor/kiro_stream_test.go`, and `internal/runtime/executor/kiro_translator_test.go`.
+Kiro `payload.replace` targets explicit final-wire JSON paths only. System/developer/user role targets do not apply to the Kiro protocol. Execute and stream finalize the wire payload once, preserving authoritative filters and reconstructed tool arguments.
 
-**Recorded validation:** the complete executor package tests and disposable server build pass. Regression tests cover fragmented JSON tool inputs, terminal tool events with no input, 16/17/106 tool inventories, final payload overrides and filters, unsigned reasoning suppression, block lifecycles, CRC and malformed-frame rejection, exception/EOF handling, and empty tool-only assistant turns. Live Kiro requests accepted every empty-turn shape, and a tool loop that previously echoed the filler in 4 of 6 runs produced no text in 12 streaming and non-streaming runs. A live Kiro-backed Claude Code run through a CPA binary built from this worktree exercised `qa/2048.html` through Chrome CDP with no browser console or runtime errors.
+**Implementation evidence:** `internal/runtime/executor/kiro_stream_test.go`. `internal/runtime/executor/kiro_executor.go`, `internal/runtime/executor/kiro_translator.go`, `internal/runtime/executor/kiro_executor_usage_test.go`, `internal/runtime/executor/kiro_stream_test.go`, and `internal/runtime/executor/kiro_translator_test.go`.
 
-**Last updated:** 2026-10-15
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/kiro_stream_test.go` retains fragmented tool-input reconstruction, valid block lifecycles and bounded CRC-checked AWS event parsing. Final-wire replacement runs once; role targets deliberately do not apply. Empty-turn, all-tool and stream regressions pass.
+
+**Last updated:** 2026-11-18
 
 ### DL036 — GSR request fallback and quota-provider identity
 
@@ -1587,9 +1592,11 @@ the scheduler path and normal, streaming, and token-count selection. Upstream
 plugin quota-provider IDs remain additive and distinct from the fork's
 request-level quota-provider identity mapping.
 
-**Implementation evidence:** `sdk/cliproxy/auth/{conductor_selection.go,selector.go,scheduler.go,gsr_tier.go,quota_recovery_provider.go}`, `internal/api/handlers/management/usage_probe.go`, and their routing and provider tests.
+Plugin exclusions constrain the pool before quota refresh and the full eligible RR fallback. Quota-provider identity remains separate from the adapter/model name, and the fallback cursor persists across requests.
 
-**Recorded validation:** full `sdk/cliproxy/auth` tests and race tests pass; focused quota-provider and GSR management tests pass; the server builds; a local HTTP fixture served six non-streaming and six streaming requests with a 3:3 round-robin split and emitted fallback warnings, while session affinity stayed on one credential across both modes. The full repository suite passes except the unrelated pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+**Implementation evidence:** `sdk/cliproxy/auth/quota_recovery_provider.go`. `sdk/cliproxy/auth/{conductor_selection.go,selector.go,scheduler.go,gsr_tier.go,quota_recovery_provider.go}`, `internal/api/handlers/management/usage_probe.go`, and their routing and provider tests.
+
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/quota_recovery_provider.go` keeps quota identity separate from adapter/model names; plugin exclusions are applied before refresh and RR fallback. Full eligible-pool, persistent cursor, mixed-provider, failed-probe and canceled-probe tests pass.
 
 Follow-up regressions exercise real Claude and Codex HTTPS quota lookups returning
 429 or disconnecting, plus optional reset lookups returning malformed HTTP 200
@@ -1603,7 +1610,7 @@ and 12 streaming chat requests with a 6:6 credential split in each mode while th
 quota endpoint returned 429, then repeated that result with quota connection
 failures. Each run made only two cached quota calls and completed all 24 requests.
 
-**Last updated:** 2026-10-28
+**Last updated:** 2026-11-18
 
 ### DL037 — Kiro static model definitions for OAuth exclusions
 
@@ -1629,11 +1636,13 @@ The bundled panel (CPAMC `a0d3fa2`) adds the quota reserve editor to the auth-fi
 
 Codex alpha-search selection carries the same config-client key hash as ordinary execution, so quota-reserve bypass keys can use held credentials.
 
-**Implementation evidence:** `sdk/cliproxy/auth/quota_reserve.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{quota_reserve_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets. `internal/api/server_routes.go` reuses `RequestClientKeyID` from `sdk/api/handlers/handlers.go`; `internal/api/server_codex_search_reserve_test.go` exercises authenticated HTTP through the real Codex executor and reserve selection.
+Codex continuity applies reserves and bypass keys before candidate construction. Muse relay actions preserve native config-key identity for bypass eligibility. Terminal pool-cooldown reporting also uses `m.eligibilityForRequest`, so reserve-held credentials cannot suppress Retry-After for the usable pool.
 
-**Recorded validation:** quota-reserve unit tests cover evaluation, reset expiry, throttling, reserve edits against a stored observation, bar IDs for all five providers, and real selection with and without a bypass key. A local CPA with the owner's live Z.ai credential (weekly 19% remaining) and a stub fallback provider served the Z.ai credential at a 10% reserve, switched to the fallback after the first request once the reserve was raised to 30%, kept serving the bypass key from Z.ai, and returned to Z.ai as soon as the reserve was lowered again through the v8 config API. Through CDP, that CPA serving the CPAMC build showed the striped bar, its tooltip, and the badge; dragging the handle and saving the provider form persisted the new reserve with the bypass key intact. The full repository suite passes except the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure. Before the fix, the configured bypass key returned 503 `auth_not_found` after the reserve held. The same authenticated request now returns 200 and reaches the upstream transport.
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_pool_cooldown_test.go`. `sdk/cliproxy/auth/conductor_selection.go`. `sdk/cliproxy/auth/quota_reserve.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{quota_reserve_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets. `internal/api/server_routes.go` reuses `RequestClientKeyID` from `sdk/api/handlers/handlers.go`; `internal/api/server_codex_search_reserve_test.go` exercises authenticated HTTP through the real Codex executor and reserve selection.
 
-**Last updated:** 2026-10-31
+**Recorded validation:** `sdk/cliproxy/auth/conductor_pool_cooldown_test.go`, `TestPoolCooldownTerminalErrorIgnoresReserveHeldCredential`, covers reserve-aware terminal pool reporting in `earliestPoolCooldownForModelAt`.  On 2026-11-18, `sdk/cliproxy/auth/conductor_selection.go` retains model-aware reserve/bypass eligibility and scheduler bypass while held; client identity reaches Codex search and Muse. Reserve edit/reset/partial-bar, alpha-search HTTP, Muse HTTP and continuity eligibility tests pass.
+
+**Last updated:** 2026-11-18
 
 ### DL039 — Streaming keep-alives before the first upstream chunk
 
@@ -1641,11 +1650,13 @@ Codex alpha-search selection carries the same config-client key hash as ordinary
 
 The Claude Messages, OpenAI Chat Completions, legacy Completions, OpenAI Responses, and Gemini SSE stream handlers now run stream setup in the background through the pre-first-token keepalive path. Nothing is written until one keep-alive interval passes without a first chunk or error, so fast failures still return their JSON error and HTTP status. After that the handler commits HTTP 200 with SSE headers and writes `: keep-alive` every interval until the first outcome. Once committed, the first chunk and later chunks go through the handler's existing forwarder, and a late failure is delivered as that protocol's in-stream error event (`event: error` for Claude, a `response.failed` or `error` event for Responses). Upstream response headers cannot reach the client after an early commit. `send-keepalive-before-ft` is tri-state: when unset, a positive `keepalive-seconds` preserves the fork behavior and enables pre-first-token keepalives; `true` enables them; `false` disables them. Gemini `alt` (non-SSE) output remains unchanged.
 
-**Implementation evidence:** `internal/config/sdk_config.go` decodes flag presence; `sdk/api/handlers/{handlers.go,stream_forwarder.go}` implement `ExecuteStreamWithPreFTKeepAlive`, used by `sdk/api/handlers/claude/code_handlers.go`, `sdk/api/handlers/openai/{openai_handlers.go,openai_responses_handlers.go}`, and `sdk/api/handlers/gemini/gemini_handlers.go`. Current-path coverage includes `sdk/api/handlers/handlers_stream_bootstrap_test.go`, `sdk/api/handlers/claude/code_handlers_keepalive_test.go`, and `sdk/api/handlers/openai/openai_responses_handlers_stream_error_test.go`. `stream_first_chunk.go` remains unused by production handlers.
+Opt-in Codex continuity may emit keepalives during an active quota wait even when ordinary pre-first-token keepalives are disabled. Wait-only ticks run only when the ordinary ticker is absent, preserving tri-state behavior without double keepalives.
 
-**Recorded validation:** race tests cover keep-alives while stream setup is pending and while the first chunk is pending, fast success and fast errors staying uncommitted with their status, a late error redelivered for in-stream reporting, the disabled interval, and client disconnect; the Claude handler tests check keep-alives before the payload, a late 503 as one in-stream `event: error`, and a fast 503 as JSON. Against a local upstream that stays silent for 30s, Claude Messages and Responses streams sent `: keep-alive` every 5s from 5s on, and Claude Code and Codex both completed. Through a Cloudflare-proxied test hostname with a 150s silent upstream and a 15s interval, Claude Messages and Responses streams, a non-streaming Messages request, and a real Claude Code run all completed at 150s, past the 125s origin timeout. The full repository suite passes except the pre-existing `TestV0RepeatedSavesKeepLegacyClientAlias` failure.
+**Implementation evidence:** `sdk/api/handlers/stream_forwarder.go`. `internal/config/sdk_config.go` decodes flag presence; `sdk/api/handlers/{handlers.go,stream_forwarder.go}` implement `ExecuteStreamWithPreFTKeepAlive`, used by `sdk/api/handlers/claude/code_handlers.go`, `sdk/api/handlers/openai/{openai_handlers.go,openai_responses_handlers.go}`, and `sdk/api/handlers/gemini/gemini_handlers.go`. Current-path coverage includes `sdk/api/handlers/handlers_stream_bootstrap_test.go`, `sdk/api/handlers/claude/code_handlers_keepalive_test.go`, and `sdk/api/handlers/openai/openai_responses_handlers_stream_error_test.go`. `stream_first_chunk.go` remains unused by production handlers.
 
-**Last updated:** 2026-11-07
+**Recorded validation:** On 2026-11-18, `sdk/api/handlers/stream_forwarder.go` retains tri-state pre-first-token SSE handling in Claude/Chat/Completions/Responses/Gemini; continuity adds the active-continuity-wait exception. Bootstrap, late-error and continuity HTTP/WebSocket tests remain and pass.
+
+**Last updated:** 2026-11-18
 
 ### DL040 — Home-mode Claude OAuth safeguard compatibility
 
@@ -1767,11 +1778,13 @@ CPA assembles multiline SSE `data:` fields before classifying token and usage ev
 
 Claude usage and serving-model observers read valid source events before Thread buffering. Terminal withholding cannot lose observed usage on a reset or missing message_stop. Buffered and streaming failures retain partial tokens exactly once. Source-reader timing precedes buffering and ends at a complete message_stop, so a delayed terminal event does not compress or extend the arrival window.
 
-**Implementation evidence:** `internal/runtime/executor/helps/generation_body.go`, `internal/runtime/executor/helps/usage_helpers.go`, and `internal/runtime/executor/claude_executor_stream.go`.
+Source-reader token observation precedes Thread terminal buffering and Antigravity zero-output buffering. Native Claude forces streaming before final payload rules and retains once-only partial usage on failures.
 
-**Recorded validation:** focused executor, usage, stream-observation, and live OpenAI/Claude streaming checks pass.
+**Implementation evidence:** `internal/runtime/executor/claude_executor_stream.go`. `internal/runtime/executor/helps/generation_body.go`, `internal/runtime/executor/helps/usage_helpers.go`, and `internal/runtime/executor/claude_executor_stream.go`.
 
-**Last updated:** 2026-11-13
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/claude_executor_stream.go` still observes native Claude source reads before Thread buffering, forces streaming before final rules, assembles SSE data, and publishes partial usage once. Generation/usage helpers survive; executor and handler regressions pass.
+
+**Last updated:** 2026-11-18
 
 ### DL047 — Claude safeguard capture failures fall back across providers
 
@@ -1782,19 +1795,15 @@ same Claude model, whose native runtime does not use the Claude OAuth
 safeguard. Genuine safeguard rejections of the caller request remain
 request-scoped and still stop processing without cooling credentials.
 
-**Implementation evidence:** `internal/runtime/executor/claude_oauth_safeguard.go`,
+A local capture-reference-unavailable 503 remains eligible for mixed Claude/Kiro fallback. Recognized request-scoped safety-policy 400 responses stop cross-credential/provider retries, including Kiro, without cooling the rejecting credential.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_claude_safeguard_routing_test.go`. `internal/runtime/executor/claude_oauth_safeguard.go`,
 `sdk/cliproxy/auth/conductor_cooldown.go`, and
 `sdk/cliproxy/auth/conductor_claude_safeguard_routing_test.go`.
 
-**Recorded validation:** focused safeguard tests and the mixed Claude/Kiro
-routing regression pass. The regression gives Claude priority and asserts actual
-`[claude, kiro]` attempts for capture-unavailable 503 errors across execute,
-count, and stream. Request-scoped 403 rejection asserts `[claude]` only, preserving
-upstream terminal-response handling without hiding a skipped Claude attempt. Production management inspection showed repeated
-Claude reference-capture failures caused by the upstream organization policy,
-while successful Claude-model requests were routed to Kiro.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_claude_safeguard_routing_test.go` still asserts actual Claude-then-Kiro attempts for local 503 across execute/count/stream and Claude-only for request rejection. Safeguard classification survives U6 policy stops; normal and race runs pass.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL048 — Key catalog reports the top-cost model
 
@@ -1881,20 +1890,17 @@ Bun stage and generate the manifest inside the build from `CPAMC_COMMIT` and `BU
 matrix target, including the macOS and Windows runners without Docker, downloads it before
 `go build`; archives ship the HTML, manifest, and assets together.
 
-**Implementation evidence:** `internal/managementasset/{bundle.go,bundle_test.go}`,
+Runtime Docker images compile the panel source supplied in their build context with Bun 1.4.3 and generate the compatibility manifest from the supplied `CPAMC_COMMIT`; CI verifies clean submodule pins before those builds. The separate canonical builder enforces its own clean-tree contract.
+
+**Implementation evidence:** `internal/api/server_management.go`. `internal/managementasset/{bundle.go,bundle_test.go}`,
 `internal/api/{server_management.go,server_routes.go,server_middleware.go,server_management_assets_test.go}`,
 `scripts/build-management-center.sh`, `Dockerfile`, `Dockerfile.web`, `Dockerfile.management`,
 `.github/workflows/{release.yaml,pr-test-build.yml,docker-image.yml}`, `nginx-web.conf`,
 `docs/management-center.md`, and `docs/analytics-operations.md`.
 
-**Recorded validation:** `gofmt` is clean, `go build -o test-output ./cmd/server` passes,
-`go test ./internal/managementasset/... ./internal/api/...` passes apart from the pre-existing
-`TestV0RepeatedSavesKeepLegacyClientAlias`, and a bundle-less copy of the tree builds and serves
-the 503 page while `/management-assets/mascots/claude.webp` returns 404. A rebuild from the pinned
-submodule serves that mascot as `image/webp` with the day-long cache header, and HEAD, traversal,
-and disabled-panel requests behave as described.
+**Recorded validation:** On 2026-11-18, `internal/api/server_management.go` retains missing-bundle 503 and gated embedded GET/HEAD assets. Canonical builder, Docker/release asset flow and gitignore remain; asset/traversal/safe-mode/missing-bundle tests pass. Bundle revision validation is excluded as requested.
 
-**Last updated:** 2026-10-23
+**Last updated:** 2026-11-18
 
 ### DL051 — Freeze closed days in overview activity
 
@@ -1970,22 +1976,17 @@ remain unavailable; external benchmarks never clamp measurements.
 
 Upstream direct-plugin TTFT uses first-packet fallback and protocol-aware events. It does not provide source-reader arrival evidence, so plugin delivery chunks alone cannot qualify for arrival throughput. `internal/pluginhost` TTFT regressions cover that boundary alongside the executor source-reader tests.
 
-**Implementation evidence:** `sdk/cliproxy/usage/output_timing.go`,
+Substantive source observations occur before Antigravity zero-output buffering, preserving qualified first-batch exclusion, generation timing and bounded arrival evidence.
+
+**Implementation evidence:** `internal/runtime/executor/helps/output_observation.go`. `sdk/cliproxy/usage/output_timing.go`,
 `internal/runtime/executor/helps/output_observation.go`,
 `internal/runtime/executor/helps/kiro_generation_body.go`,
 `internal/cpauk/model/output_timing.go`,
 `internal/cpauk/store/migrations/013_output_timing.sql`, and the CPAMC analytics consumers.
 
-**Recorded validation:** The full Go suite passes, including migration 012-to-013, import/backup
-round-trips, export parity, query-filter independence, and viewer privacy tests. Runtime and SDK
-race tests pass. CPAMC passes 2,112 tests, lint, type checking, and the production build.
-Real Kiro calls in both client modes produced qualified arrival windows; an OpenAI-compatible
-DeepSeek stream also qualified, with rate formulas matching captured counts and durations.
-Desktop and mobile checks cover events, separate arrival/effective detail values, and leaderboard
-coverage. A replay of 30,378 historical attempts withheld unsupported arrival rates while retaining
-24,271 consistent whole-attempt rates. A deterministic 1,500 TPS case remains valid without a cap.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/output_observation.go` and Kiro/source-reader observers retain matched first-batch exclusion and bounded arrival evidence before new Antigravity buffering. Model qualification, accounting/export/viewer and observer tests remain and pass; timing contract files are unchanged.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL053 — Guarded historical arrival-rate estimates
 
@@ -2100,21 +2101,16 @@ locations. All six locales include loading, unavailable, unsupported, and partia
 
 When local KV is enabled outside Home mode, data allocation includes the effective KV database and its actual dot/dash sidecars, even outside other scan roots. Each file is measured separately without claiming its shared parent; overlap and hard-link deduplication still apply. Disabled/Home mode omits this explicit local KV location, and path or mode changes invalidate the cached location set. `TestAuditStorageIncludesCustomKVDatabase` and `TestStorageUsageKVFilesAndModeChanges` in `storage_test.go` cover external paths, sidecars, mode changes, and cache invalidation.
 
-**Implementation evidence:** `internal/storageusage/` (including `clickhouse.go`),
+The management handler retains both the storage meter and ClickHouse handle alongside new upstream fields; the v8 storage route keeps allocated-space, sidecar and unavailable-backend accounting.
+
+**Implementation evidence:** `internal/api/handlers/management/storage.go`. `internal/storageusage/` (including `clickhouse.go`),
 `internal/api/handlers/management/{storage.go,storage_test.go,handler.go}`,
 `internal/api/{server_management_v8.go,server_management_v8_test.go}`,
 `internal/cpauk/service.go`, and the CPAMC storage API and Config Panel components.
 
-**Recorded validation:** Focused storage, management, API, and analytics tests pass. The full Go suite
-passes on rerun; the initial run hit existing websocket-upload and HTTP-interrupt timing
-failures, and both tests passed three isolated reruns. Windows and macOS storage-package
-compile checks pass. The canonical panel build, server compile, CPAMC tests, lint, TypeScript,
-and single-file production build pass. Live native-process measurements match filesystem
-statistics, and a real analytics backup is included under CPA data. The repository Docker
-image builds and serves the panel; its storage endpoint reports the bind-mounted filesystem
-and rejects unauthenticated requests.
+**Recorded validation:** On 2026-11-18, `internal/api/handlers/management/storage.go` remains wired at v8 /storage with preserved Handler meter/ClickHouse fields. Allocated-space, custom DB/KV sidecars, cache invalidation and unreachable-ClickHouse tests remain unchanged and pass.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL056 — Per-model cost series by service tier
 
@@ -2201,18 +2197,17 @@ Direct native Codex Images streams finish the usage observer and publish cancell
 
 Claude Thread streaming and buffered SSE failures preserve observed input/output usage before terminal validation or source errors. Actual executor regressions retain 5 input, 7 output and 12 total tokens as one failed attempt for both Claude and OpenAI targets. The existing once-only reporter and client-cancellation precedence remain authoritative.
 
-**Implementation evidence:** `internal/cpauk/store/migrations/019_event_outcomes.sql`,
+Terminal Codex WebSocket HTTP errors remain owned by the active stream rather than racing the disconnect subscriber. Antigravity local body-close errors caused by cancellation normalize to that cancellation, preserving completed success and genuine upstream failure precedence. Partial usage and observed upstream status remain once-only.
+
+**Implementation evidence:** `internal/runtime/executor/helps/usage_helpers.go`. `internal/cpauk/store/migrations/019_event_outcomes.sql`,
 `internal/cpauk/model/event_outcome.go`, `internal/cpauk/collector/{adapter.go,sanitizer.go}`,
 `sdk/cliproxy/usage/{manager.go,client_context.go}`, `sdk/api/handlers/handlers.go`,
 `internal/runtime/executor/helps/usage_helpers.go`, and the Claude, Codex, and
 OpenAI-compatible stream executors. `internal/runtime/executor/{gemini_vertex_executor.go,aistudio_executor.go,xai_executor_stream.go,stream_partial_usage_test.go}` cover these stream paths. `internal/runtime/executor/{codex_openai_images.go,codex_openai_images_cancellation_test.go}` and `TestCodexDirectImageClientCancellationRetainsObservedUsage` cover interrupted direct image delivery.
 
-**Recorded validation:** regression tests cover each misclassified category, client disconnect, internal
-cancellation followed by request closure, a provider error followed by disconnect, Codex
-blocked-read cancellation, and retained partial usage. A real client abort through a local CPA
-recorded `canceled/client`; a real upstream 400 recorded `failed/provider_to_cpa`. All five stream regressions recorded failed events with zero tokens before the fix. The actual executor stream paths now record failed events with 5 input, 7 output, and 12 total tokens; the uncached executor suite passes. The direct image cancellation regression recorded `succeeded` before the fix and `canceled/client` afterward, retaining 5 input, 7 output, and 12 total tokens with one usage record.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/usage_helpers.go` retains once-only failures, original cancellation cause, partial detail and observed upstream status. Native image, Claude Thread, Vertex/AI Studio/xAI partial-usage and collector outcome tests remain; executor/analytics suites and focused races pass.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-18
 
 ### DL059 — Quota window history and hourly collection
 
@@ -2389,7 +2384,9 @@ Telemetry preserves committed HTTP status across later classified stream errors.
 
 Upstream bounded deferred response capture when full request logging is off composes with per-dispatch telemetry and no-DSN file logs. Unrouted 404 requests do not create dumps. Owned WebSocket transports close before capture finalization, and read-only log projection discards upstream request/response sections. A live local ClickHouse-mode server imports the real analytics snapshot, serves inference, captures a request and exposes it through the restricted SQL endpoint; plain mode writes file logs and omits telemetry routes.
 
-**Implementation evidence:** `internal/clickhouse/`, `internal/config/clickhouse.go`,
+Legacy-log ingestion accepts the old response layout and upstream labeled headers/body while preserving SSE bytes. Local request diagnostics remain separate from upstream attempts in ClickHouse capture; plain file-log and no-DSN modes retain their contracts.
+
+**Implementation evidence:** `internal/telemetry/legacylog/legacylog.go`. `internal/clickhouse/`, `internal/config/clickhouse.go`,
 `internal/telemetry/{record,outbox,ingest,transcript,store,legacylog}`,
 `internal/logging/{telemetry_*.go,global_logger.go,log_dir_cleaner.go}`,
 `internal/runtime/executor/helps/logging_helpers.go`, `internal/runtime/executor/codex_executor_request.go` (compression retry capture, `codex_executor_compression_test.go`),
@@ -2398,12 +2395,7 @@ Upstream bounded deferred response capture when full request logging is off comp
 `internal/cpauk/{backend,chstore}`, `internal/cpauk/service.go`, `docker-compose.clickhouse.yml`,
 `config.example.yaml`, and `docs/clickhouse.md`. `internal/api/{server_management_v8.go,server_telemetry_routes_test.go,server_agentdocs_test.go,telemetry_disconnect_test.go,telemetry_smoke_test.go}` and `internal/agentdocs/{management.md,sql.md,llms.txt}` cover conditional registration and the documented route inventory.
 
-**Recorded validation:** `go test ./... -count=1` passes except
-`TestResponsesLateInterruptDoesNotPoisonNextCreate`, an intermittent Codex WebSocket test that
-fails at the same rate without these changes. `go vet ./...` and the server build pass. Tests
-against a real ClickHouse server cover migrations, ingestion and replay, outages, retention,
-backup and restore, both legacy imports, lifecycle ownership, and differential reads against the
-SQLite store. Live checks ran in Docker, with the Compose override where ClickHouse was needed:
+**Recorded validation:** On 2026-11-18, `internal/telemetry/legacylog/legacylog.go` now accepts upstream's labeled response layout without fabricating upstream errors. DSN/file-log mode, SQL authorization, startup handles, capture/outbox/import/shutdown and compression-retry wiring remain; real ClickHouse and HTTP fixture suites pass.
 
 - Claude Code and Codex CLI sessions through CPA produce one transcript entry per executed tool
   call and result. The shipped monthly skill query counts exactly the real content loads.
@@ -2418,7 +2410,7 @@ SQLite store. Live checks ran in Docker, with the Compose override where ClickHo
 
 Before the route fix, authenticated schema/query requests returned 503 in plain mode. Mode tests now verify all three telemetry routes return 404 without a DSN, real ClickHouse schema/query/health return 200, and DSN reloads preserve startup route availability. The configured agent-doc inventory parity test passes. Disconnect fixtures install their database handle before route registration; the conversation fixture expects plain-mode 404s, and fixtures wait for ingestion startup before cleanup.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-18
 
 ### DL061 — Rule-based routing, routing traces, and routing dry run
 
@@ -2459,14 +2451,16 @@ while routing rules and dry runs remain usable.
 
 Dry runs accept optional `source_format`; `openai-image` selects the native Images API credential track independently of the model name or client User-Agent. Omitted input preserves text-route behavior. Invalid formats return HTTP 400 with `path: "source_format"`. Live selection, trace gates, GSR refresh, and dry-run affinity checks use the same request-aware SIWC eligibility. Native image calls use the outer OAuth token even when the nested SIWC token has a different expiry. `sdk/cliproxy/auth/routing_siwc_merge_test.go` covers buffered/streaming generations and edits, both expiry directions, rules, and affinity; `internal/api/handlers/management/routing_test.go` covers format validation. Embedded routing docs describe the input.
 
-**Implementation evidence:** `internal/config/{config_types.go,routing_rules.go}`,
+Codex continuity candidates use reserve-aware eligibility, pins, exclusions, zero-weight gates and retry limits. Existing eligible affinity wins before rule narrowing; rules use ready-pool fall-through, or the recoverable quota pool when none is ready, and mixed-provider targets cannot become invalid Codex candidates.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_continuity.go`. `internal/config/{config_types.go,routing_rules.go}`,
 `sdk/cliproxy/routing/{contract.go,engine.go}`,
 `sdk/cliproxy/auth/{routing_selection.go,routing_trace.go,routing_dry_run.go,conductor_selection.go,selector.go,quota_reserve.go}`,
 `sdk/api/handlers`, `sdk/cliproxy/usage`, `internal/runtime/executor/helps/usage_helpers.go`,
 `internal/cpauk/{collector,model,chstore}`,
 `internal/api/handlers/management/{routing.go,analytics*.go}`, and `config.example.yaml`.
 
-**Recorded validation:** Before the ClickHouse merge, `go test ./...` passed (116 packages) with `go vet` and gofmt clean; targeted race runs of the auth, routing, config, CPAUK and usage packages pass. Regression tests cover cross-tier narrowing, affinity precedence, fall-through (including after a GSR refresh), plugin exemptions, unchanged no-rules behavior, executor metadata parity with tracing on, trace immutability across retries, dry-run read-only behavior, ClickHouse trace persistence, sanitization, and export/list/detail projections. A live end-to-end run with two Z.ai credentials and real upstream requests exercised credentials listing, rule hot reload, affinity kept/held/agreeing, fall-through on a blocked target, dry runs with saved and draft rules and real session bindings, and analytics disabled. Home-mode rule evaluation is intentionally out of scope.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_continuity.go` applies request eligibility, reserves/bypass, pins/exclusions, affinity and ready-pool rule fall-through to continuity. Live/dry-run rules, trace persistence/sanitization and mixed-provider parity tests remain; auth/routing/management plus focused races pass.
 
 After the ClickHouse merge, real ClickHouse tests cover scalar/event JSON trace persistence,
 detail/list/export projections, outcome patches, repricing, backup/restore, epoch archives,
@@ -2543,7 +2537,9 @@ Telemetry schema comments direct per-session counts through client request
 contexts. Migration `0002` updates those comments with `ALTER TABLE`, leaving the
 checksummed `0001` unchanged so existing server-mode databases keep starting.
 
-**Implementation evidence:** `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md,model-availability.md}`,
+The embedded maintained-route inventory includes the observational in-flight count GET and documents Muse discovery exemptions and action admission.
+
+**Implementation evidence:** `internal/api/server_agentdocs.go`. `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md,model-availability.md}`,
 `internal/api/server_agentdocs.go`, the shared availability predicate in
 `internal/api/server_management.go`, and discovery/route wiring in
 `internal/api/{server.go,server_routes.go,server_middleware.go}`,
@@ -2551,31 +2547,9 @@ checksummed `0001` unchanged so existing server-mode databases keep starting.
 `internal/cpauk/capabilities.go`, `internal/telemetry/store/migrations/0002_transcript_count_comments.sql`,
 and `internal/telemetry/ingest/fixes_test.go`.
 
-**Recorded validation:** `TestAgentDocsRouteParity` compares the embedded inventory in
-both directions against registered routes, including telemetry health.
-The model-availability guide passes GET/HEAD serving and availability checks;
-targeted management dry-run and read-only routing-state tests and the server compile
-check pass. A temporary CPA instance serves the guide linked from Commonly used;
-its exact curl recipe predicts an eligible credential with zero upstream calls.
-`TestSQLExamplesThroughAgentQuery` executes every SQL fence through the real
-restricted SQL handler against an isolated, migrated ClickHouse database with
-seeded incident, subagent, skill and routing rows; all five fences return rows.
-`TestAgentDocsServing` covers GET/HEAD, embedded bytes and content types,
-availability, safe mode, disabled panel, root JSON and Link headers on 401/403.
-`TestUnknownManagementRoutesDiscoverAgentDocs` covers the hint and access gate;
-`TestGetRoutingCredentialsIncludesAPIKeyCooldowns` covers API-key timers, empty
-arrays and Home nulls. `TestSkillOccurrencesClientViewOnTranslatedAttempt`
-checks two sessions sharing entries while replay and upstream views count once.
-Build, vet and targeted API/docs tests pass. A local no-ClickHouse smoke run
-verified discovery, docs, v8 authentication and retry-setting persistence. The
-initial docs full-suite run found `TestResponsesInterruptStopsHTTPUpstream`
-failing its cancellation assertion; it passed in isolation. After the requested
-streaming and canonical-session corrections, the Round 2 full suite passes.
-Round 3 passes targeted tests and live SQL reference parity; its full run finds
-`TestWebsocketRetryBindFailureClearsActiveSessionState/Codex_nonstream` with four
-connections instead of three. That test passes in isolation.
+**Recorded validation:** On 2026-11-18, `internal/api/server_agentdocs.go` still advertises/serves embedded GET/HEAD docs behind the shared availability gate. Inventory adds U8's in-flight read and Muse policy; route parity, safe-mode/auth-failure hints and real restricted-SQL examples pass.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-18
 
 ### DL063 — Restarts never serve an empty OAuth model catalog
 
@@ -2594,34 +2568,28 @@ with unchanged calls and order, and a reload no longer waits for ClickHouse.
 
 Upstream Antigravity discovery now lives in `sdk/auth/antigravity_models.go`. Service wrappers retain persisted-hint seeding, cached publication, asynchronous refresh, and stale-result fencing. Known persisted catalogs publish before refresh; a never-discovered catalog still follows upstream asynchronous discovery.
 
-**Implementation evidence:** `sdk/cliproxy/service_lifecycle.go`, `internal/api/server.go`,
+Kiro registration passes through the executor-wrapper helper on ordinary and forced startup/refresh paths while keeping discovered catalogs ready before listening.
+
+**Implementation evidence:** `sdk/cliproxy/service_lifecycle.go`. `sdk/cliproxy/service_lifecycle.go`, `internal/api/server.go`,
 `internal/api/server_reload.go`, `internal/api/analytics_options.go`,
 `sdk/cliproxy/service_run_startup_models_test.go`, and
 `internal/api/analytics_reload_async_test.go`.
 
-**Recorded validation:** the startup test fails on the unfixed code (no codex models at
-`OnBeforeStart`) and passes with the fix, race-clean. The reload test fails within 5s when analytics
-sync runs inline and passes with the FIFO chain. A local CPA with three codex auths and a ClickHouse
-seeded to production size (424k events, about 900 MiB) was held behind a slow `analytics_control`
-mutation. Polling `/v1/models` from launch, the unfixed binary returned 250 consecutive responses
-without codex models for about 8s. The fixed binary returned all codex models on every response, and
-a hot-reloaded API key worked and later reached the analytics key lifecycle. The full suite passes
-except `TestBundledArtifactIsValid`, which needs a built panel bundle, and the existing flaky
-`TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch` and
-`TestEndToEndAuthFileReplacement_RestoresModelsInV1ModelsWithoutRestart`, which fail the same way
-on the unfixed code.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/service_lifecycle.go` still publishes loaded-auth catalogs before OnBeforeStart/listening; analytics reload remains FIFO/asynchronous. Startup-model, blocked-analytics reload and wrapped Kiro registration regressions remain and pass.
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-18
 
 ### DL064 — Example modules build against the v8 tree
 
 The fork's plugin examples use `/v8` module names, require `CLIProxyAPI/v8 v8.0.0`, and replace that dependency with the repository root. Each builds against the checkout it ships in rather than downloading a published SDK. The example generator writes the same module path. Upstream supplies matching v8 paths in two examples; the remaining examples still need the fork correction. The `claude-web-search-router` and `codex-service-tier` module graphs combine upstream's moego dependency with local root and moego replacements.
 
-**Implementation evidence:** `examples/plugin/*/go/go.mod` and the reconciled `claude-web-search-router` and `codex-service-tier` `go.sum` files, `examples/realtime-openai-go/go.mod`, `examples/plugin/scripts/generate_examples.py`, and `examples/plugin/README.md`.
+The nested module graphs retain local v8 replacements and reconcile moego dependencies and sums required by migrated SDK imports.
 
-**Recorded validation:** All 22 plugin modules and the independent realtime example build offline with `GOPROXY=off` and `-mod=readonly` after dependency preparation; both conflicted nested modules pass tests and vet. On 2026-10-30, every example module that depends on CPA (22 plugin modules) builds with `go build ./...` in Go's default read-only module mode, and offline with `GOPROXY=off`. Before the fix, 8 of them failed with `require github.com/router-for-me/CLIProxyAPI/v8: version "v7.0.0" invalid`. `examples/realtime-openai-go` does not import CPA and builds once its third-party modules are downloaded.
+**Implementation evidence:** `examples/plugin/claude-web-search-router/go/go.mod`. `examples/plugin/*/go/go.mod` and the reconciled `claude-web-search-router` and `codex-service-tier` `go.sum` files, `examples/realtime-openai-go/go.mod`, `examples/plugin/scripts/generate_examples.py`, and `examples/plugin/README.md`.
 
-**Last updated:** 2026-11-07
+**Recorded validation:** On 2026-11-18, `examples/plugin/claude-web-search-router/go/go.mod` and the other nested module graphs retain local v8 replacements and reconciled moego dependencies/sums; generator/docs still agree. All 22 plugin modules plus realtime compile with go test -mod=readonly -run '^$' ./....
+
+**Last updated:** 2026-11-18
 
 ### DL065 — ClickHouse query, ingest, and storage efficiency
 
@@ -2686,7 +2654,7 @@ are `TestS1ReportParity`, `TestS2MixedReadParity`,
 
 ### DL066 — Scoped management keys
 
-**Last updated:** 2026-11-03
+**Last updated:** 2026-11-18
 
 Additional `management.keys` credentials have explicit `full-access` or `read-only`
 scopes. Legacy, environment, and local passwords retain full access. Startup, config
@@ -2734,7 +2702,9 @@ quota fixture: expiry details render without warnings and no reset mutation is s
 The Docker runtime accepts all three quota reads and rejects reset consumption and stale
 account headers. The full Go suite and pinned Bun Codex quota tests pass.
 
-**Implementation evidence:** `internal/config/management_keys.go`,
+Read-only scoped keys may GET `/v8/management/observability/requests/in-flight`; mutations remain denied. The bounded legacy bcrypt cache does not cache scoped authorization or revocation, which are resolved on every request.
+
+**Implementation evidence:** `internal/api/handlers/management/management_keys.go`. `internal/config/management_keys.go`,
 `internal/api/handlers/management/management_keys.go`,
 `internal/api/handlers/management/management_quota_read.go`, v8 route registration,
 startup/reload availability checks, scoped-key and quota security regression tests.
@@ -2757,7 +2727,7 @@ Dashboard, Logs Viewer, and Management Center Info with no privileged preloads.
 
 ### DL067 — Config YAML syntax errors report their line
 
-**Last updated:** 2026-11-03
+**Last updated:** 2026-11-18
 
 `PUT /v8/management/config.yaml` and the other v8 config writes return the YAML parser's message
 as `message` when the request body is not valid YAML, alongside the unchanged
@@ -2770,7 +2740,9 @@ yaml.v3's line. Bodies over 1 MiB skip the search and keep yaml.v3's message. Li
 validation errors are covered by DL069. Proposed upstream on the
 `fix/v8-config-error-messages` branch; drop this entry if upstream accepts it.
 
-**Implementation evidence:** `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
+Config authentication-cache invalidation composes with line-aware syntax errors before writes; invalid YAML still leaves the configuration unchanged.
+
+**Implementation evidence:** `internal/config/yaml_syntax_error.go`. `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
 and the `invalid_body` response in `internal/api/handlers/management/config_v8.go`.
 
 **Recorded validation:** On 2026-11-03, `yaml_syntax_error_test.go` covers dedents after
@@ -2808,7 +2780,7 @@ in the fork-only `clickhouse` section.
 
 ### DL069 — Config validation errors point at the submitted field
 
-**Last updated:** 2026-11-03
+**Last updated:** 2026-11-18
 
 The v8 config handler validates its re-encoded document, so upstream's `invalid_config` line
 references ignored the body's comments, blank lines, and indentation. A type error on line 11 of
@@ -2823,7 +2795,9 @@ the submitted body's aliases, so this holds when normalization removes the ancho
 collection nested in one of the same kind on one line is named one level too deep. Documents
 over 1 MiB keep yaml.v3's message, as for DL067. Proposed upstream with DL067; drop this entry if upstream accepts it.
 
-**Implementation evidence:** `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
+Whole-document PUT diagnostics use the original submitted bytes, while PATCH diagnostics retain path-only context alongside management authentication-cache invalidation.
+
+**Implementation evidence:** `internal/api/handlers/management/config_v8.go`. `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
 and its use after `ParseConfigBytes` and `ValidateV8Config` in
 `internal/api/handlers/management/config_v8.go`.
 
@@ -2909,7 +2883,9 @@ matching CPAMC's existing flattened filter encoding; POST queries use
 
 Dry runs accept optional `source_format`; `openai-image` selects the native Images API credential track independently of the model name or client User-Agent. Omitted input preserves text-route behavior. Invalid formats return HTTP 400 with `path: "source_format"`. Live selection, trace gates, GSR refresh, and dry-run affinity checks use the same request-aware SIWC eligibility. Native image calls use the outer OAuth token even when the nested SIWC token has a different expiry. `sdk/cliproxy/auth/routing_siwc_merge_test.go` covers buffered/streaming generations and edits, both expiry directions, rules, and affinity; `internal/api/handlers/management/routing_test.go` covers format validation. Embedded routing docs describe the input.
 
-**Implementation evidence:** `sdk/cliproxy/auth/{routing_strategy.go,routing_trace.go,routing_dry_run.go,selector.go,scheduler.go,gsr_tier.go,session_cache.go}`,
+Dry-run simulations retain private selector credits, cursors and affinity provenance. Credential retry deadlines join live eligibility gates, and continuity parity checks preserve routing explanations without advancing selector state.
+
+**Implementation evidence:** `sdk/cliproxy/auth/routing_dry_run.go`. `sdk/cliproxy/auth/{routing_strategy.go,routing_trace.go,routing_dry_run.go,selector.go,scheduler.go,gsr_tier.go,session_cache.go}`,
 `sdk/cliproxy/routing/contract.go`, `internal/cpauk/model/{routing_trace.go,query.go}`,
 `internal/cpauk/chstore/read_selection.go`, and
 `internal/api/handlers/management/{analytics.go,routing.go}`.
@@ -2932,14 +2908,9 @@ against the next manager selection, no quota refresh during simulation, kept/hel
 affinity provenance, alias merges, truncation order, query validation, real ClickHouse
 request filtering and trace round trips, and management detail resolution.
 
-**Recorded validation:** On 2026-11-13, all 1,312 top-level auth tests pass, including ten-pick
-prediction comparisons against actual public execute, stream and count paths after pinned traffic
-and scheduler rebuilds. Full private selector-state snapshots prove repeated dry runs leave live
-state unchanged. A focused race run passes 127 top-level tests covering routing, GSR, reserves,
-quota persistence, retry exclusions and cooldowns. Auth vet, formatting and server compilation pass.
-Fresh independent review confirms the final reload repair, including pending reservations, alias/model normalization and public Execute/dry-run parity. The real-service matrix covers 50 affinity enable/disable/TTL/rebind/rule/provider/transport cases, repeated three times.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/routing_dry_run.go` still privately simulates live selector credits/cursors, factors and affinity provenance. New credentialRetryAfter exclusion composes with trace gates. Weighted/GSR/SIWC/explanation/read-only/provenance tests remain and auth suite passes.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-18
 
 ### DL071 — ClickHouse transcript and system-log storage reductions
 
@@ -3002,19 +2973,15 @@ profiles, regions, and configured proxy routes. Model exclusions, OAuth aliases,
 settings, prefixes, scheduler updates, and credential-removal fences still apply.
 The Kiro management model-definition list also uses discovered registrations.
 
-**Implementation evidence:** `internal/runtime/executor/helps/kiro_models.go`,
+Case-only Kiro aliases retain discovered metadata, and credential-local identity matches suppress global alias fallback. Provider-scoped lookup can enrich metadata but cannot advertise or grant access to an undiscovered Kiro model; registration uses the executor wrapper.
+
+**Implementation evidence:** `internal/runtime/executor/helps/kiro_models.go`. `internal/runtime/executor/helps/kiro_models.go`,
 `sdk/cliproxy/kiro_models.go`, `sdk/cliproxy/service_models.go`,
 `internal/registry/model_definitions.go`, and their Kiro regression tests.
 
-**Recorded validation:** the SDK, executor, helper, and registry package suites,
-targeted Kiro race tests, `go vet`, and server build pass. An isolated Docker
-instance discovered 21 live Kiro models, completed buffered and streaming Fable
-5.1 requests and a Qwen3 Coder Next request with HTTP 200 and the requested text.
-Its shared Claude catalog explicitly included Fable 5.2, while Kiro registration
-excluded it; a Fable 5.2 request made zero upstream attempts. Public and
-credential-specific management model lists matched the live discovery result.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/kiro_models.go` retains authenticated, paginated credential-scoped membership, cache/fences and metadata enrichment. Case-only/local aliases preserve case-only mappings and credential-local identity precedence. Discovery/failure/empty/removal/profile/proxy and wrapper tests remain and pass, including focused races.
 
-**Last updated:** 2026-11-12
+**Last updated:** 2026-11-18
 
 ### DL073 — Reject forced hosted web search on Chat Completions routes
 
@@ -3032,17 +2999,15 @@ to translate normally. Native Responses routes keep their existing hosted-tool
 behavior. The forced-choice error propagates through streaming, non-streaming
 and token-count translation before an upstream request is sent.
 
-**Implementation evidence:**
+Shared media translation preserves the fork request-scoped 400 for forced hosted search, dropped hosted declarations and caller-owned function tools; refused requests make no upstream call.
+
+**Implementation evidence:** `internal/translator/openai/openai/responses/hosted_web_search_test.go`.
 `internal/translator/openai/openai/responses/{openai_openai-responses_tools.go,openai_openai-responses_request.go,hosted_web_search_test.go}`
 and `internal/runtime/executor/openai_compat_executor_hosted_tools_test.go`.
 
-**Recorded validation:** regression tests cover dropped declarations, the forced
-choice 400, caller-defined `web_search` functions, and zero upstream calls for a
-forced choice. Codex CLI 0.169 against a local server with an OpenAI-compatible
-Chat Completions provider failed with the hosted-tool 400 before the declaration
-fix and completed after it.
+**Recorded validation:** On 2026-11-18, `internal/translator/openai/openai/responses/hosted_web_search_test.go` still verifies request-scoped forced-search 400, dropped declarations and caller-owned functions after upstream media translation changes. Actual execute/stream/count fixture proves zero upstream calls; both suites pass.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-18
 
 ### DL074 — Opt-in instruction role wrapping for OpenAI-compatible providers
 
@@ -3063,7 +3028,9 @@ counting, so final overrides and filters remain authoritative. Home credential
 options can carry the same flag. CPAMC exposes a provider behavior checkbox with
 its default off and preserves explicit false and untouched absence on save.
 
-**Implementation evidence:** `internal/config/config_types.go`,
+Instruction wrapping runs before final payload rules and ordered replacement. Explicit user rules and filters remain authoritative for both compatible request protocols and token estimates.
+
+**Implementation evidence:** `internal/runtime/executor/helps/openai_instruction_roles.go`. `internal/config/config_types.go`,
 `internal/runtime/executor/helps/openai_instruction_roles.go`,
 `internal/runtime/executor/openai_compat_executor.go`,
 `internal/watcher/diff/openai_compat.go`, and `config.example.yaml`.
@@ -3071,21 +3038,9 @@ Executor regressions cover both client formats, streaming, opt-in behavior,
 message/tool order, text arrays, payload-rule ordering, token counts, and Home
 credential options. Config regressions cover v8 validation and save/reload.
 
-**Recorded validation:** `go test ./...` and the disposable server build pass.
-CPAMC passes its Bun 1.4.3 verification suite with 3,170 tests, lint, TypeScript,
-and production build, and the canonical Docker panel bundle builds. Isolated
-Chrome checks at 1440px and 390px confirm the checkbox starts off, saves, and
-reopens enabled, with no page errors or horizontal page overflow. A temporary
-loopback CPA reproduces Z.ai's HTTP 400/code 1214 with the flag off and returns
-HTTP 200/OK for the identical request after enabling it through CPAMC. Sixteen
-live Z.ai code probes cover both client formats, both stream modes, original
-system/developer precedence, developer-over-user precedence, text-array session
-updates, and a user role-spoofing attempt. All generated functions follow the
-expected priority; three low-effort nonstream replies add explanatory prose and
-fail the stricter code-only formatting check. All eight streaming probes pass
-that stricter check. No production deployment or configuration was changed.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/openai_instruction_roles.go` remains opt-in via parsed provider/Home config, runs before final rules/replacement, and rejects nontext instructions. Both protocols/modes, order, token overhead, authoritative final rules and save/reload tests remain and pass.
 
-**Last updated:** 2026-11-16
+**Last updated:** 2026-11-18
 
 ### DL075 — Session affinity survives restarts through the existing KV store
 
@@ -3111,7 +3066,9 @@ KV store instead of its separate JSON snapshot file and periodic/shutdown flushe
 It prevents restart-driven account reassignment; it does not make encrypted
 reasoning portable across organizations or prevent intentional failover.
 
-**Implementation evidence:** `internal/kvstore/persistent_map.go`,
+The config-applied hook follows executor registration; standalone KV-backed affinity persistence retains restore bounds, provenance, TTL and writer fencing, and remains disabled in Home mode.
+
+**Implementation evidence:** `sdk/cliproxy/auth/session_cache_persistence.go`. `internal/kvstore/persistent_map.go`,
 `sdk/cliproxy/auth/session_cache_persistence.go`,
 `sdk/cliproxy/session/lcp_persistence.go`, and `sdk/cliproxy/service_config.go`.
 Regressions reopen the KV database without stopping the selector, preserve both
@@ -3119,15 +3076,9 @@ explicit and history-based bindings, cover routing reload and disabled KV, and
 exercise alias/provenance restoration, expiry, eviction, compaction, generation
 fencing, durable invalidation, transaction rollback, and superseded writers.
 
-**Recorded validation:** A temporary loopback proxy with two upstream account
-fixtures kept both explicit-ID and history-only conversations on their original
-account after a forced process kill and restart. Replayed reasoning reached that
-account without removals, while a new control session chose the higher-priority
-account. The full Go suite, targeted affinity/KV race suite, focused `go vet`,
-canonical panel build, and disposable server compile pass. No production
-deployment or configuration was changed.
+**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/session_cache_persistence.go` and LCP/KV adapters retain atomic operations, restore bounds, aliases/provenance/TTL and writer fencing. Service config still enables local persistence only outside Home; new config-applied hook follows registration. Restart/reopen/reload/KV tests pass.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-18
 
 ### DL076 — Locally refused credential attempts appear in analytics
 
@@ -3147,21 +3098,17 @@ conductor hands the failure to executors implementing `PrepareFailureReporter` (
 Antigravity, Meta) for non-streaming, streaming and Home execution; token counting records no
 attempt.
 
-**Implementation evidence:** `internal/runtime/executor/helps/usage_helpers.go`
+Executor preparation failures still report a local credential attempt through `PrepareFailureReporter` for execute, stream and Home paths, with original model identity and no invented upstream status. Token counts remain excluded.
+
+**Implementation evidence:** `internal/runtime/executor/helps/usage_helpers.go`. `internal/runtime/executor/helps/usage_helpers.go`
 (`PublishAttemptFailure`), the Claude, Codex, Antigravity, Meta and xAI execute/stream/WebSocket files,
 `sdk/cliproxy/auth/{conductor.go,conductor_execution.go,conductor_home_execution.go}`,
 `internal/runtime/executor/attempt_failure_usage_test.go`, and
 `sdk/cliproxy/auth/conductor_prepare_failure_report_test.go`.
 
-**Recorded validation:** each executor regression and the conductor regression failed with the
-call sites reverted and pass with them. The executor regressions capture records synchronously and
-require exactly one per attempt, so they also fail if one refusal publishes twice. Meta request
-preparation shares the tested helper call but has no dedicated failure fixture. Against ClickHouse, a Claude Code
-request whose Claude credential lacked a reference and fell back to exhausted Kiro credentials
-recorded the Claude refusal as attempt 1 beside three Kiro 402 attempts, and the CPAMC event
-detail showed it with its routing decision.
+**Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/usage_helpers.go` remains called for all documented local refusals; execute/stream/Home conductor preparation failures still use PrepareFailureReporter, counts do not. Exactly-once/source-hop/no-upstream-status and model identity regressions remain and pass normally and with race detection.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-18
 
 ## Sync Checklist
 
@@ -3180,6 +3127,33 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 ## Merge History
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.
+
+### 2026-11-18 - Merge upstream `main` at `a5e8f69e5`
+
+Target: `upstream/main` at `a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`.
+Parents: fork `9b5fe9d1cd40fb9434b4cb586e314fc1292c0dd8` and upstream `a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`. Merged 76 upstream commits since the previous upstream base `1aaf56bc6a0fc6fce19049ba7ae8554c882304a6`, without rebasing or squashing. The panel pin advances from CPAMC `8b7056547848670b72d85977c34bbcd825a986b1` to `7e1e738499f4fe9b65555c5127dae62502572289`, its two-parent sync through upstream `e5eb4fe63ad8a2a20d13022e13e6dc4d386ac07b`, 26 incoming commits.
+
+User decisions: accept terminal Antigravity TOS deactivation with pool protection disabled by default. Use native Claude structured output while retaining Kiro schema-in-prompt fallback. Integrate ordered payload replacements into the retained single-evaluation image plan; Kiro supports final-wire paths only. Adopt opt-in Codex continuity within fork routing, reserves, affinity and retry gates. Adopt credential-bound OAuth plugin catalogs, request-scoped policy-error stops, case-only/local alias precedence, native Gemini thinking levels and strict provider lookup. Charge Muse search/browser admission, exempt discovery and propagate native client-key identity for reserve bypass. Allow the observational in-flight GET for read-only scoped management keys. No divergence was retired.
+
+Other decisions: retain every fork quota, analytics, routing, identity and packaging contract alongside upstream GPT-6.2/Gemini 4 metadata, caller-owned interceptor wrappers, zero-output handling, media translation, sensitive-pattern replacement, retry hints and management authentication caching. Scope and revocation checks remain per request. Shared media support does not imply additional Kiro adapter capabilities. Docker images compile build-context panel source with Bun 1.4.3; CI verifies clean pins separately from the canonical builder.
+
+Integration repairs: compose credential retry/force/non-quota deadlines with persisted scoped independent failures and terminal TOS state. Move Claude cleanup before final rules and retain replacement effects through automatic-image cleanup and final filters. Wrap ordinary and forced Kiro registration. Preserve local diagnostics while importing old and labeled response logs. Release bounded observer registrations in new executor fixtures; reconcile nested moego module dependencies and scheduler/key/trace fixtures. Keep active Codex streams responsible for terminal WebSocket HTTP errors and normalize cancellation-caused Antigravity body-close errors. Make terminal pool Retry-After reserve-aware with `m.eligibilityForRequest` and `TestPoolCooldownTerminalErrorIgnoresReserveHeldCredential`.
+
+Validation:
+
+- The implementation handoff records 128 passing test packages with only `TestBundledArtifactIsValid` failing on the stale bundle, plus passing vet, formatting, the disposable server build and all 23 nested example builds. Independent audit A passes `go test -p 2 ./... -count=1 -skip '^TestBundledArtifactIsValid$'` and `go vet ./...` successfully. Audits cover all 76 divergences without a verified production regression or deleted fork test file.
+- HTTP, WebSocket and AWS event-stream fixtures cover schema fallback, admission, wrappers, payload ordering, local failures and read-only in-flight access. Focused routing, cooldown, executor, handler and management race suites pass. Repaired terminal-429 stress passes 100 repetitions; Antigravity completion passes 1,000 repetitions. Risk review confirms continuity eligibility, restart/recovery deadline composition and the final payload barrier; its reserve-aware pool-cooldown finding is fixed with a named regression.
+- Real isolated ClickHouse suites exercise storage, capture, import, recovery and pricing. Read-only Compose assertions verify both build arguments and published-image overrides; builder/verifier shell syntax checks pass. CPAMC post-repair verification records 3,539 passing tests with lint and build clean.
+- Final `go test -p 2 ./... -count=1` on the merged tree with the rebuilt canonical bundle passes all 129 tested packages, including `TestBundledArtifactIsValid`; `go vet ./...`, `gofmt` and the disposable server build pass. The pre-merge baseline passed 127 packages.
+- Paid live checks on a plain-mode merged binary pass Chat Completions and Claude Messages, buffered and streaming, through Claude OAuth, Codex OAuth and an OpenAI-compatible API-key provider, plus Codex Responses; the API-key provider returns the expected text in all four modes. Per-key admission then rejection passes. A literal `payload.replace` rule reaches the upstream body. Full and read-only scoped management keys both read in-flight counts while the read-only key's config write returns 403. Plain mode writes file request logs and serves no telemetry routes; analytics health reports `disabled`, as before the merge.
+- A ClickHouse-mode server against a disposable real ClickHouse applies its 10 migrations, restarts as a no-op, imports a legacy SQLite analytics copy with event, token, cost and quota-history totals preserved, captures a live inference into analytics and request capture, and exposes it through restricted SQL. No CPAUK migration is added by this sync.
+- Both runtime images build, and the disposable web Compose stack serves the panel and proxy and passes a live inference. Integrated Chrome QA of the canonical panel against the merged binary covers every main route at 1440px and 390px in light and dark themes without page errors, including read-only sessions and a config round trip that preserves key labels, limits and comments.
+- Temporary servers, containers, volumes, images, copied credentials and key-bearing configs were removed after verification. Existing user services were left untouched.
+
+Limits:
+
+- The Kiro accounts available were disabled, so Kiro's paid happy path was not certified; Kiro schema fallback, final-wire replacements and alias handling are covered by fixtures. Firefox, WebKit and native macOS/Windows behavior were not checked. No live Home cluster is certified; the incoming Home changes require no new mandatory wire method, and earlier scheduling gaps remain outside this sync.
+- Audit B's broad run did not establish a clean full suite from its retained output; its isolated executor `-count=1` run passed. The pre-existing `TestAntigravityAuthHasCreditsRequiredHomeBalanceUsesKV` leaks an SDK credits hint under `-count>1` and remains unfixed. An unchanged ClickHouse query-ID collision reproduced on the pre-merge tree and passes in isolation on the merge. Neither is claimed repaired.
 
 ### 2026-11-13 - Merge upstream `main` at `1aaf56bc6`
 

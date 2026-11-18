@@ -80,6 +80,7 @@ for the version check and the following observational routes:
 - `GET /observability/logs/errors/:name`
 - `GET /observability/logs/requests/:id`
 - `GET /observability/usage/api-keys`
+- `GET /observability/requests/in-flight`
 
 Read-only application log reads remove credential assignments, cookies, URL userinfo and
 queries, and known configured/runtime secrets. Request-log downloads retain request

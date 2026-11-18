@@ -1235,6 +1235,9 @@ func isCredentialBlocked(auth *Auth, supportedModelCount int, now time.Time) boo
 	if effectiveAuthCooldownUntil(auth).After(now) && auth.NextRetryAfter.After(now) {
 		return true
 	}
+	if !auth.credentialRetryAfter.IsZero() && auth.credentialRetryAfter.After(now) {
+		return true
+	}
 	if len(auth.ModelStates) == 0 {
 		return auth.Unavailable || auth.Quota.Exceeded || (!auth.NextRetryAfter.IsZero() && auth.NextRetryAfter.After(now))
 	}

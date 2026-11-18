@@ -159,6 +159,14 @@ func Parse(name string, data []byte) (*record.Request, error) {
 			h := keyValues(head)
 			r.Status, _ = strconv.Atoi(first(h, "Status"))
 			delete(h, "Status")
+			if labeled, ok := strings.CutPrefix(body, "Headers:\n"); ok {
+				if headers, response, found := strings.Cut(labeled, "\nBody:\n"); found {
+					// New logs separate local diagnostics, headers, and body.
+					// Older unlabelled response sections remain readable.
+					r.Errors = append(r.Errors, h["Error"]...)
+					h, body = keyValues(headers), response
+				}
+			}
 			r.ResponseHeaders = h
 			r.Streaming = strings.Contains(strings.ToLower(first(h, "Content-Type")), "text/event-stream")
 			if !r.Streaming {

@@ -147,3 +147,46 @@ func TestKiroDiscoveryCannotResurrectRemovedCredential(t *testing.T) {
 		t.Fatal("late catalog response resurrected a removed credential")
 	}
 }
+
+func TestKiroDiscoveredCaseOnlyAliasOverridesGlobal(t *testing.T) {
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", kiroCatalogTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[{"modelId":"Qwen3-Coder-Next","tokenLimits":{"maxInputTokens":12345}}]}`)), Header: make(http.Header), Request: r}, nil
+	}))
+	cfg := &config.Config{OAuthModelAlias: map[string][]config.OAuthModelAlias{"claude": {{Name: "undiscovered", Alias: "qwen3-coder-next"}}}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	credential := &coreauth.Auth{ID: t.Name(), Provider: "kiro", Metadata: map[string]any{"access_token": "test-token"}}
+	coreauth.SetOAuthModelAliasesAttribute(credential, []config.OAuthModelAlias{{Name: "Qwen3-Coder-Next", Alias: "qwen3-coder-next"}})
+	registered, err := manager.Register(ctx, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{coreManager: manager, cfg: cfg}
+	service.registerModelsForAuth(ctx, registered)
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(credential.ID) })
+	models := reg.GetModelsForClient(credential.ID)
+	if len(models) != 1 || models[0].ID != "qwen3-coder-next" || models[0].ContextLength != 12345 {
+		t.Fatalf("discovered alias lost spelling or metadata: %+v", models)
+	}
+	if reg.ClientSupportsModel(credential.ID, "undiscovered") {
+		t.Fatal("global alias advertised undiscovered Kiro model")
+	}
+}
+
+func TestKiroExecutorRegistrationUsesWrapper(t *testing.T) {
+	service := newIssue7568Service(t, &config.Config{})
+	service.executorWrapper = func(_ string, executor coreauth.ProviderExecutor) coreauth.ProviderExecutor {
+		return &issue7568Wrapper{inner: executor}
+	}
+	credential := &coreauth.Auth{ID: t.Name(), Provider: "kiro"}
+	for _, force := range []bool{false, true} {
+		service.ensureExecutorsForAuthWithContext(t.Context(), credential, force)
+		published, ok := service.coreManager.Executor("kiro")
+		if !ok {
+			t.Fatal("Kiro executor missing")
+		}
+		if _, ok := published.(*issue7568Wrapper); !ok {
+			t.Fatalf("Kiro wrapper bypassed: %T", published)
+		}
+	}
+}

@@ -73,6 +73,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | Method and path | Purpose | Key parameters |
 | --- | --- | --- |
 | `GET /v8/management/capabilities` | Discover supported management and analytics capabilities | No params |
+| `GET /v8/management/observability/requests/in-flight` | Read standalone in-flight counts and oldest start time | No params; read-only keys allowed; empty in Home mode |
 | `GET /v8/management/storage` | Read storage size breakdown | No params |
 | `GET /v8/management/server/latest-version` | Read latest release information | No params |
 | `POST /v8/management/requests/api-call` | Make a credential-authenticated upstream HTTP call | JSON `method`, `url`; optional `auth_index`, `header`, `data`, `proxy_url`, `force_refresh`; `$TOKEN$` in header values substitutes upstream token |
@@ -274,3 +275,7 @@ curl -sS -X POST "$CPA_BASE/v8/management/analytics/query" \
 ```
 
 Use the user's intended time zone. Read `proxy_requests` for analytics client-request counts and `upstream_attempts` for attempt counts; retries can make the latter larger. Use captured-request SQL for request-level investigation, checking capture and retention coverage before comparing datasets.
+
+## Muse Code client routes
+
+Authenticated `GET /muse-code/models` and `GET /muse-code/config` are discovery reads and do not consume per-key request quota. `POST /muse-code/search` and `POST /muse-code/browser_open` consume request admission, use the client key identity for credential reserve checks, and do not synthesize token usage. Relay actions are unavailable in Home mode.

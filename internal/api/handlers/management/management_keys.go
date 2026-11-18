@@ -33,7 +33,7 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 		return false
 	}
 	switch path {
-	case "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
+	case "/observability/requests/in-flight", "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
 		"/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys",
 		"/plugins/:id/quota", "/session", "/capabilities", "/storage", "/credentials", "/credentials/models",
 		"/routing/model-definitions/:channel", "/telemetry/health", "/telemetry/schema",
