@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -34,6 +35,7 @@ import (
 )
 
 type UsageReporter struct {
+	liveAttempt          *livehandle.Handle
 	requestID            string
 	traceID              string
 	homeSelection        *usage.HomeSelection
@@ -249,6 +251,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
 	}
+	reporter.liveAttempt = livehandle.Default.StartAttempt(usage.ProxyRequestIDFromContext(ctx), livehandle.Attempt{Provider: provider, AuthID: reporter.authID, Credential: livehandle.Credential{Label: cliproxyauth.CredentialLabel(auth), AuthIndex: reporter.authIndex}, UpstreamModel: model, RequestedModel: alias}, sessionID, parentSessionID)
 	return reporter
 }
 
@@ -768,6 +771,13 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 				}
 			}
 		}
+		outcome := "finished"
+		if record.Outcome == "failed" {
+			outcome = "failed"
+		} else if record.Outcome == "canceled" {
+			outcome = "cancelled"
+		}
+		r.liveAttempt.Finish(outcome, record.UpstreamStatusCode, detail.InputTokens, detail.OutputTokens)
 		r.publishAttemptRecord(ctx, record)
 	})
 }
@@ -796,7 +806,9 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 		return
 	}
 	r.once.Do(func() {
-		r.publishAttemptRecord(ctx, r.buildRecord(usage.Detail{}, false, usage.Failure{}))
+		record := r.buildRecord(usage.Detail{}, false, usage.Failure{})
+		r.liveAttempt.Finish("finished", record.UpstreamStatusCode, 0, 0)
+		r.publishAttemptRecord(ctx, record)
 	})
 }
 
@@ -4532,6 +4544,7 @@ func (r *UsageReporter) ObserveGenerationTokenAt(at time.Time) {
 	if r == nil {
 		return
 	}
+	r.liveAttempt.Output(0, at)
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
 	if r.generationInvalid {
@@ -4604,6 +4617,7 @@ func (r *UsageReporter) ObserveUpstreamResponseAt(at time.Time) {
 	}
 	elapsed := at.Sub(r.dispatchAt)
 	r.providerLatency = &elapsed
+	r.liveAttempt.Ack(at)
 }
 
 func (r *UsageReporter) generationDuration() *time.Duration {
@@ -4654,8 +4668,10 @@ func (r *UsageReporter) ObserveUpstreamResponse() {
 	if r.dispatchAt.IsZero() || r.providerLatency != nil {
 		return
 	}
-	elapsed := time.Since(r.dispatchAt)
+	now := time.Now()
+	elapsed := now.Sub(r.dispatchAt)
 	r.providerLatency = &elapsed
+	r.liveAttempt.Ack(now)
 }
 
 func (r *UsageReporter) localLatencies() (firstToken, provider, routing *time.Duration) {

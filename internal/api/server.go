@@ -353,6 +353,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		authManager.SetQuotaRecoveryRefresher(s.mgmt.RefreshQuotaForRouting)
 		authManager.SetQuotaReserveProber(s.mgmt.QuotaReserveBars)
 	}
+	s.mgmt.SetManagementAvailable(s.managementEnabled)
 	s.mgmt.SetUsageLimitTracker(s.usageLimitTracker)
 	s.mgmt.SetClickHouse(s.clickHouse.handle)
 	s.mgmt.SetAnalyticsService(s.analytics)

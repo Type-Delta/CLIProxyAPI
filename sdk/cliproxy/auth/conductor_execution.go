@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -255,6 +256,7 @@ func isOpenAIImageExecutionOptions(opts cliproxyexecutor.Options) bool {
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	scope := m.beginInFlight("")
 	defer func() { scope.end() }()
+	livehandle.Default.SetModel(coreusage.ProxyRequestIDFromContext(ctx), requestedModelAliasFromOptions(opts, req.Model))
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {
@@ -425,6 +427,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	scope := m.beginInFlight("")
 	defer func() { scope.end() }()
+	livehandle.Default.SetModel(coreusage.ProxyRequestIDFromContext(ctx), requestedModelAliasFromOptions(opts, req.Model))
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {
@@ -502,6 +505,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			scope = nil
 		}
 	}()
+	livehandle.Default.SetModel(coreusage.ProxyRequestIDFromContext(ctx), requestedModelAliasFromOptions(opts, req.Model))
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if pool := m.routingPoolForRequest(ctx, req.Model, opts); pool != nil {

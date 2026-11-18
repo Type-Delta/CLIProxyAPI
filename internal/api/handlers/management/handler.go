@@ -55,6 +55,7 @@ type Handler struct {
 	quotaCacheMu             sync.Mutex
 	quotaCache               *apiCallQuotaCache
 	authManager              *coreauth.Manager
+	managementAvailable      func() bool
 	tokenStore               coreauth.Store
 	localPassword            string
 	allowRemoteOverride      bool
@@ -265,6 +266,14 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 	return config.ComputeSourceHash(data) != cfg.SourceHash
 }
 
+// SetManagementAvailable sets the server's gate for whether the Management API serves at all (off
+// in Home mode or without a management secret). Long-lived responses check it while they run.
+func (h *Handler) SetManagementAvailable(available func() bool) {
+	h.mu.Lock()
+	h.managementAvailable = available
+	h.mu.Unlock()
+}
+
 // SetAuthManager updates the auth manager reference used by management endpoints.
 func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	if h == nil {
@@ -457,21 +466,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
 
-		// Accept either Authorization: Bearer <key> or X-Management-Key
-		var provided string
-		if ah := c.GetHeader("Authorization"); ah != "" {
-			parts := strings.SplitN(ah, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				provided = parts[1]
-			} else {
-				provided = ah
-			}
-		}
-		if provided == "" {
-			provided = c.GetHeader("X-Management-Key")
-		}
-
-		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, provided)
+		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, providedManagementKey(c))
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
@@ -485,6 +480,41 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 	}
 }
 
+// providedManagementKey reads Authorization: Bearer <key>, a bare Authorization value, or
+// X-Management-Key.
+func providedManagementKey(c *gin.Context) string {
+	var provided string
+	if ah := c.GetHeader("Authorization"); ah != "" {
+		parts := strings.SplitN(ah, " ", 2)
+		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			provided = parts[1]
+		} else {
+			provided = ah
+		}
+	}
+	if provided == "" {
+		provided = c.GetHeader("X-Management-Key")
+	}
+	return provided
+}
+
+// managementAuthState fingerprints the settings that decide management access, so long-lived
+// responses can tell when to authenticate their caller again.
+func (h *Handler) managementAuthState() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return ""
+	}
+	remote := h.cfg.RemoteManagement
+	var b strings.Builder
+	fmt.Fprintf(&b, "%t\x00%s", remote.AllowRemote, remote.SecretKey)
+	for _, key := range remote.Keys {
+		fmt.Fprintf(&b, "\x00%s\x00%s", key.Scope, key.SecretKey)
+	}
+	return b.String()
+}
+
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
@@ -496,6 +526,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 }
 
 func (h *Handler) authenticateManagementScope(clientIP string, localClient bool, provided string) (string, bool, int, string) {
+	return h.checkManagementScope(clientIP, localClient, provided, true)
+}
+
+// checkManagementScope matches a management key. With record, it is a login attempt: IP bans
+// apply and failures count toward one. Without, it re-checks a caller who already authenticated
+// (a long-lived stream) and leaves the attempt counters alone.
+func (h *Handler) checkManagementScope(clientIP string, localClient bool, provided string, record bool) (string, bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
@@ -524,7 +561,7 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	now := time.Now()
 	h.attemptsMu.Lock()
 	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
+	if record && ai != nil && !ai.blockedUntil.IsZero() {
 		if now.Before(ai.blockedUntil) {
 			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 			h.attemptsMu.Unlock()
@@ -541,6 +578,9 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	}
 
 	fail := func() {
+		if !record {
+			return
+		}
 		h.attemptsMu.Lock()
 		aip := h.failedAttempts[clientIP]
 		if aip == nil {
@@ -557,6 +597,9 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	}
 
 	reset := func() {
+		if !record {
+			return
+		}
 		h.attemptsMu.Lock()
 		if ai := h.failedAttempts[clientIP]; ai != nil {
 			ai.count = 0

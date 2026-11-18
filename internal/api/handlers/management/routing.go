@@ -249,21 +249,7 @@ func routingAPIKeyID(cfg *config.Config, label string) (id string, found, ambigu
 	return id, found, false
 }
 
-func routingCredentialLabel(auth *coreauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if label := strings.TrimSpace(authAttribute(auth, "label")); label != "" {
-		return label
-	}
-	if label := strings.TrimSpace(auth.Label); label != "" {
-		return label
-	}
-	if provider := strings.TrimSpace(auth.Provider); provider != "" {
-		return provider
-	}
-	return auth.ID
-}
+func routingCredentialLabel(auth *coreauth.Auth) string { return coreauth.CredentialLabel(auth) }
 
 func routingCredentialPriority(auth *coreauth.Auth) int {
 	if auth == nil {

@@ -143,6 +143,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 
 | Method and path | Purpose | Key parameters |
 | --- | --- | --- |
+| `GET /v8/management/live-requests` | Inspect in-flight and recently finished proxy requests | No parameters; retains completed requests for 30 seconds, with bounded history |
+| `GET /v8/management/live-requests/stream` | Stream live requests via SSE | Same read-only management permission; a `full` snapshot first, then each second changed `requests`, `progress` tuples `[id, request output bytes, attempt index, attempt output bytes, last output time]` for output-only growth, and `removed` IDs; reconnect for a fresh full after a slow subscriber is disconnected |
 | `GET /v8/management/observability/logs` | Read application logs incrementally | Query `after` Unix seconds, `limit`, `cursor`; use returned `next-cursor`. Requires file logging enabled, otherwise 400 `{"error":"logging to file disabled"}`. Captured request logs use separate endpoints. |
 | `DELETE /v8/management/observability/logs` | Clear application log files | No params |
 | `GET /v8/management/observability/logs/errors` | List captured request error logs | No params |
@@ -150,6 +152,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `GET /v8/management/observability/logs/requests/:id` | Read or reconstruct captured request and attempts | Path `id` is request-log identifier |
 | `GET /v8/management/observability/usage/api-keys` | Read in-memory per-key usage | No params |
 | `GET /v8/management/observability/usage/queue` | Pop queued usage records | Query `count`, default 1; consuming read |
+
+Both live-request endpoints include `session` when known, the first eight hex characters of SHA-256 of the trimmed client session ID, and `parent` in the same form when that session was spawned by another one (a subagent's main session). Raw session IDs are never exposed. Each attempt's `ack_at` is when the provider first answered it (HTTP response headers or a WebSocket frame), or null until then; it keeps that first answer when the attempt dispatches again. Stream events use `data: <json>\n\n`, with `server_time`, `retention_seconds`, `truncated`, and an always-present `requests` array. The first event adds `full:true`; subsequent events contain only new or revised requests and optionally `removed` request IDs. One broadcaster per registry collects and encodes each tick once for all subscribers, caches full snapshots per tick, and stops when no subscribers remain.
 
 ## Credentials and OAuth
 

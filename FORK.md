@@ -3110,6 +3110,74 @@ Executor preparation failures still report a local credential attempt through `P
 
 **Last updated:** 2026-11-18
 
+### DL077 — Live proxy request monitoring
+
+The process keeps an in-memory view of admitted proxy requests and their upstream attempts.
+`GET /v8/management/live-requests` exposes their derived states, provider acknowledgement time (`ack_at`: the provider's first answer to the attempt, HTTP
+response headers or a WebSocket frame, kept across retries within the attempt; analytics provider
+latency is measured from the same signal but follows the latest dispatch), output timing
+and byte counts,
+reported token counts, credential display labels, short API-key identifiers, and an optional
+eight-character SHA-256 digest of the client session ID (never the ID itself; the latest non-empty
+attempt session wins) with the same digest of its parent session when the request metadata names one
+(a subagent's main session), to read-only management keys. Completed requests remain for 30 seconds, with
+at most 200 retained and at most 16 attempts shown per request; request-level output byte and token
+totals still count every attempt, so long websocket sessions are not undercounted. Model discovery is
+excluded. Raw API keys and request content are not stored in this registry. A stream that fails
+after its response headers ends as failed, and usage reported after the request closed still lands
+on its attempt. CPAMC's Live Handle page draws this feed as a request map. The view supplements
+upstream execution and usage reporting without changing routing or the legacy management routes.
+
+`GET /v8/management/live-requests/stream` has the same read-only access and sends server-sent events
+(`data: <json>` frames): a full snapshot (`"full": true`) on connection, then every second the
+requests whose state changed, `progress` tuples `[id, request output bytes, attempt index, attempt
+output bytes, last output time]` for requests that only streamed more output, and `removed` IDs. The
+per-second frame doubles as a heartbeat carrying `server_time`. Private revisions drive the delta: any
+change advances a request's revision, and every change other than output growth after the first
+output also advances its shape, so steady streaming costs a tuple instead of the whole request. A
+shared broadcaster per registry takes one snapshot and encodes one frame per tick for all
+subscribers, caches the tick's full snapshot for new subscribers, closes subscribers whose bounded
+queues fill so they reconnect for a fresh full, and stops its ticker when idle. Totals, rates, and
+any feed are left to clients. A stream checks its caller again when it opens, against settings read
+before that check, and again whenever management access settings change (keys, remote access, or
+the secret); it closes before its next frame if the key no longer has access, or once the Management API stops
+serving (Home mode, or no management secret). These re-checks do not
+count as failed logins, so revoked streams cannot get their address banned. Credential labels are
+read from the auth manager when each frame is built, so a credential renamed during a long request
+shows its new name, and the delta resends a request whose decorated key or credential label changed.
+
+**Implementation evidence:** `internal/livehandle/` (`registry.go`, `stream.go`),
+`internal/api/server_middleware.go`, `internal/api/server_management_v8.go`,
+`internal/api/handlers/management/{live_requests.go,management_keys.go}`,
+`sdk/cliproxy/auth/{conductor_execution.go,types.go}`, and
+`internal/runtime/executor/helps/{usage_helpers.go,output_observation.go}`. Registry, middleware,
+handler, and reporter tests cover lifecycle, late usage, post-header stream failure, request totals
+beyond the attempt window, retention, privacy, and the read-only routes. Deterministic race-enabled
+stream tests cover session and parent digests, acknowledgements kept at the first answer, and revisions, one snapshot and one shared frame per tick, cached
+full-to-delta consistency, additions, changes, progress-only growth, removals, label updates,
+slow-subscriber eviction, and idle shutdown and restart. A route test revokes the viewer's key
+mid-stream and expects the stream to close without another frame; handler tests cover a key revoked
+between middleware and handler, re-checks that leave the ban counter alone, and current credential
+labels; a stream test resends a renamed credential that carries no new revision. A route test turns the
+Management API off mid-stream and expects the stream to close, and a race-enabled test decorates
+while API keys are edited.
+
+**Recorded validation:** focused registry, stream, reporter, conductor, API, and management handler
+tests pass with `-race`, and the progress test fails if output growth advances the shape. With the
+panel bundle built, the full suite passes apart from two load-sensitive tests
+(`TestPricingDiscoveryThroughManagementAPI`, `TestC4bBulkRetentionDropsMonthsAndKeepsReceipts`)
+that pass when their packages are rerun alone; the race-enabled API suite also reports races in the
+logger hot-reload and targeted OAuth tests outside this feature. Against a local CPA with
+OpenAI-compatible, Codex API-key, and Claude API-key credentials, streamed requests moved through
+waiting, streaming, and finished with exact token counts and matching request-level totals; routing
+failures (503 with no attempt) and upstream 400s ended as failed; the payload carried no raw keys;
+and a read-only management key could read the route. With real streaming traffic on two
+header-identified client sessions, the stream answered `text/event-stream` with
+`X-Accel-Buffering: no`, delivered frames 995–1004 ms apart, sent 31 of 42 frames as progress-only,
+and carried session digests that CPAMC drew as session nodes.
+
+**Last updated:** 2026-11-18
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

@@ -1742,3 +1742,20 @@ func normaliseUnix(raw int64) time.Time {
 	}
 	return time.Unix(raw, 0)
 }
+
+// CredentialLabel returns the display label used by management views.
+func CredentialLabel(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(auth.Attributes["label"]); label != "" {
+		return label
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		return label
+	}
+	if provider := strings.TrimSpace(auth.Provider); provider != "" {
+		return provider
+	}
+	return auth.ID
+}

@@ -18,6 +18,8 @@ func (s *Server) registerManagementV8Routes() {
 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
 		c.Set(management.ConfigV8ContextKey, true)
 	})
+	v8.GET("/live-requests", s.mgmt.GetLiveRequests)
+	v8.GET("/live-requests/stream", s.mgmt.StreamLiveRequests)
 	v8.GET("/overview", s.mgmt.GetManagementOverview)
 	v8.GET("/session", s.mgmt.GetManagementSession)
 	v8.GET("/management-keys", s.mgmt.ListManagementKeys)
