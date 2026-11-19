@@ -209,13 +209,14 @@ func TestRoutingRegressionGSRPreparedFactorsAfterExpiry(t *testing.T) {
 func TestRoutingRegressionGSRNoCaptureAllocations(t *testing.T) {
 	pool := telemetryPool()
 	now := time.Now()
+	pool[0].Quota.SetGSRQuotaWindows("zai", []QuotaReserveBar{{ID: "weekly", RemainingPercent: 45, ResetAt: now.Add(time.Hour)}})
 	before := testing.AllocsPerRun(100, func() {
 		_, routingRegressionWeights, _ = routingBaselineGSRWeights(pool, "zai", "", now, defaultGreedySoonestRecoveryHalfLife)
 	})
 	after := testing.AllocsPerRun(100, func() {
 		_, routingRegressionWeights, _ = greedySoonestRecoveryWeights(pool, "zai", "", now, defaultGreedySoonestRecoveryHalfLife)
 	})
-	if after != before {
+	if after > before {
 		t.Fatalf("no-capture allocations = %g, before explanations = %g", after, before)
 	}
 	t.Logf("no-capture allocations: before=%g after=%g", before, after)

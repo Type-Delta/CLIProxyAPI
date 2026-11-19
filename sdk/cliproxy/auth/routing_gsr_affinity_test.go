@@ -14,6 +14,43 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
+func TestRoutingGSRAffinityKeepsBindingAsRemainingQuotaChanges(t *testing.T) {
+	const model = "gpt-gsr-affinity-quota"
+	reset := time.Now().Add(2 * time.Hour)
+	makeAuth := func(id, plan, used string) *Auth {
+		return &Auth{ID: id, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"plan_type": plan},
+			Quota: QuotaState{Signals: map[string]string{
+				"X-Codex-Secondary-Reset-At": reset.Format(time.RFC3339), "X-Codex-Secondary-Used-Percent": used,
+			}}}
+	}
+	plus := makeAuth("quota-plus", "plus", "10")
+	pro := makeAuth("quota-pro", "pro", "99")
+	manager := gsrFallbackTestManager(t, model, plus, pro)
+	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: manager.Selector(), TTL: time.Hour})
+	defer affinity.Stop()
+	manager.SetSelector(affinity)
+	pick := func(session, want string) {
+		t.Helper()
+		opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-Id": []string{session}}}
+		got, _, errPick := manager.pickNext(context.Background(), "codex", model, opts, nil)
+		if errPick != nil || got == nil || got.ID != want {
+			t.Fatalf("session %q picked %v, err %v, want %q", session, got, errPick, want)
+		}
+	}
+	pick("bound", plus.ID)
+	quota := makeAuth(pro.ID, "pro", "20").Quota
+	quota.ObservedAt = time.Now()
+	if _, errUpdate := manager.UpdateQuotaObservation(context.Background(), pro.ID, quota); errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	pick("bound", plus.ID)
+	pick("new", pro.ID)
+	if _, errReport := manager.ApplyProviderQuotaReport(context.Background(), plus.ID, true, reset); errReport != nil {
+		t.Fatal(errReport)
+	}
+	pick("bound", pro.ID)
+}
+
 func TestRoutingGSRAffinityBeforeRulesAndRefresh(t *testing.T) {
 	for _, test := range []struct {
 		name          string

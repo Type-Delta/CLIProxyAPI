@@ -72,6 +72,8 @@ type codexUsageWindowResponse struct {
 	UsedPercentCamel json.RawMessage `json:"usedPercent"`
 	WindowMinutes    json.RawMessage `json:"window_minutes"`
 	WindowMinutesCam json.RawMessage `json:"windowMinutes"`
+	WindowSeconds    json.RawMessage `json:"limit_window_seconds"`
+	WindowSecondsCam json.RawMessage `json:"limitWindowSeconds"`
 	ResetAt          json.RawMessage `json:"reset_at"`
 	ResetAtCamel     json.RawMessage `json:"resetAt"`
 	ResetAfter       json.RawMessage `json:"reset_after_seconds"`
@@ -100,6 +102,21 @@ type claudeUsageResponse struct {
 	SevenDay      *claudeUsageWindowResponse `json:"seven_day"`
 	IguanaNecktie *claudeUsageWindowResponse `json:"iguana_necktie"`
 	Limits        []claudeUsageLimitResponse `json:"limits"`
+}
+
+func isClaudeFableScope(kind, model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.EqualFold(strings.TrimSpace(kind), "weekly_scoped") && (model == "fable" || model == "fable 5")
+}
+
+func claudeHasLegacyCloudCreditWindow(body []byte) bool {
+	window := ojson.GetBytes(body, "iguana_necktie")
+	for _, key := range []string{"limit_dollars", "used_dollars", "remaining_dollars"} {
+		if value := window.Get(key); value.Exists() && value.Type != ojson.Null {
+			return true
+		}
+	}
+	return false
 }
 
 func parseZaiQuota(body []byte, _ time.Time) ([]model.ProviderQuotaWindow, error) {
@@ -380,7 +397,7 @@ func (h *Handler) syncClaudeUsageCooldown(ctx context.Context, auth *coreauth.Au
 		}
 	}
 
-	fable, fableFound := claudeFableUsageDecision(&usage)
+	fable, fableFound := claudeFableUsageDecision(&usage, body)
 	if !fableFound || !fable.actionable {
 		return
 	}
@@ -429,14 +446,13 @@ func claudeUsageBaseDecision(fiveHour, sevenDay *claudeUsageWindowResponse, now 
 	return false, time.Time{}, true
 }
 
-func claudeFableUsageDecision(usage *claudeUsageResponse) (claudeUsageDecision, bool) {
+func claudeFableUsageDecision(usage *claudeUsageResponse, body []byte) (claudeUsageDecision, bool) {
 	if usage == nil {
 		return claudeUsageDecision{}, false
 	}
 	var modern *claudeUsageLimitResponse
 	for _, limit := range usage.Limits {
-		if !strings.EqualFold(strings.TrimSpace(limit.Kind), "weekly_scoped") ||
-			!strings.EqualFold(strings.TrimSpace(limit.Scope.Model.DisplayName), "fable") || limit.Percent == nil {
+		if !isClaudeFableScope(limit.Kind, limit.Scope.Model.DisplayName) || limit.Percent == nil {
 			continue
 		}
 		if limit.IsActive {
@@ -452,7 +468,7 @@ func claudeFableUsageDecision(usage *claudeUsageResponse) (claudeUsageDecision, 
 	if modern != nil {
 		window := &claudeUsageWindowResponse{Utilization: modern.Percent, ResetsAt: modern.ResetsAt}
 		return claudeUsageWindowDecision(window, time.Now()), true
-	} else if usage.IguanaNecktie != nil {
+	} else if usage.IguanaNecktie != nil && !claudeHasLegacyCloudCreditWindow(body) {
 		return claudeUsageWindowDecision(usage.IguanaNecktie, time.Now()), true
 	}
 	return claudeUsageDecision{}, false
@@ -545,9 +561,17 @@ func runUsageProbeWindows(ctx context.Context, h *Handler, auth *coreauth.Auth, 
 }
 
 func runUsageProbeWindowsWithMode(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, parse func([]byte) ([]model.ProviderQuotaWindow, error), background bool) ([]model.ProviderQuotaWindow, error) {
+	outcome, errProbe := runUsageProbeResponse(ctx, h, auth, name, targetURL, background)
+	if errProbe != nil {
+		return nil, errProbe
+	}
+	return parse([]byte(outcome.response.Body))
+}
+
+func runUsageProbeResponse(ctx context.Context, h *Handler, auth *coreauth.Auth, name, targetURL string, background bool) (quotaCallOutcome, error) {
 	parsedURL, errParseURL := url.Parse(targetURL)
 	if errParseURL != nil {
-		return nil, fmt.Errorf("parse %s quota URL: %w", name, errParseURL)
+		return quotaCallOutcome{}, fmt.Errorf("parse %s quota URL: %w", name, errParseURL)
 	}
 	headers := map[string]string{
 		"Accept":        "application/json",
@@ -579,16 +603,12 @@ func runUsageProbeWindowsWithMode(ctx context.Context, h *Handler, auth *coreaut
 		outcome = h.getQuotaCache().do(ctx, key, execute)
 	}
 	if outcome.outerError != "" {
-		return nil, fmt.Errorf("%s usage request failed: %s", name, outcome.outerError)
+		return quotaCallOutcome{}, fmt.Errorf("%s usage request failed: %s", name, outcome.outerError)
 	}
 	if !outcome.successfulResponse() {
-		return nil, fmt.Errorf("%s usage request returned status %d", name, outcome.response.StatusCode)
+		return quotaCallOutcome{}, fmt.Errorf("%s usage request returned status %d", name, outcome.response.StatusCode)
 	}
-	windows, errParseQuota := parse([]byte(outcome.response.Body))
-	if errParseQuota != nil {
-		return nil, errParseQuota
-	}
-	return windows, nil
+	return outcome, nil
 }
 
 func parseClaudeGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
@@ -604,13 +624,13 @@ func parseClaudeGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
 	}
 	var fableReset string
 	for _, limit := range usage.Limits {
-		if strings.EqualFold(strings.TrimSpace(limit.Kind), "weekly_scoped") && strings.EqualFold(strings.TrimSpace(limit.Scope.Model.DisplayName), "fable") && strings.TrimSpace(limit.ResetsAt) != "" {
+		if isClaudeFableScope(limit.Kind, limit.Scope.Model.DisplayName) && strings.TrimSpace(limit.ResetsAt) != "" {
 			if limit.IsActive || fableReset == "" {
 				fableReset = strings.TrimSpace(limit.ResetsAt)
 			}
 		}
 	}
-	if fableReset == "" && usage.IguanaNecktie != nil {
+	if fableReset == "" && usage.IguanaNecktie != nil && !claudeHasLegacyCloudCreditWindow(body) {
 		fableReset = strings.TrimSpace(usage.IguanaNecktie.ResetsAt)
 	}
 	if reset, errParse := time.Parse(time.RFC3339, fableReset); errParse == nil && !reset.IsZero() {
@@ -620,6 +640,10 @@ func parseClaudeGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
 }
 
 func parseCodexGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
+	return parseCodexGSRQuotaAt(body, time.Now().UTC())
+}
+
+func parseCodexGSRQuotaAt(body []byte, observedAt time.Time) ([]model.ProviderQuotaWindow, error) {
 	var usage map[string]json.RawMessage
 	if errUnmarshal := json.Unmarshal(body, &usage); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode Codex usage response: %w", errUnmarshal)
@@ -633,36 +657,29 @@ func parseCodexGSRQuota(body []byte) ([]model.ProviderQuotaWindow, error) {
 		return nil, fmt.Errorf("Codex usage response has no rate limit windows")
 	}
 	var bestReset time.Time
-	var bestMinutes float64
-	var bestRank = 99
-	for rank, item := range []struct {
-		label string
-		raw   json.RawMessage
-	}{
-		{label: "weekly", raw: rateLimit.PrimaryWindow},
-		{label: "weekly", raw: rateLimit.PrimaryWindowCamel},
-		{label: "weekly", raw: rateLimit.SecondaryWindow},
-		{label: "weekly", raw: rateLimit.SecondaryWindowCamel},
+	var bestSeconds float64
+	now := time.Now()
+	for _, raw := range []json.RawMessage{
+		rateLimit.PrimaryWindow, rateLimit.PrimaryWindowCamel, rateLimit.SecondaryWindow, rateLimit.SecondaryWindowCamel,
 	} {
-		if len(item.raw) == 0 || string(item.raw) == "null" {
+		if len(raw) == 0 || string(raw) == "null" {
 			continue
 		}
 		var window codexUsageWindowResponse
-		if json.Unmarshal(item.raw, &window) != nil {
+		if json.Unmarshal(raw, &window) != nil {
 			continue
 		}
-		reset := parseCodexUsageWindowReset(window)
-		if reset.IsZero() || !reset.After(time.Now()) {
+		reset := parseCodexUsageWindowResetAt(window, observedAt)
+		if !reset.After(now) {
 			continue
 		}
-		minutes := rawFloat(window.WindowMinutes)
-		if minutes == 0 {
-			minutes = rawFloat(window.WindowMinutesCam)
+		seconds := max(rawFloat(window.WindowSeconds), rawFloat(window.WindowSecondsCam))
+		if seconds == 0 {
+			seconds = 60 * max(rawFloat(window.WindowMinutes), rawFloat(window.WindowMinutesCam))
 		}
-		if bestReset.IsZero() || minutes > bestMinutes || (minutes == bestMinutes && rank < bestRank) {
+		if bestReset.IsZero() || seconds > bestSeconds {
 			bestReset = reset
-			bestMinutes = minutes
-			bestRank = rank
+			bestSeconds = seconds
 		}
 	}
 	if bestReset.IsZero() {
@@ -687,6 +704,10 @@ func rawFloat(raw json.RawMessage) float64 {
 }
 
 func parseCodexUsageWindowReset(window codexUsageWindowResponse) time.Time {
+	return parseCodexUsageWindowResetAt(window, time.Now().UTC())
+}
+
+func parseCodexUsageWindowResetAt(window codexUsageWindowResponse, observedAt time.Time) time.Time {
 	for _, raw := range []json.RawMessage{window.ResetAt, window.ResetAtCamel} {
 		if len(raw) == 0 || string(raw) == "null" {
 			continue
@@ -704,7 +725,7 @@ func parseCodexUsageWindowReset(window codexUsageWindowResponse) time.Time {
 	for _, raw := range []json.RawMessage{window.ResetAfter, window.ResetAfterCamel} {
 		if len(raw) > 0 && string(raw) != "null" {
 			if value := rawFloat(raw); value >= 0 {
-				return time.Now().UTC().Add(time.Duration(value * float64(time.Second)))
+				return observedAt.Add(time.Duration(value * float64(time.Second)))
 			}
 		}
 	}
@@ -776,14 +797,13 @@ func parseKiroGSRQuota(body []byte) ([]model.ProviderQuotaWindow, string, error)
 		}
 		resetAt := time.Unix(0, int64(resetSeconds*float64(time.Second))).UTC()
 		window := model.ProviderQuotaWindow{Label: "monthly", ResetsAt: &resetAt}
-		if limitField := firstGJSON(breakdown, "usageLimitWithPrecision", "usageLimit"); limitField.Exists() {
-			limit := int64(math.Max(0, math.Round(limitField.Float())))
-			used := int64(math.Max(0, math.Round(firstGJSON(breakdown, "currentUsageWithPrecision", "currentUsage").Float())))
+		limitField := firstGJSON(breakdown, "usageLimitWithPrecision", "usageLimit")
+		usedField := firstGJSON(breakdown, "currentUsageWithPrecision", "currentUsage")
+		total, usage := limitField.Float(), usedField.Float()
+		if limitField.Exists() && usedField.Exists() && total > 0 && !math.IsInf(total, 1) && usage >= 0 && !math.IsInf(usage, 1) {
+			limit, used := int64(math.Round(total)), int64(math.Round(usage))
 			remaining := max(limit-used, 0)
-			percent := 0.0
-			if limit > 0 {
-				percent = math.Min(100, float64(used)/float64(limit)*100)
-			}
+			percent := math.Min(100, usage/total*100)
 			window.Limit, window.Used, window.Remaining, window.Percent = &limit, &used, &remaining, &percent
 		}
 		return []model.ProviderQuotaWindow{window}, plan, nil
@@ -802,36 +822,81 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 	// first: a credential served through a different adapter must still be
 	// probed at, and parsed by, the provider that owns its quota window.
 	provider := coreauth.QuotaRecoveryProviderForAuth(auth)
-	var (
-		windows []model.ProviderQuotaWindow
-		plan    string
-		err     error
-	)
+	ctx = h.authManager.CaptureQuotaObservationForAuth(ctx, auth)
+	var name, targetURL string
 	switch provider {
 	case "claude":
-		windows, err = runUsageProbeWindows(ctx, h, auth, "Claude", claudeUsageQuotaURL, parseClaudeGSRQuota)
+		name, targetURL = "Claude", claudeUsageQuotaURL
 	case "codex":
-		windows, err = runUsageProbeWindows(ctx, h, auth, "Codex", codexUsageQuotaURL, parseCodexGSRQuota)
+		name, targetURL = "Codex", codexUsageQuotaURL
 	case "opencode-go":
-		windows, err = runUsageProbeWindows(ctx, h, auth, "OpenCode Go", opencodeGoUsageQuotaURL, parseOpenCodeGoQuota)
+		name, targetURL = "OpenCode Go", opencodeGoUsageQuotaURL
 	case "zai":
-		windows, err = runUsageProbeWindows(ctx, h, auth, "Z.ai", zaiUsageQuotaURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
-			return parseZaiQuota(body, time.Now().UTC())
-		})
+		name, targetURL = "Z.ai", zaiUsageQuotaURL
 	case "kiro":
-		windows, err = runUsageProbeWindows(ctx, h, auth, "Kiro", kiroUsageLimitsURL(auth), func(body []byte) ([]model.ProviderQuotaWindow, error) {
-			parsedWindows, parsedPlan, errParseQuota := parseKiroGSRQuota(body)
-			plan = parsedPlan
-			return parsedWindows, errParseQuota
-		})
+		name, targetURL = "Kiro", kiroUsageLimitsURL(auth)
 	default:
 		if probe := strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe"))); probe != "" {
 			return fmt.Errorf("usage probe %q has no quota recovery probe", probe)
 		}
 		return fmt.Errorf("provider %q has no quota recovery probe", strings.ToLower(strings.TrimSpace(auth.Provider)))
 	}
+	outcome, errProbe := runUsageProbeResponse(ctx, h, auth, name, targetURL, false)
+	if errProbe != nil {
+		return errProbe
+	}
+	observedAt := outcome.cachedAt
+	body := []byte(outcome.response.Body)
+	var (
+		windows []model.ProviderQuotaWindow
+		bars    []coreauth.QuotaReserveBar
+		plan    string
+		err     error
+	)
+	switch provider {
+	case "claude":
+		windows, err = parseClaudeGSRQuota(body)
+		bars, _ = claudeQuotaReserveBars(body)
+	case "codex":
+		windows, err = parseCodexGSRQuotaAt(body, observedAt)
+		bars, _ = codexQuotaReserveBarsAt(body, observedAt)
+		plan = ojson.GetBytes(body, "plan_type").String()
+	case "opencode-go":
+		bars, err = opencodeGoQuotaReserveBars(body)
+		for _, bar := range bars {
+			windows = append(windows, model.ProviderQuotaWindow{
+				Label: strings.TrimPrefix(bar.ID, "opencode-go-"), ResetsAt: new(bar.ResetAt),
+			})
+		}
+	case "zai":
+		plan = ojson.GetBytes(body, "data.level").String()
+		windows, err = parseZaiQuota(body, observedAt)
+	case "kiro":
+		windows, plan, err = parseKiroGSRQuota(body)
+	}
 	if err != nil {
 		return err
+	}
+	if provider == "zai" || provider == "kiro" {
+		for _, window := range windows {
+			if window.ResetsAt == nil {
+				continue
+			}
+			var remaining float64
+			switch {
+			case provider == "kiro" && window.Percent != nil:
+				remaining = 100 - *window.Percent
+			case window.Limit != nil && *window.Limit <= 0:
+				continue
+			case window.Limit != nil && *window.Limit > 0 && window.Remaining != nil:
+				remaining = 100 * float64(*window.Remaining) / float64(*window.Limit)
+			case window.Percent != nil:
+				remaining = 100 - *window.Percent
+			default:
+				continue
+			}
+			bars = append(bars, coreauth.QuotaReserveBar{ID: window.Label, RemainingPercent: remaining, ResetAt: *window.ResetsAt})
+		}
 	}
 	modelKey := strings.ToLower(strings.TrimSpace(modelName))
 	preferredLabels := []string{"weekly", "monthly"}
@@ -873,28 +938,38 @@ func (h *Handler) RefreshQuotaForRouting(ctx context.Context, auth *coreauth.Aut
 		if provider == "claude" {
 			targetURL = claudeResetGrantsQuotaURL
 		}
-		_, errManual := runUsageProbeWindows(ctx, h, auth, provider, targetURL, func(body []byte) ([]model.ProviderQuotaWindow, error) {
-			expiry, errParse := parseManualResetExpiry(provider, body, time.Now().UTC())
-			observation.ExpiresAt = expiry
-			return nil, errParse
-		})
+		manualOutcome, errManual := runUsageProbeResponse(ctx, h, auth, provider, targetURL, false)
+		if errManual == nil {
+			observation.ExpiresAt, errManual = parseManualResetExpiry(provider, []byte(manualOutcome.response.Body), time.Now().UTC())
+		}
 		if errManual != nil {
 			log.WithError(errManual).WithField("auth_id", auth.ID).Debug("manual reset expiry unavailable; preserving previous observation")
 		} else {
-			observation.ObservedAt = time.Now().UTC()
+			observation.ObservedAt = manualOutcome.cachedAt
 			manual = observation
 		}
 	}
-	quota := auth.Quota.Clone()
-	if quota.Signals == nil {
-		quota.Signals = make(map[string]string)
+	// A probe is a complete snapshot. Copying passive headers here can attach
+	// their usage to the wrong window or re-anchor a relative reset.
+	quota := coreauth.QuotaState{ObservedAt: observedAt, ManualReset: manual, Signals: make(map[string]string)}
+	if provider == "claude" {
+		for _, window := range windows {
+			if window.ResetsAt == nil || !window.ResetsAt.After(time.Now()) {
+				continue
+			}
+			if window.Label == "weekly" {
+				quota.Signals["Anthropic-Ratelimit-Unified-7d-Reset"] = window.ResetsAt.UTC().Format(time.RFC3339)
+			} else if window.Label == "weekly_fable" {
+				quota.Signals["Anthropic-Ratelimit-Unified-7d_oi-Reset"] = window.ResetsAt.UTC().Format(time.RFC3339)
+			}
+		}
+	} else {
+		quota.Signals[signalName] = resetAt.UTC().Format(time.RFC3339)
 	}
-	quota.Signals[signalName] = resetAt.UTC().Format(time.RFC3339)
-	if provider == "kiro" && plan != "" {
-		quota.Signals["kiro_plan_type"] = plan
+	quota.SetGSRQuotaWindows(provider, bars)
+	if plan != "" {
+		quota.Signals[provider+"_plan_type"] = plan
 	}
-	quota.ObservedAt = time.Now().UTC()
-	quota.ManualReset = manual
 	_, errUpdate := h.authManager.UpdateQuotaObservation(ctx, auth.ID, quota)
 	return errUpdate
 }

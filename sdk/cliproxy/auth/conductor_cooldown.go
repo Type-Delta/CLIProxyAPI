@@ -39,6 +39,7 @@ type quotaResetState struct {
 	sharedSeq             uint64
 	allModelsSeq          uint64
 	modelSeq              map[string]uint64
+	quotaObservationSeq   uint64
 	publications          int
 	published             chan struct{}
 	recoveryVersion       uint64
@@ -1743,6 +1744,13 @@ func (m *Manager) applyProviderQuotaReport(ctx context.Context, authID string, e
 		}
 	} else {
 		changed = recoverProviderQuotaState(auth, selectedModels, selectAllModels, recoverCredential, now)
+		if resetObservation {
+			barIDs, _ := ctx.Value(quotaResetBarsKey{}).([]string)
+			if (barIDs == nil || len(barIDs) > 0) && QuotaRecoveryProviderForAuth(auth) != "" {
+				m.quotaResetStates[authID].quotaObservationSeq = m.currentExecutionSeq()
+				changed = clearGSRQuotaObservation(auth) || changed
+			}
+		}
 	}
 
 	if !changed {
@@ -3034,7 +3042,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		// These providers' routing observations come from usage probes. Adapter
 		// responses cannot replace them, including adapters without passive headers.
 		quotaProvider := QuotaRecoveryProviderForAuth(auth)
-		if !result.SkipQuotaObservation && quotaProvider != quotaRecoveryProviderZai && quotaProvider != quotaRecoveryProviderOpenCodeGo {
+		resetState := m.quotaResetStates[result.AuthID]
+		preResetObservation := result.ExecutionSeq != 0 && resetState != nil && result.ExecutionSeq <= resetState.quotaObservationSeq
+		if !result.SkipQuotaObservation && !preResetObservation && quotaProvider != quotaRecoveryProviderZai && quotaProvider != quotaRecoveryProviderOpenCodeGo {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)

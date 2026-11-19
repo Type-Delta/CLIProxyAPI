@@ -262,9 +262,12 @@ routing:
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # greedy-soonest-recovery gives exponentially larger shares to credentials whose
   # provider quota recovery is sooner; the default decay half-life is 36 hours.
+  # GSR scales those shares by estimated remaining quota. It uses the tightest
+  # observed quota window for the requested model and the plan's relative allowance.
+  # Without usable quota data, inferred plan tiers contribute no bonus.
   # An explicit gsr_tier credential attribute can override the allowance class
   # (standard, pro, premium, max, or elite); unknown tiers remain neutral.
-  # The credential weight is added after recovery decay and the allowance multiplier.
+  # The credential weight is added after recovery decay and remaining-quota scaling.
   # Omitted weights add 1; non-positive weights add nothing to GSR.
   # If a credential in the active eligible pool has no usable recovery timestamp,
   # GSR falls back to round-robin for that request and logs a warning. The normal

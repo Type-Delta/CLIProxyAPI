@@ -517,11 +517,12 @@ func quotaAuthIdentityHash(auth *coreauth.Auth, ignoredAttributes ...string) str
 	return digestQuotaKey(builder.String())
 }
 
-func quotaBackoffHash(authHash, provider string) string {
+func quotaBackoffHash(authHash, provider, credentialVersion string) string {
 	var builder strings.Builder
 	writeQuotaPart(&builder, "quota-backoff-v1")
 	writeQuotaPart(&builder, authHash)
 	writeQuotaPart(&builder, strings.ToLower(strings.TrimSpace(provider)))
+	writeQuotaPart(&builder, credentialVersion)
 	return digestQuotaKey(builder.String())
 }
 
@@ -530,9 +531,11 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	// Reserve edits change routing immediately without lifting provider backoff.
 	backoffAuthHash := quotaAuthIdentityHash(auth, coreauth.AttributeQuotaReserve, coreauth.AttributeQuotaReserveBypassKeys)
 	provider := ""
+	credentialVersion := ""
 	epoch := uint64(0)
 	if auth != nil {
 		provider = strings.ToLower(strings.TrimSpace(auth.Provider))
+		credentialVersion = strconv.FormatUint(auth.CredentialVersion, 10)
 		if h != nil && h.authManager != nil {
 			epoch = h.authManager.QuotaObservationEpoch(auth.ID)
 		}
@@ -541,6 +544,7 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	writeQuotaPart(&base, "quota-base-v1")
 	writeQuotaPart(&base, authHash)
 	writeQuotaPart(&base, strconv.FormatUint(epoch, 10))
+	writeQuotaPart(&base, credentialVersion)
 	writeQuotaPart(&base, strings.ToUpper(strings.TrimSpace(method)))
 	if rawURL != nil {
 		canonical := *rawURL
@@ -555,6 +559,7 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	writeQuotaPart(&builder, "quota-request-v1")
 	writeQuotaPart(&builder, authHash)
 	writeQuotaPart(&builder, strconv.FormatUint(epoch, 10))
+	writeQuotaPart(&builder, credentialVersion)
 	writeQuotaPart(&builder, strings.ToUpper(strings.TrimSpace(method)))
 	if rawURL != nil {
 		writeQuotaPart(&builder, rawURL.String())
@@ -567,7 +572,7 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 		requestHash: digestQuotaKey(builder.String()),
 		baseHash:    digestQuotaKey(base.String()),
 		authHash:    authHash,
-		backoffHash: quotaBackoffHash(backoffAuthHash, provider),
+		backoffHash: quotaBackoffHash(backoffAuthHash, provider, credentialVersion),
 	}
 }
 

@@ -203,6 +203,8 @@ type quotaRecoveryPreparation struct {
 	refreshError int
 }
 
+const quotaRecoveryRefreshInterval = 3 * time.Minute
+
 // prepareQuotaRecoveryCandidates refreshes missing observations but preserves the full
 // candidate pool. GSR may use its RR fallback when any choice-pool member remains unknown.
 func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates []*Auth, model string) ([]*Auth, quotaRecoveryPreparation, error) {
@@ -243,8 +245,11 @@ func (m *Manager) prepareQuotaRecoveryCandidates(ctx context.Context, candidates
 		provider := QuotaRecoveryProviderForAuth(candidate)
 		manual := candidate.Quota.ManualReset
 		needsManualReset := (provider == "codex" || provider == "claude") &&
-			(manual.Provider != provider || manual.ObservedAt.After(now) || !manual.ObservedAt.After(now.Add(-3*time.Minute)))
-		if RecoveryTimestampForAuth(candidate, model).IsZero() || needsManualReset {
+			(manual.Provider != provider || manual.ObservedAt.After(now) || !manual.ObservedAt.After(now.Add(-quotaRecoveryRefreshInterval)))
+		probeOnly := provider == "zai" || provider == "opencode-go" || provider == "kiro"
+		observedAt := candidate.Quota.ObservedAt
+		needsUsage := probeOnly && (observedAt.After(now) || !observedAt.After(now.Add(-quotaRecoveryRefreshInterval)))
+		if RecoveryTimestampForAuth(candidate, model).IsZero() || needsManualReset || needsUsage {
 			missing = append(missing, candidate.Clone())
 		}
 	}

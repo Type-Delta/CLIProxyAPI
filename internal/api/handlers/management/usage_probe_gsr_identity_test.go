@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,7 +104,8 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 	openCodeBody := fmt.Sprintf(`{"usage":{"monthly":{"percent":32,"resetsAt":%q}}}`, reset.Format(time.RFC3339))
 	codexBody := fmt.Sprintf(`{"rate_limit":{"primary_window":{"used_percent":10,"window_minutes":10080,"reset_at":%d}}}`, reset.Unix())
 	claudeBody := fmt.Sprintf(`{"seven_day":{"utilization":10,"resets_at":%q}}`, reset.Format(time.RFC3339))
-	claudeFableBody := fmt.Sprintf(`{"seven_day":{"utilization":5,"resets_at":%q},"limits":[{"kind":"weekly_scoped","percent":20,"is_active":true,"resets_at":%q,"scope":{"model":{"display_name":"fable"}}}]}`, reset.Add(time.Hour).Format(time.RFC3339), reset.Format(time.RFC3339))
+	claudeFableBody := fmt.Sprintf(`{"seven_day":{"utilization":5,"resets_at":%q},"limits":[{"kind":"weekly_scoped","percent":20,"is_active":true,"resets_at":%q,"scope":{"model":{"display_name":"Fable 5"}}}]}`, reset.Add(time.Hour).Format(time.RFC3339), reset.Format(time.RFC3339))
+	claudeCloudBody := fmt.Sprintf(`{"seven_day":{"utilization":5,"resets_at":%q},"iguana_necktie":{"utilization":95,"limit_dollars":50,"resets_at":%q}}`, reset.Format(time.RFC3339), reset.Add(time.Hour).Format(time.RFC3339))
 
 	tests := []struct {
 		name        string
@@ -113,6 +115,7 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 		body        string
 		wantRequest string
 		wantSignal  string
+		wantBars    int
 	}{
 		{
 			name:        "z.ai compatibility credential",
@@ -140,6 +143,7 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			body:        openCodeBody,
 			wantRequest: "GET https://opencode.ai/zen/go/v1/usage",
 			wantSignal:  "monthly_reset_at",
+			wantBars:    1,
 		},
 		{
 			name:        "opencode go compatibility credential",
@@ -149,6 +153,7 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			body:        openCodeBody,
 			wantRequest: "GET https://opencode.ai/zen/go/v1/usage",
 			wantSignal:  "monthly_reset_at",
+			wantBars:    1,
 		},
 		{
 			name:        "codex credential keeps the codex probe",
@@ -158,6 +163,7 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			body:        codexBody,
 			wantRequest: "GET https://chatgpt.com/backend-api/wham/usage",
 			wantSignal:  "X-Codex-Primary-Reset-At",
+			wantBars:    1,
 		},
 		{
 			name:        "claude credential keeps the claude probe",
@@ -167,6 +173,7 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			body:        claudeBody,
 			wantRequest: "GET https://api.anthropic.com/api/oauth/usage",
 			wantSignal:  "Anthropic-Ratelimit-Unified-7d-Reset",
+			wantBars:    1,
 		},
 		{
 			name:        "claude fable credential persists the fable window",
@@ -176,6 +183,17 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			body:        claudeFableBody,
 			wantRequest: "GET https://api.anthropic.com/api/oauth/usage",
 			wantSignal:  "Anthropic-Ratelimit-Unified-7d_oi-Reset",
+			wantBars:    2,
+		},
+		{
+			name:        "claude cloud session credits are separate from Fable",
+			provider:    "claude",
+			attributes:  map[string]string{"api_key": "dummy-claude-key"},
+			model:       "claude-fable-5-1",
+			body:        claudeCloudBody,
+			wantRequest: "GET https://api.anthropic.com/api/oauth/usage",
+			wantSignal:  "Anthropic-Ratelimit-Unified-7d-Reset",
+			wantBars:    1,
 		},
 	}
 	for _, test := range tests {
@@ -205,8 +223,33 @@ func TestRefreshQuotaForRoutingResolvesProbeIdentity(t *testing.T) {
 			if got := updated.Quota.Signals[test.wantSignal]; got != reset.Format(time.RFC3339) {
 				t.Fatalf("%s = %q, want %q (all signals %v)", test.wantSignal, got, reset.Format(time.RFC3339), updated.Quota.Signals)
 			}
-			if len(updated.Quota.Signals) != 1 {
-				t.Fatalf("signals = %v, want only %s", updated.Quota.Signals, test.wantSignal)
+			bars := 0
+			for signal := range updated.Quota.Signals {
+				if strings.HasPrefix(signal, "gsr-quota:") {
+					bars++
+				}
+			}
+			if bars != test.wantBars {
+				t.Fatalf("signals = %v, want %d quota bars", updated.Quota.Signals, test.wantBars)
+			}
+		})
+	}
+}
+
+func TestRefreshQuotaForRoutingObservesOpenCodeExhaustedWindow(t *testing.T) {
+	fixture := newGSRProbeFixture(t)
+	reset := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	for _, usage := range []string{`"status":"rate_limited"`, `"status":"rate_limited","percent":25`} {
+		t.Run(usage, func(t *testing.T) {
+			fixture.setResponse(http.StatusOK, fmt.Sprintf(`{"usage":{"monthly":{%s,"resetsAt":%q}}}`, usage, reset.Format(time.RFC3339)))
+			handler, auth := gsrProbeHandler(t, "openai-compatible-opencode-go", map[string]string{"api_key": "dummy-opencode-key"})
+			if errRefresh := handler.RefreshQuotaForRouting(context.Background(), auth, "test-model"); errRefresh != nil {
+				t.Fatal(errRefresh)
+			}
+			current, _ := handler.authManager.GetByID(auth.ID)
+			want := fmt.Sprintf("0:%d", reset.UnixMilli())
+			if got := current.Quota.Signals["gsr-quota:opencode-go:opencode-go-monthly"]; got != want {
+				t.Fatalf("exhausted usage observation = %q, want %q", got, want)
 			}
 		})
 	}
@@ -254,6 +297,89 @@ func TestRefreshQuotaForRoutingRejectsUnsupportedProbe(t *testing.T) {
 				t.Fatalf("unsupported credential persisted signals: %v", updated.Quota.Signals)
 			}
 		})
+	}
+}
+
+func TestRefreshQuotaForRoutingKeepsCachedResetAndUsageTogether(t *testing.T) {
+	fixture := newGSRProbeFixture(t)
+	fixture.setResponse(http.StatusOK, `{"rate_limit":{"secondary_window":{"limit_window_seconds":604800,"reset_after_seconds":3600}}}`)
+	handler, auth := gsrProbeHandler(t, "codex", map[string]string{"api_key": "dummy-codex-key"})
+	now := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Minute)
+	handler.quotaCache = newAPICallQuotaCache(func() time.Time { return now })
+	old := coreauth.QuotaState{ObservedAt: now.Add(-time.Hour), Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent": "99", "X-Codex-Primary-Reset-After-Seconds": "10",
+	}}
+	if _, errUpdate := handler.authManager.UpdateQuotaObservation(context.Background(), auth.ID, old); errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	observedAt := now
+	wantReset := now.Add(time.Hour).Format(time.RFC3339)
+	for range 2 {
+		current, _ := handler.authManager.GetByID(auth.ID)
+		if errRefresh := handler.RefreshQuotaForRouting(context.Background(), current, "gpt-5"); errRefresh != nil {
+			t.Fatal(errRefresh)
+		}
+		current, _ = handler.authManager.GetByID(auth.ID)
+		if !current.Quota.ObservedAt.Equal(observedAt) || len(current.Quota.Signals) != 1 || current.Quota.Signals["X-Codex-Primary-Reset-At"] != wantReset {
+			t.Fatalf("probe observation = %+v, want only the reset at %s from %v", current.Quota, wantReset, observedAt)
+		}
+		now = now.Add(time.Minute)
+	}
+	if got := len(fixture.requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want one usage and one manual-reset request", got)
+	}
+}
+
+func TestRefreshQuotaForRoutingRejectsReplacedOAuthBackoff(t *testing.T) {
+	ctx := context.Background()
+	oldStarted, releaseOld := make(chan struct{}), make(chan struct{})
+	var release sync.Once
+	reset := time.Now().Add(time.Hour).Unix()
+	fixture := newGSRProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer old-account":
+			close(oldStarted)
+			<-releaseOld
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case "Bearer new-account":
+			if r.URL.Path == "/backend-api/wham/usage" {
+				fmt.Fprintf(w, `{"rate_limit":{"primary_window":{"used_percent":20,"reset_at":%d}}}`, reset)
+			} else {
+				fmt.Fprint(w, `{"credits":[]}`)
+			}
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	t.Cleanup(func() { release.Do(func() { close(releaseOld) }) })
+	manager := coreauth.NewManager(nil, nil, nil)
+	old, errRegister := manager.Register(ctx, &coreauth.Auth{ID: "oauth-backoff", Provider: "codex",
+		Metadata: map[string]any{"access_token": "old-account", "refresh_token": "old-grant"}})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	handler := &Handler{authManager: manager}
+	oldDone := make(chan error, 1)
+	go func() { oldDone <- handler.RefreshQuotaForRouting(ctx, old, "gpt-5") }()
+	select {
+	case <-oldStarted:
+	case errProbe := <-oldDone:
+		t.Fatalf("original probe never hit the provider: %v", errProbe)
+	}
+	replacement := old.Clone()
+	replacement.Metadata["access_token"] = "new-account"
+	replacement.Metadata["refresh_token"] = "new-grant"
+	current, errUpdate := manager.Update(ctx, replacement)
+	release.Do(func() { close(releaseOld) })
+	if errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	if errProbe := <-oldDone; errProbe == nil {
+		t.Fatal("original probe should have received HTTP 429")
+	}
+	if errProbe := handler.RefreshQuotaForRouting(ctx, current, "gpt-5"); errProbe != nil {
+		t.Fatalf("replacement probe failed after %d provider requests: %v", len(fixture.requests()), errProbe)
 	}
 }
 
@@ -326,13 +452,13 @@ func TestRefreshQuotaForRoutingRejectsUnusableWindows(t *testing.T) {
 func TestRoutingGSRProbeRecoveryAcrossSharedKeyEntries(t *testing.T) {
 	fixture := newGSRProbeFixture(t)
 	reset := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
-	fixture.setResponse(http.StatusOK, fmt.Sprintf(`{"code":200,"success":true,"data":{"limits":[{"unit":6,"number":1,"nextResetTime":%d}]}}`, reset.UnixMilli()))
 	manager := coreauth.NewManager(nil, &coreauth.GreedySoonestRecoverySelector{}, nil)
 	handler := &Handler{authManager: manager}
 	modelName := "glm-shared-key-recovery"
 	providers := []string{"openai-compatible-zai-a", "openai-compatible-zai-b"}
 	var auths []*coreauth.Auth
-	for _, provider := range providers {
+	for i, provider := range providers {
+		fixture.setResponse(http.StatusOK, fmt.Sprintf(`{"code":200,"success":true,"data":{"limits":[{"unit":6,"number":1,"nextResetTime":%d,"percentage":%d}]}}`, reset.UnixMilli(), 90-80*i))
 		a, err := manager.Register(context.Background(), &coreauth.Auth{ID: provider, Provider: provider, Status: coreauth.StatusActive, Attributes: map[string]string{"usage_probe": "zai", "api_key": "dummy-shared-key"}})
 		if err != nil {
 			t.Fatal(err)
@@ -369,6 +495,16 @@ func TestRoutingGSRProbeRecoveryAcrossSharedKeyEntries(t *testing.T) {
 			if row.RecoveryAtMs != reset.UnixMilli() || row.RecoverySource != "signal:weekly_reset_at" {
 				t.Fatalf("cycle=%d recovery=%+v", cycle, row)
 			}
+			want := 0.1
+			if dry.Candidates[row.Index].ID == providers[1] {
+				want = 0.9
+			}
+			if row.RemainingQuotaFraction == nil || *row.RemainingQuotaFraction != want {
+				t.Fatalf("cycle=%d quota fraction = %v, want %.1f", cycle, row.RemainingQuotaFraction, want)
+			}
+		}
+		if cycle == 0 && dry.Candidates[dry.Pick].ID != providers[1] {
+			t.Fatalf("first dry-run pick = %q, want %q", dry.Candidates[dry.Pick].ID, providers[1])
 		}
 		ctx, holder := routing.WithTraceHolder(context.Background())
 		if _, err := manager.Execute(ctx, providers, cliproxyexecutor.Request{Model: modelName}, cliproxyexecutor.Options{}); err != nil {

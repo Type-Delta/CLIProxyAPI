@@ -7,15 +7,30 @@ import (
 
 type quotaObservationKey struct{}
 type quotaObservation struct {
-	manager *Manager
-	authID  string
-	epoch   uint64
+	manager           *Manager
+	authID            string
+	epoch             uint64
+	registrationEpoch uint64
+	credentialVersion uint64
 }
 type quotaResetBarsKey struct{}
 
 // CaptureQuotaObservation marks the start of a provider quota request. Existing
 // markers are retained so nested probes cannot refresh a stale observation.
 func (m *Manager) CaptureQuotaObservation(ctx context.Context, authID string) context.Context {
+	return m.captureQuotaObservation(ctx, authID, nil)
+}
+
+// CaptureQuotaObservationForAuth ties a probe to the credential snapshot
+// supplied to its transport, even if a replacement is already registered.
+func (m *Manager) CaptureQuotaObservationForAuth(ctx context.Context, auth *Auth) context.Context {
+	if auth == nil {
+		return m.CaptureQuotaObservation(ctx, "")
+	}
+	return m.captureQuotaObservation(ctx, auth.ID, auth)
+}
+
+func (m *Manager) captureQuotaObservation(ctx context.Context, authID string, source *Auth) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -26,9 +41,16 @@ func (m *Manager) CaptureQuotaObservation(ctx context.Context, authID string) co
 		return ctx
 	}
 	m.mu.RLock()
-	epoch := m.quotaObservationEpochs[authID]
+	observation := quotaObservation{manager: m, authID: authID, epoch: m.quotaObservationEpochs[authID]}
+	if source == nil {
+		source = m.auths[authID]
+	}
+	if source != nil {
+		observation.registrationEpoch = source.RegistrationEpoch
+		observation.credentialVersion = source.CredentialVersion
+	}
 	m.mu.RUnlock()
-	return context.WithValue(ctx, quotaObservationKey{}, quotaObservation{m, authID, epoch})
+	return context.WithValue(ctx, quotaObservationKey{}, observation)
 }
 
 // QuotaObservationEpoch identifies the current generation of cached quota reads.
@@ -46,7 +68,12 @@ func (m *Manager) quotaObservationCurrentLocked(ctx context.Context, authID stri
 		return true
 	}
 	observation, ok := ctx.Value(quotaObservationKey{}).(quotaObservation)
-	return !ok || observation.manager != m || observation.authID != authID || observation.epoch == m.quotaObservationEpochs[authID]
+	if !ok || observation.manager != m || observation.authID != authID {
+		return true
+	}
+	auth := m.auths[authID]
+	return auth != nil && observation.epoch == m.quotaObservationEpochs[authID] &&
+		observation.registrationEpoch == auth.RegistrationEpoch && observation.credentialVersion == auth.CredentialVersion
 }
 
 func (m *Manager) advanceQuotaObservationEpochLocked(authID string) {

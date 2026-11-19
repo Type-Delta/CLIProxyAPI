@@ -43,11 +43,15 @@ func TestGreedySoonestRecoverySelectorFallsBackWhenRecoveryTimestampMissing(t *t
 	}
 }
 
-func TestGreedySoonestRecoverySelectorPrefersAllowanceTier(t *testing.T) {
+func TestGreedySoonestRecoverySelectorScalesObservedQuotaByPlan(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
 	auths := []*Auth{
-		{ID: "plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}, Quota: QuotaState{Signals: map[string]string{"X-Codex-Primary-Reset-At": now.Format(time.RFC3339)}}},
-		{ID: "pro", Provider: "codex", Attributes: map[string]string{"plan_type": "pro"}, Quota: QuotaState{Signals: map[string]string{"X-Codex-Primary-Reset-At": now.Format(time.RFC3339)}}},
+		{ID: "plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}, Quota: QuotaState{Signals: map[string]string{
+			"X-Codex-Primary-Reset-At": now.Format(time.RFC3339), "X-Codex-Primary-Used-Percent": "0",
+		}}},
+		{ID: "pro", Provider: "codex", Attributes: map[string]string{"plan_type": "pro"}, Quota: QuotaState{Signals: map[string]string{
+			"X-Codex-Primary-Reset-At": now.Format(time.RFC3339), "X-Codex-Primary-Used-Percent": "90",
+		}}},
 	}
 	selector := &GreedySoonestRecoverySelector{}
 	counts := map[string]int{}
@@ -61,6 +65,80 @@ func TestGreedySoonestRecoverySelectorPrefersAllowanceTier(t *testing.T) {
 	if counts["pro"] <= counts["plus"] {
 		t.Fatalf("tier-aware counts = %#v, want pro > plus", counts)
 	}
+}
+
+func TestGSRPrefersMoreRemainingQuota(t *testing.T) {
+	reset := time.Now().Add(time.Hour).Format(time.RFC3339)
+	pool := []*Auth{
+		{ID: "plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}, Quota: QuotaState{Signals: map[string]string{
+			"X-Codex-Secondary-Reset-At": reset, "X-Codex-Secondary-Used-Percent": "20",
+		}}},
+		{ID: "pro", Provider: "codex", Attributes: map[string]string{"plan_type": "pro"}, Quota: QuotaState{Signals: map[string]string{
+			"X-Codex-Secondary-Reset-At": reset, "X-Codex-Secondary-Used-Percent": "99",
+		}}},
+	}
+	selector := &GreedySoonestRecoverySelector{}
+	picked, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, pool)
+	if errPick != nil {
+		t.Fatal(errPick)
+	}
+	if picked.ID != "plus" {
+		t.Fatalf("picked %q, want Plus with 0.8 Plus-equivalent quota over Pro with 0.2", picked.ID)
+	}
+	// A nearly depleted short window caps the amount this session can use.
+	pool[0].Quota.Signals["X-Codex-Primary-Reset-At"] = reset
+	pool[0].Quota.Signals["X-Codex-Primary-Used-Percent"] = "95"
+	factors, errFactors := greedySoonestRecoveryFactors(pool, "codex", "gpt-5", time.Now(), 0)
+	if errFactors != nil || factors["plus"].Weight != 50_001 || factors["pro"].Weight != 200_001 {
+		t.Fatalf("limiting quota weights = %+v, err = %v", factors, errFactors)
+	}
+	// Expired and malformed observations must not restore a plan-only bonus.
+	pool[1].Quota.Signals["X-Codex-Secondary-Used-Percent"] = "NaN"
+	pool[1].Quota.Signals["X-Codex-Primary-Reset-At"] = time.Now().Add(-time.Minute).Format(time.RFC3339)
+	pool[1].Quota.Signals["X-Codex-Primary-Used-Percent"] = "0"
+	factors, errFactors = greedySoonestRecoveryFactors(pool, "codex", "gpt-5", time.Now(), 0)
+	if errFactors != nil || factors["pro"].Weight != 1_000_001 || factors["pro"].RemainingQuotaFraction != nil {
+		t.Fatalf("unobserved quota factors = %+v, err = %v", factors["pro"], errFactors)
+	}
+}
+
+func TestGSRUsesSparkWebSocketQuota(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour).Format(time.RFC3339)
+	auth := &Auth{ID: "spark", Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+		"X-Codex-Primary-Used-Percent":                                       "99",
+		"X-Codex-Primary-Reset-At":                                           reset,
+		"X-Codex-Additional-Gpt-5-3-Codex-Spark-Primary-Used-Percent":        "40",
+		"X-Codex-Additional-Gpt-5-3-Codex-Spark-Primary-Reset-After-Seconds": "900",
+	}}}
+	remaining, observed := gsrRemainingFraction(auth, "codex", "gpt-5.3-codex-spark", now)
+	if !observed || remaining != 0.6 {
+		t.Fatalf("Spark remaining quota = %g, observed %t, want 0.6", remaining, observed)
+	}
+}
+
+func TestGSRFableUsesSharedAndScopedQuota(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour)
+	auth := &Auth{Provider: "claude", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{
+		"Anthropic-Ratelimit-Unified-5h-Reset":          reset.Format(time.RFC3339),
+		"Anthropic-Ratelimit-Unified-5h-Utilization":    "0.99",
+		"Anthropic-Ratelimit-Unified-7d_oi-Reset":       reset.Format(time.RFC3339),
+		"Anthropic-Ratelimit-Unified-7d_oi-Utilization": "0.2",
+	}}}
+	check := func() {
+		t.Helper()
+		remaining, observed := gsrRemainingFraction(auth, "claude", "claude-fable-5-1", now)
+		if !observed || remaining < 0.009999 || remaining > 0.010001 {
+			t.Fatalf("Fable remaining quota = %g, observed %t, want 0.01 from shared window", remaining, observed)
+		}
+	}
+	check()
+	auth.Quota.SetGSRQuotaWindows("claude", []QuotaReserveBar{
+		{ID: "five-hour", RemainingPercent: 1, ResetAt: reset},
+		{ID: "seven-day-fable", RemainingPercent: 80, ResetAt: reset},
+	})
+	check()
 }
 
 func TestGSRAddsSchedulingWeightAfterRecoveryAndTier(t *testing.T) {

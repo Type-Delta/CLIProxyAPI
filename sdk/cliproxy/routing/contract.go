@@ -152,7 +152,9 @@ type StrategyWeight struct {
 	// ConfigWeight is the credential's configured scheduling weight.
 	ConfigWeight int64 `json:"config_weight,omitempty"`
 
-	// GSR factors: Weight = BaseWeight*TierMultiplier + ConfigWeight, with
+	// GSR factors: Weight = max(1, round(BaseWeight * TierMultiplier *
+	// RemainingQuotaFraction)) + ConfigWeight. An absent remaining fraction
+	// contributes a factor of 1.
 	// BaseWeight = max(1, trunc(Decay * 1e6)) and Decay = exp(-DelayMs / HalfLifeMs).
 
 	// RecoveryAtMs is the cached recovery deadline (Unix ms); 0 when missing.
@@ -168,6 +170,9 @@ type StrategyWeight struct {
 	// Tier is the GSR allowance tier: unknown, standard, pro, premium, max, elite.
 	Tier           string `json:"tier,omitempty"`
 	TierMultiplier int64  `json:"tier_multiplier,omitempty"`
+	// RemainingQuotaFraction is the observed fraction of the tightest quota
+	// window for this model. Nil indicates unavailable quota data.
+	RemainingQuotaFraction *float64 `json:"remaining_quota_fraction,omitempty"`
 	// TierSource names where Tier came from: "override", "plan", "signal", or empty for unknown.
 	TierSource string `json:"tier_source,omitempty"`
 }

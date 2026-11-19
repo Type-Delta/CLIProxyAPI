@@ -3,9 +3,12 @@ package management
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +80,7 @@ func TestRefreshQuotaForRoutingKiro(t *testing.T) {
 			emailRequired: r.URL.Query().Get("isEmailRequired"),
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"subscriptionInfo":{"subscriptionTitle":"KIRO PRO+"},"usageBreakdownList":[{"resourceType":"AGENTIC_REQUEST","currentUsage":1,"usageLimit":10,"nextDateReset":%d}]}`, reset.Unix())
+		_, _ = fmt.Fprintf(w, `{"subscriptionInfo":{"subscriptionTitle":"KIRO PRO+"},"usageBreakdownList":[{"resourceType":"AGENTIC_REQUEST","currentUsageWithPrecision":99.6,"usageLimitWithPrecision":100,"nextDateReset":%d}]}`, reset.Unix())
 	}))
 	t.Cleanup(server.Close)
 	originalEndpoint := kiroUsageLimitsEndpoint
@@ -125,6 +128,11 @@ func TestRefreshQuotaForRoutingKiro(t *testing.T) {
 	}
 	if got := updated.Quota.Signals["kiro_plan_type"]; got != "KIRO PRO+" {
 		t.Fatalf("kiro_plan_type = %q, want KIRO PRO+", got)
+	}
+	rawRemaining, _, _ := strings.Cut(updated.Quota.Signals["gsr-quota:kiro:monthly"], ":")
+	remaining, errParse := strconv.ParseFloat(rawRemaining, 64)
+	if errParse != nil || math.Abs(remaining-0.4) > 1e-9 {
+		t.Fatalf("remaining percent = %q, want 0.4", rawRemaining)
 	}
 }
 

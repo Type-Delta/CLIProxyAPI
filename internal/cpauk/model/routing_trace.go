@@ -40,8 +40,8 @@ func SanitizeRoutingTrace(trace *routing.Trace, identityKey [32]byte, storeCrede
 		step.Weights = append([]routing.StrategyWeight(nil), step.Weights...)
 		for i := range step.Weights {
 			w := &step.Weights[i]
-			// DelayMs, TierMultiplier, and ConfigWeight stay: with HalfLifeMs they
-			// rebuild the decay, base weight, and weight formula.
+			// Keep the remaining quota fraction alongside the effective weight.
+			// DelayMs and HalfLifeMs still explain the recovery decay.
 			w.RecoveryAtMs = 0
 			w.RecoverySource = ""
 			w.Decay = 0

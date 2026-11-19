@@ -68,10 +68,9 @@ func UnwrapWeightedRoundRobinSelector(selector Selector) *WeightedRoundRobinSele
 }
 
 // GreedySoonestRecoverySelector distributes requests according to the cached
-// recovery deadline of each eligible credential. Earlier recovery deadlines get
-// exponentially more share, while the regular availability and priority gates
-// still decide which credentials are eligible.
-// The credential's scheduling weight is added after the allowance tier multiplier.
+// recovery deadline and estimated remaining quota of each eligible credential.
+// Earlier deadlines receive exponentially more share, scaled by the tier-adjusted
+// quota remaining. The configured scheduling weight is added afterward.
 //
 // HalfLife controls how quickly a later deadline loses share. A zero value uses
 // the 36-hour default. If any eligible credential has no cached recovery deadline,
@@ -1556,16 +1555,27 @@ func greedySoonestRecoveryWeightsWithFactors(auths []*Auth, provider, model stri
 	for _, auth := range weighted {
 		delay := deadlines[auth.ID].Sub(earliest)
 		base := greedySoonestRecoveryWeight(delay, halfLife)
-		tier, source := GSRAllowanceTierForAuthWithSource(auth, QuotaRecoveryProviderForAuth(auth))
-		multiplier := gsrAllowanceMultiplier(tier)
+		quotaProvider := QuotaRecoveryProviderForAuth(auth)
+		tier, source, multiplier := gsrAllowanceDetails(auth, quotaProvider)
+		remaining, observed := gsrRemainingFraction(auth, quotaProvider, model, now)
+		if !observed && source != "override" {
+			multiplier = 1
+		}
+		quotaWeight := multiplyGSRWeight(base, multiplier)
+		if observed {
+			quotaWeight = max(1, int64(math.Round(float64(quotaWeight)*remaining)))
+		}
 		configWeight := authWeight(auth)
-		weight := multiplyGSRWeight(base, multiplier) + configWeight
+		weight := quotaWeight + configWeight
 		weights[auth.ID] = weight
 		if factors != nil {
 			f := factors[auth.ID]
 			f.DelayMs = delay.Milliseconds()
 			f.Decay = math.Exp(-float64(delay) / float64(halfLife))
 			f.BaseWeight, f.TierMultiplier, f.ConfigWeight, f.Weight = base, multiplier, configWeight, weight
+			if observed {
+				f.RemainingQuotaFraction = new(remaining)
+			}
 			f.Tier = []string{"unknown", "standard", "pro", "premium", "max", "elite"}[tier]
 			f.TierSource = source
 			factors[auth.ID] = f

@@ -467,11 +467,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
 	} else if mode == updateModeQuotaObservation {
+		if !m.quotaObservationCurrentLocked(ctx, auth.ID) {
+			current := existing.Clone()
+			m.mu.Unlock()
+			return current, false, false, nil
+		}
 		updatedQuota := auth.Quota.Clone()
 		auth = existing.Clone()
 		auth.Quota = mergeQuotaObservation(auth.Quota, updatedQuota)
-		auth.Quota.Signals = updatedQuota.Signals
-		auth.Quota.ObservedAt = updatedQuota.ObservedAt
+		if updatedQuota.ObservedAt.IsZero() {
+			auth.Quota.Signals = updatedQuota.Signals
+			auth.Quota.ObservedAt = updatedQuota.ObservedAt
+		}
 	}
 	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < m.authEpochs[auth.ID] {
 		m.mu.Unlock()
@@ -688,6 +695,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 				}
 			}
 		}
+	}
+	if credChanged && mode == updateModeReplace {
+		clearGSRQuotaObservation(auth)
 	}
 	auth.UpdatedAt = now
 	cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged

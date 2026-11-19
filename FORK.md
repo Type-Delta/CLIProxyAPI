@@ -1280,12 +1280,23 @@ while applying recovery-aware selection for new and failed bindings. Quota-only
 affinity rebinding tracks transiently unavailable credential IDs computed from the
 same candidate pool and timestamp used by GSR, so quota recovery and sticky-session
 decisions remain consistent.
-GSR also applies a provider-neutral allowance tier multiplier. Codex plan metadata
-(Pro 500 elite, Pro 200 max, Pro 100 premium, matching their 50x/20x/10x Plus
-allowances; Claude Max and Ultra both map to max) and explicit `gsr_tier` overrides are supported; unknown tiers remain neutral and
-raw quota totals are never compared across providers. The credential scheduling
-weight is added after recovery decay and the allowance multiplier in both the
-selector and scheduler. Omitted weights add 1; non-positive or invalid weights
+GSR multiplies the recovery weight by estimated remaining quota. It uses the
+smallest remaining fraction among the current observed windows that apply to the
+model, scaled by the plan's relative allowance. Codex Pro 100, Pro 200 and Pro 500
+use 10x, 20x and 50x Plus respectively. Known Claude Max and Ultra tiers use 5x and
+10x Pro when the credential reports its plan. Z.ai Lite, Pro and Max use 1x, 6x
+and 14x Lite. Kiro and other recognized plans without a configured provider
+ratio use the existing ordinal tier scale. Raw quota totals
+are never compared across providers. Without a usable usage observation, the
+estimate uses a neutral multiplier, with explicit `gsr_tier` overrides still
+honored. GSR reads quota utilization from passive upstream signals and shared
+management probes. Each probe replaces the observation as one snapshot with its
+original cache timestamp. Confirmed upstream resets discard old observations,
+including results from requests already in flight. Probe updates are also
+fenced by credential registration and version. GSR rechecks probe-only Kiro, OpenCode Go and Z.ai observations
+after three minutes when choosing among multiple credentials.
+The credential scheduling weight is added after recovery decay and quota scaling
+in both the selector and scheduler. Omitted weights add 1; non-positive or invalid weights
 add nothing and preserve GSR eligibility. The existing request-level round-robin
 fallback remains unweighted. CPAMC auth-file hints, card tooltips, and provider
 forms describe both strategies in all six locales.
@@ -1313,14 +1324,18 @@ Management routing reads and writes normalize the aliases to the canonical strat
 Plugin candidate exclusions apply before GSR refresh and delegated builtin selection. Continuity uses the same reserve-aware eligibility and ready-pool rule fall-through as ordinary selection without replacing GSR recovery weights or fallback cursors.
 
 **Implementation evidence:** `internal/api/server.go`. `internal/config/config_types.go`,
-`sdk/cliproxy/service_config.go`, `sdk/cliproxy/auth/`, `sdk/cliproxy/auth/scheduler.go`,
+`sdk/cliproxy/service_config.go`, `sdk/cliproxy/auth/{gsr_quota,gsr_tier,selector,scheduler}.go`,
 `internal/api/handlers/management/config_basic.go`,
 `internal/api/handlers/management/{usage_probe,gsr_manual_reset}.go`, `internal/api/server.go`, and
 `config.example.yaml`.
 
-**Recorded validation:** On 2026-11-18, `internal/api/server.go` still installs the quota refresher; strategy parsing, service selector, recovery decay, tier multiplier and scheduler remain connected. GSR weighting/fallback/affinity and new continuity/live/dry-run parity tests pass.
+**Recorded validation:** On 2026-11-19, a regression test reproduced Pro at 1%
+remaining taking precedence over Plus at 80% with matching reset times. Tests
+cover both directions of tier-adjusted selection, the limiting short window,
+unusable observations, affinity rebinding and live/dry-run parity with quota
+from the shared management probe. The full Go suite and server build pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-19
 
 ### DL029 — CPAMC quota summary redesign
 
@@ -2820,12 +2835,13 @@ session affinity. `strategy_step` records the applied algorithm, GSR's missing-d
 round-robin fallback, previous cursor pick, per-candidate scheduling shares, effective
 weights, and accounting credits before selection. GSR includes cached recovery deadlines
 and their source, delay, decay, base weight, allowance tier and source, tier multiplier,
-and configured weight. Legacy selectors and single/mixed-provider scheduler picks
+the observed remaining quota fraction, and configured weight. Legacy selectors and single/mixed-provider scheduler picks
 share the same GSR factor calculation. Live explanations consume the picker's prepared
 deadlines and weights, so expiry during tracing cannot change the reported algorithm
 or shares. Explanation maps are allocated only when a routing capture is present.
-Existing exported timestamp and tier APIs remain compatible. GSR keeps its existing truncation and minimum-one base weight; the contract
-comment now describes that arithmetic rather than rounding.
+Existing exported timestamp and tier APIs remain compatible. GSR truncates the
+recovery base weight, then rounds the result of multiplying it by the tier scale
+and remaining fraction. Both stages have a minimum weight of one.
 
 Dry runs copy live credits and cursors and predict ten selections for RR, WRR, fill-first,
 and GSR. WRR clones the selector's exact or dynamic accounting pool, including pending and
@@ -2908,9 +2924,12 @@ against the next manager selection, no quota refresh during simulation, kept/hel
 affinity provenance, alias merges, truncation order, query validation, real ClickHouse
 request filtering and trace round trips, and management detail resolution.
 
-**Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/routing_dry_run.go` still privately simulates live selector credits/cursors, factors and affinity provenance. New credentialRetryAfter exclusion composes with trace gates. Weighted/GSR/SIWC/explanation/read-only/provenance tests remain and auth suite passes.
+**Recorded validation:** On 2026-11-19, the shared-probe regression checks the
+remaining quota factor and compares dry-run predictions with live execution.
+The weighted, GSR, SIWC, explanation, read-only and affinity provenance tests
+also cover the eligibility gates and private selector state.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-19
 
 ### DL071 — ClickHouse transcript and system-log storage reductions
 
