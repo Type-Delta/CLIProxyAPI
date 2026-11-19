@@ -48,6 +48,32 @@ func TestGetAPIKeysReturnsRawKeysIDsRevisionAndDuplicateWarning(t *testing.T) {
 	}
 }
 
+func TestGetAPIKeysReadOnlyReturnsOnlyIdentityLabels(t *testing.T) {
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{APIKeys: []config.APIKeyEntry{
+		{Key: "labelled-key-with-enough-entropy", Label: "team-a"},
+		{Key: "unlabelled-key-with-enough-entropy"},
+	}}}}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/api-keys", nil)
+	ctx.Set(managementScopeContextKey, config.ManagementScopeReadOnly)
+
+	h.GetAPIKeys(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "enough-entropy") || recorder.Header().Get("X-CPA-Config-Revision") != "" {
+		t.Fatalf("read-only response leaked keys or revision: %s", body)
+	}
+	want := `{"key-identities":[{"key_id":"` + config.APIKeyID("labelled-key-with-enough-entropy") +
+		`","label":"team-a"},{"key_id":"` + config.APIKeyID("unlabelled-key-with-enough-entropy") + `"}]}`
+	if body != want {
+		t.Fatalf("body = %s, want %s", body, want)
+	}
+}
+
 func TestAPIKeyIdentityCatalogMarksInjectedDigestConflict(t *testing.T) {
 	entries := []config.APIKeyEntry{
 		{Key: "same-key-with-enough-entropy"},

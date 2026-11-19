@@ -27,7 +27,7 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 		return false
 	}
 	if c.Request.Method == http.MethodPost {
-		return path == "/analytics/query" || path == "/analytics/exports" || path == "/telemetry/query" || path == "/requests/api-call" || path == "/plugins/:id/quota"
+		return path == "/analytics/query" || path == "/analytics/exports" || path == "/telemetry/query" || path == "/requests/api-call" || path == "/plugins/:id/quota" || path == "/routing/dry-run"
 	}
 	if c.Request.Method != http.MethodGet {
 		return false
@@ -35,8 +35,8 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 	switch path {
 	case "/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
 		"/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys",
-		"/plugins/:id/quota", "/session", "/capabilities", "/storage", "/credentials", "/credentials/models",
-		"/routing/model-definitions/:channel", "/telemetry/health", "/telemetry/schema",
+		"/plugins/:id/quota", "/session", "/capabilities", "/api-keys", "/storage", "/credentials", "/credentials/models",
+		"/routing/model-definitions/:channel", "/routing/credentials", "/telemetry/health", "/telemetry/schema",
 		"/analytics/health", "/analytics/summary", "/analytics/timeseries", "/analytics/dimensions",
 		"/analytics/events", "/analytics/events/:attempt_id", "/analytics/attempts/:attempt_id", "/analytics/pricing",
 		"/analytics/pricing/catalog-providers", "/analytics/providers", "/analytics/quotas",

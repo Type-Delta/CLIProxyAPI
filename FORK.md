@@ -2654,7 +2654,7 @@ are `TestS1ReportParity`, `TestS2MixedReadParity`,
 
 ### DL066 — Scoped management keys
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-19
 
 Additional `management.keys` credentials have explicit `full-access` or `read-only`
 scopes. Legacy, environment, and local passwords retain full access. Startup, config
@@ -2702,7 +2702,7 @@ quota fixture: expiry details render without warnings and no reset mutation is s
 The Docker runtime accepts all three quota reads and rejects reset consumption and stale
 account headers. The full Go suite and pinned Bun Codex quota tests pass.
 
-Read-only scoped keys may GET `/v8/management/observability/requests/in-flight`; mutations remain denied. The bounded legacy bcrypt cache does not cache scoped authorization or revocation, which are resolved on every request.
+Read-only scoped keys may GET `/v8/management/observability/requests/in-flight`; mutations remain denied. They may also GET `/v8/management/routing/credentials` and POST `/v8/management/routing/dry-run`, so the panel's Routing → Dry run tab works for read-only sessions: the catalogue is secret-free and dry runs predict without moving strategy, affinity, or cooldown state. For read-only keys, `GET /v8/management/api-keys` returns only `key-identities` entries with `key_id` and `label`, the identities `GET /analytics/keys` already shows, so the Dry run key selector works. It returns no raw keys, revision headers, config indexes, or warnings. The bounded legacy bcrypt cache does not cache scoped authorization or revocation, which are resolved on every request.
 
 **Implementation evidence:** `internal/api/handlers/management/management_keys.go`. `internal/config/management_keys.go`,
 `internal/api/handlers/management/management_keys.go`,
