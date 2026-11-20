@@ -3214,9 +3214,11 @@ and carried session digests that CPAMC drew as session nodes.
 
 An administrator can arm a Claude or Codex auth-file credential with `PATCH /v8/management/credentials/fields` and `{"manual_reset_armed": true}` (`null` or `false` disarms). Other values, nested paths, other providers, the deprecated v0 route, and Home mode return 400; disarming is accepted everywhere. The flag lives in auth-file metadata and the v8 listing reports it as `manual_reset_armed`. A background loop checks armed credentials every minute. Its usage and grant/credit reads go through the shared management quota cache, so an armed credential costs at most one upstream read per URL per cache lifetime. CPA spends one Claude reset grant or Codex reset credit when one of these holds:
 
-- a bar the reset refills is spent;
-- a reserve that no configured client key can bypass holds such a bar;
+- the normal weekly bar (Codex `weekly`, Claude `seven-day`) is spent and the reset refills it;
+- a reserve that no configured client key can bypass holds that bar and the reset refills it;
 - a usable grant or credit expires within 15 minutes.
+
+Five-hour, monthly, and model-specific bars (such as Claude's weekly Fable bar) never trigger a claim, whether spent or held.
 
 Claude offers mirror CPAMC's claim blockers. The grant must be eligible, usable now, not paused, started, not in cooldown, and not a give-back with nothing to give back. A grant that requires the account to be at its limit is not claimable while a reserve holds the account above that limit. Codex credits refill the standard five-hour, weekly, and monthly bars. Among triggering offers, the one expiring soonest is spent.
 

@@ -105,8 +105,13 @@ func TestManualResetBlockedBars(t *testing.T) {
 		{ID: "monthly", RemainingPercent: 0},
 		{ID: "seven-day", RemainingPercent: 12, ResetAt: now.Add(time.Hour)},
 	}
-	blocked := manualResetBlockedBars(bars, []coreauth.QuotaReserveHit{{BarID: "seven-day"}}, now)
-	if len(blocked) != 3 || !blocked["five-hour"] || !blocked["monthly"] || !blocked["seven-day"] {
+	blocked := manualResetBlockedBars(bars, []coreauth.QuotaReserveHit{{BarID: "seven-day"}, {BarID: "five-hour"}}, now)
+	// Only weekly bars count: the 5-hour and monthly bars are spent but never trigger.
+	if len(blocked) != 1 || !blocked["seven-day"] {
+		t.Fatalf("blocked = %v", blocked)
+	}
+	blocked = manualResetBlockedBars([]coreauth.QuotaReserveBar{{ID: "weekly", RemainingPercent: 0}}, nil, now)
+	if len(blocked) != 1 || !blocked["weekly"] {
 		t.Fatalf("blocked = %v", blocked)
 	}
 }
@@ -236,11 +241,25 @@ func (h *Handler) armedForTest(t *testing.T, id string) bool {
 	return ok && manualResetArmed(auth)
 }
 
-func claudeArmingStatus(fiveHourUsed int, atLimit bool, endsAt time.Time) string {
+func claudeArmingStatus(weeklyUsed int, atLimit bool, endsAt time.Time) string {
+	return claudeArmingWindows(40, weeklyUsed, atLimit, endsAt)
+}
+
+func claudeArmingWindows(fiveHourUsed, weeklyUsed int, atLimit bool, endsAt time.Time) string {
 	resetsAt := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
-	return fmt.Sprintf(`{"five_hour":{"utilization":%d,"resets_at":%q},"seven_day":{"utilization":40,"resets_at":%q},`+
+	return fmt.Sprintf(`{"five_hour":{"utilization":%d,"resets_at":%q},"seven_day":{"utilization":%d,"resets_at":%q},`+
 		`"cedar_ember":{"eligible":true,"at_limit":%t,"grants":[{"id":"grant-1","resets_total":1,"resets_left":1,"usable_now":true,`+
-		`"clears":["five_hour","seven_day"],"ends_at":%q}]}}`, fiveHourUsed, resetsAt, resetsAt, atLimit, endsAt.UTC().Format(time.RFC3339))
+		`"clears":["five_hour","seven_day"],"ends_at":%q}]}}`, fiveHourUsed, resetsAt, weeklyUsed, resetsAt, atLimit, endsAt.UTC().Format(time.RFC3339))
+}
+
+func TestArmedResetIgnoresSpentFiveHourLimit(t *testing.T) {
+	h, auth, upstream := newArmingHandler(t, "claude", nil)
+	upstream.grants = claudeArmingWindows(100, 40, true, time.Now().Add(72*time.Hour))
+	upstream.result = `{"result":"reset"}`
+	h.checkArmedManualReset(context.Background(), auth)
+	if len(upstream.claims) != 0 || !h.armedForTest(t, auth.ID) {
+		t.Fatalf("claims=%v armed=%t", upstream.claims, h.armedForTest(t, auth.ID))
+	}
 }
 
 func TestArmedClaudeResetClaimsWhenExhaustedAndDisarms(t *testing.T) {
@@ -350,7 +369,7 @@ func TestArmedResetTreatsOnlyUnbypassableReserveAsBlocked(t *testing.T) {
 		{"live bypass key", []string{config.APIKeyID(liveKey)}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			attributes := map[string]string{coreauth.AttributeQuotaReserve: `{"five-hour":30}`}
+			attributes := map[string]string{coreauth.AttributeQuotaReserve: `{"seven-day":30}`}
 			if test.bypass != nil {
 				raw, _ := json.Marshal(test.bypass)
 				attributes[coreauth.AttributeQuotaReserveBypassKeys] = string(raw)
@@ -464,5 +483,47 @@ func TestPatchDisarmFailsWhenTheStoreCannotSaveIt(t *testing.T) {
 	h.PatchAuthFileFields(ctx)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("unsaved disarm answered %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestArmedCodexResetFiresOnlyForTheWeeklyLimit(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		fiveHour, weekly int
+		wantClaim        bool
+	}{
+		{"weekly spent", 30, 100, true},
+		{"five-hour spent", 100, 30, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h, auth, upstream := newArmingHandler(t, "codex", nil)
+			reset := time.Now().Add(3 * time.Hour).Unix()
+			upstream.usage = fmt.Sprintf(`{"rate_limit":{"primary_window":{"used_percent":%d,"limit_window_seconds":18000,"reset_at":%d},`+
+				`"secondary_window":{"used_percent":%d,"limit_window_seconds":604800,"reset_at":%d}}}`, test.fiveHour, reset, test.weekly, reset)
+			upstream.credits = fmt.Sprintf(`{"credits":[{"reset_type":"codex_rate_limits","status":"available","expires_at":%q}]}`, time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339))
+			upstream.result = `{"code":"reset"}`
+			h.checkArmedManualReset(context.Background(), auth)
+			if claimed := len(upstream.claims) == 1; claimed != test.wantClaim {
+				t.Fatalf("claimed = %t, want %t", claimed, test.wantClaim)
+			}
+			if armed := h.armedForTest(t, auth.ID); armed == test.wantClaim {
+				t.Fatalf("armed = %t after check", armed)
+			}
+		})
+	}
+}
+
+func TestArmedResetIgnoresUnbypassableFiveHourReserve(t *testing.T) {
+	attributes := map[string]string{coreauth.AttributeQuotaReserve: `{"five-hour":30}`}
+	h, auth, upstream := newArmingHandler(t, "claude", attributes)
+	// 80% used leaves 20%, inside the 30% reserve: held, nobody can bypass, but it is not the weekly bar.
+	upstream.grants = strings.Replace(claudeArmingWindows(80, 40, false, time.Now().Add(72*time.Hour)), `"usable_now":true`, `"usable_now":true,"use_requires_limit":false`, 1)
+	upstream.result = `{"result":"reset"}`
+	h.checkArmedManualReset(context.Background(), auth)
+	if _, held := h.authManager.QuotaReserveState(auth.ID); !held {
+		t.Fatal("five-hour reserve not held; the test no longer exercises a reserve hit")
+	}
+	if len(upstream.claims) != 0 || !h.armedForTest(t, auth.ID) {
+		t.Fatalf("claims=%v armed=%t", upstream.claims, h.armedForTest(t, auth.ID))
 	}
 }

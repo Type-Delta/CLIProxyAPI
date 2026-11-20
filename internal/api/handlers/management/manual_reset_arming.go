@@ -19,16 +19,21 @@ import (
 
 // An armed manual reset spends one Claude reset grant or Codex reset credit on
 // the operator's behalf. CPAMC arms it by setting the auth-file metadata flag
-// below through PATCH /v8/management/credentials/fields. It fires when a bar the
-// reset refills is spent, when such a bar is held by a reserve no configured
-// client key can bypass, or when a usable grant or credit expires within
-// manualResetExpiryLead. It is one-shot: CPA durably clears the flag before it
+// below through PATCH /v8/management/credentials/fields. It fires when the
+// normal weekly limit (manualResetTriggerBars) is spent or held by a reserve no
+// configured client key can bypass, provided the reset refills that bar, or when
+// a usable grant or credit expires within manualResetExpiryLead. Shorter,
+// monthly and model-specific limits never trigger it. It is one-shot: CPA durably clears the flag before it
 // sends the claim and never re-arms, whatever the provider answers.
 const (
 	manualResetArmedKey   = "manual_reset_armed"
 	manualResetArmTick    = time.Minute
 	manualResetExpiryLead = 15 * time.Minute
 )
+
+// manualResetTriggerBars are the normal weekly bars: Codex "weekly" and Claude
+// "seven-day". Only these can trigger an armed reset.
+var manualResetTriggerBars = map[string]bool{"weekly": true, "seven-day": true}
 
 // codexManualResetBars are the standard-pool bars a Codex reset credit refills.
 var codexManualResetBars = []string{"five-hour", "weekly", "monthly"}
@@ -231,17 +236,20 @@ func manualResetResult(outcome quotaCallOutcome, field string) string {
 	return "HTTP " + strconv.Itoa(outcome.response.StatusCode)
 }
 
-// manualResetBlockedBars lists bars no client can use: spent ones, plus the
-// given reserve hits (callers pass hits only when nobody can bypass them).
+// manualResetBlockedBars lists the weekly trigger bars no client can use: spent
+// ones, plus the given reserve hits (callers pass hits only when nobody can
+// bypass them).
 func manualResetBlockedBars(bars []coreauth.QuotaReserveBar, hits []coreauth.QuotaReserveHit, now time.Time) map[string]bool {
 	blocked := make(map[string]bool)
 	for _, bar := range bars {
-		if bar.RemainingPercent <= 0 && (bar.ResetAt.IsZero() || bar.ResetAt.After(now)) {
+		if manualResetTriggerBars[bar.ID] && bar.RemainingPercent <= 0 && (bar.ResetAt.IsZero() || bar.ResetAt.After(now)) {
 			blocked[bar.ID] = true
 		}
 	}
 	for _, hit := range hits {
-		blocked[hit.BarID] = true
+		if manualResetTriggerBars[hit.BarID] {
+			blocked[hit.BarID] = true
+		}
 	}
 	return blocked
 }
