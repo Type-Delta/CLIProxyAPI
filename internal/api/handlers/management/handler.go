@@ -43,9 +43,11 @@ const attemptMaxIdleTime = 2 * time.Hour
 type Handler struct {
 	clickHouse clickHouseHandle
 
-	cfg                      *config.Config
-	configFilePath           string
-	mu                       sync.Mutex
+	cfg            *config.Config
+	configFilePath string
+	mu             sync.Mutex
+	// manualResetClaims holds one *sync.Mutex per credential ID; see lockManualResetClaim.
+	manualResetClaims        sync.Map
 	authStatusMu             sync.Mutex
 	reloadMu                 sync.Mutex
 	reloadGeneration         uint64

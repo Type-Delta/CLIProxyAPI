@@ -458,8 +458,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
 	s.startUsageLimitPersistence()
-	s.startQuotaHistoryCollector()
-	defer s.stopQuotaHistoryCollector(context.Background())
+	s.startQuotaBackgroundJobs()
+	defer s.stopQuotaBackgroundJobs(context.Background())
 	defer func() {
 		s.stopUsageLimitPersistence()
 		s.flushUsageLimits()
@@ -584,7 +584,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	log.Debug("Stopping API server...")
-	s.stopQuotaHistoryCollector(ctx)
+	s.stopQuotaBackgroundJobs(ctx)
 	s.stopUsageLimitPersistence()
 	defer s.flushUsageLimits()
 

@@ -168,6 +168,11 @@ func (h *Handler) APICall(c *gin.Context) {
 	switch requestKind {
 	case quotaRequestCacheable:
 		outcome = h.getQuotaCache().do(c.Request.Context(), cacheKey, execute)
+	case quotaRequestClaudeReset, quotaRequestCodexConsume:
+		// Never spend while an armed reset check is between its read and its claim.
+		unlock := h.lockManualResetClaim(auth.ID)
+		outcome = execute(c.Request.Context())
+		unlock()
 	default:
 		outcome = execute(c.Request.Context())
 	}

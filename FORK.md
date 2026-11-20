@@ -3210,6 +3210,45 @@ and carried session digests that CPAMC drew as session nodes.
 
 **Last updated:** 2026-11-18
 
+### DL078 — Armed manual resets and unbypassable reserve reporting
+
+An administrator can arm a Claude or Codex auth-file credential with `PATCH /v8/management/credentials/fields` and `{"manual_reset_armed": true}` (`null` or `false` disarms). Other values, nested paths, other providers, the deprecated v0 route, and Home mode return 400; disarming is accepted everywhere. The flag lives in auth-file metadata and the v8 listing reports it as `manual_reset_armed`. A background loop checks armed credentials every minute. Its usage and grant/credit reads go through the shared management quota cache, so an armed credential costs at most one upstream read per URL per cache lifetime. CPA spends one Claude reset grant or Codex reset credit when one of these holds:
+
+- a bar the reset refills is spent;
+- a reserve that no configured client key can bypass holds such a bar;
+- a usable grant or credit expires within 15 minutes.
+
+Claude offers mirror CPAMC's claim blockers. The grant must be eligible, usable now, not paused, started, not in cooldown, and not a give-back with nothing to give back. A grant that requires the account to be at its limit is not claimable while a reserve holds the account above that limit. Codex credits refill the standard five-hour, weekly, and monthly bars. Among triggering offers, the one expiring soonest is spent.
+
+Arming is one-shot. Before sending the claim, CPA consumes the arm with `PersistMetadataEntry`. That save checks under the credential's mutation lock that the flag is still set and the credential is enabled, so a disarm or disable that landed during the reads wins. If the store cannot record the cleared flag, nothing is sent, so a restart cannot reload an arm that already spent. CPA never re-arms after sending, whatever the provider answers, because a gateway error may hide a redeemed credit. The log records the provider's result code. A disarm PATCH is also written through `PersistMetadataEntry` and returns 500 if the store cannot record it, so an acknowledged cancellation cannot be undone by a restart.
+
+A per-credential claim lock is shared by panel claims made through the API-call proxy (`reset_rate_limits` and Codex `consume`) and the armed check, which holds it from its usage read to its claim. The armed check therefore never acts on a reading a panel claim has already spent: the panel claim invalidates the cached reads, and the check re-reads them. A manual reset that the operator confirmed from an older view still spends after an automatic one; that is the operator's explicit choice, the same as two open tabs. Claims go through the same `executeAPICall` path as panel claims, so routing reconciliation and cache invalidation are unchanged. The loop skips Home mode, where several CPA nodes sharing a credential would each spend a reset.
+
+While a reserve holds a credential, the v8 credentials listing also reports `quota_reserve_bypassable`. It is true only when a configured client API key's ID is on the bypass list; stale key IDs do not count. Both new fields are kept for read-only management keys; the v0 listing is unchanged.
+
+The bundled panel treats an unbypassable reserve like exhaustion, and its Quota page replaces each credential's Refresh pill with the Arm toggle (CPAMC DL088).
+
+**Implementation evidence:** `internal/api/handlers/management/manual_reset_arming.go`, `internal/api/handlers/management/{auth_files.go,auth_files_fields.go,management_keys.go,api_tools.go,handler.go}`, `internal/api/quota_history_collector.go` (starts the loop beside the quota history collector), the CPAMC gitlink, and the bundled management assets; tests: `internal/api/handlers/management/manual_reset_arming_test.go`.
+
+**Recorded validation:** `go test ./...` passes, and the arming tests pass with `-race`. They use a local TLS upstream to cover:
+
+- claimable-grant and credit parsing, and trigger selection;
+- spent and stale-bypass reserve triggers, and a live bypass key that suppresses the trigger;
+- one claim and no re-arm for spent, refused, unreadable, and HTTP 502 answers;
+- the Claude claim body;
+- PATCH validation and the v8-only gate.
+
+These tests fail when their guard is removed:
+
+- no claim when a disarm lands during the reads;
+- no claim when the credential is disabled during the reads;
+- no claim when the store cannot save the disarm;
+- a 500 for a disarm PATCH the store cannot save.
+
+A further test checks that the armed check waits while a panel claim holds the credential. A local CPA built from this change, running with copies of real Claude and Codex credentials, armed and disarmed a credential through the panel and persisted the flag to its auth file. Its first live tick read the armed Claude account and logged `waiting` without claiming. The listing reported `quota_reserve_bypassable: false` for a credential held by a reserve with no bypass keys, and for one whose only bypass key ID was not configured locally. Arming through the v0 route returned 400.
+
+**Last updated:** 2026-11-20
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

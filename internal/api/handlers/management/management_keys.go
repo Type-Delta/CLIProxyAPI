@@ -221,7 +221,7 @@ func sanitizeReadOnlyCredentials(c *gin.Context, files []gin.H) {
 	// Preserve quota identifiers and observations without exposing arbitrary
 	// provider-owned metadata, error messages, bypass API keys, or filesystem paths.
 	allowed := map[string]bool{}
-	for _, field := range []string{"id", "auth_index", "name", "display_name", "type", "provider", "label", "status", "disabled", "unavailable", "runtime_only", "source", "size", "success", "failed", "recent_requests", "quota", "quota_reserve", "quota_reserve_state", "model_quotas", "supports_quota", "quota_provider", "quota_plugin_id", "email", "project_id", "profile_arn", "account_type", "account", "created_at", "updated_at", "modtime", "last_refresh", "next_retry_after", "cooldowns", "id_token", "usage_probe", "pricing_catalog"} {
+	for _, field := range []string{"id", "auth_index", "name", "display_name", "type", "provider", "label", "status", "disabled", "unavailable", "runtime_only", "source", "size", "success", "failed", "recent_requests", "quota", "quota_reserve", "quota_reserve_state", "quota_reserve_bypassable", "manual_reset_armed", "model_quotas", "supports_quota", "quota_provider", "quota_plugin_id", "email", "project_id", "profile_arn", "account_type", "account", "created_at", "updated_at", "modtime", "last_refresh", "next_retry_after", "cooldowns", "id_token", "usage_probe", "pricing_catalog"} {
 		allowed[field] = true
 	}
 	for _, entry := range files {

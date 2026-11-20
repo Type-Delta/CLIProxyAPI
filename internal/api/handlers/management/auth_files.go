@@ -709,7 +709,13 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if h.authManager != nil {
 		if state, held := h.authManager.QuotaReserveState(auth.ID); held {
 			entry["quota_reserve_state"] = state
+			if quota.v8 {
+				entry["quota_reserve_bypassable"] = h.quotaReserveBypassable(auth)
+			}
 		}
+	}
+	if quota.v8 && manualResetArmed(auth) {
+		entry[manualResetArmedKey] = true
 	}
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas

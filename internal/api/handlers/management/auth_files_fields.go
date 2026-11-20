@@ -307,6 +307,15 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		}
 	}
 
+	if raw, ok := req[manualResetArmedKey]; ok && strings.TrimSpace(string(raw)) == "true" {
+		// The armed check runs only on v8, and never in Home mode, where several
+		// nodes sharing the credential would each spend a reset.
+		if !c.GetBool(ConfigV8ContextKey) || h.authManager.HomeEnabled() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": manualResetArmedKey + " requires the v8 API outside Home mode"})
+			return
+		}
+	}
+
 	ctx := c.Request.Context()
 
 	// Find auth by name or ID
@@ -348,6 +357,14 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if !committed || updatedAuth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
 		return
+	}
+	if raw, ok := req[manualResetArmedKey]; ok && strings.TrimSpace(string(raw)) != "true" {
+		// Modify tolerates save failures; a disarm must reach the store, or a
+		// restart would reload the arm and spend a reset the operator cancelled.
+		if saved, _ := h.authManager.PersistMetadataEntry(ctx, updatedAuth.ID, updatedAuth.RegistrationEpoch, manualResetArmedKey, false, nil); !saved {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save the disarmed reset"})
+			return
+		}
 	}
 	for key := range req {
 		root := rootAuthFileField(strings.TrimSpace(key))
@@ -431,6 +448,19 @@ func applyAuthFileFieldsPatch(targetAuth *coreauth.Auth, req map[string]json.Raw
 			}
 		} else if root := rootAuthFileField(fieldPath); root == coreauth.AttributeQuotaReserve || root == coreauth.AttributeQuotaReserveBypassKeys {
 			return &authFileFieldPatchError{message: root + " does not support nested fields"}
+		} else if rootAuthFileField(fieldPath) == manualResetArmedKey {
+			armed, okBool := value.(bool)
+			if fieldPath != manualResetArmedKey || (value != nil && !okBool) {
+				return &authFileFieldPatchError{message: manualResetArmedKey + " must be a boolean or null"}
+			}
+			if armed && !manualResetSupported(targetAuth) {
+				return &authFileFieldPatchError{message: manualResetArmedKey + " is only supported for Claude and Codex credentials"}
+			}
+			if armed {
+				targetAuth.Metadata[manualResetArmedKey] = true
+			} else {
+				delete(targetAuth.Metadata, manualResetArmedKey)
+			}
 		} else if fieldPath == "headers" {
 			applyAuthFileHeadersPatch(targetAuth, value)
 		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
