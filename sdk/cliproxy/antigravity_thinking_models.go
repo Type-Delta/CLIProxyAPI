@@ -23,21 +23,38 @@ func appendAntigravityThinkingModels(models, templates []*ModelInfo, hints antig
 	for i, model := range models {
 		registered[model.ID] = i
 	}
+	blocked := make(map[string]struct{})
 	for _, baseID := range slices.Sorted(maps.Keys(hints.ThinkingGroups)) {
 		levels := hints.ThinkingGroups[baseID]
-		template := byID[baseID]
-		for _, level := range levels {
+		variants := effortVariantIDs(baseID, levels)
+		baseTemplate := byID[baseID]
+		template := baseTemplate
+		var availableTemplate bool
+		for _, id := range variants {
+			variant := byID[id]
+			if variant == nil {
+				continue
+			}
 			if template == nil {
-				template = byID[baseID+"-"+level]
+				template = variant
+			}
+			if len(applyExcludedModels([]*ModelInfo{variant}, excluded)) != 0 {
+				availableTemplate = true
 			}
 		}
 		if template == nil || len(levels) == 0 {
 			continue
 		}
-		_, baseOnWire := hints.ModelIDs[baseID]
-		if baseOnWire && len(applyExcludedModels([]*ModelInfo{{ID: baseID}}, excluded)) == 0 {
+		// Some families appear in the management catalog only as effort variants.
+		// Excluding every listed variant also disables the generated family routes.
+		if len(applyExcludedModels([]*ModelInfo{{ID: baseID}}, excluded)) == 0 || (baseTemplate == nil && !availableTemplate) {
+			blocked[baseID] = struct{}{}
+			for _, id := range variants {
+				blocked[id] = struct{}{}
+			}
 			continue
 		}
+		_, baseOnWire := hints.ModelIDs[baseID]
 		group := &registry.AntigravityThinking{
 			BaseID: baseID, KnownLevels: slices.Clone(levels), WireModels: make(map[string]string),
 		}
@@ -87,7 +104,10 @@ func appendAntigravityThinkingModels(models, templates []*ModelInfo, hints antig
 			}
 		}
 	}
-	return models
+	return slices.DeleteFunc(models, func(model *ModelInfo) bool {
+		_, excluded := blocked[model.ID]
+		return excluded
+	})
 }
 
 func effortVariantIDs(baseID string, levels []string) []string {

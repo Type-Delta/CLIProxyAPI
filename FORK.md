@@ -3268,8 +3268,11 @@ the group model and send a separate thinking level, or encode the level in
 the combined model ID. An explicit level takes precedence. CPA sends the
 advertised base ID with the level when the account supports that wire
 format. On accounts that advertise only combined wire IDs, CPA selects the
-corresponding advertised variant. Existing catalogs without groups retain
-their previous behavior, and exclusions still apply to the selected variant.
+corresponding advertised variant. Excluding a grouped base ID removes all
+its effort routes from the catalog and routing. When the management model
+definitions list a group only by effort variants, excluding all of those
+entries also removes the group. Individual effort exclusions still apply
+within enabled groups. Catalogs without groups keep their existing behavior.
 Model cooldowns are recorded against the wire model that returned the limit.
 The account catalog and its group information are saved together so the
 same routes can be restored after a restart.

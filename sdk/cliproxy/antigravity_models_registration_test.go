@@ -138,6 +138,64 @@ func TestAntigravityDynamicRegistrationExclusions(t *testing.T) {
 	}
 }
 
+func TestAntigravityEffortRouteExclusions(t *testing.T) {
+	const (
+		base = "claude-opus-5-5"
+		high = base + "-high"
+		low  = base + "-low"
+	)
+	for _, tc := range []struct {
+		name, wireModels, excluded string
+		wantBase, wantHigh         bool
+	}{
+		{name: "split base exclusion", wireModels: fmt.Sprintf(`%q:{}`, base), excluded: base},
+		{name: "split catalog exclusion", wireModels: fmt.Sprintf(`%q:{}`, base), excluded: high},
+		{name: "combined base exclusion", wireModels: fmt.Sprintf(`%q:{},%q:{}`, low, high), excluded: "*opus-5-5"},
+		{name: "combined catalog exclusion", wireModels: fmt.Sprintf(`%q:{},%q:{}`, low, high), excluded: high},
+		{name: "single effort exclusion", wireModels: fmt.Sprintf(`%q:{}`, base), excluded: low, wantBase: true, wantHigh: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAntigravityCapabilityCache()
+			t.Cleanup(resetAntigravityCapabilityCache)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintf(w, `{"models":{%s,"gemini-4-hydrogen-xhigh":{}},"groupedModels":{%q:{"supportedThinkingLevels":[{"thinkingSuffix":"low"},{"thinkingSuffix":"high"}]}}}`, tc.wireModels, base)
+			}))
+			defer server.Close()
+
+			svc := &Service{cfg: &config.Config{}}
+			auth := antigravityTestAuth("effort-exclusions", server.URL)
+			reg := GlobalModelRegistry()
+			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+			svc.registerModelsForAuth(t.Context(), auth)
+			svc.WaitAntigravityProbes()
+			for _, id := range []string{base, low, high} {
+				if !reg.ClientSupportsModel(auth.ID, id) {
+					t.Fatalf("enabled credential did not register %s", id)
+				}
+			}
+
+			svc.cfg = &config.Config{OAuthExcludedModels: map[string][]string{"antigravity": {tc.excluded}}}
+			svc.registerModelsForAuth(t.Context(), auth)
+			svc.WaitAntigravityProbes()
+
+			listed := make(map[string]bool)
+			for _, model := range reg.GetAvailableModels("openai") {
+				if id, ok := model["id"].(string); ok {
+					listed[id] = true
+				}
+			}
+			for id, want := range map[string]bool{base: tc.wantBase, low: false, high: tc.wantHigh, "gemini-4-hydrogen-xhigh": true} {
+				if listed[id] != want {
+					t.Errorf("catalog lists %s = %t, want %t", id, listed[id], want)
+				}
+				if routable := reg.ClientSupportsModel(auth.ID, id); routable != want {
+					t.Errorf("credential routes %s = %t, want %t", id, routable, want)
+				}
+			}
+		})
+	}
+}
+
 func TestAntigravityDynamicRegistrationBatches(t *testing.T) {
 	resetAntigravityCapabilityCache()
 	t.Cleanup(resetAntigravityCapabilityCache)
