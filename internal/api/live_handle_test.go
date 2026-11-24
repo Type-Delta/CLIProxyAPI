@@ -1,18 +1,19 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 func TestLiveHandleAdmission(t *testing.T) {
@@ -65,6 +66,7 @@ func TestLiveHandleHTTPFlow(t *testing.T) {
 		ctx := c.Request.Context()
 		livehandle.Default.SetModel(coreusage.ProxyRequestIDFromContext(ctx), "test-model")
 		reporter := helps.NewUsageReporter(ctx, "test-provider", "upstream-model", nil)
+		helps.ObserveResponsesTokenEvent(reporter, []byte(`{"type":"response.output_item.added","output_index":0,"item":{"id":"ws_1","type":"web_search_call"}}`))
 		reporter.ObserveOutputDeltaAt("hello", time.Now())
 		close(entered)
 		<-release
@@ -93,7 +95,7 @@ func TestLiveHandleHTTPFlow(t *testing.T) {
 	resp.Body.Close()
 	close(release)
 	<-done
-	if err != nil || resp.StatusCode != 200 || !strings.Contains(string(body), `"state":"streaming"`) || !strings.Contains(string(body), `"output_bytes":5`) || !strings.Contains(string(body), `"requested_model":"test-model"`) {
+	if err != nil || resp.StatusCode != 200 || !strings.Contains(string(body), `"state":"streaming"`) || !strings.Contains(string(body), `"output_bytes":5`) || !strings.Contains(string(body), `"requested_model":"test-model"`) || !strings.Contains(string(body), `"tool_calls":1`) {
 		t.Fatalf("live response %d %s %v", resp.StatusCode, body, err)
 	}
 }

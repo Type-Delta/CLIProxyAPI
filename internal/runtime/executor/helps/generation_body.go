@@ -215,6 +215,9 @@ func (r *UsageReporter) observeGenerationPayloadAt(protocol string, payload []by
 		r.InvalidateGenerationTimingReason("malformed_stream")
 		return
 	}
+	if protocol == "responses" {
+		r.observeLiveResponsesTools(trimmed)
+	}
 	text, unsupported := outputDeltaText(protocol, payload)
 	if unsupported {
 		r.InvalidateGenerationTimingReason("unsupported_protocol")

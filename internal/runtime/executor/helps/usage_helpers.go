@@ -36,6 +36,9 @@ import (
 
 type UsageReporter struct {
 	liveAttempt          *livehandle.Handle
+	liveToolIDs          map[string]struct{} // guarded by ttftMu
+	liveToolSlots        map[int64]string    // guarded by ttftMu
+	liveToolCount        int                 // guarded by ttftMu
 	requestID            string
 	traceID              string
 	homeSelection        *usage.HomeSelection

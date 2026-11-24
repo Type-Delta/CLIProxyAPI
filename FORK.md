@@ -3146,6 +3146,13 @@ excluded. Raw API keys and request content are not stored in this registry. A st
 after its response headers ends as failed, and usage reported after the request closed still lands
 on its attempt. CPAMC's Live Handle page draws this feed as a request map. The view supplements
 upstream execution and usage reporting without changing routing or the legacy management routes.
+The panel keeps a model-to-credential edge visible while an active request is idle between
+provider turns, including Codex provider tool calls whose attempt has already ended. Search
+requests get a separate model node labelled with the model and `search` tool name.
+Responses streams and terminal output report observed tool-call counts per attempt and request.
+The tracker deduplicates output items across events and sends only counts to the panel. The
+request total includes earlier attempts even after they leave the attempt window. The panel offers
+an opt-in map badge and shows the count in request details.
 
 `GET /v8/management/live-requests/stream` has the same read-only access and sends server-sent events
 (`data: <json>` frames): a full snapshot (`"full": true`) on connection, then every second the
@@ -3208,7 +3215,9 @@ header-identified client sessions, the stream answered `text/event-stream` with
 `X-Accel-Buffering: no`, delivered frames 995–1004 ms apart, sent 31 of 42 frames as progress-only,
 and carried session digests that CPAMC drew as session nodes.
 
-**Last updated:** 2026-11-18
+On 2026-11-24, the live request API test checks the serialized tool count. The Responses observer test covers HTTP stream events, a repeated call in terminal output, and request totals across WebSocket turns. The observer test also passes with the race detector.
+
+**Last updated:** 2026-11-24
 
 ### DL078 — Armed manual resets and unbypassable reserve reporting
 

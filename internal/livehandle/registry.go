@@ -37,6 +37,7 @@ type Attempt struct {
 	Provider       string     `json:"provider"`
 	Credential     Credential `json:"credential"`
 	UpstreamModel  string     `json:"upstream_model"`
+	ToolCalls      int        `json:"tool_calls,omitempty"`
 	OutputBytes    int64      `json:"output_bytes"`
 	InputTokens    *int64     `json:"input_tokens"`
 	OutputTokens   *int64     `json:"output_tokens"`
@@ -67,6 +68,7 @@ type Request struct {
 	// OutputBytes and OutputTokens total every attempt, including ones beyond the attempt window.
 	OutputBytes  int64     `json:"output_bytes"`
 	OutputTokens *int64    `json:"output_tokens"`
+	ToolCalls    int       `json:"tool_calls,omitempty"`
 	Attempts     []Attempt `json:"attempts"`
 	KeyID        string    `json:"-"`
 }
@@ -204,7 +206,7 @@ func (h *Handle) update(late, progress bool, fn func(*Attempt)) {
 		for i := range req.Attempts {
 			a := &req.Attempts[i]
 			if a.Index == h.index && (a.EndedAt == nil || late && a.closedByRequest) {
-				bytes, tokens, state, streamed := a.OutputBytes, a.OutputTokens, a.State, a.FirstOutputAt != nil
+				bytes, tokens, toolCalls, state, streamed := a.OutputBytes, a.OutputTokens, a.ToolCalls, a.State, a.FirstOutputAt != nil
 				fn(a)
 				if progress && streamed && a.State == state {
 					r.revision++
@@ -213,6 +215,7 @@ func (h *Handle) update(late, progress bool, fn func(*Attempt)) {
 					r.bump(req)
 				}
 				req.OutputBytes += a.OutputBytes - bytes
+				req.ToolCalls += a.ToolCalls - toolCalls
 				if a.OutputTokens != tokens {
 					// A fresh pointer, so snapshots never share a value this lock later changes.
 					total := *a.OutputTokens
@@ -258,6 +261,14 @@ func (h *Handle) Output(bytes int, at time.Time) {
 		a.State = "streaming"
 	})
 }
+
+// SetToolCalls records the cumulative number of calls observed on this attempt.
+func (h *Handle) SetToolCalls(count int) {
+	h.update(false, false, func(a *Attempt) {
+		a.ToolCalls = max(a.ToolCalls, count)
+	})
+}
+
 func (h *Handle) Finish(outcome string, status int, input, output int64) {
 	h.update(true, false, func(a *Attempt) {
 		if !a.closedByRequest {

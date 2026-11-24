@@ -135,6 +135,7 @@ func ObserveResponsesTokenEvent(reporter *UsageReporter, payload []byte) {
 	if reporter.readerOwnsGeneration() {
 		return
 	}
+	reporter.observeLiveResponsesTools(JSONPayload(payload))
 	// Delivery-time callers retain legacy diagnostics only. Qualified output
 	// timing requires a timestamp captured by the actual source reader.
 	if isResponsesTokenEvent(payload, false) {
