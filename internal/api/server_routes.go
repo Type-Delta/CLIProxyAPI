@@ -153,10 +153,12 @@ func (s *Server) setupRoutes() {
 		museCode.POST("/browser_open", s.museCodeHandler.Handle)
 	}
 
-	// Gemini compatible API routes
+	// Antigravity and Gemini API routes
+	geminiUsageLimit := middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolGemini)
+	s.engine.POST("/v1internal:operation", AuthMiddleware(s.accessManager), geminiUsageLimit, geminiHandlers.AntigravityHandler)
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
-	v1beta.Use(middleware.UsageLimitMiddleware(s.usageLimitTracker, middleware.ProtocolGemini))
+	v1beta.Use(geminiUsageLimit)
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)

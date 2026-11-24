@@ -764,6 +764,24 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	return reasoningEffortFromConfig(config)
 }
 
+// RequestedAntigravityThinkingLevel returns an explicit discrete effort for
+// account selection. Numeric budgets go through the normal thinking pipeline.
+func RequestedAntigravityThinkingLevel(body []byte, provider, model string) ThinkingLevel {
+	config := ThinkingConfig{}
+	if suffix := ParseSuffix(model); suffix.HasSuffix {
+		config = parseSuffixToConfig(suffix.RawSuffix, provider, suffix.ModelName)
+	} else {
+		config = extractThinkingConfigForUsage(body, provider)
+	}
+	if config.Mode == ModeNone {
+		return LevelNone
+	}
+	if config.Mode == ModeLevel {
+		return ThinkingLevel(strings.ToLower(strings.TrimSpace(string(config.Level))))
+	}
+	return ""
+}
+
 // ExtractTranslatedReasoningEffort returns the final provider payload's thinking
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
@@ -909,8 +927,17 @@ func extractGeminiConfigFromGetter(get func(string) ojson.Result, provider strin
 	if !level.Exists() {
 		level = get(prefix + ".thinking_level")
 	}
+	if provider == "antigravity" && !level.Exists() {
+		level = get("request.generationConfig.thinking_config.thinking_level")
+		if !level.Exists() {
+			level = get("request.generationConfig.thinking_config.thinkingLevel")
+		}
+	}
 	if level.Exists() {
 		value := level.String()
+		if provider == "antigravity" {
+			value = strings.ToLower(strings.TrimSpace(value))
+		}
 		switch value {
 		case "none":
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -924,6 +951,12 @@ func extractGeminiConfigFromGetter(get func(string) ojson.Result, provider strin
 	budget := get(prefix + ".thinkingBudget")
 	if !budget.Exists() {
 		budget = get(prefix + ".thinking_budget")
+	}
+	if provider == "antigravity" && !budget.Exists() {
+		budget = get("request.generationConfig.thinking_config.thinking_budget")
+		if !budget.Exists() {
+			budget = get("request.generationConfig.thinking_config.thinkingBudget")
+		}
 	}
 	if budget.Exists() {
 		value := int(budget.Int())

@@ -15,13 +15,126 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antigravitycapture"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
+
+type antigravityOAuthSafeguardError struct{ statusErr }
+
+func (antigravityOAuthSafeguardError) IsRequestScoped() bool { return true }
+
+type antigravityReferenceUnavailableError struct{ statusErr }
+
+func (antigravityReferenceUnavailableError) IsCredentialScoped() bool { return true }
+
+func (antigravityReferenceUnavailableError) ErrorCode() string {
+	return cliproxyauth.ErrorCodeAntigravityReferenceUnavailable
+}
+
+func rejectAntigravityOAuth(reason string) error {
+	log.WithField("reason", reason).Warn("Antigravity OAuth safeguard rejected request")
+	return antigravityOAuthSafeguardError{statusErr{code: http.StatusForbidden, msg: "Antigravity OAuth safeguard rejected request: " + reason}}
+}
+
+func (e *AntigravityExecutor) antigravityOAuthSafeguardEnabled(auth *cliproxyauth.Auth) bool {
+	if e.cfg == nil || e.cfg.Home.Enabled || !e.cfg.Antigravity.OAuthSafeguard || auth == nil || auth.AuthKind() != cliproxyauth.AuthKindOAuth {
+		return false
+	}
+	target, errParse := url.Parse(resolveAntigravityRequestBaseURL(auth))
+	return errParse == nil && antigravitycapture.IsDirectURL(target)
+}
+
+func (e *AntigravityExecutor) loadAntigravityReference(auth *cliproxyauth.Auth) (*antigravitycapture.Profile, error) {
+	if !e.antigravityOAuthSafeguardEnabled(auth) {
+		return nil, nil
+	}
+	load := e.referenceLoader
+	if load == nil {
+		load = antigravitycapture.LoadCurrent
+	}
+	profile, err := load()
+	if err != nil || profile == nil {
+		return nil, antigravityReferenceUnavailableError{statusErr{code: http.StatusServiceUnavailable,
+			msg: "Antigravity OAuth safeguard requires a valid private reference. Run --antigravity-capture or wait for the background capture."}}
+	}
+	return profile, nil
+}
+
+func (e *AntigravityExecutor) antigravityInferenceClient(ctx context.Context, auth *cliproxyauth.Auth) *http.Client {
+	client := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	if e.antigravityOAuthSafeguardEnabled(auth) {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	return client
+}
+
+func (e *AntigravityExecutor) checkAntigravityOAuthIncoming(auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) error {
+	profile, err := e.loadAntigravityReference(auth)
+	if err != nil || profile == nil {
+		return err
+	}
+	if opts.SourceFormat.String() != "antigravity" || len(opts.Headers.Values("User-Agent")) != 1 ||
+		!antigravitycapture.IsNativeUserAgent(opts.Headers.Get("User-Agent")) {
+		return rejectAntigravityOAuth("a native Antigravity request and User-Agent are required")
+	}
+	if !profile.MatchesContentType(opts.Headers) {
+		return rejectAntigravityOAuth("the incoming Content-Type does not match the Antigravity reference")
+	}
+	payload := opts.OriginalRequest
+	if len(payload) == 0 {
+		payload = req.Payload
+	}
+	if !ojson.ValidBytes(payload) {
+		return rejectAntigravityOAuth("the incoming request must be valid JSON")
+	}
+	if reason := helps.AntigravityOAuthEnvelopeMismatch(ojson.NewDoc(payload), countTokens, profile.EnvelopeUserAgent); reason != "" {
+		return rejectAntigravityOAuth("incoming " + reason)
+	}
+	return nil
+}
+
+func (e *AntigravityExecutor) prepareAntigravityInferenceHeaders(
+	auth *cliproxyauth.Auth, req *http.Request, doc *ojson.Doc, token string, countTokens bool,
+) error {
+	profile, err := e.loadAntigravityReference(auth)
+	if err != nil {
+		return err
+	}
+	userAgent := resolveUserAgent(auth)
+	if profile != nil && antigravityConfiguredUserAgent(auth) == "" {
+		userAgent = profile.UserAgent
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", userAgent)
+	if auth != nil {
+		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
+	}
+	if profile == nil {
+		return nil
+	}
+	if reason := helps.AntigravityOAuthHeaderMismatch(req, token, profile); reason != "" {
+		return rejectAntigravityOAuth(reason)
+	}
+	path := req.URL.EscapedPath()
+	if (countTokens && path != antigravityCountTokensPath) ||
+		(!countTokens && path != antigravityGeneratePath && path != antigravityStreamPath) {
+		return rejectAntigravityOAuth("the outbound path must match the inference operation")
+	}
+	if reason := helps.AntigravityOAuthEnvelopeMismatch(doc, countTokens, profile.EnvelopeUserAgent); reason != "" {
+		return rejectAntigravityOAuth("outbound " + reason)
+	}
+	if !countTokens && doc.Get("project").Str != antigravityProjectIDFromAuth(auth) {
+		return rejectAntigravityOAuth("the outbound project must match the selected credential")
+	}
+	return nil
+}
 
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, error) {
 	doc := ojson.NewDoc(payload)
@@ -30,11 +143,35 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 }
 
 func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, doc *ojson.Doc, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, []byte, error) {
+	info := helps.AntigravityGroupedModel(auth, modelName, cliproxyexecutor.Options{})
+	return e.buildGenerationRequestDoc(ctx, auth, token, modelName, doc, stream, alt, baseURL, info, derivedSessionIDs...)
+}
+
+func (e *AntigravityExecutor) buildGenerationRequestDoc(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, doc *ojson.Doc, stream bool, alt, baseURL string, modelInfo *registry.ModelInfo, derivedSessionIDs ...string) (*http.Request, []byte, error) {
 	if token == "" {
 		return nil, nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
 	if doc == nil {
 		doc = ojson.NewDoc(nil)
+	}
+	wireModel, errModel := helps.AntigravityWireModel(doc, modelName, modelInfo)
+	if errModel != nil {
+		return nil, nil, errModel
+	}
+	if modelInfo != nil && wireModel != modelName && !antigravityCoolingDisabled(auth, e.cfg) {
+		now := time.Now()
+		useCredits := antigravityShouldBypassShortCooldown(ctx, e.cfg)
+		if errTarget := cliproxyauth.CheckAntigravityTargetModel(auth, wireModel, now, useCredits); errTarget != nil {
+			return nil, nil, errTarget
+		}
+		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, wireModel, now); errCooldown != nil {
+			return nil, nil, homeKVUnavailableStatusErr(errCooldown)
+		} else if inCooldown && !useCredits {
+			return nil, nil, cliproxyauth.WithCause(&cliproxyauth.Error{
+				Code: cliproxyauth.ErrorCodeAntigravityTargetUnavailable, HTTPStatus: http.StatusTooManyRequests,
+				Message: "selected Antigravity effort variant is in short cooldown",
+			}, statusErr{code: http.StatusTooManyRequests, retryAfter: &remaining})
+		}
 	}
 
 	base := strings.TrimSuffix(baseURL, "/")
@@ -64,7 +201,7 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if errProject != nil {
 		return nil, nil, errProject
 	}
-	geminiToAntigravityDoc(doc, modelName, projectID, derivedSessionIDs...)
+	geminiToAntigravityDoc(doc, wireModel, projectID, derivedSessionIDs...)
 	promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutputDoc(modelName, doc)
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
@@ -108,17 +245,15 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	// Connection header and keeps its HTTP/1.1 connections alive, so forcing
 	// "Connection: close" would both deviate from that fingerprint and defeat the
 	// shared connection pool by discarding every established TCP + TLS session.
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
+	if errGuard := e.prepareAntigravityInferenceHeaders(auth, httpReq, doc, token, false); errGuard != nil {
+		return nil, nil, errGuard
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+	if modelInfo != nil && wireModel != modelName {
+		cliproxyexecutor.SetUpstreamAttemptModel(ctx, wireModel)
+	}
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {

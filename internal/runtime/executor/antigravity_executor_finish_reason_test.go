@@ -6,11 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -68,6 +71,98 @@ func collectAntigravityStream(t *testing.T, baseURL string, sourceFormat, respon
 		t.Fatal("expected at least one chunk")
 	}
 	return chunks
+}
+
+func TestAntigravityNativeStreamPreservesWireFrames(t *testing.T) {
+	const partial = `{"response":{"candidates":[{"content":{"parts":[{"text":"OK"}]}}],"usageMetadata":{"promptTokenCount":2}}}`
+	const terminal = `{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":3}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+partial+"\n\ndata: "+terminal+"\n\n")
+	}))
+	defer server.Close()
+
+	const payload = `{"model":"gemini-3.7-flash","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`
+	chunks := collectAntigravityStream(t, server.URL, sdktranslator.FormatAntigravity, sdktranslator.FormatAntigravity, payload)
+	if got := string(bytes.Join(chunks, []byte("\n"))); got != partial+"\n"+terminal {
+		t.Fatalf("native frames = %s", got)
+	}
+}
+
+func TestAntigravityGroupedCooldownFollowsWireModel(t *testing.T) {
+	const model = "gemini-3.8-flash"
+	const high, low = model + "-high", model + "-low"
+	const quota = `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"60s"}]}}`
+	var highCalls, lowCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Error(errRead)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch ojson.GetBytes(body, "model").Str {
+		case high:
+			highCalls.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, quota)
+		case low:
+			lowCalls.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}]},\"finishReason\":\"STOP\"}]}}\n\n")
+		default:
+			t.Error("request did not resolve a wire model")
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	authID := t.Name()
+	reg := registry.GetGlobalRegistry()
+	group := &registry.AntigravityThinking{BaseID: model, DefaultLevel: "low", WireModels: map[string]string{"high": high, "low": low}}
+	var models []*registry.ModelInfo
+	for _, id := range []string{model, high, low} {
+		models = append(models, &registry.ModelInfo{ID: id, Type: "antigravity", Thinking: &registry.ThinkingSupport{Levels: []string{"high", "low"}}, AntigravityThinking: group})
+	}
+	reg.RegisterClient(authID, "antigravity", models)
+	t.Cleanup(func() {
+		reg.UnregisterClient(authID)
+		antigravityShortCooldownByAuth.Delete(antigravityShortCooldownKey(&cliproxyauth.Auth{ID: authID}, high))
+	})
+	cfg := &config.Config{}
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(NewAntigravityExecutor(cfg))
+	_, errRegister := manager.Register(t.Context(), &cliproxyauth.Auth{ID: authID, Provider: "antigravity",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "token", "project_id": "project", "expired": time.Now().Add(time.Hour).Format(time.RFC3339)},
+	})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity, Stream: true}
+	request := func(level string) cliproxyexecutor.Request {
+		payload := strings.ReplaceAll(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"LEVEL"}}}}`, "LEVEL", level)
+		return cliproxyexecutor.Request{Model: model, Payload: []byte(payload)}
+	}
+	if _, err := manager.ExecuteStream(t.Context(), []string{"antigravity"}, request("HIGH"), opts); err == nil {
+		t.Fatal("expected high effort to return 429")
+	}
+	result, errLow := manager.ExecuteStream(t.Context(), []string{"antigravity"}, request("LOW"), opts)
+	if errLow != nil {
+		t.Fatalf("high effort cooldown blocked low effort: %v", errLow)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+	}
+	if _, err := manager.ExecuteStream(t.Context(), []string{"antigravity"}, request("HIGH"), opts); err == nil {
+		t.Fatal("expected high effort cooldown")
+	}
+	if highCalls.Load() != 1 || lowCalls.Load() != 1 {
+		t.Fatalf("upstream calls high=%d low=%d, want one each", highCalls.Load(), lowCalls.Load())
+	}
 }
 
 func TestAntigravityStreamSurfacesTrailingBackendError(t *testing.T) {

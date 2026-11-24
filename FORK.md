@@ -3260,6 +3260,93 @@ A further test checks that the armed check waits while a panel claim holds the c
 
 **Last updated:** 2026-11-20
 
+### DL079 — Antigravity model IDs and thinking effort
+
+CPA reads Antigravity's per-account model catalog and exposes recognized
+model groups alongside their supported combined IDs. A request can select
+the group model and send a separate thinking level, or encode the level in
+the combined model ID. An explicit level takes precedence. CPA sends the
+advertised base ID with the level when the account supports that wire
+format. On accounts that advertise only combined wire IDs, CPA selects the
+corresponding advertised variant. Existing catalogs without groups retain
+their previous behavior, and exclusions still apply to the selected variant.
+Model cooldowns are recorded against the wire model that returned the limit.
+The account catalog and its group information are saved together so the
+same routes can be restored after a restart.
+
+The authenticated native `/v1internal:generateContent`,
+`/v1internal:streamGenerateContent`, and `/v1internal:countTokens` endpoints
+accept Antigravity envelopes in local credential mode. The count endpoint
+uses the outer model for routing and removes generation envelope fields
+before sending the token count to Google. The generation endpoints enforce
+the caller's API-key usage limits. Home dispatch has its own model catalog
+and does not expose these native endpoints.
+
+**Implementation evidence:** `sdk/auth/antigravity_models.go`,
+`sdk/cliproxy/antigravity_thinking_models.go`,
+`internal/runtime/executor/helps/antigravity_thinking.go`,
+the Antigravity executor, and the native HTTP handlers.
+
+**Recorded validation:** account-scoped effort selection, native thinking
+field aliases, native SSE framing, and quota admission have regression
+coverage. Live consumer catalogs advertised combined wire IDs. Split and
+combined client requests completed against Claude Sonnet 5.5 and Gemini 3.8
+Flash on that catalog, and native Gemini token counting returned a count.
+
+**Last updated:** 2026-11-24
+
+### DL080 — Antigravity OAuth request safeguard
+
+`oauth.providers.antigravity.oauth-safeguard` is off by default. When
+enabled, CPA rejects inference on a local direct Google Antigravity OAuth
+credential unless the request uses the native endpoint, an Antigravity
+client User-Agent, and the Cloud Code JSON envelope. CPA checks the final
+destination, bearer token, project, software headers, and body after payload
+rules. A refusal returns a request-scoped 403 and does not cool the
+credential. Guarded SDK requests use the typed inference methods. Custom
+upstream endpoints and Home dispatch are outside the guard's scope.
+
+CPA installs Google's Antigravity CLI in a private reference directory
+using the official release manifest and SHA-512 checksum. A probe runs the
+verified binary with a clean environment and a short-lived access token
+from a CPA-managed consumer OAuth credential. The CLI uses its file-based
+token store in a temporary owner-only home. CPA confirms the token and
+project on the intercepted Cloud Code request and promotes the new
+reference after a successful model turn. The saved capture contains the
+CLI version, capture time, User-Agent, content type, and envelope client
+marker. It omits tokens, account and project identifiers, and request and
+response content.
+
+The updater checks for releases when due at startup and every 24 hours. A failed
+candidate leaves the last successful reference available. The guard
+returns 503 while no valid reference exists. `--antigravity-capture`
+creates the reference on demand, and `--antigravity-capture-update`
+forces a fresh capture. Docker Compose persists the reference in its own
+volume. Enterprise-only credentials cannot bootstrap the consumer CLI
+reference. The guard accepts compatible CLI, Hub, and legacy request
+shapes, and uses the captured CLI User-Agent as the default upstream
+value. It compares observable request properties and does not authenticate
+the incoming client executable.
+
+**Implementation evidence:**
+`internal/runtime/executor/helps/antigravity_oauth_safeguard.go`,
+`internal/antigravitycapture/`, `sdk/cliproxy/service_antigravity_reference.go`,
+the Antigravity executor, `config.example.yaml`, and
+`internal/cpauk/model/event_outcome.go`.
+
+**Recorded validation:** the executor tests cover native acceptance, rejection
+before transport, rejection after payload filters, and outbound header
+override rejection. The official Antigravity CLI completed a Sonnet turn
+through the guarded server. The server returned 403 for a foreign User-Agent.
+The private CLI 1.5.16 captured a live Cloud Code model turn using the
+disposable CPA auth store on Windows. A Linux Docker server created its
+reference on startup, completed a guarded live Gemini request, and kept
+the same active profile after restart. Capture tests cover token and
+project binding, successful response validation, the daily update
+boundary, and rollback after a failed candidate.
+
+**Last updated:** 2026-11-24
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

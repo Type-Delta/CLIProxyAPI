@@ -126,6 +126,8 @@ func run() (exitStatus int) {
 	var claudeLogin bool
 	var claudeCapture bool
 	var claudeCaptureUpdate bool
+	var antigravityCapture bool
+	var antigravityCaptureUpdate bool
 	var noBrowser bool
 	var oauthCallbackPort int
 	var loginProxyURL string
@@ -160,6 +162,8 @@ func run() (exitStatus int) {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&claudeCapture, "claude-capture", false, "Install and capture a private Claude Code OAuth reference")
 	flag.BoolVar(&claudeCaptureUpdate, "claude-capture-update", false, "Force a private Claude Code update check and capture")
+	flag.BoolVar(&antigravityCapture, "antigravity-capture", false, "Install and capture a private Antigravity OAuth reference")
+	flag.BoolVar(&antigravityCaptureUpdate, "antigravity-capture-update", false, "Force a private Antigravity update check and capture")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
 	flag.StringVar(&loginProxyURL, "login-proxy", "", "Proxy URL used for the OAuth login flow and saved as the new credential's proxy_url (http, https, socks5, socks5h)")
@@ -683,7 +687,7 @@ func run() (exitStatus int) {
 		ProxyURL:     loginProxyURL,
 	}
 
-	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || claudeCapture || claudeCaptureUpdate || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin || kiroLogin
+	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || antigravityCapture || antigravityCaptureUpdate || codexLogin || codexDeviceLogin || claudeLogin || claudeCapture || claudeCaptureUpdate || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin || kiroLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -762,6 +766,15 @@ func run() (exitStatus int) {
 			os.Exit(1)
 		}
 		fmt.Println("Private Claude Code OAuth reference ready for version", profile.ClaudeVersion)
+	} else if antigravityCapture || antigravityCaptureUpdate {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		profile, errCapture := cliproxy.RefreshAntigravityReference(ctx, cfg, antigravityCaptureUpdate)
+		if errCapture != nil {
+			fmt.Fprintln(os.Stderr, errCapture)
+			os.Exit(1)
+		}
+		fmt.Println("Private Antigravity OAuth reference ready for version", profile.Version)
 	} else if kimiLogin {
 		cmd.DoKimiLogin(cfg, options)
 	} else if kimiAILogin {

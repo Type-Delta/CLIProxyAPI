@@ -70,6 +70,8 @@ func usageLimitRouteIsSkipped(c *gin.Context) bool {
 		return true
 	case "POST /v1beta/models/*action":
 		return strings.HasSuffix(c.Param("action"), ":countTokens")
+	case "POST /v1internal:operation":
+		return c.Param("operation") == ":countTokens"
 	default:
 		return false
 	}

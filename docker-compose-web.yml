@@ -26,6 +26,7 @@ services:
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_PLUGIN_PATH:-./plugins}:/CLIProxyAPI/plugins
       - claude-reference:/root/.config/cli-proxy-api/claude-reference
+      - antigravity-reference:/root/.config/cli-proxy-api/antigravity-reference
     restart: unless-stopped
     networks:
       - cpa-web
@@ -47,6 +48,7 @@ services:
 
 volumes:
   claude-reference:
+  antigravity-reference:
 
 networks:
   cpa-web:

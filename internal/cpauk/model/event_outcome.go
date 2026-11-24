@@ -47,7 +47,8 @@ func ClassifyEvent(e *Event) {
 		return
 	}
 	hop := ""
-	if e.UpstreamSentAt == nil && (e.ExecutorType == "auth-selection" || strings.HasPrefix(body, "Claude OAuth safeguard")) {
+	if e.UpstreamSentAt == nil && (e.ExecutorType == "auth-selection" || strings.HasPrefix(body, "Claude OAuth safeguard") ||
+		strings.HasPrefix(body, "Antigravity OAuth safeguard")) {
 		hop = "cpa_to_provider"
 		e.UpstreamStatusCode = nil
 	} else if ProviderFailureBody(body) || (e.UpstreamStatusCode != nil && *e.UpstreamStatusCode >= 400 && *e.UpstreamStatusCode != 499) {

@@ -24,6 +24,9 @@ import (
 
 // ExecuteStream performs a streaming request to the Antigravity API.
 func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if errGuard := e.checkAntigravityOAuthIncoming(auth, req, opts, false); errGuard != nil {
+		return nil, helps.PublishAttemptFailure(ctx, e, thinking.ParseSuffix(req.Model).ModelName, auth, errGuard)
+	}
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -80,6 +83,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	req.Payload = originalPayload
 	// Observe a translation refusal before the token refresh or any upstream call.
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	groupInfo := helps.AntigravityGroupedModel(auth, baseModel, opts)
+	if groupInfo != nil {
+		modelInfo = groupInfo
+	}
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Stream: true, ModelInfo: modelInfo}
 	originalTranslated, translated, errTranslate := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
 	if errTranslate != nil {
@@ -95,7 +102,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	}
 
 	doc := ojson.NewDoc(translated)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+	if err = helps.ApplyAntigravityRequestThinkingDoc(doc, req, opts, groupInfo); err != nil {
 		return nil, err
 	}
 
@@ -108,7 +115,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.antigravityInferenceClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 
 	// Credential retry rounds are owned by the conductor. Perform one upstream
@@ -132,13 +139,15 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if replayScope.valid() {
 		replayRequestPayload, _ = antigravityReplayRequestEnvelopeFromDoc(doc)
 	}
-	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, requestPayload, errReq := e.buildGenerationRequestDoc(ctx, auth, token, baseModel, doc, true, opts.Alt, baseURL, groupInfo, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return nil, err
 	}
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
+	reporter.SetUpstreamModel(ojson.GetBytesNoCopy(requestPayload, "model").Str)
+	cooldownModel := cliproxyexecutor.UpstreamAttemptModel(ctx, baseModel)
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate_stream").Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
@@ -175,11 +184,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			case antigravity429DecisionShortCooldownSwitchAuth:
 				closeAntigravityAuthIdleTransports(auth)
 				if decision.retryAfter != nil && *decision.retryAfter > 0 && !antigravityCoolingDisabled(auth, e.cfg) {
-					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
+					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, cooldownModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
 						err = homeKVUnavailableStatusErr(errMarkCooldown)
 						return nil, err
 					}
-					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s recorded", *decision.retryAfter, baseModel)
+					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s recorded", *decision.retryAfter, cooldownModel)
 				}
 			case antigravity429DecisionFullQuotaExhausted:
 				closeAntigravityAuthIdleTransports(auth)
@@ -343,8 +352,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			}
 			emitTranslatedPayload := func(p []byte) bool {
 				// Filter usage metadata for all models after block classification
-				// so only the terminal chunk retains client-visible usage statistics.
-				p = helps.JSONPayload(helps.FilterSSEUsageMetadata(append([]byte("data: "), p...)))
+				// when translating to another protocol. Native clients parse Cloud Code proto JSON.
+				if responseFormat != sdktranslator.FormatAntigravity {
+					p = helps.JSONPayload(helps.FilterSSEUsageMetadata(append([]byte("data: "), p...)))
+				}
 				if len(p) == 0 {
 					return true
 				}
@@ -533,7 +544,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				return
 			default:
 				for _, shell := range shells {
-					shellFiltered := helps.JSONPayload(helps.FilterSSEUsageMetadata(append([]byte("data: "), shell...)))
+					shellFiltered := shell
+					if responseFormat != sdktranslator.FormatAntigravity {
+						shellFiltered = helps.JSONPayload(helps.FilterSSEUsageMetadata(append([]byte("data: "), shell...)))
+					}
 					if len(shellFiltered) == 0 {
 						continue
 					}
@@ -554,7 +568,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// stream as a successful completion. A clean EOF is a normal end
 			// even without finishReason: real Antigravity tool-call streams
 			// end that way (see antigravityNoFinishReasonSSE).
-			tail := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("[DONE]"), &param, claudeInputTokens)
+			var tail [][]byte
+			if responseFormat != sdktranslator.FormatAntigravity {
+				tail = helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("[DONE]"), &param, claudeInputTokens)
+			}
 			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			helps.CaptureTranslatedClaudeStreamError(responseFormat, tail, &translatedClaudeErr, func(msg string) error {
 				return newGeminiTranslatedClaudeErrorStatusErr(msg)

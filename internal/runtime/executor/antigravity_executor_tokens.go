@@ -11,7 +11,6 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -21,6 +20,9 @@ import (
 // CountTokens counts tokens for the given request using the Antigravity API.
 func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if errGuard := e.checkAntigravityOAuthIncoming(auth, req, opts, true); errGuard != nil {
+		return cliproxyexecutor.Response{}, helps.PublishAttemptFailure(ctx, e, baseModel, auth, errGuard)
+	}
 	if antigravityInTOSPause(e.cfg, auth) {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity pool paused after TOS_VIOLATION"}
 	}
@@ -42,6 +44,10 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	// Prepare payload once (doesn't depend on baseURL). A translation refusal is
 	// observed before the token refresh or any upstream call.
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	groupInfo := helps.AntigravityGroupedModel(auth, baseModel, opts)
+	if groupInfo != nil {
+		modelInfo = groupInfo
+	}
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Body: req.Payload, ModelInfo: modelInfo}
 	translatedReq := helps.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq)
 	if translatedReq.Err != nil {
@@ -63,7 +69,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	}
 
 	doc := ojson.NewDoc(payload)
-	if errThinking := helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); errThinking != nil {
+	if errThinking := helps.ApplyAntigravityRequestThinkingDoc(doc, req, opts, groupInfo); errThinking != nil {
 		return cliproxyexecutor.Response{}, errThinking
 	}
 	e.obfuscateSensitiveWordsDoc(doc)
@@ -76,13 +82,16 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 
 	_ = doc.Delete("project")
 	_ = doc.Delete("model")
+	_ = doc.Delete("requestId")
+	_ = doc.Delete("requestType")
+	_ = doc.Delete("userAgent")
 	_ = doc.Delete("request.safetySettings")
 	_ = doc.Delete("request.toolConfig")
 	_ = doc.Delete("request.labels")
 	_ = doc.Delete("request.sessionId")
 
 	base := resolveAntigravityRequestBaseURL(auth)
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.antigravityInferenceClient(ctx, auth)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -107,17 +116,12 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		return cliproxyexecutor.Response{}, errReq
 	}
 	// No httpReq.Close: keep the shared Antigravity connection pool usable.
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
+	if errGuard := e.prepareAntigravityInferenceHeaders(auth, httpReq, doc, token, true); errGuard != nil {
+		return cliproxyexecutor.Response{}, helps.PublishAttemptFailure(ctx, e, baseModel, auth, errGuard)
 	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
 
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       requestURL.String(),

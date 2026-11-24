@@ -372,6 +372,9 @@ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
 		return "", false
 	}
+	if code := errorCodeFromError(err); code == ErrorCodeAntigravityTargetUnavailable || code == ErrorCodeAntigravityReferenceUnavailable {
+		return "", false
+	}
 	return MatchRequestScopedErrorRules(extractRequestScopedErrorRules(auth, cfg), err)
 }
 

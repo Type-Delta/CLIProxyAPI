@@ -1378,6 +1378,8 @@ oauth:
 
     # Antigravity provider behavior.
     antigravity:
+      # oauth-safeguard: false       # capture a private Antigravity CLI reference and require matching native OAuth requests
+                                    # bootstrapping the reference requires a current consumer Antigravity OAuth credential
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"
       #   - "proxy"

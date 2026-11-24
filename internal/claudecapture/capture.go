@@ -6,19 +6,16 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
+
 	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
+
 	"encoding/json"
-	"encoding/pem"
+
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
+
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +28,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/referencecapture"
 )
 
 type CaptureOptions struct {
@@ -430,35 +428,5 @@ func profileFromRequest(req *http.Request, body []byte, version string) *Profile
 }
 
 func interceptionCertificate() (tls.Certificate, []byte, error) {
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	caTemplate := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "CPA temporary Claude capture CA"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	ca, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	serial, err = rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	leafTemplate := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "api.anthropic.com"}, DNSNames: []string{"api.anthropic.com"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, ca, &leafKey.PublicKey, caKey)
-	if err != nil {
-		return tls.Certificate{}, nil, err
-	}
-	return tls.Certificate{Certificate: [][]byte{leafDER, caDER}, PrivateKey: leafKey}, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), nil
+	return referencecapture.Certificate("CPA temporary Claude capture CA", []string{"api.anthropic.com"})
 }

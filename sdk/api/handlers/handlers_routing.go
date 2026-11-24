@@ -58,6 +58,14 @@ func preferExecutionProvider(providers []string, preferred string) []string {
 }
 
 func adjustExecutionProvidersForEntryProtocol(entryProtocol string, providers []string) []string {
+	if entryProtocol == Antigravity {
+		for _, provider := range providers {
+			if provider == Antigravity {
+				return []string{Antigravity}
+			}
+		}
+		return nil
+	}
 	if entryProtocol == Interactions {
 		return preferExecutionProvider(providers, GeminiInteractions)
 	}

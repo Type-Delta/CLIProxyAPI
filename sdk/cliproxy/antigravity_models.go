@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,12 +85,17 @@ var (
 type antigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
 	// Nil means unknown; an empty non-nil set is an authoritative empty catalog.
-	ModelIDs map[string]struct{}
-	revision uint64
+	ModelIDs       map[string]struct{}
+	ThinkingGroups map[string][]string
+	revision       uint64
 }
 
 func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints {
-	return antigravityModelCapabilityHints{WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs), ModelIDs: maps.Clone(h.ModelIDs), revision: h.revision}
+	groups := maps.Clone(h.ThinkingGroups)
+	for id, levels := range groups {
+		groups[id] = slices.Clone(levels)
+	}
+	return antigravityModelCapabilityHints{WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs), ModelIDs: maps.Clone(h.ModelIDs), ThinkingGroups: groups, revision: h.revision}
 }
 
 // antigravityCapabilityKey isolates catalogs by account, project, route and client
@@ -219,6 +225,7 @@ func buildPersistedAntigravityCapabilityHintsValue(project, endpoint string, hin
 	return sdkauth.BuildPersistedAntigravityCapabilityHints(project, endpoint, sdkauth.AntigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ThinkingGroups:    hints.ThinkingGroups,
 	})
 }
 
@@ -230,6 +237,7 @@ func parsePersistedAntigravityCapabilityHints(metadata map[string]any, expectedP
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ThinkingGroups:    hints.ThinkingGroups,
 	}, true
 }
 
@@ -370,6 +378,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ThinkingGroups:    hints.ThinkingGroups,
 	}, status
 }
 
@@ -438,6 +447,7 @@ func parseAntigravityModelCapabilityHints(body []byte) (antigravityModelCapabili
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ThinkingGroups:    hints.ThinkingGroups,
 	}, true
 }
 
@@ -514,12 +524,14 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	models := filterAntigravityModels(registry.GetAntigravityModels(), hints)
-	models = applyAntigravityFetchedModelCapabilities(models, hints)
 	excluded := cfg.OAuthExcludedModels[coreauth.OAuthModelAliasChannel(auth.Provider, auth.AuthKind())]
 	if value := strings.TrimSpace(auth.Attributes["excluded_models"]); value != "" {
 		excluded = strings.Split(value, ",")
 	}
+	templates := registry.GetAntigravityModels()
+	models := filterAntigravityModels(templates, hints)
+	models = appendAntigravityThinkingModels(models, templates, hints, excluded)
+	models = applyAntigravityFetchedModelCapabilities(models, hints)
 	models = applyExcludedModels(models, excluded)
 	models = applyOAuthModelAliasForAuth(cfg, "antigravity", auth.AuthKind(), auth.Attributes, models)
 	models = s.appendPluginModels("antigravity", models, excluded)

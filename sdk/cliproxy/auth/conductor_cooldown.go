@@ -2324,6 +2324,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if result.Provider == "antigravity" {
+		result.Model = cliproxyexecutor.UpstreamAttemptModel(ctx, result.Model)
+	}
 	if m != nil {
 		if policy := m.ResultPolicy(); policy != nil {
 			result = policy.ApplyResultPolicy(ctx, result)
@@ -4077,7 +4080,32 @@ func shouldSkipCredentialCooldown(err *Error) bool {
 	if err != nil && err.Code == ErrorCodeForceCooldown {
 		return false
 	}
+	if err != nil && (err.Code == ErrorCodeAntigravityTargetUnavailable || err.Code == ErrorCodeAntigravityReferenceUnavailable) {
+		return true
+	}
 	return isRequestScopedResultError(err) || isConnectionLifecycleResultError(err) || isTransientTransportResultError(err) || isStreamTruncatedResultError(err)
+}
+
+// CheckAntigravityTargetModel checks model state when a grouped route resolves
+// to a different wire model on the selected credential.
+func CheckAntigravityTargetModel(auth *Auth, model string, now time.Time, useCredits bool) error {
+	state := existingModelState(auth, model)
+	if state == nil {
+		return nil
+	}
+	blocked, _, next := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
+	if state.Status != StatusDisabled && (!blocked || (useCredits && state.Quota.Exceeded &&
+		state.Quota.Reason == "quota" && state.Quota.NextRecoverAt.After(now) &&
+		!state.NextRetryAfter.After(state.Quota.NextRecoverAt) && !state.nonQuotaCooldownUntil.After(now) &&
+		!effectiveModelForceUntil(state).After(now))) {
+		return nil
+	}
+	err := &Error{Code: ErrorCodeAntigravityTargetUnavailable, HTTPStatus: http.StatusServiceUnavailable, Message: "selected Antigravity effort variant is unavailable"}
+	if state.Status != StatusDisabled && next.After(now) {
+		err.HTTPStatus = http.StatusTooManyRequests
+		return &trustedRetryAfterError{cause: err, deadline: next}
+	}
+	return err
 }
 
 // isConnectionLifecycleError reports transport/session lifecycle failures that must

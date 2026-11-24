@@ -19,6 +19,7 @@ type ContinuityWaitObserver interface {
 
 type upstreamAttemptTracker struct {
 	attempted atomic.Bool
+	model     atomic.Pointer[string]
 }
 
 type localWebsocketTurnTracker struct {
@@ -88,6 +89,28 @@ func UpstreamAttempted(ctx context.Context) bool {
 	}
 	tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker)
 	return ok && tracker != nil && tracker.attempted.Load()
+}
+
+// SetUpstreamAttemptModel records a model selected after credential admission.
+func SetUpstreamAttemptModel(ctx context.Context, model string) {
+	if ctx == nil || model == "" {
+		return
+	}
+	if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok {
+		tracker.model.Store(&model)
+	}
+}
+
+// UpstreamAttemptModel returns the late-selected model, or the caller's fallback.
+func UpstreamAttemptModel(ctx context.Context, fallback string) string {
+	if ctx != nil {
+		if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok {
+			if model := tracker.model.Load(); model != nil {
+				return *model
+			}
+		}
+	}
+	return fallback
 }
 
 // WithLocalWebsocketTurnTracker installs a tracker that records when a downstream

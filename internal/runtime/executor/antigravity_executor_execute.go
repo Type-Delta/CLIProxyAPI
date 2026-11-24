@@ -25,6 +25,9 @@ import (
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if errGuard := e.checkAntigravityOAuthIncoming(auth, req, opts, false); errGuard != nil {
+		return resp, helps.PublishAttemptFailure(ctx, e, thinking.ParseSuffix(req.Model).ModelName, auth, errGuard)
+	}
 	if helps.HasResponsesCompactionItem(req.Payload) {
 		expanded, errExpand := helps.ExpandAntigravityCompactionCapsules(req.Payload)
 		if errExpand != nil {
@@ -81,6 +84,10 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	req.Payload = originalPayload
 	// Observe a translation refusal before the token refresh or any upstream call.
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	groupInfo := helps.AntigravityGroupedModel(auth, baseModel, opts)
+	if groupInfo != nil {
+		modelInfo = groupInfo
+	}
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, ModelInfo: modelInfo}
 	originalTranslated, translated, errTranslate := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
 	if errTranslate != nil {
@@ -96,7 +103,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	doc := ojson.NewDoc(translated)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+	if err = helps.ApplyAntigravityRequestThinkingDoc(doc, req, opts, groupInfo); err != nil {
 		return resp, err
 	}
 
@@ -108,7 +115,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.antigravityInferenceClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	// Credential retry rounds are owned by the conductor. Perform one upstream
 	// request per credential so request-retry is not consumed twice.
@@ -132,13 +139,15 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		replayRequestPayload, _ = antigravityReplayRequestEnvelopeFromDoc(doc)
 	}
 
-	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, requestPayload, errReq := e.buildGenerationRequestDoc(ctx, auth, token, baseModel, doc, false, opts.Alt, baseURL, groupInfo, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return resp, err
 	}
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
+	reporter.SetUpstreamModel(ojson.GetBytesNoCopy(requestPayload, "model").Str)
+	cooldownModel := cliproxyexecutor.UpstreamAttemptModel(ctx, baseModel)
 
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
 	if errDo != nil {
@@ -168,11 +177,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		case antigravity429DecisionShortCooldownSwitchAuth:
 			closeAntigravityAuthIdleTransports(auth)
 			if decision.retryAfter != nil && *decision.retryAfter > 0 && !antigravityCoolingDisabled(auth, e.cfg) {
-				if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
+				if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, cooldownModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
 					err = homeKVUnavailableStatusErr(errMarkCooldown)
 					return resp, err
 				}
-				log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
+				log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, cooldownModel)
 			}
 		case antigravity429DecisionFullQuotaExhausted:
 			closeAntigravityAuthIdleTransports(auth)
@@ -323,6 +332,10 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	req.Payload = originalPayload
 	// Observe a translation refusal before the token refresh or any upstream call.
 	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
+	groupInfo := helps.AntigravityGroupedModel(auth, baseModel, opts)
+	if groupInfo != nil {
+		modelInfo = groupInfo
+	}
 	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Stream: true, ModelInfo: modelInfo}
 	originalTranslated, translated, errTranslate := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
 	if errTranslate != nil {
@@ -338,7 +351,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	}
 
 	doc := ojson.NewDoc(translated)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
+	if err = helps.ApplyAntigravityRequestThinkingDoc(doc, req, opts, groupInfo); err != nil {
 		return resp, err
 	}
 
@@ -350,7 +363,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := e.antigravityInferenceClient(ctx, auth)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 
 	// Credential retry rounds are owned by the conductor. Perform one upstream
@@ -374,13 +387,15 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	if replayScope.valid() {
 		replayRequestPayload, _ = antigravityReplayRequestEnvelopeFromDoc(doc)
 	}
-	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, requestPayload, errReq := e.buildGenerationRequestDoc(ctx, auth, token, baseModel, doc, true, opts.Alt, baseURL, groupInfo, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return resp, err
 	}
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
+	reporter.SetUpstreamModel(ojson.GetBytesNoCopy(requestPayload, "model").Str)
+	cooldownModel := cliproxyexecutor.UpstreamAttemptModel(ctx, baseModel)
 
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
 	if errDo != nil {
@@ -418,11 +433,11 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			case antigravity429DecisionShortCooldownSwitchAuth:
 				closeAntigravityAuthIdleTransports(auth)
 				if decision.retryAfter != nil && *decision.retryAfter > 0 && !antigravityCoolingDisabled(auth, e.cfg) {
-					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, baseModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
+					if errMarkCooldown := markAntigravityShortCooldownRequired(ctx, auth, cooldownModel, time.Now(), *decision.retryAfter); errMarkCooldown != nil {
 						err = homeKVUnavailableStatusErr(errMarkCooldown)
 						return resp, err
 					}
-					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
+					log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, cooldownModel)
 				}
 			case antigravity429DecisionFullQuotaExhausted:
 				closeAntigravityAuthIdleTransports(auth)

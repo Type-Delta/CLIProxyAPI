@@ -6,6 +6,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -86,6 +87,10 @@ type ModelInfo struct {
 	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
 	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
 
+	// AntigravityThinking describes the wire IDs available for this credential's
+	// grouped model. It is populated by the account catalog, not the static model list.
+	AntigravityThinking *AntigravityThinking `json:"-"`
+
 	// SupportConfigurationUpdate reports internal support for configuration_update.
 	SupportConfigurationUpdate bool `json:"-"`
 
@@ -108,6 +113,13 @@ type ModelInfo struct {
 	// IsCompat enables compatibility handling for this configured API-key model.
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
+}
+
+type AntigravityThinking struct {
+	BaseID       string
+	DefaultLevel string
+	KnownLevels  []string
+	WireModels   map[string]string
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.
@@ -864,6 +876,12 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		return nil
 	}
 	copyModel := *model
+	if model.AntigravityThinking != nil {
+		thinking := *model.AntigravityThinking
+		thinking.WireModels = maps.Clone(thinking.WireModels)
+		thinking.KnownLevels = append([]string(nil), thinking.KnownLevels...)
+		copyModel.AntigravityThinking = &thinking
+	}
 	if model.NativeCapabilities != nil {
 		copyCapabilities := *model.NativeCapabilities
 		if model.NativeCapabilities.WebSearch != nil {
@@ -1473,6 +1491,22 @@ func (r *ModelRegistry) ClientSupportsModel(clientID, modelID string) bool {
 	}
 
 	return false
+}
+
+// ClientModelInfo returns a copy of the model registered for a single client.
+func (r *ModelRegistry) ClientModelInfo(clientID, modelID string) *ModelInfo {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	models := r.clientModelInfos[clientID]
+	if info := models[modelID]; info != nil {
+		return cloneModelInfo(info)
+	}
+	for id, info := range models {
+		if strings.EqualFold(id, modelID) {
+			return cloneModelInfo(info)
+		}
+	}
+	return nil
 }
 
 // IsModelSuspendedForClient reports whether a model is currently suspended for a specific client.

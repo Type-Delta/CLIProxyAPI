@@ -41,13 +41,20 @@ type AntigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
 	// Nil means unknown; an empty non-nil set is an authoritative empty catalog.
 	ModelIDs map[string]struct{}
+	// ThinkingGroups maps advertised base model IDs to their supported efforts.
+	ThinkingGroups map[string][]string
 }
 
 // Clone returns a deep copy of the capability hints.
 func (h AntigravityModelCapabilityHints) Clone() AntigravityModelCapabilityHints {
+	groups := maps.Clone(h.ThinkingGroups)
+	for id, levels := range groups {
+		groups[id] = slices.Clone(levels)
+	}
 	return AntigravityModelCapabilityHints{
 		WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs),
 		ModelIDs:          maps.Clone(h.ModelIDs),
+		ThinkingGroups:    groups,
 	}
 }
 
@@ -208,7 +215,40 @@ func ParseAntigravityModelCapabilityHints(body []byte) (AntigravityModelCapabili
 	return AntigravityModelCapabilityHints{
 		WebSearchModelIDs: webSearchModels,
 		ModelIDs:          modelIDs,
+		ThinkingGroups:    parseAntigravityThinkingGroups(top.Get("groupedModels"), modelIDs),
 	}, true
+}
+
+func parseAntigravityThinkingGroups(raw ojson.Result, modelIDs map[string]struct{}) map[string][]string {
+	if !raw.IsObject() || len(modelIDs) == 0 {
+		return nil
+	}
+	groups := make(map[string][]string)
+	raw.ForEach(func(key, entry ojson.Result) bool {
+		if len(groups) >= antigravityMaxCatalogModels {
+			return false
+		}
+		id := NormalizeAntigravityModelID(key.Str)
+		if id == "" {
+			return true
+		}
+		declared := entry.Get("supportedThinkingLevels")
+		if !declared.IsArray() {
+			return true
+		}
+		declared.ForEach(func(_, item ojson.Result) bool {
+			level := strings.ToLower(strings.TrimSpace(item.Get("thinkingSuffix").Str))
+			switch level {
+			case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+				if !slices.Contains(groups[id], level) {
+					groups[id] = append(groups[id], level)
+				}
+			}
+			return true
+		})
+		return true
+	})
+	return groups
 }
 
 // BuildPersistedAntigravityCapabilityHints serializes capability hints for storage in auth metadata.
@@ -230,6 +270,17 @@ func BuildPersistedAntigravityCapabilityHints(project, endpoint string, hints An
 	}
 	value := map[string]any{
 		"model_ids": modelItems,
+	}
+	if len(hints.ThinkingGroups) != 0 {
+		groups := make(map[string]any, len(hints.ThinkingGroups))
+		for id, levels := range hints.ThinkingGroups {
+			items := make([]any, len(levels))
+			for i, level := range levels {
+				items[i] = level
+			}
+			groups[id] = items
+		}
+		value["thinking_groups"] = groups
 	}
 	if project = strings.TrimSpace(project); project != "" {
 		value["project_id"] = project
@@ -293,9 +344,26 @@ func ParsePersistedAntigravityCapabilityHints(metadata map[string]any, expectedP
 		}
 		webSearchModels = parsedWebSearch
 	}
+	var groups map[string][]string
+	if rawGroups, okGroups := rawMap["thinking_groups"].(map[string]any); okGroups && len(rawGroups) <= antigravityMaxCatalogModels {
+		groups = make(map[string][]string, len(rawGroups))
+		for id, rawLevels := range rawGroups {
+			levels, okLevels := rawLevels.([]any)
+			if !okLevels || len(levels) > 7 || NormalizeAntigravityModelID(id) != id || id == "" {
+				continue
+			}
+			for _, value := range levels {
+				switch value {
+				case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+					groups[id] = append(groups[id], value.(string))
+				}
+			}
+		}
+	}
 	return AntigravityModelCapabilityHints{
 		ModelIDs:          modelIDs,
 		WebSearchModelIDs: webSearchModels,
+		ThinkingGroups:    groups,
 	}, true
 }
 

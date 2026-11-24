@@ -264,6 +264,9 @@ type ProxyConnectionPoolConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
+	// OAuthSafeguard restricts direct Google OAuth inference to native requests.
+	OAuthSafeguard bool `yaml:"oauth-safeguard,omitempty" json:"oauth-safeguard,omitempty"`
+
 	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 

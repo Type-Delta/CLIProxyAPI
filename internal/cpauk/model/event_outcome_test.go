@@ -19,6 +19,7 @@ func TestLegacyEventOutcomes(t *testing.T) {
 		{"incomplete", "upstream stream closed before [DONE]", "failed", "provider_to_cpa", 200, true},
 		{"peer", "stream error: stream ID 11; INTERNAL_ERROR; received from peer", "failed", "provider_to_cpa", 200, true},
 		{"local guard", "Claude OAuth safeguard flagged this request", "failed", "cpa_to_provider", 403, false},
+		{"local Antigravity guard", "Antigravity OAuth safeguard rejected request", "failed", "cpa_to_provider", 403, false},
 		{"canceled", "context canceled", "canceled", "", 499, true},
 		{"url canceled", `Post "https://provider.invalid/v1": context canceled`, "canceled", "", 499, true},
 		{"body closed remains unknown", "http2: response body closed", "failed", "", 200, true},
@@ -42,7 +43,7 @@ func TestLegacyEventOutcomes(t *testing.T) {
 			if tc.outcome == "canceled" && (e.CancellationSource == nil || *e.CancellationSource != "unknown" || e.Completed()) {
 				t.Fatalf("cancellation=%+v", e)
 			}
-			if tc.name == "local guard" && e.UpstreamStatusCode != nil {
+			if (tc.name == "local guard" || tc.name == "local Antigravity guard") && e.UpstreamStatusCode != nil {
 				t.Fatal("invented upstream status")
 			}
 		})

@@ -31,6 +31,13 @@ const transientTransportErrorCode = ErrorCodeTransientTransport
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
+// ErrorCodeAntigravityTargetUnavailable means the selected credential cannot
+// serve this effort variant. Other credentials may still serve the request.
+const ErrorCodeAntigravityTargetUnavailable = "antigravity_target_unavailable"
+
+// ErrorCodeAntigravityReferenceUnavailable marks a local safeguard setup failure.
+const ErrorCodeAntigravityReferenceUnavailable = "antigravity_reference_unavailable"
+
 // ErrorCodeStreamTruncated marks locally synthesized failures for accepted
 // upstream streams that ended without a terminal frame. The public status
 // stays 502, but the credential must not cool and the generation must not be

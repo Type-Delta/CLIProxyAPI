@@ -205,6 +205,7 @@ func TestUsageLimitMiddlewareSkipsRoutesWithoutConsumingQuota(t *testing.T) {
 		{method: http.MethodGet, path: "/v1beta/models", route: "/v1beta/models"},
 		{method: http.MethodGet, path: "/v1beta/models/gemini-test", route: "/v1beta/models/*action"},
 		{method: http.MethodPost, path: "/v1beta/models/gemini-test:countTokens", route: "/v1beta/models/*action"},
+		{method: http.MethodPost, path: "/v1internal:countTokens", route: "/v1internal:operation"},
 		{method: http.MethodPost, path: "/v1/messages/count_tokens", route: "/v1/messages/count_tokens"},
 		{method: http.MethodGet, path: "/v1/videos/request-1", route: "/v1/videos/:request_id"},
 		{method: http.MethodGet, path: "/openai/v1/videos/video-1", route: "/openai/v1/videos/:video_id"},
@@ -238,6 +239,29 @@ func TestUsageLimitMiddlewareSkipsRoutesWithoutConsumingQuota(t *testing.T) {
 				t.Fatalf("request usage after skipped route = %#v, want zero", snapshot)
 			}
 		})
+	}
+}
+
+func TestAntigravityUsageLimitCoversGeneration(t *testing.T) {
+	tracker := newUsageLimitTestTracker()
+	engine := gin.New()
+	engine.POST("/v1internal:operation", func(c *gin.Context) {
+		c.Set("userApiKey", usageLimitTestKey)
+	}, UsageLimitMiddleware(tracker, ProtocolGemini), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/v1internal:generateContent", http.StatusNoContent},
+		{"/v1internal:generateContent", http.StatusTooManyRequests},
+		{"/v1internal:streamGenerateContent", http.StatusTooManyRequests},
+		{"/v1internal:countTokens", http.StatusNoContent},
+	} {
+		if got := serveUsageLimitTestRequest(engine, http.MethodPost, tc.path).Code; got != tc.want {
+			t.Errorf("%s: status = %d, want %d", tc.path, got, tc.want)
+		}
 	}
 }
 

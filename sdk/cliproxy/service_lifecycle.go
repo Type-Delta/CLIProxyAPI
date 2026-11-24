@@ -247,6 +247,11 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	go s.runKiroModelRefresh(ctx)
 	s.startClaudeReferenceUpdater(ctx)
+	referenceDone := s.startAntigravityReferenceUpdater(ctx)
+	defer func() {
+		runCancel()
+		<-referenceDone
+	}()
 
 	select {
 	case <-ctx.Done():

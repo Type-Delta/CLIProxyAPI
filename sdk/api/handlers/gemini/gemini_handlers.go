@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
@@ -165,11 +166,45 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 
 	switch method {
 	case "generateContent":
-		h.handleGenerateContent(c, action[0], rawJSON)
+		h.handleGenerateContent(c, h.HandlerType(), action[0], rawJSON)
 	case "streamGenerateContent":
-		h.handleStreamGenerateContent(c, action[0], rawJSON)
+		h.handleStreamGenerateContent(c, h.HandlerType(), action[0], rawJSON)
 	case "countTokens":
-		h.handleCountTokens(c, action[0], rawJSON)
+		h.handleCountTokens(c, h.HandlerType(), action[0], rawJSON)
+	}
+}
+
+// AntigravityHandler accepts Cloud Code inference envelopes using CPA client authentication.
+func (h *GeminiAPIHandler) AntigravityHandler(c *gin.Context) {
+	if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusNotImplemented, Error: fmt.Errorf("native Antigravity inference requires local credential routing")})
+		return
+	}
+	operation := c.Param("operation")
+	switch operation {
+	case ":generateContent", ":streamGenerateContent", ":countTokens":
+	default:
+		c.Status(http.StatusNotFound)
+		return
+	}
+	raw, errRead := c.GetRawData()
+	if errRead != nil {
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: clienterror.HTTPStatusFromErrorOr(errRead, http.StatusBadRequest), Error: errRead})
+		return
+	}
+	model := ojson.GetBytesNoCopy(raw, "model")
+	modelName := strings.TrimSpace(model.Str)
+	if !ojson.ValidBytes(raw) || model.Type != ojson.String || modelName == "" {
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("Antigravity request requires a model")})
+		return
+	}
+	switch operation {
+	case ":generateContent":
+		h.handleGenerateContent(c, Antigravity, modelName, raw)
+	case ":streamGenerateContent":
+		h.handleStreamGenerateContent(c, Antigravity, modelName, raw)
+	case ":countTokens":
+		h.handleCountTokens(c, Antigravity, modelName, raw)
 	}
 }
 
@@ -182,7 +217,7 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 //   - c: The Gin context for the request
 //   - modelName: The name of the Gemini model to use for content generation
 //   - rawJSON: The raw JSON request body containing generation parameters
-func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName string, rawJSON []byte) {
+func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, protocol, modelName string, rawJSON []byte) {
 	alt := h.GetAlt(c)
 
 	// Get the http.Flusher interface to manually flush the response.
@@ -230,7 +265,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 	defer stopKeepAlive()
 
 	dataChan, resolvedHeaders, errChan, okBootstrap := h.ExecuteStreamWithPreFTKeepAlive(
-		c, cliCtx, func(err error) { cliCancel(err) }, h.HandlerType(), modelName, rawJSON, alt, keepAliveC, writeKeepAlive,
+		c, cliCtx, func(err error) { cliCancel(err) }, protocol, modelName, rawJSON, alt, keepAliveC, writeKeepAlive,
 	)
 	if !okBootstrap {
 		return
@@ -333,11 +368,11 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 //   - c: The Gin context for the request
 //   - modelName: The name of the Gemini model to use for token counting
 //   - rawJSON: The raw JSON request body containing the content to count
-func (h *GeminiAPIHandler) handleCountTokens(c *gin.Context, modelName string, rawJSON []byte) {
+func (h *GeminiAPIHandler) handleCountTokens(c *gin.Context, protocol, modelName string, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	resp, upstreamHeaders, errMsg := h.ExecuteCountWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	resp, upstreamHeaders, errMsg := h.ExecuteCountWithAuthManager(cliCtx, protocol, modelName, rawJSON, alt)
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
@@ -357,12 +392,12 @@ func (h *GeminiAPIHandler) handleCountTokens(c *gin.Context, modelName string, r
 //   - c: The Gin context for the request
 //   - modelName: The name of the Gemini model to use for content generation
 //   - rawJSON: The raw JSON request body containing generation parameters and content
-func (h *GeminiAPIHandler) handleGenerateContent(c *gin.Context, modelName string, rawJSON []byte) {
+func (h *GeminiAPIHandler) handleGenerateContent(c *gin.Context, protocol, modelName string, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, protocol, modelName, rawJSON, alt)
 	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)

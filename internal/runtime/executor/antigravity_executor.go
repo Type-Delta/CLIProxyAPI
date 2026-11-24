@@ -17,6 +17,7 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/antigravitycapture"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -51,10 +52,11 @@ const (
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg           *config.Config
-	matcherMu     sync.RWMutex
-	lastWordsKey  string
-	cachedMatcher *helps.SensitiveWordMatcher
+	cfg             *config.Config
+	referenceLoader func() (*antigravitycapture.Profile, error)
+	matcherMu       sync.RWMutex
+	lastWordsKey    string
+	cachedMatcher   *helps.SensitiveWordMatcher
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -1023,6 +1025,9 @@ func (e *AntigravityExecutor) PrepareRequest(req *http.Request, auth *cliproxyau
 	if req == nil {
 		return nil
 	}
+	if e.antigravityOAuthSafeguardEnabled(auth) {
+		return rejectAntigravityOAuth("raw HTTP requests cannot use guarded Antigravity credentials")
+	}
 	token, _, errToken := e.ensureAccessToken(req.Context(), auth)
 	if errToken != nil {
 		return errToken
@@ -1040,6 +1045,9 @@ func (e *AntigravityExecutor) PrepareRequest(req *http.Request, auth *cliproxyau
 func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, fmt.Errorf("antigravity executor: request is nil")
+	}
+	if e.antigravityOAuthSafeguardEnabled(auth) {
+		return nil, rejectAntigravityOAuth("raw HTTP requests cannot use guarded Antigravity credentials")
 	}
 	if ctx == nil {
 		ctx = req.Context()
