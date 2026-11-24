@@ -338,6 +338,8 @@ routing:
     # Additional rounds apply to HTTP 403, 408, 429, 500, 502, 503, and 504 failures.
     # Individual credential/provider overrides take precedence; 0 disables additional
     # rounds, while an omitted or negative override inherits this global setting.
+    # Replayable Codex streams recover from overload and early disconnects in separate
+    # sweeps until the client disconnects, even when this ordinary round budget is zero.
     request-retry: 3
 
     # Maximum number of different credentials to try in each credential retry round
@@ -349,6 +351,7 @@ routing:
     # Maximum cooldown wait in seconds between retry rounds.
     # Set to 0 or below to never wait for credential cooldown.
     # Retry rounds that need no wait remain controlled by request-retry.
+    # Codex stream outage recovery can wait past this limit to honor upstream Retry-After.
     max-retry-interval: 30
 
   cooldown:
@@ -568,15 +571,10 @@ upstream:
     # Why: the upstream smuggles `server_is_overloaded` rejections *inside* an HTTP 200 stream,
     # right after those handshake events, instead of returning 503 on the wire. Buffering them
     # keeps the downstream response headers uncommitted long enough to transparently retry on
-    # another credential. Only overload/rate-limit rejections trigger failover; every other terminal
-    # failure is still delivered in-stream exactly as before. One pre-existing behaviour is worth
-    # knowing, because this option makes the window it lives in much longer: if the stream ends while
-    # the bootstrap is still holding, the attempt ends instead of the error reaching the client, and
-    # whether another credential is then tried depends on how it ended. A clean end with no terminal
-    # event is request-scoped on SSE, so nothing else is tried; a websocket close, or a transport error
-    # such as a dropped connection on either transport, is not, so the request may be retried on
-    # another credential. None of that is new, but before this option the hold ended at the first
-    # keepalive, so it was rare; now it can span the whole reasoning phase.
+    # another credential. Replayable Codex streams routed through CPA use buffering automatically
+    # for SSE outage recovery, including a clean EOF during bootstrap. Native downstream WebSockets
+    # normally forward their handshake immediately so clients can steer or interrupt. Set this
+    # option to also buffer non-duplex WebSocket handshakes and direct executor calls.
     # Trade-off: response headers are delayed until generation starts. Because heartbeats are held
     # too, the delay now ends at the first generated token rather than at the first heartbeat. The
     # budget bounds how much is held, not how long: 48 SSE lines, which measures out as 15 heartbeats

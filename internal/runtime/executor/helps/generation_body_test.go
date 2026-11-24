@@ -82,6 +82,31 @@ func TestGenerationBodyCancelUnblocksSourceAndConsumer(t *testing.T) {
 	}
 }
 
+func TestGenerationBodyStopsReadAheadAtTerminalFrame(t *testing.T) {
+	const frame = "data: {\"type\":\"response.completed\"}\n\n"
+	source, writer := io.Pipe()
+	defer func() { _ = writer.Close() }()
+	reporter := NewUsageReporter(t.Context(), "codex", "test", nil)
+	body := reporter.TrackGenerationBody(t.Context(), source, "responses", func(payload []byte) bool {
+		return CodexResponseEventType(payload) == "response.completed"
+	})
+	defer func() { _ = body.Close() }()
+	go func() { _, _ = io.WriteString(writer, frame) }()
+	result := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(body)
+		result <- string(data)
+	}()
+	select {
+	case data := <-result:
+		if data != frame {
+			t.Fatalf("read %q, want terminal frame", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader waited for transport EOF after the terminal frame")
+	}
+}
+
 func TestResponsesTerminalOutputEstablishesFirstWithoutExtendingGeneration(t *testing.T) {
 	r := NewUsageReporter(context.Background(), "codex", "test", nil)
 	r.StartUpstreamTiming()

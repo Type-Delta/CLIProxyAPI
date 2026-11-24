@@ -1091,12 +1091,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			var dataChan <-chan []byte
 			forwardingStream.Store(true)
 			var errChan <-chan *interfaces.ErrorMessage
-			if h != nil && h.HasSchedulerContinuity() {
-				cliCtx = cliproxyexecutor.WithContinuityWaitObserver(cliCtx, responsesWebsocketContinuityObserver{setActive: setContinuityWaitActive})
-				dataChan, _, errChan = h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
-			} else {
-				dataChan, _, errChan = h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
-			}
+			cliCtx = cliproxyexecutor.WithContinuityWaitObserver(cliCtx, responsesWebsocketContinuityObserver{setActive: setContinuityWaitActive})
+			dataChan, _, errChan = h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 			if !selectedAuthObserved {
 				// Plugin/alternate routes bypass auth selection. Keep canonical HTTP-mode
 				// state instead of inheriting the previous pinned websocket mode.

@@ -194,6 +194,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 	}
 	var exhausted *homeRetryRoundExhaustedError
 	if errors.As(fallback, &exhausted) && exhausted != nil {
+		provider := upstreamAttemptProviderFromError(upstream)
 		upstream = unwrapUpstreamExecutionAttempt(upstream)
 		var previousRound *homeRetryRoundExhaustedError
 		if errors.As(upstream, &previousRound) && previousRound != nil && previousRound.cause != nil {
@@ -202,7 +203,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 		// Keep the current Home round marker because it owns authoritative retry timing.
 		preferred := *exhausted
 		preferred.cause = upstream
-		return markUpstreamExecutionAttempt(&preferred)
+		return markUpstreamExecutionAttemptWithProvider(&preferred, provider)
 	}
 	return markUpstreamExecutionAttempt(upstream)
 }
@@ -523,6 +524,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
+	if (providersIncludeCodex(normalized) || m.HomeEnabled()) && canRetryCodexStream(ctx, req) {
+		ctx = cliproxyexecutor.WithCodexStreamRetry(ctx)
+	}
 	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
 		return nil, errThread
@@ -556,8 +560,14 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 	retryRoundPending := false
 	retryRoundWaited := false
+	retryingCodexStream := false
+	defer func() {
+		if retryingCodexStream {
+			cliproxyexecutor.NotifyContinuityWaitEnd(ctx)
+		}
+	}()
 	for {
-		if m.continuityDeadlineExceeded(continuitySession) {
+		if !retryingCodexStream && m.continuityDeadlineExceeded(continuitySession) {
 			continuitySession.budgetExhausted = true
 			continuitySession.terminated = true
 			break
@@ -628,6 +638,22 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		continuitySession.priorAttemptSeen = true
 		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errStream)
 		lastErr = errStream
+		if delay, retry := m.codexStreamRetryDelay(ctx, opts, normalized, retryModel, errStream, roundAttempted, retryingCodexStream); retry {
+			if !retryingCodexStream {
+				retryingCodexStream = true
+				cliproxyexecutor.NotifyContinuityWaitStart(ctx)
+			}
+			if errWait := waitForCooldown(ctx, delay, 0); errWait != nil {
+				return nil, errWait
+			}
+			// Recovery sweeps are independent of the ordinary per-credential retry budget.
+			attempt = 0
+			continue
+		}
+		if retryingCodexStream {
+			retryingCodexStream = false
+			cliproxyexecutor.NotifyContinuityWaitEnd(ctx)
+		}
 		if upstreamAttempted && m.isCodexAttemptFailure(errStream, roundAttempted) {
 			eligibility := authSelectionEligibilityForRequest(ctx, opts)
 			pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)

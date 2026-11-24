@@ -778,7 +778,12 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			sess.clearActive(conn, readCh)
 			unlock()
 		}()
+		delivered := false
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if !delivered && len(chunk.Payload) != 0 {
+				delivered = true
+				sess.setReplayableBootstrap(conn, false)
+			}
 			select {
 			case out <- chunk:
 				return true
@@ -802,6 +807,13 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				default:
 				}
 				if ctx.Err() == nil {
+					var disconnect codexWebsocketBootstrapDisconnect
+					if !delivered && !preserveClassification && errors.As(errRead, &disconnect) {
+						reporter.PublishFailure(ctx, disconnect)
+						send(cliproxyexecutor.StreamChunk{Err: disconnect})
+						return
+					}
+					errRead = sess.readErrorAfterBootstrap(ctx, errRead)
 					var connectionErr error = &codexDuplexConnectionError{cause: errRead}
 					if preserveClassification {
 						// HTTP business failures must retain credential/cooldown policy.

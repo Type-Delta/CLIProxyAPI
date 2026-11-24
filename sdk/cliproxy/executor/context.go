@@ -169,6 +169,18 @@ func WithContinuityWaitObserver(ctx context.Context, observer ContinuityWaitObse
 	return context.WithValue(ctx, continuityWaitObserverContextKey{}, observer)
 }
 
+type codexStreamRetryContextKey struct{}
+
+// WithCodexStreamRetry enables pre-output buffering for a replayable Codex turn.
+func WithCodexStreamRetry(ctx context.Context) context.Context {
+	return context.WithValue(ctx, codexStreamRetryContextKey{}, true)
+}
+
+// CodexStreamRetryEnabled reports whether the conductor can retry the turn before output.
+func CodexStreamRetryEnabled(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(codexStreamRetryContextKey{}) == true
+}
+
 // NotifyContinuityWaitStart notifies any attached observer that a real continuity wait has started.
 func NotifyContinuityWaitStart(ctx context.Context) {
 	if ctx == nil {

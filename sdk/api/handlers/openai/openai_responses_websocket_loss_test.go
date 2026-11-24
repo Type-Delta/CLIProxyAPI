@@ -512,9 +512,7 @@ func TestResponsesWebsocketQueuedInputBeforeIdleEOFIsNotSent(t *testing.T) {
 	}
 }
 
-// A 502 request-scoped-errors continue rule must not replay a response.create when the upstream
-// websocket disconnects before response.created.
-func TestResponsesWebsocketLossBeforeResponseCreatedIgnoresContinueRule(t *testing.T) {
+func TestResponsesWebsocketLossBeforeResponseCreatedRetriesFullTurn(t *testing.T) {
 	f := newLossFixture(t, false, func(index int, c *websocket.Conn, read func() []byte) {
 		read()
 		if index == 1 {
@@ -525,16 +523,9 @@ func TestResponsesWebsocketLossBeforeResponseCreatedIgnoresContinueRule(t *testi
 	})
 
 	f.create(`,"event_id":"c1"`)
-	lost := f.nextError()
-	if ojson.GetBytesNoCopy(lost, "error.code").String() != "upstream_websocket_lost" || ojson.GetBytesNoCopy(lost, "error.event_id").String() != "c1" {
-		t.Fatalf("loss error = %s, want upstream_websocket_lost for c1", lost)
+	if first := f.next(); ojson.GetBytesNoCopy(first, "type").String() != "response.completed" {
+		t.Fatalf("received %s, want completion from the retried turn", first)
 	}
-	if f.connections.Load() != 1 || f.creates.Load() != 1 {
-		t.Fatalf("after first loss: connections=%d creates=%d, want 1 and 1", f.connections.Load(), f.creates.Load())
-	}
-
-	f.create(`,"event_id":"c2"`)
-	f.awaitCompleted()
 	if f.connections.Load() != 2 || f.creates.Load() != 2 {
 		t.Fatalf("after recovery: connections=%d creates=%d, want 2 and 2", f.connections.Load(), f.creates.Load())
 	}

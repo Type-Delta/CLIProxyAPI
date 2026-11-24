@@ -3350,6 +3350,35 @@ boundary, and rollback after a failed candidate.
 
 **Last updated:** 2026-11-24
 
+### DL081 — Codex stream outage recovery
+
+CPA keeps a replayable Codex turn open across overload, transient capacity rejections, and
+upstream disconnects before any response event has been forwarded. Recovery uses the normal
+credential selector and starts new sweeps outside the ordinary retry round and maximum wait
+settings. Sweeps are cancellable, use a jittered delay of at least one second, and honor
+eligible credential cooldowns and upstream retry hints. A direct HTTP or WebSocket 429 with
+`server_is_overloaded` records a transient model cooldown. Without a hint or override, the
+default overload cooldown is 15 seconds.
+
+HTTP streams send SSE comments while recovering, and downstream WebSockets send pings.
+Managed SSE turns buffer the upstream handshake up to the existing bootstrap limits. Native
+WebSockets can recover until their first response event is forwarded, including
+`response.created`. WebSocket continuations tied to an existing upstream connection retain
+their session-specific loss handling. Genuine quota failures still use ordinary quota policy.
+
+**Implementation evidence:** `sdk/cliproxy/auth/conductor_codex_stream_retry.go`, the Codex
+HTTP and WebSocket executors, and `test/codex_outage_retry_test.go`.
+
+**Recorded validation:** A Dockerized server completed a single Responses SSE request after
+two upstream failures with the ordinary retry budget set to zero. Integration tests cover
+the same client connection surviving repeated overload and EOF, and SSE keep-alives
+while the upstream retry hint exceeds the ordinary wait limit. The Codex SSE reader stops
+reading ahead at the terminal event so closing the response body can finish without waiting
+for another transport read. WebSocket tests cover a reset immediately after upgrade and
+preserve close-code handling when the upstream close arrives behind queued output.
+
+**Last updated:** 2026-11-24
+
 ## Sync Checklist
 
 Project-specific checks every upstream sync runs, in addition to the full test suite, lint, typecheck, builds, and a smoke test of upstream and fork features.

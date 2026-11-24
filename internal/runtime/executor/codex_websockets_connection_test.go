@@ -15,8 +15,41 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
+
+func TestCodexDeferredWebsocketCloseAfterBootstrap(t *testing.T) {
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(t.Context())
+	for _, tc := range []struct {
+		name     string
+		code     int
+		turnLoss bool
+	}{
+		{name: "normal", code: websocket.CloseNormalClosure},
+		{name: "going away", code: websocket.CloseGoingAway},
+		{name: "abnormal", code: websocket.CloseAbnormalClosure, turnLoss: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newEphemeralCodexWebsocketSession()
+			cause := &websocket.CloseError{Code: tc.code}
+			got := sess.readErrorAfterBootstrap(ctx, codexWebsocketBootstrapDisconnect{cause})
+			if cliproxyexecutor.IsUpstreamWebsocketTurnError(got) != tc.turnLoss {
+				t.Fatalf("close classification = %v, want turn loss %t", got, tc.turnLoss)
+			}
+			select {
+			case notification := <-sess.upstreamDisconnectCh:
+				if tc.turnLoss || notification != cause {
+					t.Fatalf("unexpected disconnect notification: %v", notification)
+				}
+			default:
+				if !tc.turnLoss {
+					t.Fatal("missing ordinary disconnect notification")
+				}
+			}
+		})
+	}
+}
 
 // compressionFrameRecorder observes the first WebSocket frame after HTTP hijacking.
 type compressionFrameRecorder struct {

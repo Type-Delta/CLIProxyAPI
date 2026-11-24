@@ -164,7 +164,7 @@ func TestGenerationBodyInvalidReasonsPreservePayload(t *testing.T) {
 			r := NewUsageReporter(context.Background(), "test", "test", nil)
 			r.StartUpstreamTiming()
 			payload := []byte(tc.payload)
-			observer := r.generationSSEObserver(tc.protocol)
+			observer := r.generationSSEObserver(tc.protocol, nil)
 			observer(payload, r.dispatchAt.Add(time.Second), io.EOF)
 			if string(payload) != tc.payload {
 				t.Fatal("observer changed source bytes")

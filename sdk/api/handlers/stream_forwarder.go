@@ -142,8 +142,8 @@ func (h *BaseAPIHandler) StartContinuityWaitKeepAliveForPeek(c *gin.Context, exi
 // ExecuteStreamWithPreFTKeepAlive executes a streaming request via ExecuteStreamWithAuthManager.
 // When keepAliveC is non-nil (streaming.send-keepalive-before-ft is enabled and keepalive-seconds > 0),
 // it runs the synchronous bootstrap in a goroutine and invokes writeKeepAlive on each tick while waiting.
-// When keepAliveC is nil for an SSE request (alt == "") and an active continuity scheduler is attached,
-// it emits wait-only keep-alives strictly while a continuity wait is active.
+// When keepAliveC is nil for an SSE request (alt == ""), it emits wait-only
+// keep-alives while the manager signals that it is waiting to retry.
 // It returns (dataChan, upstreamHeaders, errChan, ok), where ok is false if the request context was canceled
 // or writeKeepAlive returned false.
 func (h *BaseAPIHandler) ExecuteStreamWithPreFTKeepAlive(
@@ -156,7 +156,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithPreFTKeepAlive(
 	keepAliveC <-chan time.Time,
 	writeKeepAlive func() bool,
 ) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage, bool) {
-	waitOnlyKeepAlive := keepAliveC == nil && alt == "" && writeKeepAlive != nil && h != nil && h.HasSchedulerContinuity()
+	waitOnlyKeepAlive := keepAliveC == nil && alt == "" && writeKeepAlive != nil && h != nil && h.AuthManager != nil
 	if keepAliveC == nil && !waitOnlyKeepAlive {
 		dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, handlerType, modelName, rawJSON, alt)
 		return dataChan, upstreamHeaders, errChan, true

@@ -140,7 +140,7 @@ func TestCodexStreamDisconnectAfterHeadersFailsOver(t *testing.T) {
 }
 
 // TestCodexStreamDisconnectExhaustionNotInvalidRequestError verifies that when
-// retries are exhausted for a stream that disconnects before any SSE bytes,
+// a continuation uses up its retry budget before any SSE bytes,
 // the surfaced JSON error is classified as an upstream/server error (not invalid_request_error).
 func TestCodexStreamDisconnectExhaustionNotInvalidRequestError(t *testing.T) {
 	const model = "gpt-6-astra"
@@ -175,7 +175,7 @@ func TestCodexStreamDisconnectExhaustionNotInvalidRequestError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses",
-		strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","stream":true}`, model)))
+		strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"hello","stream":true,"previous_response_id":"resp_previous"}`, model)))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	base := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager)

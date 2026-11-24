@@ -205,11 +205,11 @@ func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time 
 // transient capacity 429. An explicit zero retry hint means the upstream
 // accepts an immediate retry and suppresses the default transient cooldown;
 // only a missing hint falls back to that default.
-func transientRateLimitRetryAfter(now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
+func transientRateLimitRetryAfter(now time.Time, retryAfter *time.Duration, disableCooling bool, resultErr *Error) time.Time {
 	if retryAfter != nil && *retryAfter == 0 {
 		return time.Time{}
 	}
-	return recoverableFailureRetryAfterWithHint(now, retryAfter, disableCooling)
+	return recoverableFailureRetryAfterWithResult(now, retryAfter, disableCooling, resultErr)
 }
 
 func recoverableFailureRetryAfterWithHint(now time.Time, retryAfter *time.Duration, disableCooling bool) time.Time {
@@ -244,14 +244,22 @@ func isServerOverloadedResultError(resultErr *Error) bool {
 		return true
 	}
 	var payload struct {
+		Code  string `json:"code"`
 		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
+		Body struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"body"`
 	}
 	if json.Unmarshal([]byte(resultErr.Message), &payload) != nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(payload.Error.Code), "server_is_overloaded")
+	return strings.EqualFold(strings.TrimSpace(payload.Error.Code), "server_is_overloaded") ||
+		strings.EqualFold(strings.TrimSpace(payload.Code), "server_is_overloaded") ||
+		strings.EqualFold(strings.TrimSpace(payload.Body.Error.Code), "server_is_overloaded")
 }
 
 // SetConfig updates the runtime config snapshot used by request-time helpers.
@@ -2569,7 +2577,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						// is written and the quota exponential backoff never moves;
 						// a still-live genuine quota deadline is left untouched and
 						// keeps blocking through the generic retry branches below.
-						next := transientRateLimitRetryAfter(now, result.RetryAfter, disableCooling)
+						next := transientRateLimitRetryAfter(now, result.RetryAfter, disableCooling, result.Error)
 						ownModelNonQuotaDeadline = next
 						if isForceResult {
 							ownModelForceDeadline = next
@@ -5262,7 +5270,7 @@ func applyAuthFailureFields(auth *Auth, resultErr *Error, retryAfter *time.Durat
 	if isTransientRateLimitResultError(resultErr) && statusCode == http.StatusTooManyRequests {
 		// Without a model key the transient capacity rejection degrades to an
 		// auth-level transient cooldown (issue 7017), never quota exhaustion.
-		next := transientRateLimitRetryAfter(now, retryAfter, disableCooling)
+		next := transientRateLimitRetryAfter(now, retryAfter, disableCooling, resultErr)
 		ownAuthNonQuotaDeadline = next
 		if isForceAuth {
 			ownAuthForceDeadline = next

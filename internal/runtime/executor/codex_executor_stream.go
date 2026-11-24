@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -146,10 +147,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
-	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+	retryBeforeOutput := cliproxyexecutor.CodexStreamRetryEnabled(ctx)
+	buffering := retryBeforeOutput || e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
 	var bootstrapTimeout time.Duration
 	var bootstrapStart time.Time
-	if buffering {
+	if buffering && e.cfg != nil {
 		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
 	}
 	// Start the bootstrap clock at response headers, before decoding may read body bytes.
@@ -180,7 +182,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 
-	httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses")
+	httpResp.Body = reporter.TrackGenerationBody(ctx, httpResp.Body, "responses", func(payload []byte) bool {
+		return isCodexTerminalEventType(helps.CodexResponseEventType(payload))
+	})
 	bufferedFrames := 0
 	bufferedBytes := 0
 	budgetExhausted := false
@@ -276,7 +280,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 							// transparently retry on another credential, and report the status the
 							// upstream refused to put on the wire.
 							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
-							if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
+							if streamErr.StatusCode() == http.StatusTooManyRequests && (retryBeforeOutput || streamErr.RetryAfter() != nil) {
 								return nil, streamErr
 							}
 							return nil, newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
@@ -395,7 +399,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				close(closedCh)
 				return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: closedCh}, nil
 			}
-			streamErr := newCodexIncompleteStreamError()
+			var streamErr error = newCodexIncompleteStreamError()
+			if retryBeforeOutput {
+				streamErr = fmt.Errorf("%s: %w", codexIncompleteStreamMessage, io.ErrUnexpectedEOF)
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			streamUsage.PublishFailure(ctx, reporter, streamErr)
 			return nil, streamErr

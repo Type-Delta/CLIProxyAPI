@@ -156,6 +156,37 @@ func codexWebsocketTurnTransportError(err error) error {
 	return &cliproxyexecutor.UpstreamWebsocketTurnError{Cause: err}
 }
 
+func isCodexWebsocketBootstrapDisconnect(err error) bool {
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) && (closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway) {
+		return true
+	}
+	return cliproxyexecutor.IsUpstreamWebsocketTurnError(codexWebsocketTurnTransportError(err))
+}
+
+// codexWebsocketBootstrapDisconnect lets the consumer decide whether frames queued
+// ahead of this disconnect committed the downstream turn.
+type codexWebsocketBootstrapDisconnect struct{ error }
+
+func (e codexWebsocketBootstrapDisconnect) Unwrap() error { return e.error }
+
+func (s *codexWebsocketSession) readErrorAfterBootstrap(ctx context.Context, err error) error {
+	var disconnect codexWebsocketBootstrapDisconnect
+	if !errors.As(err, &disconnect) {
+		return err
+	}
+	err = disconnect.error
+	if cliproxyexecutor.DownstreamWebsocket(ctx) {
+		err = codexWebsocketTurnTransportError(err)
+	}
+	if cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+		cliproxyexecutor.NotifyWebsocketInputLoss(ctx)
+	} else if s != nil {
+		s.notifyUpstreamDisconnect(err)
+	}
+	return err
+}
+
 // codexWebsocketTurnEventID lets a lost turn's error carry the create's event_id.
 func codexWebsocketTurnEventID(err error, payload []byte) error {
 	var turnErr *cliproxyexecutor.UpstreamWebsocketTurnError

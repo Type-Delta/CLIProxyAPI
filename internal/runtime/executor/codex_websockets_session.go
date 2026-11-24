@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,6 +61,7 @@ type codexWebsocketSession struct {
 	// recoverTransport (under connMu): the current turn belongs to a downstream websocket,
 	// so a transport loss ends the turn but not the downstream socket.
 	recoverTransport          bool
+	replayableBootstrap       bool            // consumer has not committed downstream output
 	turnContext               context.Context // attempt context of the current downstream turn
 	conn                      *websocket.Conn
 	connCloser                *websocketConnectionCloser
@@ -250,6 +252,19 @@ func (s *codexWebsocketSession) markTerminalError(conn *websocket.Conn, err erro
 	return true
 }
 
+func (s *codexWebsocketSession) bootstrapDisconnectForConn(conn *websocket.Conn) error {
+	if s == nil {
+		return nil
+	}
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	var disconnect codexWebsocketBootstrapDisconnect
+	if s.terminalConn == conn && errors.As(s.terminalErr, &disconnect) {
+		return disconnect
+	}
+	return nil
+}
+
 func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexWebsocketRead, <-chan struct{}) {
 	if s == nil || conn == nil {
 		return nil, nil
@@ -260,6 +275,14 @@ func (s *codexWebsocketSession) activeForConn(conn *websocket.Conn) (chan codexW
 		return nil, nil
 	}
 	return s.activeCh, s.activeDone
+}
+
+func (s *codexWebsocketSession) setReplayableBootstrap(conn *websocket.Conn, replayable bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == conn {
+		s.replayableBootstrap = replayable
+	}
 }
 
 func clearRetryActiveState(sess *codexWebsocketSession, conn *websocket.Conn, ch chan codexWebsocketRead) bool {
@@ -840,6 +863,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
 	sess.proxyURL = dialProxyURL
 	sess.useSIWC = useSIWC
 	sess.readerConn = conn
+	sess.replayableBootstrap = cliproxyexecutor.CodexStreamRetryEnabled(ctx)
 	sess.connMu.Unlock()
 
 	sess.configureConn(conn)
@@ -860,9 +884,27 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		msgType, payload, errRead := conn.ReadMessage()
 		observedAt := time.Now()
 		if errRead != nil {
+			ch, done := sess.activeForConn(conn)
 			sess.connMu.Lock()
 			recoverTransport := sess.recoverTransport
+			replayableBootstrap := sess.conn == conn && sess.replayableBootstrap && sess.turnContext != nil && sess.turnContext.Err() == nil
 			sess.connMu.Unlock()
+			if replayableBootstrap && isCodexWebsocketBootstrapDisconnect(errRead) {
+				// Leave downstream loss handling to the consumer, which sees all
+				// previously queued frames before seeing this disconnect.
+				disconnect := codexWebsocketBootstrapDisconnect{errRead}
+				sess.markTerminalError(conn, disconnect)
+				// Activation after the terminal mark reads the stored error itself.
+				ch, done = sess.activeForConn(conn)
+				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "bootstrap_disconnected", disconnect)
+				if ch != nil {
+					sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: disconnect}, nil)
+					if sess.clearActive(conn, ch) {
+						close(ch)
+					}
+				}
+				return
+			}
 			if recoverTransport {
 				errRead = codexWebsocketTurnTransportError(errRead)
 			}
@@ -877,7 +919,6 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 				invalidate()
 				invalidated = true
 			}
-			ch, done := sess.activeForConn(conn)
 			if ch != nil {
 				invalidated = sendTerminalWebsocketRead(ch, done, codexWebsocketRead{conn: conn, err: errRead}, invalidate)
 				if sess.clearActive(conn, ch) {
@@ -1007,6 +1048,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 	lifecycle := sess.lifecycle
 	turnContext := sess.turnContext
 	sess.turnContext = nil
+	sess.replayableBootstrap = false
 	closer := sess.connCloser
 	sess.lifecycle = nil
 	sess.lifecycleModel = ""
@@ -1034,8 +1076,10 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 		}
 	}
 	if lifecycle != nil {
-		if owner, ok := lifecycle.(interface{ EndWebsocketTurn(context.Context, string) }); ok && cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
-			// The lost turn's attempt must survive to deliver its error to the client.
+		var bootstrapDisconnect codexWebsocketBootstrapDisconnect
+		if owner, ok := lifecycle.(interface{ EndWebsocketTurn(context.Context, string) }); ok &&
+			(cliproxyexecutor.IsUpstreamWebsocketTurnError(err) || errors.As(err, &bootstrapDisconnect)) {
+			// The lost turn's attempt must survive until the stream handles its error.
 			owner.EndWebsocketTurn(turnContext, reason)
 		} else {
 			lifecycle.End(reason)

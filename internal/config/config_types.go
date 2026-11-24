@@ -346,12 +346,9 @@ type CodexConfig struct {
 	// intervals rather than one, and can trip client or reverse-proxy read timeouts. The hold is
 	// bounded by a frame and a byte budget, not by wall-clock time, and neither budget is advanced
 	// by a websocket peer that sends only control frames or by an upstream that never terminates an
-	// SSE line. Only overload and rate-limit rejections fail over deliberately. A stream that ends
-	// while the bootstrap is still holding ends the attempt rather than reaching the client, and
-	// what follows is pre-existing but now far more likely, since the hold can span the whole
-	// reasoning phase instead of ending at the first keepalive: a clean end with no terminal event
-	// is request-scoped on SSE and stops there, while a websocket close or a transport error on
-	// either transport is not, so the request may be retried on another credential.
+	// SSE line. Replayable, cancellable Codex requests routed through the auth manager
+	// use buffering automatically for SSE outage recovery. Set this flag to also
+	// enable buffering on native downstream WebSockets and executor calls.
 	// Default is false.
 	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
 	// StreamBootstrapTimeout specifies an optional maximum duration to hold back uncommitted response

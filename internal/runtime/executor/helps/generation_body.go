@@ -32,16 +32,21 @@ type generationBody struct {
 
 // TrackGenerationBody observes SSE arrivals before downstream processing. Memory
 // is bounded; queue pressure preserves payloads but invalidates timing.
-func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadCloser, protocol string) io.ReadCloser {
+func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadCloser, protocol string, terminal ...func([]byte) bool) io.ReadCloser {
 	if r == nil || body == nil {
 		return body
 	}
 	completed := false
-	observe := r.generationSSEObserver(protocol, func() { completed = true })
+	observe := r.generationSSEObserver(protocol, func(payload []byte) {
+		if protocol == "claude" && ojson.GetBytes(payload, "type").String() == "message_stop" ||
+			len(terminal) > 0 && terminal[0](payload) {
+			completed = true
+		}
+	})
 	return r.TrackGenerationBodyObserver(ctx, body, observe, func() bool { return completed })
 }
 
-func (r *UsageReporter) generationSSEObserver(protocol string, onComplete ...func()) func([]byte, time.Time, error) {
+func (r *UsageReporter) generationSSEObserver(protocol string, onFrame func([]byte)) func([]byte, time.Time, error) {
 	r.SetOutputTimingSource(protocol, "source_reader", "visible_deltas")
 	var line []byte
 	var frameData [][]byte
@@ -53,8 +58,8 @@ func (r *UsageReporter) generationSSEObserver(protocol string, onComplete ...fun
 		}
 		payload := bytes.Join(frameData, []byte("\n"))
 		r.observeGenerationPayloadAt(protocol, payload, at)
-		if protocol == "claude" && ojson.GetBytes(payload, "type").String() == "message_stop" && len(onComplete) > 0 {
-			onComplete[0]()
+		if onFrame != nil {
+			onFrame(payload)
 		}
 		frameData = nil
 		frameBytes = 0
@@ -143,8 +148,8 @@ func (r *UsageReporter) TrackGenerationBodyObserver(ctx context.Context, body io
 			if observe != nil {
 				observe(data, at, err)
 			}
-			// Claude message_stop ends the response. Do not read ahead to transport
-			// EOF and accidentally drain or reuse an unpooled connection.
+			// The consumer can close the body at a terminal frame. Stop read-ahead
+			// there so it cannot race another network read.
 			if err == nil && len(completed) > 0 && completed[0]() {
 				err = io.EOF
 			}
