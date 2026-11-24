@@ -2,10 +2,10 @@ package management
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"gopkg.in/yaml.v3"
@@ -164,6 +164,12 @@ type apiKeyIdentityEntry struct {
 	Duplicate     bool   `json:"duplicate,omitempty"`
 }
 
+// apiKeyLabel is the read-only view of an API-key identity.
+type apiKeyLabel struct {
+	KeyID string `json:"key_id"`
+	Label string `json:"label,omitempty"`
+}
+
 type apiKeyDuplicateWarning struct {
 	Code          string `json:"code"`
 	ConfigIndexes []int  `json:"config_indexes"`
@@ -181,6 +187,17 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 		return
 	}
 	entries := h.cfg.APIKeys
+	if isReadOnlyManagement(c) {
+		// Read-only sessions get only the identities the Usage key catalog already shows.
+		identities, _ := buildAPIKeyIdentityCatalog(entries, config.APIKeyID)
+		labels := make([]apiKeyLabel, 0, len(identities))
+		for _, identity := range identities {
+			labels = append(labels, apiKeyLabel{KeyID: identity.KeyID, Label: identity.Label})
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(200, gin.H{"key-identities": labels})
+		return
+	}
 	revision := apiKeyRevision(entries)
 	duplicateIndexes := config.DuplicateAPIKeyIndexes(entries)
 	warnings := make([]apiKeyDuplicateWarning, 0, len(duplicateIndexes))

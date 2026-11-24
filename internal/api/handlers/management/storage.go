@@ -10,6 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/storageusage"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -54,16 +56,33 @@ func (h *Handler) GetStorageUsage(c *gin.Context) {
 		{Path: pluginDir, Category: "data"},
 		{Path: managementasset.StaticDir(h.configFilePath), Category: "data"},
 	}
-	// A custom database can share a directory with unrelated applications.
-	// Include its sidecars and recovery files without claiming the entire parent.
-	entries, errEntries := os.ReadDir(filepath.Dir(analyticsPath))
-	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() && (strings.HasPrefix(name, filepath.Base(analyticsPath)+"-") ||
-			strings.HasPrefix(name, filepath.Base(analyticsPath)+".") || strings.HasPrefix(name, "identity.key.")) {
-			locations = append(locations, storageusage.Location{Path: filepath.Join(filepath.Dir(analyticsPath), name), Category: "data"})
+
+	// Custom databases can share a directory with unrelated applications.
+	// Include individual sidecars without claiming the entire parent.
+	databasePaths := []string{analyticsPath}
+	partialLocations := false
+	if !h.cfg.KVStore.Disabled && !h.cfg.Home.Enabled && home.Current() == nil {
+		kvPath, errPath := kvstore.ResolvePath(h.cfg.EffectiveKVStorePath())
+		if errPath != nil {
+			partialLocations = true
+		} else {
+			locations = append(locations, storageusage.Location{Path: kvPath, Category: "data"})
+			databasePaths = append(databasePaths, kvPath)
 		}
 	}
+	for _, databasePath := range databasePaths {
+		entries, errEntries := os.ReadDir(filepath.Dir(databasePath))
+		partialLocations = partialLocations || (errEntries != nil && !os.IsNotExist(errEntries))
+		for _, entry := range entries {
+			name := entry.Name()
+			if !entry.IsDir() && (strings.HasPrefix(name, filepath.Base(databasePath)+"-") ||
+				strings.HasPrefix(name, filepath.Base(databasePath)+".") ||
+				(databasePath == analyticsPath && strings.HasPrefix(name, "identity.key."))) {
+				locations = append(locations, storageusage.Location{Path: filepath.Join(filepath.Dir(databasePath), name), Category: "data"})
+			}
+		}
+	}
+
 	if store, ok := h.tokenStore.(interface{ WorkDir() string }); ok {
 		locations = append(locations, storageusage.Location{Path: store.WorkDir(), Category: "data"})
 	} else if store, ok := h.tokenStore.(interface {
@@ -75,7 +94,7 @@ func (h *Handler) GetStorageUsage(c *gin.Context) {
 	}
 	h.mu.Unlock()
 	snapshot := h.storageUsage.Measure(c.Request.Context(), locations)
-	snapshot.Partial = snapshot.Partial || errAuth != nil || errPlugins != nil || (errEntries != nil && !os.IsNotExist(errEntries))
+	snapshot.Partial = snapshot.Partial || errAuth != nil || errPlugins != nil || partialLocations
 	if handle := h.ClickHouse(); handle != nil && handle.Configured() {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 		defer cancel()

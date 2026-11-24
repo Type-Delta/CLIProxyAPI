@@ -1,453 +1,335 @@
 package helps
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-type fakeClaudeDeviceProfileKVClient struct {
-	values        map[string][]byte
-	getErr        error
-	setErr        error
-	setNXErr      error
-	expireErr     error
-	setNXResult   bool
-	getCount      int
-	setCount      int
-	setNXCount    int
-	expireCount   int
-	lastSetTTL    time.Duration
-	lastSetNXTTL  time.Duration
-	lastExpireTTL time.Duration
+func claudeDeviceHeaders(userAgent string) http.Header {
+	return http.Header{"User-Agent": {userAgent}, "X-Stainless-Package-Version": {"0.128.0"}, "X-Stainless-Runtime-Version": {"v26.12.1"}, "X-Stainless-Os": {"Windows"}, "X-Stainless-Arch": {"x64"}}
 }
 
-func newFakeClaudeDeviceProfileKVClient() *fakeClaudeDeviceProfileKVClient {
-	return &fakeClaudeDeviceProfileKVClient{
-		values:      make(map[string][]byte),
-		setNXResult: true,
-	}
-}
-
-func (c *fakeClaudeDeviceProfileKVClient) KVGet(_ context.Context, key string) ([]byte, bool, error) {
-	c.getCount++
-	if c.getErr != nil {
-		return nil, false, c.getErr
-	}
-	value, ok := c.values[key]
-	if !ok {
-		return nil, false, nil
-	}
-	return append([]byte(nil), value...), true, nil
-}
-
-func (c *fakeClaudeDeviceProfileKVClient) KVSet(_ context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error) {
-	c.setCount++
-	c.lastSetTTL = opts.EX
-	if c.setErr != nil {
-		return false, c.setErr
-	}
-	c.values[key] = append([]byte(nil), value...)
-	return true, nil
-}
-
-func (c *fakeClaudeDeviceProfileKVClient) KVSetNX(_ context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
-	c.setNXCount++
-	c.lastSetNXTTL = ttl
-	if c.setNXErr != nil {
-		return false, c.setNXErr
-	}
-	if _, ok := c.values[key]; ok {
-		return false, nil
-	}
-	if c.setNXResult {
-		c.values[key] = append([]byte(nil), value...)
-		return true, nil
-	}
-	return false, nil
-}
-
-func (c *fakeClaudeDeviceProfileKVClient) KVExpire(_ context.Context, _ string, ttl time.Duration) (bool, error) {
-	c.expireCount++
-	c.lastExpireTTL = ttl
-	if c.expireErr != nil {
-		return false, c.expireErr
-	}
-	return true, nil
-}
-
-func useFakeClaudeDeviceProfileKVClient(t *testing.T, client *fakeClaudeDeviceProfileKVClient, homeMode bool, errClient error) {
+func profileStore(t *testing.T, enabled bool) *kvstore.BoltStore {
 	t.Helper()
-	previous := currentClaudeDeviceProfileKVClient
-	currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) {
-		return client, homeMode, errClient
+	store, err := kvstore.OpenBoltStore(filepath.Join(t.TempDir(), "profiles.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	previous := currentClaudeDeviceProfileKVClient
+	currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) { return store, enabled, nil }
+	ResetClaudeDeviceProfileCache()
 	t.Cleanup(func() {
 		currentClaudeDeviceProfileKVClient = previous
+		ResetClaudeDeviceProfileCache()
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
 	})
+	return store
 }
 
-func mustClaudeDeviceProfileJSON(t *testing.T, value claudeDeviceProfileKVValue) []byte {
+func resolveProfile(t *testing.T, h http.Header, cfg *config.Config) ClaudeDeviceProfile {
 	t.Helper()
-	raw, errMarshal := json.Marshal(value)
-	if errMarshal != nil {
-		t.Fatalf("marshal device profile: %v", errMarshal)
+	p, err := ResolveClaudeDeviceProfileRequired(context.Background(), &cliproxyauth.Auth{ID: "credential"}, "key", h, cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return raw
+	return p
 }
 
-func claudeDeviceHeaders(userAgent string) http.Header {
-	return http.Header{
-		"User-Agent":                  {userAgent},
-		"X-Stainless-Package-Version": {defaultClaudeFingerprintPackageVersion},
-		"X-Stainless-Runtime-Version": {defaultClaudeFingerprintRuntimeVersion},
-		"X-Stainless-Os":              {"Windows"},
-		"X-Stainless-Arch":            {"x64"},
-	}
-}
-
-func TestResolveClaudeDeviceProfileLocalUsesBaselineForInvalidSignals(t *testing.T) {
-	ResetClaudeDeviceProfileCache()
-	auth := &cliproxyauth.Auth{ID: "auth-invalid-signals"}
-	headers := claudeDeviceHeaders("claude-cli/999.0.0 (external, cli)")
-	headers.Set("X-Stainless-Package-Version", "999.0.0")
-	headers.Set("X-Stainless-Runtime-Version", "v999.0.0")
-
-	profile := resolveClaudeDeviceProfileLocal(auth, "api-key", headers, nil)
-	baseline := defaultClaudeDeviceProfile(nil)
-	if profile.UserAgent != baseline.UserAgent || profile.PackageVersion != baseline.PackageVersion || profile.RuntimeVersion != baseline.RuntimeVersion {
-		t.Fatalf("invalid profile = %#v, want local baseline %#v", profile, baseline)
-	}
-}
-
-func TestResolveClaudeDeviceProfileLocalKeepsExactMeasuredSoftwareBaseline(t *testing.T) {
-	ResetClaudeDeviceProfileCache()
-	auth := &cliproxyauth.Auth{ID: "auth-newer-patch-signals"}
-	headers := claudeDeviceHeaders("claude-cli/2.1.281 (external, cli)")
-
-	profile := resolveClaudeDeviceProfileLocal(auth, "api-key", headers, nil)
-	baseline := defaultClaudeDeviceProfile(nil)
-	if profile.UserAgent != baseline.UserAgent || profile.PackageVersion != baseline.PackageVersion || profile.RuntimeVersion != baseline.RuntimeVersion {
-		t.Fatalf("unmeasured profile = %#v, want exact local baseline %#v", profile, baseline)
-	}
-}
-
-func TestApplyClaudeLegacyDeviceHeadersReplacesInvalidNativeSoftwareSignals(t *testing.T) {
-	request, errRequest := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
-	if errRequest != nil {
-		t.Fatal(errRequest)
-	}
-	incoming := claudeDeviceHeaders("claude-cli/999.0.0 (external, cli)")
-	incoming.Set("X-Stainless-Package-Version", "999.0.0")
-	incoming.Set("X-Stainless-Runtime-Version", "v999.0.0")
-
-	ApplyClaudeLegacyDeviceHeaders(request, incoming, nil, true)
-
-	baseline := defaultClaudeDeviceProfile(nil)
-	if got := request.Header.Get("User-Agent"); got != baseline.UserAgent {
-		t.Fatalf("User-Agent = %q, want local baseline %q", got, baseline.UserAgent)
-	}
-	if got := request.Header.Get("X-Stainless-Package-Version"); got != baseline.PackageVersion {
-		t.Fatalf("X-Stainless-Package-Version = %q, want %q", got, baseline.PackageVersion)
-	}
-	if got := request.Header.Get("X-Stainless-Runtime-Version"); got != baseline.RuntimeVersion {
-		t.Fatalf("X-Stainless-Runtime-Version = %q, want %q", got, baseline.RuntimeVersion)
-	}
-}
-
-func TestApplyClaudeLegacyDeviceHeadersAcceptsConfiguredMeasuredBaseline(t *testing.T) {
-	request, errRequest := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
-	if errRequest != nil {
-		t.Fatal(errRequest)
-	}
-	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
-		UserAgent:      "claude-cli/2.2.0 (external, cli)",
-		PackageVersion: "0.95.0",
-		RuntimeVersion: "v26.4.0",
-		OS:             "MacOS",
-		Arch:           "arm64",
-	}}
-	incoming := claudeDeviceHeaders("claude-cli/2.2.0 (external, cli)")
-	incoming.Set("X-Stainless-Package-Version", "0.95.0")
-	incoming.Set("X-Stainless-Runtime-Version", "v26.4.0")
-
-	ApplyClaudeLegacyDeviceHeaders(request, incoming, cfg, true)
-
-	if got := request.Header.Get("User-Agent"); got != "claude-cli/2.2.0 (external, cli)" {
-		t.Fatalf("User-Agent = %q, want configured measured baseline", got)
-	}
-	if got := request.Header.Get("X-Stainless-Package-Version"); got != "0.95.0" {
-		t.Fatalf("X-Stainless-Package-Version = %q, want 0.95.0", got)
-	}
-	if got := request.Header.Get("X-Stainless-Runtime-Version"); got != "v26.4.0" {
-		t.Fatalf("X-Stainless-Runtime-Version = %q, want v26.4.0", got)
-	}
-}
-
-func TestApplyClaudeLegacyDeviceHeadersKeepNewerVersionsUsesConfiguredBaseline(t *testing.T) {
-	request, errRequest := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
-	if errRequest != nil {
-		t.Fatal(errRequest)
-	}
-	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
-		UserAgent:      "claude-cli/2.2.0 (external, cli)",
-		PackageVersion: "0.95.0",
-		RuntimeVersion: "v26.4.0",
-		OS:             "MacOS",
-		Arch:           "arm64",
-	}}
-	incoming := claudeDeviceHeaders("claude-cli/2.2.5 (external, cli)")
-	incoming.Set("X-Stainless-Package-Version", "0.128.0")
-	incoming.Set("X-Stainless-Runtime-Version", "v26.5.0")
-
-	ApplyClaudeLegacyDeviceHeaders(request, incoming, cfg, true, true)
-
-	if got := request.Header.Get("User-Agent"); got != "claude-cli/2.2.5 (external, cli)" {
-		t.Fatalf("User-Agent = %q, want claude-cli/2.2.5 (external, cli)", got)
-	}
-	if got := request.Header.Get("X-Stainless-Package-Version"); got != "0.128.0" {
-		t.Fatalf("X-Stainless-Package-Version = %q, want 0.128.0", got)
-	}
-	if got := request.Header.Get("X-Stainless-Runtime-Version"); got != "v26.5.0" {
-		t.Fatalf("X-Stainless-Runtime-Version = %q, want v26.5.0", got)
-	}
-}
-
-func TestResolveClaudeDeviceProfileRequiredHomeReadWithoutCandidate(t *testing.T) {
-	client := newFakeClaudeDeviceProfileKVClient()
-	auth := &cliproxyauth.Auth{ID: "auth-1"}
-	key := claudeDeviceProfileKVKey(auth, "api-key", ClaudeDeviceProfile{})
-	client.values[key] = mustClaudeDeviceProfileJSON(t, claudeDeviceProfileKVValue{
-		UserAgent:      "claude-cli/2.2.0 (external, cli)",
-		PackageVersion: "0.80.0",
-		RuntimeVersion: "v24.4.0",
-		OS:             "Windows",
-		Arch:           "x64",
-	})
-	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
-
-	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", nil, nil)
-	if errProfile != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
-	}
-	if profile.UserAgent != defaultClaudeFingerprintUserAgent {
-		t.Fatalf("UserAgent = %q, want local baseline %q for unmeasured cached profile", profile.UserAgent, defaultClaudeFingerprintUserAgent)
-	}
-	if profile.OS != defaultClaudeFingerprintOS || profile.Arch != defaultClaudeFingerprintArch {
-		t.Fatalf("platform = %s/%s, want baseline pinned %s/%s", profile.OS, profile.Arch, defaultClaudeFingerprintOS, defaultClaudeFingerprintArch)
-	}
-	if client.expireCount != 1 || client.lastExpireTTL != claudeDeviceProfileTTL {
-		t.Fatalf("KVExpire count/ttl = %d/%v, want 1/%v", client.expireCount, client.lastExpireTTL, claudeDeviceProfileTTL)
-	}
-}
-
-func TestResolveClaudeDeviceProfileRequiredHomeCandidateLocksRereadsAndWrites(t *testing.T) {
-	client := newFakeClaudeDeviceProfileKVClient()
-	auth := &cliproxyauth.Auth{ID: "auth-1"}
-	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
-
-	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), nil)
-	if errProfile != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
-	}
-	if profile.UserAgent != defaultClaudeFingerprintUserAgent {
-		t.Fatalf("UserAgent = %q, want candidate %q", profile.UserAgent, defaultClaudeFingerprintUserAgent)
-	}
-	if client.setNXCount != 1 || client.lastSetNXTTL != claudeDeviceProfileLockTTL {
-		t.Fatalf("KVSetNX count/ttl = %d/%v, want 1/%v", client.setNXCount, client.lastSetNXTTL, claudeDeviceProfileLockTTL)
-	}
-	if client.getCount != 1 {
-		t.Fatalf("KVGet count = %d, want re-read after lock", client.getCount)
-	}
-	if client.setCount != 1 || client.lastSetTTL != claudeDeviceProfileTTL {
-		t.Fatalf("KVSet count/ttl = %d/%v, want 1/%v", client.setCount, client.lastSetTTL, claudeDeviceProfileTTL)
-	}
-}
-
-func TestResolveClaudeDeviceProfileRequiredHomeSeparatesVSCodeAgentSDKFromCLI(t *testing.T) {
-	client := newFakeClaudeDeviceProfileKVClient()
-	auth := &cliproxyauth.Auth{ID: "auth-home-subclient-isolation"}
-	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
-
-	cliProfile, errCLI := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), nil)
-	if errCLI != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() CLI error = %v", errCLI)
-	}
-	vscodeUA := "claude-cli/2.1.280 (external, claude-vscode, agent-sdk/0.3.220)"
-	vscodeProfile, errVSCode := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders(vscodeUA), nil)
-	if errVSCode != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() VSCode error = %v", errVSCode)
-	}
-
-	if cliProfile.UserAgent != defaultClaudeFingerprintUserAgent {
-		t.Fatalf("CLI UserAgent = %q, want CLI profile", cliProfile.UserAgent)
-	}
-	if vscodeProfile.UserAgent != vscodeUA {
-		t.Fatalf("VSCode UserAgent = %q, want %q", vscodeProfile.UserAgent, vscodeUA)
-	}
-	if client.setCount != 2 {
-		t.Fatalf("KVSet count = %d, want separate CLI and VSCode profiles", client.setCount)
-	}
-	cliKey := claudeDeviceProfileKVKey(auth, "api-key", cliProfile)
-	vscodeKey := claudeDeviceProfileKVKey(auth, "api-key", vscodeProfile)
-	if cliKey == vscodeKey {
-		t.Fatalf("CLI and VSCode KV keys are equal: %q", cliKey)
-	}
-	if _, ok := client.values[cliKey]; !ok {
-		t.Fatalf("CLI profile missing from KV key %q", cliKey)
-	}
-	if _, ok := client.values[vscodeKey]; !ok {
-		t.Fatalf("VSCode profile missing from KV key %q", vscodeKey)
-	}
-}
-
-func TestResolveClaudeDeviceProfileRequiredHomeNormalizesUnmeasuredCachedProfile(t *testing.T) {
-	client := newFakeClaudeDeviceProfileKVClient()
-	auth := &cliproxyauth.Auth{ID: "auth-1"}
-	key := claudeDeviceProfileKVKey(auth, "api-key", ClaudeDeviceProfile{})
-	client.values[key] = mustClaudeDeviceProfileJSON(t, claudeDeviceProfileKVValue{
-		UserAgent:      "claude-cli/2.4.0 (external, cli)",
-		PackageVersion: "0.90.0",
-		RuntimeVersion: "v24.5.0",
-		OS:             "Windows",
-		Arch:           "x64",
-	})
-	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
-
-	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders("claude-cli/2.3.0 (external, cli)"), nil)
-	if errProfile != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
-	}
-	if profile.UserAgent != defaultClaudeFingerprintUserAgent {
-		t.Fatalf("UserAgent = %q, want local baseline %q", profile.UserAgent, defaultClaudeFingerprintUserAgent)
-	}
-	if client.setCount != 0 {
-		t.Fatalf("KVSet count = %d, want no downgrade write", client.setCount)
-	}
-	if client.expireCount != 1 {
-		t.Fatalf("KVExpire count = %d, want cached refresh", client.expireCount)
-	}
-}
-
-func TestResolveClaudeDeviceProfileRequiredHomeFailures(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		headers http.Header
-		client  *fakeClaudeDeviceProfileKVClient
-	}{
-		{name: "read", client: &fakeClaudeDeviceProfileKVClient{values: make(map[string][]byte), getErr: errors.New("get failed")}},
-		{name: "lock", headers: claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), client: &fakeClaudeDeviceProfileKVClient{values: make(map[string][]byte), setNXResult: true, setNXErr: errors.New("lock failed")}},
-		{name: "lock-miss", headers: claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), client: &fakeClaudeDeviceProfileKVClient{values: make(map[string][]byte), setNXResult: false}},
-		{name: "reread", headers: claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), client: &fakeClaudeDeviceProfileKVClient{values: make(map[string][]byte), setNXResult: true, getErr: errors.New("re-read failed")}},
-		{name: "write", headers: claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), client: &fakeClaudeDeviceProfileKVClient{values: make(map[string][]byte), setNXResult: true, setErr: errors.New("write failed")}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			useFakeClaudeDeviceProfileKVClient(t, tc.client, true, nil)
-			if _, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), &cliproxyauth.Auth{ID: "auth-1"}, "api-key", tc.headers, nil); errProfile == nil {
-				t.Fatalf("ResolveClaudeDeviceProfileRequired() error = nil, want error")
+func TestClaudeDeviceProfileMonotonicObservedTuples(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "memory", true: "persistent"}[persistent], func(t *testing.T) {
+			profileStore(t, persistent)
+			first := claudeDeviceHeaders("claude-cli/2.1.318 (external, sdk-ts, agent-sdk/0.3.220)")
+			want := resolveProfile(t, first, nil)
+			sequence := []struct {
+				ua, pkg, node string
+				upgrade       bool
+			}{
+				{"claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)", "0.128.0", "v26.12.1", true},
+				{first.Get("User-Agent"), "0.128.0", "v26.12.1", false},
+				{"claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.221)", "0.128.1", "v26.12.2", true},
+				// A higher CLI cannot bring an older SDK or Node with it.
+				{"claude-cli/2.1.323 (external, sdk-ts, agent-sdk/0.3.220)", "0.128.1", "v26.12.2", false},
+				{"claude-cli/2.1.323 (external, sdk-ts, agent-sdk/0.3.221)", "0.128.0", "v26.12.2", false},
+				{"claude-cli/2.1.323 (external, sdk-ts, agent-sdk/0.3.221)", "0.128.1", "v26.12.1", false},
+				{"claude-cli/2.1.323 (external, sdk-ts)", "0.128.1", "v26.12.2", false},
+				{"claude-cli/3.0.0 (external, sdk-ts, agent-sdk/0.4.0)", "0.129.0", "v27.0.0", true},
+				{"claude-cli/3.0.1 (external, cli, agent-sdk/0.4.0)", "0.129.0", "v27.0.0", false},
+			}
+			for _, item := range sequence {
+				h := claudeDeviceHeaders(item.ua)
+				h.Set("X-Stainless-Package-Version", item.pkg)
+				h.Set("X-Stainless-Runtime-Version", item.node)
+				got := resolveProfile(t, h, nil)
+				if item.upgrade {
+					want.UserAgent = item.ua
+					want.PackageVersion = item.pkg
+					want.RuntimeVersion = item.node
+					want.version, _ = parseClaudeCLIVersion(item.ua)
+				}
+				if got != want {
+					t.Fatalf("candidate %s: got %+v, want %+v", item.ua, got, want)
+				}
+			}
+			newerConfig := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{UserAgent: "claude-cli/4.0.0 (external, cli)", PackageVersion: "1.0.0", RuntimeVersion: "v30.0.0", OS: "Linux", Arch: "x64"}}
+			if got := resolveProfile(t, nil, newerConfig); got != want {
+				t.Fatalf("config changed stored tuple/device: %+v", got)
 			}
 		})
 	}
 }
 
-func TestResolveClaudeDeviceProfilePreservesConfirmedClientAtBaselineVersion(t *testing.T) {
+func TestClaudeDeviceProfileFallbackAndIncompleteObservation(t *testing.T) {
+	profileStore(t, true)
+	fallback := resolveProfile(t, nil, nil)
+	if !fallback.fallback {
+		t.Fatal("missing fallback marker")
+	}
+	older := claudeDeviceHeaders("claude-cli/2.1.279 (external, sdk-ts)")
+	if got := resolveProfile(t, older, nil); got != fallback {
+		t.Fatalf("fallback downgraded: %+v", got)
+	}
+	first := claudeDeviceHeaders("claude-cli/2.1.322 (external, sdk-ts)")
+	first.Del("X-Stainless-Package-Version")
+	if got := resolveProfile(t, first, nil); got != fallback {
+		t.Fatal("partial tuple learned")
+	}
+	first.Set("X-Stainless-Package-Version", "0.128.0")
+	established := resolveProfile(t, first, nil)
+	if established.UserAgent != first.Get("User-Agent") || established.fallback {
+		t.Fatal("first eligible client did not establish identity")
+	}
 	ResetClaudeDeviceProfileCache()
-	client := newFakeClaudeDeviceProfileKVClient()
-	useFakeClaudeDeviceProfileKVClient(t, client, false, nil)
-	auth := &cliproxyauth.Auth{ID: "auth-baseline-entrypoint"}
-	headers := claudeDeviceHeaders("claude-cli/2.1.280 (external, cli)")
-	headers.Set("X-Stainless-Package-Version", "0.112.1")
-	headers.Set("X-Stainless-Runtime-Version", "v26.3.0")
-
-	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", headers, nil)
-	if errProfile != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
+	if got := resolveProfile(t, nil, nil); got != established {
+		t.Fatal("persistent profile lost on memory reset")
 	}
-	if profile.UserAgent != "claude-cli/2.1.280 (external, cli)" {
-		t.Fatalf("UserAgent = %q, want confirmed cli entrypoint preserved", profile.UserAgent)
-	}
-	if profile.PackageVersion != "0.112.1" || profile.RuntimeVersion != "v26.3.0" {
-		t.Fatalf("software profile = %s/%s, want 0.112.1/v26.3.0", profile.PackageVersion, profile.RuntimeVersion)
+	profileStore(t, false)
+	if got := resolveProfile(t, older, nil); got.UserAgent != older.Get("User-Agent") {
+		t.Fatal("first-ever native caller was forced up to baseline")
 	}
 }
 
-func TestResolveClaudeDeviceProfileSeparatesVSCodeAgentSDKFromCLI(t *testing.T) {
-	ResetClaudeDeviceProfileCache()
-	client := newFakeClaudeDeviceProfileKVClient()
-	useFakeClaudeDeviceProfileKVClient(t, client, false, nil)
-	auth := &cliproxyauth.Auth{ID: "auth-subclient-isolation"}
-
-	cliHeaders := claudeDeviceHeaders("claude-cli/2.1.280 (external, cli)")
-	cliHeaders.Set("X-Stainless-Package-Version", "0.112.1")
-	cliHeaders.Set("X-Stainless-Runtime-Version", "v26.3.0")
-	cliProfile, errCLI := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", cliHeaders, nil)
-	if errCLI != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() CLI error = %v", errCLI)
+func TestClaudeDeviceProfileLegacyMigrationPreservesTupleAndRemovesTTL(t *testing.T) {
+	store := profileStore(t, true)
+	auth := &cliproxyauth.Auth{ID: "credential"}
+	key := claudeDeviceProfileKVKey(auth, "key", ClaudeDeviceProfile{})
+	legacy := claudeDeviceProfileKVValue{UserAgent: "claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)", PackageVersion: "0.128.0", RuntimeVersion: "v26.12.1", OS: "Linux", Arch: "x64"}
+	raw, _ := json.Marshal(legacy)
+	if _, err := store.KVSet(context.Background(), key, raw, kvstore.KVSetOptions{EX: 7 * 24 * time.Hour}); err != nil {
+		t.Fatal(err)
 	}
-
-	vscodeUA := "claude-cli/2.1.280 (external, claude-vscode, agent-sdk/0.3.220)"
-	vscodeHeaders := claudeDeviceHeaders(vscodeUA)
-	vscodeHeaders.Set("X-Stainless-Package-Version", "0.112.1")
-	vscodeHeaders.Set("X-Stainless-Runtime-Version", "v26.3.0")
-	vscodeProfile, errVSCode := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", vscodeHeaders, nil)
-	if errVSCode != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() VSCode error = %v", errVSCode)
+	profile := resolveProfile(t, nil, nil)
+	if profile.UserAgent != legacy.UserAgent || profile.OS != "Linux" {
+		t.Fatalf("migration changed valid profile: %+v", profile)
 	}
-
-	sdkTSUA := "claude-cli/2.1.280 (external, sdk-ts, agent-sdk/0.3.220)"
-	sdkTSHeaders := claudeDeviceHeaders(sdkTSUA)
-	sdkTSHeaders.Set("X-Stainless-Package-Version", "0.112.1")
-	sdkTSHeaders.Set("X-Stainless-Runtime-Version", "v26.3.0")
-	sdkTSProfile, errSDKTS := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", sdkTSHeaders, nil)
-	if errSDKTS != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() sdk-ts error = %v", errSDKTS)
-	}
-
-	if cliProfile.UserAgent != "claude-cli/2.1.280 (external, cli)" {
-		t.Fatalf("CLI UserAgent = %q, want CLI profile", cliProfile.UserAgent)
-	}
-	if vscodeProfile.UserAgent != vscodeUA {
-		t.Fatalf("VSCode UserAgent = %q, want %q", vscodeProfile.UserAgent, vscodeUA)
-	}
-	if sdkTSProfile.UserAgent != sdkTSUA {
-		t.Fatalf("sdk-ts UserAgent = %q, want %q", sdkTSProfile.UserAgent, sdkTSUA)
-	}
-
-	cliProfileAgain, errCLIAgain := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", cliHeaders, nil)
-	if errCLIAgain != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() second CLI error = %v", errCLIAgain)
-	}
-	if cliProfileAgain.UserAgent != cliProfile.UserAgent {
-		t.Fatalf("second CLI UserAgent = %q, want isolated cached %q", cliProfileAgain.UserAgent, cliProfile.UserAgent)
+	ttl, found, err := store.KVTTL(context.Background(), key)
+	if err != nil || !found || ttl != 0 {
+		t.Fatalf("persistent profile TTL = %v, found %v, error %v", ttl, found, err)
 	}
 }
 
-func TestResolveClaudeDeviceProfileRequiredNonHomeKeepsLocalCache(t *testing.T) {
-	ResetClaudeDeviceProfileCache()
-	client := newFakeClaudeDeviceProfileKVClient()
-	useFakeClaudeDeviceProfileKVClient(t, client, false, nil)
-	auth := &cliproxyauth.Auth{ID: "auth-1"}
-	cfg := &config.Config{}
+type profileFaultStore struct {
+	*kvstore.BoltStore
+	getErr, casErr error
+	beforeCAS      func()
+}
 
-	first, errFirst := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), cfg)
-	if errFirst != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() first error = %v", errFirst)
+func (s *profileFaultStore) KVGet(ctx context.Context, key string) ([]byte, bool, error) {
+	if s.getErr != nil {
+		return nil, false, s.getErr
 	}
-	second, errSecond := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", nil, cfg)
-	if errSecond != nil {
-		t.Fatalf("ResolveClaudeDeviceProfileRequired() second error = %v", errSecond)
+	return s.BoltStore.KVGet(ctx, key)
+}
+func (s *profileFaultStore) KVCompareAndSwap(ctx context.Context, key string, expected []byte, exists bool, value []byte, ttl time.Duration) (bool, error) {
+	if s.casErr != nil {
+		return false, s.casErr
 	}
-	if second.UserAgent != first.UserAgent {
-		t.Fatalf("cached UserAgent = %q, want %q", second.UserAgent, first.UserAgent)
+	if s.beforeCAS != nil {
+		s.beforeCAS()
 	}
-	if client.getCount != 0 || client.setCount != 0 || client.setNXCount != 0 {
-		t.Fatalf("KV calls = get %d set %d setnx %d, want all zero", client.getCount, client.setCount, client.setNXCount)
+	return s.BoltStore.KVCompareAndSwap(ctx, key, expected, exists, value, ttl)
+}
+
+func TestClaudeDeviceProfileRequiredPersistenceFailures(t *testing.T) {
+	for _, operation := range []string{"client", "get", "cas", "unsupported", "corrupt"} {
+		t.Run(operation, func(t *testing.T) {
+			store := profileStore(t, true)
+			fault := &profileFaultStore{BoltStore: store}
+			sentinel := errors.New("unavailable")
+			switch operation {
+			case "get":
+				fault.getErr = sentinel
+			case "cas":
+				fault.casErr = sentinel
+			case "corrupt":
+				key := claudeDeviceProfileKVKey(&cliproxyauth.Auth{ID: "credential"}, "key", ClaudeDeviceProfile{})
+				_, _ = store.KVSet(context.Background(), key, []byte(`{"user_agent":"invalid"}`), kvstore.KVSetOptions{})
+			}
+			currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) {
+				if operation == "client" {
+					return nil, true, sentinel
+				}
+				if operation == "unsupported" {
+					return struct{ claudeDeviceProfileKVClient }{store}, true, nil
+				}
+				return fault, true, nil
+			}
+			if _, err := ResolveClaudeDeviceProfileRequired(context.Background(), &cliproxyauth.Auth{ID: "credential"}, "key", claudeDeviceHeaders(defaultClaudeFingerprintUserAgent), nil); err == nil {
+				t.Fatal("required KV failure silently fell back")
+			}
+		})
+	}
+}
+
+func TestClaudeDeviceProfileCASRereadsConcurrentWinner(t *testing.T) {
+	store := profileStore(t, true)
+	winnerHeaders := claudeDeviceHeaders("claude-cli/2.1.323 (external, sdk-ts, agent-sdk/0.3.221)")
+	winner, _ := extractClaudeDeviceProfile(winnerHeaders, nil)
+	winner.DeviceID = claudeSignatureDeviceID(&cliproxyauth.Auth{ID: "credential"}, "key")
+	key := claudeDeviceProfileKVKey(&cliproxyauth.Auth{ID: "credential"}, "key", ClaudeDeviceProfile{})
+	raw, _ := json.Marshal(claudeDeviceProfileKVValueFromProfile(winner))
+	var once sync.Once
+	fault := &profileFaultStore{BoltStore: store, beforeCAS: func() {
+		once.Do(func() {
+			_, err := store.KVSet(context.Background(), key, raw, kvstore.KVSetOptions{})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}}
+	currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) { return fault, true, nil }
+	got := resolveProfile(t, claudeDeviceHeaders("claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+	if got != winner {
+		t.Fatalf("returned stale snapshot: %+v, winner %+v", got, winner)
+	}
+}
+
+func TestClaudeDeviceProfileConcurrentCandidates(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "memory", true: "persistent"}[persistent], func(t *testing.T) {
+			profileStore(t, persistent)
+			// Establish client identity before scheduling reorderings of its software.
+			resolveProfile(t, claudeDeviceHeaders("claude-cli/2.1.318 (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for _, version := range []string{"2.1.319", "2.1.322", "2.1.318", "2.1.320"} {
+				wg.Add(1)
+				go func(v string) {
+					defer wg.Done()
+					<-start
+					_, err := ResolveClaudeDeviceProfileRequired(context.Background(), &cliproxyauth.Auth{ID: "credential"}, "key", claudeDeviceHeaders("claude-cli/"+v+" (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+					if err != nil {
+						t.Error(err)
+					}
+				}(version)
+			}
+			close(start)
+			wg.Wait()
+			if got := resolveProfile(t, nil, nil); got.UserAgent != "claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)" {
+				t.Fatalf("concurrent updates downgraded: %+v", got)
+			}
+		})
+	}
+}
+
+func TestApplyClaudeDeviceProfileBillingDocExistingFieldsOnly(t *testing.T) {
+	p, _ := extractClaudeDeviceProfile(claudeDeviceHeaders("claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+	original := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.318.AbC; cc_entrypoint=cli; cc_is_subagent=true; cch=12345;","cache_control":{"type":"ephemeral"}},{"type":"text","text":"instructions"}]}`
+	doc := ojson.NewDocString(original)
+	ApplyClaudeDeviceProfileBillingDoc(doc, p, "")
+	want := bytes.ReplaceAll([]byte(original), []byte("2.1.318.AbC"), []byte("2.1.322."+ClaudeBillingFingerprint("", "2.1.322")))
+	want = bytes.ReplaceAll(want, []byte("cc_entrypoint=cli"), []byte("cc_entrypoint=sdk-ts"))
+	if !bytes.Equal(doc.Bytes(), want) {
+		t.Fatalf("billing changed other fields: %s", doc.Bytes())
+	}
+	for _, raw := range []string{`{"messages":[]}`, `{"system":[{"text":"instructions"}]}`, `{"system":[{"text":"x-anthropic-billing-header: cch=12345;"}]}`} {
+		doc := ojson.NewDocString(raw)
+		ApplyClaudeDeviceProfileBillingDoc(doc, p, "")
+		if doc.String() != raw {
+			t.Fatalf("restored absent billing: %s", doc.String())
+		}
+	}
+}
+
+func TestApplyClaudeLegacyDeviceHeadersConfirmedPassthrough(t *testing.T) {
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{UserAgent: "claude-cli/3.0.0 (external, cli)", PackageVersion: "0.200.0", RuntimeVersion: "v30.0.0"}}
+	h := claudeDeviceHeaders("claude-cli/2.1.318 (external, sdk-ts, workload/cron)")
+	r := httptest.NewRequest("POST", "/messages", nil)
+	ApplyClaudeLegacyDeviceHeaders(r, h, cfg, true)
+	for _, name := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Runtime-Version", "X-Stainless-Os", "X-Stainless-Arch"} {
+		if r.Header.Get(name) != h.Get(name) {
+			t.Fatalf("native %s changed", name)
+		}
+	}
+	r = httptest.NewRequest("POST", "/messages", nil)
+	ApplyClaudeLegacyDeviceHeaders(r, h, cfg, false)
+	if r.Header.Get("User-Agent") != cfg.ClaudeHeaderDefaults.UserAgent {
+		t.Fatal("unconfirmed caller leaked tuple")
+	}
+}
+
+func TestClaudeDeviceProfileMigratesLegacySubclient(t *testing.T) {
+	store := profileStore(t, true)
+	legacy := claudeDeviceProfileKVValue{UserAgent: "claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)", PackageVersion: "0.128.0", RuntimeVersion: "v26.12.1", OS: "Linux", Arch: "x64"}
+	oldKey := "cpa:claude:device-profile:" + kvstore.HashKeyPart("auth:credential|subclient:sdk-ts")
+	raw, _ := json.Marshal(legacy)
+	_, err := store.KVSet(context.Background(), oldKey, raw, kvstore.KVSetOptions{EX: 7 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolveProfile(t, claudeDeviceHeaders("claude-cli/2.1.318 (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+	if got.UserAgent != legacy.UserAgent || got.OS != legacy.OS {
+		t.Fatalf("legacy subclient tuple downgraded: %+v", got)
+	}
+	key := claudeDeviceProfileKVKey(&cliproxyauth.Auth{ID: "credential"}, "key", ClaudeDeviceProfile{})
+	if _, found, err := store.KVGet(context.Background(), key); err != nil || !found {
+		t.Fatalf("consolidated profile missing: %v", err)
+	}
+}
+
+func TestClaudeDeviceProfileNoDowngradeAfterSevenDays(t *testing.T) {
+	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	store, err := kvstore.OpenBoltStore(filepath.Join(t.TempDir(), "clock.db"), kvstore.WithNowFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := currentClaudeDeviceProfileKVClient
+	currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) { return store, true, nil }
+	t.Cleanup(func() { currentClaudeDeviceProfileKVClient = previous; _ = store.Close() })
+	want := resolveProfile(t, claudeDeviceHeaders("claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.220)"), nil)
+	now = now.Add(365 * 24 * time.Hour)
+	if got := resolveProfile(t, nil, nil); got != want {
+		t.Fatalf("persistent tuple expired to baseline: %+v", got)
+	}
+}
+
+func TestClaudeDeviceProfileMemoryCapacityPreservesExistingIdentity(t *testing.T) {
+	profileStore(t, false)
+	established := resolveProfile(t, claudeDeviceHeaders("claude-cli/2.1.322 (external, sdk-ts)"), nil)
+	claudeDeviceProfileCacheMu.Lock()
+	for i := 0; len(claudeDeviceProfileCache) < 4096; i++ {
+		claudeDeviceProfileCache[string(rune(i))] = claudeDeviceProfileCacheEntry{profile: established}
+	}
+	claudeDeviceProfileCacheMu.Unlock()
+	if _, err := ResolveClaudeDeviceProfileRequired(context.Background(), &cliproxyauth.Auth{ID: "new-credential"}, "new-key", nil, nil); err == nil {
+		t.Fatal("capacity silently evicted a stable identity")
+	}
+	if got := resolveProfile(t, nil, nil); got != established {
+		t.Fatalf("capacity changed existing identity: %+v", got)
 	}
 }

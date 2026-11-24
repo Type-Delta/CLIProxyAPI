@@ -71,7 +71,12 @@ func (w *TelemetryStreamingWriter) WriteStatus(status int, headers map[string][]
 func (w *TelemetryStreamingWriter) WriteAPIRequest([]byte) error           { return nil }
 func (w *TelemetryStreamingWriter) WriteAPIResponse([]byte) error          { return nil }
 func (w *TelemetryStreamingWriter) WriteAPIWebsocketTimeline([]byte) error { return nil }
-func (w *TelemetryStreamingWriter) SetFirstChunkTimestamp(t time.Time)     { w.request.FirstChunkAt = t }
+
+// WriteAPIResponseErrors is a no-op: the telemetry middleware publishes upstream errors with the record.
+func (w *TelemetryStreamingWriter) WriteAPIResponseErrors([]*interfaces.ErrorMessage) error {
+	return nil
+}
+func (w *TelemetryStreamingWriter) SetFirstChunkTimestamp(t time.Time) { w.request.FirstChunkAt = t }
 func (w *TelemetryStreamingWriter) Close() error {
 	// Close only releases resources. Finish supplies bytes to middleware, the sole publisher.
 	if w.source != nil {

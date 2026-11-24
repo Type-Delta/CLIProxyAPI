@@ -1,5 +1,7 @@
 # CPA management API
 
+For a model availability check, use the [routing dry-run guide](model-availability.md).
+
 Paths are relative to your CPA base URL. Ask the user for their management key; never guess it. Send `Authorization: Bearer <key>` or `X-Management-Key: <key>`. Client inference keys are separate. Use `/v8/management`; `/v0/management` is deprecated.
 
 ## Access and errors
@@ -71,6 +73,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | Method and path | Purpose | Key parameters |
 | --- | --- | --- |
 | `GET /v8/management/capabilities` | Discover supported management and analytics capabilities | No params |
+| `GET /v8/management/observability/requests/in-flight` | Read standalone in-flight counts and oldest start time | No params; read-only keys allowed; empty in Home mode |
 | `GET /v8/management/storage` | Read storage size breakdown | No params |
 | `GET /v8/management/server/latest-version` | Read latest release information | No params |
 | `POST /v8/management/requests/api-call` | Make a credential-authenticated upstream HTTP call | JSON `method`, `url`; optional `auth_index`, `header`, `data`, `proxy_url`, `force_refresh`; `$TOKEN$` in header values substitutes upstream token |
@@ -93,6 +96,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `GET /v8/management/analytics/dimensions` | Read values for a dimension | Analytics GET range; required `dimension`: `provider`, `model`, `credential`, `key`, `endpoint`, `failure`, `latency`, `cache`, `service_tier`, `source`; filters |
 | `GET /v8/management/analytics/events` | Page through sanitized upstream attempts | Analytics GET range, filters, `page_size`, `cursor`; list omits routing trace |
 | `GET /v8/management/analytics/events/:attempt_id` | Read one attempt including routing trace and credential filename | Path `attempt_id`; required RFC3339 `start`, `end`, IANA `time_zone`; no pagination; trace may be null |
+| `GET /v8/management/analytics/attempts/:attempt_id` | Read the same attempt detail through a URL that avoids privacy-filter false positives | Same range, filters, authentication, and response as `/analytics/events/:attempt_id`; preferred for browser clients |
+| `GET /v8/management/analytics/attempts/:attempt_id/headers` | Read masked retained HTTP headers without loading request bodies | Full-access management key; same required range and filters as attempt detail plus `hop=client_to_cpa\|cpa_to_client\|cpa_to_provider\|provider_to_cpa`. Returns `blocks` with method, URL, timestamp, repeated header values, and upstream dispatch index. Upstream blocks cover all HTTP dispatches for the proxy request. WebSocket and missing telemetry return an empty list. Response is `no-store`. |
 | `GET /v8/management/analytics/pricing` | Read effective pricing, overrides and missing prices | No params |
 | `GET /v8/management/analytics/pricing/catalog-providers` | List pricing catalog providers | No params |
 | `PUT /v8/management/analytics/pricing` | Replace manual pricing overrides | JSON `rules` or `overrides`; optional `currency_unit`, `rounding`, `kiro_usd_per_credit` |
@@ -132,12 +137,14 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `POST /v8/management/routing/model-definitions/refresh` | Refresh model catalogs immediately | No body; returns catalog status, sources and `changed_providers`; invalid sources return 400, refresh failures return 502 |
 | `POST /v8/management/models/refresh` | Refresh model catalogs immediately | Alias of `/routing/model-definitions/refresh` |
 | `GET /v8/management/routing/credentials` | List secret-free routable credentials | Returns `credentials` with `cooldowns`, `observed_at`, `client_types`; covers config API keys and OAuth; IDs are Auth.ID, not analytics HMAC IDs |
-| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, draft `rules`; returns `trace`, `warnings` |
+| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, `source_format` (`"openai-image"` simulates the native Images API; invalid values return 400 with `path:"source_format"`), draft `rules`; returns `trace`, `warnings` |
 
 ## Observability
 
 | Method and path | Purpose | Key parameters |
 | --- | --- | --- |
+| `GET /v8/management/live-requests` | Inspect in-flight and recently finished proxy requests | No parameters; retains completed requests for 30 seconds, with bounded history |
+| `GET /v8/management/live-requests/stream` | Stream live requests via SSE | Same read-only management permission; a `full` snapshot first, then each second changed `requests`, `progress` tuples `[id, request output bytes, attempt index, attempt output bytes, last output time]` for output-only growth, and `removed` IDs; reconnect for a fresh full after a slow subscriber is disconnected |
 | `GET /v8/management/observability/logs` | Read application logs incrementally | Query `after` Unix seconds, `limit`, `cursor`; use returned `next-cursor`. Requires file logging enabled, otherwise 400 `{"error":"logging to file disabled"}`. Captured request logs use separate endpoints. |
 | `DELETE /v8/management/observability/logs` | Clear application log files | No params |
 | `GET /v8/management/observability/logs/errors` | List captured request error logs | No params |
@@ -145,6 +152,8 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `GET /v8/management/observability/logs/requests/:id` | Read or reconstruct captured request and attempts | Path `id` is request-log identifier |
 | `GET /v8/management/observability/usage/api-keys` | Read in-memory per-key usage | No params |
 | `GET /v8/management/observability/usage/queue` | Pop queued usage records | Query `count`, default 1; consuming read |
+
+Both live-request endpoints include `session` when known, the first eight hex characters of SHA-256 of the trimmed client session ID, and `parent` in the same form when that session was spawned by another one (a subagent's main session). Raw session IDs are never exposed. Each attempt's `ack_at` is when the provider first answered it (HTTP response headers or a WebSocket frame), or null until then; it keeps that first answer when the attempt dispatches again. Stream events use `data: <json>\n\n`, with `server_time`, `retention_seconds`, `truncated`, and an always-present `requests` array. The first event adds `full:true`; subsequent events contain only new or revised requests and optionally `removed` request IDs. One broadcaster per registry collects and encodes each tick once for all subscribers, caches full snapshots per tick, and stops when no subscribers remain.
 
 ## Credentials and OAuth
 
@@ -270,3 +279,7 @@ curl -sS -X POST "$CPA_BASE/v8/management/analytics/query" \
 ```
 
 Use the user's intended time zone. Read `proxy_requests` for analytics client-request counts and `upstream_attempts` for attempt counts; retries can make the latter larger. Use captured-request SQL for request-level investigation, checking capture and retention coverage before comparing datasets.
+
+## Muse Code client routes
+
+Authenticated `GET /muse-code/models` and `GET /muse-code/config` are discovery reads and do not consume per-key request quota. `POST /muse-code/search` and `POST /muse-code/browser_open` consume request admission, use the client key identity for credential reserve checks, and do not synthesize token usage. Relay actions are unavailable in Home mode.

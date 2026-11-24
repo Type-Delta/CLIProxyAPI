@@ -34,7 +34,9 @@ ordinary JSON configuration reads. Full-access users can still download raw conf
 Configuration writes preserve unrelated persisted settings and surrounding comments.
 
 Read-only access uses an explicit v8 route allowlist. It includes session and capability
-metadata, credential summaries, model definitions, storage observations, analytics reads,
+metadata, credential summaries, model definitions, the secret-free routing credential
+catalogue, side-effect-free `POST /routing/dry-run` predictions, a label-only `GET /api-keys`
+(`{"key-identities":[{"key_id":"…","label":"…"}]}`, never raw keys), storage observations, analytics reads,
 structured `POST /analytics/query`, in-memory CSV/JSON event exports, and restricted
 `POST /telemetry/query`. The telemetry
 SQL connection uses the existing ClickHouse account with constant read-only settings,
@@ -80,6 +82,7 @@ for the version check and the following observational routes:
 - `GET /observability/logs/errors/:name`
 - `GET /observability/logs/requests/:id`
 - `GET /observability/usage/api-keys`
+- `GET /observability/requests/in-flight`
 
 Read-only application log reads remove credential assignments, cookies, URL userinfo and
 queries, and known configured/runtime secrets. Request-log downloads retain request

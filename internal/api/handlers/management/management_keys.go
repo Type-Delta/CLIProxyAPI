@@ -27,18 +27,18 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 		return false
 	}
 	if c.Request.Method == http.MethodPost {
-		return path == "/analytics/query" || path == "/analytics/exports" || path == "/telemetry/query" || path == "/requests/api-call" || path == "/plugins/:id/quota"
+		return path == "/analytics/query" || path == "/analytics/exports" || path == "/telemetry/query" || path == "/requests/api-call" || path == "/plugins/:id/quota" || path == "/routing/dry-run"
 	}
 	if c.Request.Method != http.MethodGet {
 		return false
 	}
 	switch path {
-	case "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
+	case "/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
 		"/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys",
-		"/plugins/:id/quota", "/session", "/capabilities", "/storage", "/credentials", "/credentials/models",
-		"/routing/model-definitions/:channel", "/telemetry/health", "/telemetry/schema",
+		"/plugins/:id/quota", "/session", "/capabilities", "/api-keys", "/storage", "/credentials", "/credentials/models",
+		"/routing/model-definitions/:channel", "/routing/credentials", "/telemetry/health", "/telemetry/schema",
 		"/analytics/health", "/analytics/summary", "/analytics/timeseries", "/analytics/dimensions",
-		"/analytics/events", "/analytics/events/:attempt_id", "/analytics/pricing",
+		"/analytics/events", "/analytics/events/:attempt_id", "/analytics/attempts/:attempt_id", "/analytics/pricing",
 		"/analytics/pricing/catalog-providers", "/analytics/providers", "/analytics/quotas",
 		"/analytics/quota-history", "/analytics/keys", "/analytics/leaderboard", "/analytics/query":
 		return true
@@ -221,7 +221,7 @@ func sanitizeReadOnlyCredentials(c *gin.Context, files []gin.H) {
 	// Preserve quota identifiers and observations without exposing arbitrary
 	// provider-owned metadata, error messages, bypass API keys, or filesystem paths.
 	allowed := map[string]bool{}
-	for _, field := range []string{"id", "auth_index", "name", "display_name", "type", "provider", "label", "status", "disabled", "unavailable", "runtime_only", "source", "size", "success", "failed", "recent_requests", "quota", "quota_reserve", "quota_reserve_state", "model_quotas", "supports_quota", "quota_provider", "quota_plugin_id", "email", "project_id", "profile_arn", "account_type", "account", "created_at", "updated_at", "modtime", "last_refresh", "next_retry_after", "cooldowns", "id_token", "usage_probe", "pricing_catalog"} {
+	for _, field := range []string{"id", "auth_index", "name", "display_name", "type", "provider", "label", "status", "disabled", "unavailable", "runtime_only", "source", "size", "success", "failed", "recent_requests", "quota", "quota_reserve", "quota_reserve_state", "quota_reserve_bypassable", "manual_reset_armed", "model_quotas", "supports_quota", "quota_provider", "quota_plugin_id", "email", "project_id", "profile_arn", "account_type", "account", "created_at", "updated_at", "modtime", "last_refresh", "next_retry_after", "cooldowns", "id_token", "usage_probe", "pricing_catalog"} {
 		allowed[field] = true
 	}
 	for _, entry := range files {

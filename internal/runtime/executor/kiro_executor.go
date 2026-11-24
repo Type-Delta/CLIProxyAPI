@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -15,16 +14,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -318,10 +320,34 @@ func emitTranslatedKiroSSE(ctx context.Context, out chan<- cliproxyexecutor.Stre
 // the Kiro-specific payload builder runs. Kiro exposes Claude-compatible models
 // but its runtime wire format only accepts the Claude Messages shape.
 func kiroRequestPayload(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) []byte {
-	if len(req.Payload) == 0 || opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatClaude {
+	if len(req.Payload) == 0 {
 		return req.Payload
 	}
-	return sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatClaude, req.Model, req.Payload, opts.Stream)
+	payload := req.Payload
+	if opts.SourceFormat != "" && opts.SourceFormat != sdktranslator.FormatClaude {
+		ctx := context.Background()
+		if opts.SourceFormat == sdktranslator.FormatOpenAIResponse {
+			ctx = responsesclaude.WithTopLevelSystemItems(ctx, true)
+		}
+		payload = sdktranslator.TranslateRequestEnvelope(ctx, opts.SourceFormat, sdktranslator.FormatClaude, sdktranslator.RequestEnvelope{
+			Model: req.Model, Body: req.Payload, Stream: opts.Stream,
+		}).Body
+	}
+	// Kiro drops output_config. Preserve schema guidance in the shared
+	// Claude representation used by inference and local token counting.
+	doc := ojson.NewDoc(payload)
+	if format := doc.Get("output_config.format"); format.Get("type").String() == "json_schema" {
+		instruction := common.BuildClaudeStructuredOutputInstruction(format)
+		system := doc.Get("system")
+		if system.Type == ojson.String {
+			_ = doc.Set("system", system.String()+"\n\n"+instruction)
+		} else {
+			_ = doc.Set("system.-1", map[string]any{"type": "text", "text": instruction})
+		}
+		_ = doc.Delete("output_config.format")
+		return doc.Bytes()
+	}
+	return payload
 }
 
 func (e *KiroExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -339,14 +365,14 @@ func (e *KiroExecutor) resolveContextWindow(ctx context.Context, auth *cliproxya
 	if events.contextUsagePercentage == nil || events.inputTokensReported {
 		return
 	}
-	model := gjson.GetBytes(body, "conversationState.currentMessage.userInputMessage.modelId").String()
+	model := ojson.GetBytes(body, "conversationState.currentMessage.userInputMessage.modelId").String()
 	if model == "" {
 		return
 	}
 	region := authValue(auth, "region", kiroauth.DefaultRegion)
 	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/ListAvailableModels", region)
 	query := url.Values{"origin": {"AI_EDITOR"}}
-	if profile := gjson.GetBytes(body, "profileArn").String(); profile != "" {
+	if profile := ojson.GetBytes(body, "profileArn").String(); profile != "" {
 		query.Set("profileArn", profile)
 	}
 	request, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)

@@ -84,7 +84,7 @@ func TestKeysTabDisplaysLabelsAndSecretFreeShortIDs(t *testing.T) {
 func TestKeysTabCreatesKeyWithUTF8Label(t *testing.T) {
 	patchBody := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch && r.URL.Path == "/v0/management/api-keys" {
+		if r.Method == http.MethodPatch && r.URL.Path == "/v8/management/api-keys" {
 			raw, _ := io.ReadAll(r.Body)
 			patchBody = strings.TrimSpace(string(raw))
 			return
@@ -93,7 +93,7 @@ func TestKeysTabCreatesKeyWithUTF8Label(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	m.formInputs[keyFieldKey].SetValue("new-secret")
@@ -114,7 +114,7 @@ func TestKeysTabPreservesControlCharactersInUnchangedLabel(t *testing.T) {
 	originalLabel := "tenant\nprod\t\x1b[31m"
 	var patch map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v8/management/api-keys" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -124,7 +124,7 @@ func TestKeysTabPreservesControlCharactersInUnchangedLabel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(keysDataMsg{entries: []APIKeyEntry{{
 		Key: "raw-secret", Label: originalLabel, Index: 3,
@@ -152,7 +152,7 @@ func TestKeysTabPreservesControlCharactersInUnchangedLabel(t *testing.T) {
 func TestKeysTabLabelOnlyEditOmitsUnknownLimits(t *testing.T) {
 	var patch map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v8/management/api-keys" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -166,7 +166,7 @@ func TestKeysTabLabelOnlyEditOmitsUnknownLimits(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(keysDataMsg{entries: []APIKeyEntry{{
 		Key: "raw-secret", Label: "old", Index: 2,
@@ -191,7 +191,7 @@ func TestKeysTabLabelOnlyEditOmitsUnknownLimits(t *testing.T) {
 func TestKeysTabJSONLabelModeCreatesExactControlCharacters(t *testing.T) {
 	var patch map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/api-keys" {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v8/management/api-keys" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -201,7 +201,7 @@ func TestKeysTabJSONLabelModeCreatesExactControlCharacters(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	m.focusFormField(keyFieldLabel)
@@ -247,7 +247,7 @@ func TestKeysTabResetsSelectedLimitedKeyAfterConfirmation(t *testing.T) {
 	key := "limited-secret-key"
 	resetKey := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v0/management/api-key-limits/reset" {
+		if r.Method != http.MethodPost || r.URL.Path != "/v8/management/api-key-limits/reset" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -264,7 +264,7 @@ func TestKeysTabResetsSelectedLimitedKeyAfterConfirmation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(keysDataMsg{
 		entries: []APIKeyEntry{{Key: key, Index: 0}},
@@ -307,7 +307,7 @@ func TestKeysTabResetsSelectedLimitedKeyAfterConfirmation(t *testing.T) {
 func TestKeysTabResetsByStableKeyID(t *testing.T) {
 	requested := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v0/management/api-key-limits/reset" {
+		if r.Method != http.MethodPost || r.URL.Path != "/v8/management/api-key-limits/reset" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -326,7 +326,7 @@ func TestKeysTabResetsByStableKeyID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client()})
+	m := newKeysTabModel(&Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"})
 	m.SetSize(160, 40)
 	m, _ = m.Update(keysDataMsg{
 		entries: []APIKeyEntry{{Key: "raw-secret", KeyID: "stable-id", Index: 0}},
@@ -555,17 +555,17 @@ func TestKeysTabEditAndDeleteUseOriginalServerIndex(t *testing.T) {
 	deleteRevision := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v0/management/api-keys":
+		case r.Method == http.MethodGet && r.URL.Path == "/v8/management/api-keys":
 			if _, errWrite := w.Write([]byte(`{"api-keys":["",{"key":"real-key"}],"config_revision":"rev-current"}`)); errWrite != nil {
 				t.Errorf("write api-keys: %v", errWrite)
 			}
-		case r.Method == http.MethodPatch && r.URL.Path == "/v0/management/api-keys":
+		case r.Method == http.MethodPatch && r.URL.Path == "/v8/management/api-keys":
 			raw, errRead := io.ReadAll(r.Body)
 			if errRead != nil {
 				t.Errorf("read patch body: %v", errRead)
 			}
 			patchBody = strings.TrimSpace(string(raw))
-		case r.Method == http.MethodDelete && r.URL.Path == "/v0/management/api-keys":
+		case r.Method == http.MethodDelete && r.URL.Path == "/v8/management/api-keys":
 			deleteQuery = r.URL.RawQuery
 			deleteRevision = r.Header.Get("If-Match")
 			w.Header().Set("X-CPA-Config-Revision", "rev-after-delete")
@@ -575,7 +575,7 @@ func TestKeysTabEditAndDeleteUseOriginalServerIndex(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{baseURL: server.URL, http: server.Client()}
+	client := &Client{baseURL: server.URL, http: server.Client(), apiKeyRevision: "rev-current"}
 	m := newKeysTabModel(client)
 	m.SetSize(160, 40)
 	msg, ok := m.fetchKeys().(keysDataMsg)

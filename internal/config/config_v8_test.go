@@ -167,6 +167,28 @@ upstream:
 	}
 }
 
+func TestV8ShutdownTimeoutParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"v8 nested", "server:\n  shutdown-timeout: 15\n", 15},
+		{"legacy top-level", "shutdown-timeout: 7\n", 7},
+		{"absent defaults to zero", "server:\n  port: 8317\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ShutdownTimeoutSeconds != tc.want {
+				t.Fatalf("ShutdownTimeoutSeconds = %d, want %d", cfg.ShutdownTimeoutSeconds, tc.want)
+			}
+		})
+	}
+}
+
 func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw string
@@ -1014,5 +1036,67 @@ func TestLegacyAnalyticsRootIsNotAV8Marker(t *testing.T) {
 	}
 	if IsV8ConfigLayout(root.Content[0]) {
 		t.Fatal("legacy document with an analytics root was detected as a v8 layout")
+	}
+}
+
+func TestV8ExampleDocumentsSessionAffinityCompactionGuidance(t *testing.T) {
+	example, errRead := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var doc yaml.Node
+	if errUnmarshal := yaml.Unmarshal(example, &doc); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	routing := yamlPath(doc.Content[0], "routing")
+	if routing == nil {
+		t.Fatal("config.example.yaml is missing routing block")
+	}
+	idx := findMapKeyIndex(routing, "session-affinity")
+	if idx < 0 {
+		t.Fatal("config.example.yaml is missing routing.session-affinity")
+	}
+	comment := routing.Content[idx].HeadComment
+	for _, required := range []string{
+		"Merkle LCP prefix/compaction matching",
+		"2 shared trailing turns",
+		"replaces all earlier turns with a summary",
+		"send X-Session-ID",
+	} {
+		if !strings.Contains(comment, required) {
+			t.Fatalf("routing.session-affinity comment in config.example.yaml is missing %q; got:\n%s", required, comment)
+		}
+	}
+}
+
+func TestV8InstructionRoleWrapperRoundTrip(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			data := []byte(fmt.Sprintf("config-version: 8\napi-keys:\n  openai-compatibility:\n    - name: fixture\n      base-url: https://example.invalid/v1\n      instruction-role-wrapper: %t\n      keys: [{api-key: test-key}]\n      models: [{name: test-model}]\n", enabled))
+			if errValidate := ValidateV8Config(data); errValidate != nil {
+				t.Fatal(errValidate)
+			}
+			cfg, errParse := ParseConfigBytes(data)
+			if errParse != nil {
+				t.Fatal(errParse)
+			}
+			if len(cfg.OpenAICompatibility) != 1 || cfg.OpenAICompatibility[0].InstructionRoleWrapper != enabled {
+				t.Fatal("provider wrapper option did not load")
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if errWrite := os.WriteFile(path, data, 0600); errWrite != nil {
+				t.Fatal(errWrite)
+			}
+			if errSave := SaveConfigPreserveComments(path, cfg); errSave != nil {
+				t.Fatal(errSave)
+			}
+			loaded, errLoad := LoadConfig(path)
+			if errLoad != nil {
+				t.Fatal(errLoad)
+			}
+			if loaded.OpenAICompatibility[0].InstructionRoleWrapper != enabled {
+				t.Fatal("provider wrapper option did not survive save/reload")
+			}
+		})
 	}
 }

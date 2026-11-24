@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const generationReadChunkBytes = 16 * 1024
@@ -36,10 +36,12 @@ func (r *UsageReporter) TrackGenerationBody(ctx context.Context, body io.ReadClo
 	if r == nil || body == nil {
 		return body
 	}
-	return r.TrackGenerationBodyObserver(ctx, body, r.generationSSEObserver(protocol))
+	completed := false
+	observe := r.generationSSEObserver(protocol, func() { completed = true })
+	return r.TrackGenerationBodyObserver(ctx, body, observe, func() bool { return completed })
 }
 
-func (r *UsageReporter) generationSSEObserver(protocol string) func([]byte, time.Time, error) {
+func (r *UsageReporter) generationSSEObserver(protocol string, onComplete ...func()) func([]byte, time.Time, error) {
 	r.SetOutputTimingSource(protocol, "source_reader", "visible_deltas")
 	var line []byte
 	var frameData [][]byte
@@ -51,6 +53,9 @@ func (r *UsageReporter) generationSSEObserver(protocol string) func([]byte, time
 		}
 		payload := bytes.Join(frameData, []byte("\n"))
 		r.observeGenerationPayloadAt(protocol, payload, at)
+		if protocol == "claude" && ojson.GetBytes(payload, "type").String() == "message_stop" && len(onComplete) > 0 {
+			onComplete[0]()
+		}
 		frameData = nil
 		frameBytes = 0
 	}
@@ -119,7 +124,7 @@ func (r *UsageReporter) generationSSEObserver(protocol string) func([]byte, time
 // TrackGenerationBodyObserver reads independently of downstream delivery and
 // supplies one monotonic timestamp for each source read to a protocol observer.
 // Observers must retain bounded state and must never change the received bytes.
-func (r *UsageReporter) TrackGenerationBodyObserver(ctx context.Context, body io.ReadCloser, observe func([]byte, time.Time, error)) io.ReadCloser {
+func (r *UsageReporter) TrackGenerationBodyObserver(ctx context.Context, body io.ReadCloser, observe func([]byte, time.Time, error), completed ...func() bool) io.ReadCloser {
 	if r == nil || body == nil {
 		return body
 	}
@@ -137,6 +142,11 @@ func (r *UsageReporter) TrackGenerationBodyObserver(ctx context.Context, body io
 			data = data[:n]
 			if observe != nil {
 				observe(data, at, err)
+			}
+			// Claude message_stop ends the response. Do not read ahead to transport
+			// EOF and accidentally drain or reuse an unpooled connection.
+			if err == nil && len(completed) > 0 && completed[0]() {
+				err = io.EOF
 			}
 			item := generationRead{data: data, err: err}
 			select {
@@ -201,9 +211,12 @@ func (r *UsageReporter) observeGenerationPayloadAt(protocol string, payload []by
 	if bytes.Equal(trimmed, []byte("[DONE]")) || len(trimmed) == 0 {
 		return
 	}
-	if !gjson.ValidBytes(trimmed) {
+	if !ojson.ValidBytes(trimmed) {
 		r.InvalidateGenerationTimingReason("malformed_stream")
 		return
+	}
+	if protocol == "responses" {
+		r.observeLiveResponsesTools(trimmed)
 	}
 	text, unsupported := outputDeltaText(protocol, payload)
 	if unsupported {
@@ -230,14 +243,14 @@ func ObserveResponsesTokenEventAt(r *UsageReporter, payload []byte, at time.Time
 
 func (r *UsageReporter) observeResponsesFirstOutputAt(payload []byte, at time.Time) {
 	payload = JSONPayload(payload)
-	event := gjson.GetBytes(payload, "type").String()
+	event := ojson.GetBytes(payload, "type").String()
 	// Completed snapshots can establish first visible output, never a duration.
 	visible := false
 	if (strings.HasSuffix(event, ".done") && event != "response.done") || event == "response.output_item.added" {
 		visible = isResponsesTokenEvent(payload, true)
 	}
 	if event == "response.completed" || event == "response.incomplete" || event == "response.done" {
-		for _, item := range gjson.GetBytes(payload, "response.output").Array() {
+		for _, item := range ojson.GetBytes(payload, "response.output").Array() {
 			if len(item.Get("arguments").String()) > 0 || len(item.Get("input").String()) > 0 {
 				visible = true
 			}

@@ -2,17 +2,19 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -219,6 +221,7 @@ func TestResetCredentialQuota_Endpoint(t *testing.T) {
 	}
 
 	host := pluginhost.New()
+	host.SetAuthManager(manager)
 	host.RegisterPluginForTest("opencode-plugin", pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{Name: "OpenCode Plugin"},
 		Capabilities: pluginapi.Capabilities{
@@ -1298,5 +1301,114 @@ func TestFetchCredentialQuota_MissingTokenDoesNotHitUpstream(t *testing.T) {
 	// Upstream must NEVER be contacted
 	if upstreamHit {
 		t.Fatal("upstream server must NOT be contacted when template requires token but token is missing")
+	}
+}
+
+func TestPluginHostResetChangesCachedReserveReadGeneration(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	auth, _ := h.authManager.GetByID("credential-a-claude")
+	host := pluginhost.New()
+	host.SetAuthManager(h.authManager)
+	host.RegisterPluginForTest("quota-plugin", pluginapi.Plugin{Capabilities: pluginapi.Capabilities{QuotaProvider: &mockQuotaProvider{identifier: "claude"}}})
+	proxy.setResponse(http.StatusOK, nil, `{"before":true}`)
+	if _, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders); err != nil {
+		t.Fatal(err)
+	}
+	result, handled, err := host.ResetQuotaByPlugin(context.Background(), "quota-plugin", pluginapi.QuotaResetRequest{AuthID: auth.ID, Provider: auth.Provider})
+	if err != nil || !handled || !result.Success {
+		t.Fatalf("plugin reset: handled=%v result=%+v err=%v", handled, result, err)
+	}
+	proxy.setResponse(http.StatusOK, nil, `{"after":true}`)
+	got, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"after":true}` {
+		t.Fatalf("reserve probe used pre-reset cache: %s", got)
+	}
+}
+
+func TestDeclarativeQuotaAmbiguousReportsOnlyRecover(t *testing.T) {
+	for _, tc := range []struct {
+		name, body                    string
+		initiallyBlocked, wantBlocked bool
+	}{
+		{"mixed", `{"groups":[{"buckets":[{"window":"one","remainingFraction":0.8}]},{"buckets":[{"window":"two","remainingFraction":0,"resetTime":"2099-01-01T00:00:00Z"}]}]}`, false, false},
+		{"missing", `{"groups":[{"buckets":[{"window":"one","resetTime":"2099-01-01T00:00:00Z"}]}]}`, false, false},
+		{"positive", `{"groups":[{"buckets":[{"window":"one","remainingFraction":0.8}]},{"buckets":[{"window":"two","remainingFraction":0.1}]}]}`, true, false},
+		{"positive-and-missing", `{"groups":[{"buckets":[{"window":"one","remainingFraction":0.8},{"window":"two","resetTime":"2099-01-01T00:00:00Z"}]}]}`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+			defer server.Close()
+			m := coreauth.NewManager(nil, nil, nil)
+			auth, err := m.Register(context.Background(), &coreauth.Auth{ID: "declarative", Provider: "other", Status: coreauth.StatusActive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.RegisterExecutor(&refreshRecordExecutor{provider: "other"})
+			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "healthy-sibling"}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+			if tc.initiallyBlocked {
+				if _, err = m.ApplyProviderQuotaReport(context.Background(), auth.ID, true, time.Now().Add(time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := NewHandlerWithoutConfigFilePath(&config.Config{}, m)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			_, handled, errProbe := h.executeQuotaProbe(c, auth, map[string]any{"url": server.URL})
+			if !handled || (errProbe != nil && tc.name != "missing") {
+				t.Fatalf("probe handled %v, error %v", handled, errProbe)
+			}
+			current, _ := m.GetByID(auth.ID)
+			if current.Unavailable != tc.wantBlocked || current.Quota.Exceeded != tc.wantBlocked {
+				t.Fatalf("unexpected credential state: %+v", current.Quota)
+			}
+			if !tc.wantBlocked {
+				if _, errExecute := m.Execute(context.Background(), []string{"other"}, cliproxyexecutor.Request{Model: "healthy-sibling"}, cliproxyexecutor.Options{}); errExecute != nil {
+					t.Fatalf("healthy sibling could not execute: %v", errExecute)
+				}
+			}
+		})
+	}
+}
+
+func TestMappedQuotaIncompleteBucketsDoNotRecover(t *testing.T) {
+	for _, tc := range []struct {
+		name, body    string
+		expectBlocked bool
+	}{
+		{"missing", `{"windows":[{"remaining_fraction":0.8},{"window":"other"}]}`, true},
+		{"invalid", `{"windows":[{"remaining_fraction":0.8},{"remaining_fraction":"bad"}]}`, true},
+		{"complete", `{"windows":[{"remaining_fraction":0.8},{"remaining_fraction":0.2}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+			defer server.Close()
+			m := coreauth.NewManager(nil, nil, nil)
+			auth, err := m.Register(context.Background(), &coreauth.Auth{ID: "mapped", Provider: "other", Status: coreauth.StatusActive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = m.ApplyProviderQuotaReport(context.Background(), auth.ID, true, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			h := NewHandlerWithoutConfigFilePath(&config.Config{}, m)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			mapping := map[string]any{"groups": []any{map[string]any{"buckets_path": "windows"}}}
+			_, handled, err := h.executeQuotaProbe(c, auth, map[string]any{"url": server.URL, "mapping": mapping})
+			if !handled || err != nil {
+				t.Fatalf("handled %v error %v", handled, err)
+			}
+			current, _ := m.GetByID(auth.ID)
+			if current.Unavailable != tc.expectBlocked || current.Quota.Exceeded != tc.expectBlocked {
+				t.Fatalf("unexpected quota: %+v", current.Quota)
+			}
+		})
 	}
 }

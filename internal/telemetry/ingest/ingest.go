@@ -623,6 +623,13 @@ func (i *Ingester) processView(ctx context.Context, r *record.Request, index int
 		ids = append(ids, id)
 		contentIDs = append(contentIDs, e.ContentID)
 	}
+	if parsed.ToolsID != "" {
+		if err = i.content(ctx, parsed.ToolsID, "tools", parsed.Tools, "", at); err != nil {
+			return out, err
+		}
+		ids = append(ids, "")
+		contentIDs = append(contentIDs, parsed.ToolsID)
+	}
 	view := "client"
 	if index > 0 {
 		view = "upstream"

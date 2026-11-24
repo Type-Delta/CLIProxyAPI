@@ -1,0 +1,2 @@
+ALTER TABLE {database}.request_contexts COMMENT COLUMN content_ids 'Ordered raw content IDs parallel to entry_ids. A trailing tools item has an empty entry ID and is referenced by a $cpa_tools_v1 marker in the envelope or Kiro current message';
+ALTER TABLE {database}.transcript_content COMMENT COLUMN kind 'Element, request envelope, or tools array. Tools are referenced by request_contexts and are not conversation entries';

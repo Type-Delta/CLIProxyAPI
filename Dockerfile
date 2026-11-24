@@ -15,20 +15,29 @@ RUN test -n "$CPAMC_COMMIT" && VERSION="$CPAMC_COMMIT" bun run build \
     && printf '{"schema_version":1,"cpamc_commit":"%s","management_api":{"min":1,"max":1},"built_at":"%s","sha256":"%s"}\n' \
          "$CPAMC_COMMIT" "$PANEL_BUILT_AT" "$html_sha" > dist/management-artifact.json
 
+# CI overrides this empty stage with a build context holding gocache.tar from an
+# earlier build; local builds leave it empty and rely on the cache mount alone.
+FROM scratch AS go-cache-seed
+
+# Unpacks the seed into the Go build cache mount while the builder image is pulled.
+FROM debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443 AS go-cache
+RUN --mount=type=bind,from=go-cache-seed,target=/seed \
+    --mount=type=cache,target=/root/.cache/go-build \
+    if [ -f /seed/gocache.tar ]; then tar -xf /seed/gocache.tar -C /root/.cache/go-build; fi \
+    && touch /go-cache-ready
+
 FROM golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb AS builder
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git \
-    && apt-get clean \
-    && find /var/lib/apt/lists -mindepth 1 -delete
-
-COPY go.mod go.sum ./
-
-RUN go mod download
-
+# The golang image already ships gcc, libc6-dev, and git for the CGO build.
 COPY . .
+
+# Compile every package (without linking) before the panel lands so this runs in parallel
+# with panel-builder; the final build then only recompiles the embedding package and links.
+RUN --mount=type=bind,from=go-cache,source=/go-cache-ready,target=/tmp/go-cache-ready \
+    --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux go list -buildvcs=false -export -deps ./cmd/server/ >/dev/null
 
 # The panel is always rebuilt from the pinned submodule inside this build, so the
 # embedded bundle never depends on committed or working-tree build output.
@@ -40,7 +49,8 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
 FROM debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443
 

@@ -3,14 +3,21 @@ package pluginhost
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 // RegisterPluginForTest registers a plugin directly on the host for testing.
 func (h *Host) RegisterPluginForTest(id string, plugin pluginapi.Plugin) {
+	h.RegisterPluginWithPriorityForTest(id, 1, plugin)
+}
+
+// RegisterPluginWithPriorityForTest registers a plugin with an explicit runtime priority on the host for testing.
+func (h *Host) RegisterPluginWithPriorityForTest(id string, priority int, plugin pluginapi.Plugin) {
 	if h == nil {
 		return
 	}
@@ -20,7 +27,7 @@ func (h *Host) RegisterPluginForTest(id string, plugin pluginapi.Plugin) {
 		version:  "1.0.0",
 		meta:     plugin.Metadata,
 		plugin:   plugin,
-		priority: 1,
+		priority: priority,
 	}
 	records := append(h.activeRecords(), record)
 	h.mu.Lock()
@@ -158,9 +165,11 @@ func (h *Host) QuotaProviderPluginIDs(ctx context.Context) map[string]string {
 			addCandidate(identifier, record.id)
 		}
 		addCandidate(normalizeProviderID(record.id), record.id)
-		if record.plugin.Capabilities.AuthProvider != nil {
-			if authID, okAuth := h.callAuthProviderIdentifier(record.id, record.plugin.Capabilities.AuthProvider); okAuth {
-				addCandidate(authID, record.id)
+		if hasRecordAuthProvider(record) {
+			if authIDs, okAuth := h.callRecordAuthProviderIdentifiers(record); okAuth {
+				for _, authID := range authIDs {
+					addCandidate(authID, record.id)
+				}
 			}
 		}
 	}
@@ -219,10 +228,14 @@ func (h *Host) quotaProviderRecord(ctx context.Context, provider string) *capabi
 			r := record
 			return &r
 		}
-		if record.plugin.Capabilities.AuthProvider != nil {
-			if authID, okAuth := h.callAuthProviderIdentifier(record.id, record.plugin.Capabilities.AuthProvider); okAuth && authID == provider {
-				r := record
-				return &r
+		if hasRecordAuthProvider(record) {
+			if authIDs, okAuth := h.callRecordAuthProviderIdentifiers(record); okAuth {
+				for _, authID := range authIDs {
+					if authID == provider {
+						r := record
+						return &r
+					}
+				}
 			}
 		}
 	}
@@ -417,11 +430,40 @@ func (h *Host) callQuotaFetch(ctx context.Context, record capabilityRecord, prov
 			err = fmt.Errorf("plugin %s panicked during FetchQuota: %v", record.id, recovered)
 		}
 	}()
+	if h.authManager != nil && req.AuthID != "" {
+		ctx = h.authManager.CaptureQuotaObservation(ctx, req.AuthID)
+	}
 	quotaResp, errFetch := provider.FetchQuota(ctx, req)
 	if errFetch != nil {
 		return pluginapi.QuotaFetchResponse{}, true, errFetch
 	}
+	if h.authManager != nil && req.AuthID != "" && QuotaResponseFullyPositive(quotaResp) {
+		if _, errApply := h.authManager.ApplyProviderQuotaRecovery(context.WithoutCancel(ctx), req.AuthID, nil); errApply != nil {
+			log.WithError(errApply).WithField("auth_id", req.AuthID).Warn("failed to sync plugin quota cooldown")
+		}
+	}
 	return quotaResp, true, nil
+}
+
+// QuotaResponseFullyPositive reports whether every bucket provides positive,
+// valid remaining quota. Plugin groups do not identify model or shared pools,
+// so exhausted or missing buckets cannot establish credential-wide exhaustion.
+func QuotaResponseFullyPositive(resp pluginapi.QuotaFetchResponse) bool {
+	if len(resp.Groups) == 0 {
+		return false
+	}
+	for _, group := range resp.Groups {
+		if len(group.Buckets) == 0 {
+			return false
+		}
+		for _, bucket := range group.Buckets {
+			value := bucket.RemainingFraction
+			if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value > 1 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (h *Host) callQuotaReset(ctx context.Context, record capabilityRecord, provider pluginapi.QuotaProvider, req pluginapi.QuotaResetRequest) (resp pluginapi.QuotaResetResponse, handled bool, err error) {
@@ -464,6 +506,11 @@ func (h *Host) callQuotaReset(ctx context.Context, record capabilityRecord, prov
 	resetResp, errReset := provider.ResetQuota(ctx, req)
 	if errReset != nil {
 		return pluginapi.QuotaResetResponse{}, true, errReset
+	}
+	if resetResp.Success && h.authManager != nil && req.AuthID != "" {
+		if _, errApply := h.authManager.ApplyProviderQuotaReset(context.WithoutCancel(ctx), req.AuthID, nil, nil); errApply != nil {
+			log.WithError(errApply).WithField("auth_id", req.AuthID).Warn("failed to reconcile routing quota after plugin reset")
+		}
 	}
 	return resetResp, true, nil
 }

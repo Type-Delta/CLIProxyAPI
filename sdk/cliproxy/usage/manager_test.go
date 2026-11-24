@@ -2,8 +2,11 @@ package usage
 
 import (
 	"context"
+	"net/http"
+	"runtime"
 	"testing"
 	"time"
+	"weak"
 )
 
 func TestStreamFromContextDefaultsMissingToFalse(t *testing.T) {
@@ -209,5 +212,84 @@ func TestLookupStreamFromContextPreservesUnknownAndExplicitFalse(t *testing.T) {
 				t.Fatalf("observer context changed stream=%v known=%v", stream, known)
 			}
 		})
+	}
+}
+
+type consumedUsageReferences struct {
+	detail weak.Pointer[CacheDetails]
+	header weak.Pointer[string]
+}
+
+type notifyUsagePlugin struct {
+	delivered chan consumedUsageReferences
+}
+
+func (p *notifyUsagePlugin) HandleUsage(_ context.Context, record Record) {
+	p.delivered <- consumedUsageReferences{
+		detail: weak.Make(record.Detail.CacheDetails),
+		header: weak.Make(&record.ResponseHeaders["X-Request-Id"][0]),
+	}
+}
+
+type retainedRequestPayload struct {
+	data [64 << 10]byte
+}
+
+type retainedRequestContextKey struct{}
+
+//go:noinline
+func publishConsumableRecord(mgr *Manager) (weak.Pointer[retainedRequestPayload], weak.Pointer[CacheDetails], weak.Pointer[string]) {
+	ctxPayload := &retainedRequestPayload{}
+	cacheDetails := &CacheDetails{}
+	headerSlice := []string{"req-header-value"}
+
+	ctx := context.WithValue(context.Background(), retainedRequestContextKey{}, ctxPayload)
+	mgr.Publish(ctx, Record{
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		ResponseHeaders: http.Header{"X-Request-Id": headerSlice},
+		Detail: Detail{
+			CacheDetails: cacheDetails,
+		},
+	})
+
+	return weak.Make(ctxPayload), weak.Make(cacheDetails), weak.Make(&headerSlice[0])
+}
+
+func TestManagerReleasesConsumedQueueItemReferencesWhenIdle(t *testing.T) {
+	mgr := NewManager(10)
+	t.Cleanup(mgr.Stop)
+
+	plugin := &notifyUsagePlugin{delivered: make(chan consumedUsageReferences, 1)}
+	mgr.Register(plugin)
+
+	ctxWeak, detailWeak, headerWeak := publishConsumableRecord(mgr)
+
+	var consumed consumedUsageReferences
+	select {
+	case consumed = <-plugin.delivered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage record dispatch")
+	}
+
+	for range 10 {
+		runtime.Gosched()
+		runtime.GC()
+		if ctxWeak.Value() == nil && detailWeak.Value() == nil && headerWeak.Value() == nil && consumed.detail.Value() == nil && consumed.header.Value() == nil {
+			break
+		}
+	}
+
+	if ctxWeak.Value() != nil {
+		t.Fatalf("consumed request context payload is still retained while manager is idle")
+	}
+	if detailWeak.Value() != nil {
+		t.Fatalf("consumed record Detail.CacheDetails is still retained while manager is idle")
+	}
+	if headerWeak.Value() != nil {
+		t.Fatalf("consumed record ResponseHeaders backing value is still retained while manager is idle")
+	}
+	if consumed.detail.Value() != nil || consumed.header.Value() != nil {
+		t.Fatal("consumed observer snapshot is still retained while manager is idle")
 	}
 }

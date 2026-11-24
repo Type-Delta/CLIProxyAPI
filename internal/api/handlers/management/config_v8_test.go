@@ -13,6 +13,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"gopkg.in/yaml.v3"
 )
 
@@ -109,6 +113,54 @@ func TestConfigV8MigrationAndLegacyAPI(t *testing.T) {
 	case <-reloads:
 	case <-time.After(5 * time.Second):
 		t.Fatal("config reload hook was not called")
+	}
+}
+
+func TestConfigV8ReserveEditUpdatesRoutingBeforeReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if errWrite := os.WriteFile(path, []byte("port: 8317\nclaude-api-key:\n  - api-key: test-key\n    quota-reserve: {seven-day: 30}\n"), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(path)
+	if errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	auths, errSynth := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{Config: cfg, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator()})
+	if errSynth != nil || len(auths) != 1 {
+		t.Fatalf("synthesize auths: %d, %v", len(auths), errSynth)
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, errRegister := manager.Register(context.Background(), auths[0])
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	manager.ApplyQuotaReserveBars(auth, []coreauth.QuotaReserveBar{{ID: "seven-day", RemainingPercent: 20, ResetAt: time.Now().Add(time.Hour)}})
+	const modelID = "config-reserve-routing"
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: modelID}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	manager.RegisterExecutor(&refreshRecordExecutor{provider: "claude"})
+	h := &Handler{cfg: cfg, configFilePath: path, authManager: manager}
+	router := gin.New()
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	for _, test := range []struct {
+		body string
+		held bool
+	}{
+		{`[{"name":"team","keys":[{"api-key":"test-key","quota-reserve":{"seven-day":10}}]}]`, false},
+		{`[{"name":"team","keys":[{"api-key":"test-key","quota-reserve":{"seven-day":40}}]}]`, true},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/v8/management/config/api-keys/claude", strings.NewReader(test.body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("reserve save status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if _, held := manager.QuotaReserveState(auth.ID); held != test.held {
+			t.Fatalf("reserve held immediately after save = %v, want %v", held, test.held)
+		}
+		_, errExecute := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: modelID}, cliproxyexecutor.Options{})
+		if (errExecute != nil) != test.held {
+			t.Fatalf("request immediately after reserve edit: %v, want held %v", errExecute, test.held)
+		}
 	}
 }
 
@@ -890,5 +942,184 @@ api-keys:
 	}
 	if loaded.OpenAICompatibility[0].Headers["User-Agent"] != "$User-Agent-3" {
 		t.Fatalf("unexpected loaded headers: %+v", loaded.OpenAICompatibility[0].Headers)
+	}
+}
+
+func TestConfigV8InjectsDistinctAuthIndexesForDistinctConnectionPools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `config-version: 8
+api-keys:
+  gemini:
+    - name: gemini-group
+      base-url: "https://example.invalid"
+      connection-pool:
+        enabled: true
+        idle-conn-timeout: "120s"
+        max-idle-conns-per-host: 2
+      keys:
+        - api-key: "shared-gemini-key"
+        - api-key: "shared-gemini-key"
+          connection-pool:
+            idle-conn-timeout: ""
+            max-idle-conns-per-host: 5
+  vertex:
+    - name: vertex-group
+      base-url: "https://vertex.example.invalid"
+      connection-pool:
+        enabled: true
+        max-idle-conns-per-host: 2
+      keys:
+        - api-key: "shared-vertex-key"
+        - api-key: "shared-vertex-key"
+          connection-pool:
+            max-idle-conns-per-host: 6
+`
+	if errWrite := os.WriteFile(file, []byte(raw), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(file)
+	if errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	synth := synthesizer.NewConfigSynthesizer()
+	auths, errSynth := synth.Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		Now:         time.Now(),
+		IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if errSynth != nil {
+		t.Fatal(errSynth)
+	}
+	for _, a := range auths {
+		if _, errReg := manager.Register(context.Background(), a); errReg != nil {
+			t.Fatal(errReg)
+		}
+	}
+	h := &Handler{cfg: cfg, configFilePath: file, authManager: manager}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+
+	for _, provider := range []string{"gemini", "vertex"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v8/management/config/api-keys/"+provider, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", provider, w.Code, w.Body.String())
+		}
+		var groups []struct {
+			Keys []struct {
+				AuthIndex string `yaml:"auth_index" json:"auth_index"`
+			} `yaml:"keys" json:"keys"`
+		}
+		if err := yaml.Unmarshal(w.Body.Bytes(), &groups); err != nil {
+			t.Fatalf("unmarshal %s response: %v", provider, err)
+		}
+		if len(groups) != 1 || len(groups[0].Keys) != 2 {
+			t.Fatalf("%s groups = %+v, want 1 group with 2 keys", provider, groups)
+		}
+		first := groups[0].Keys[0].AuthIndex
+		second := groups[0].Keys[1].AuthIndex
+		if first == "" || second == "" || first == second {
+			t.Fatalf("%s auth_index values = (%q, %q), want two distinct non-empty indexes", provider, first, second)
+		}
+	}
+}
+
+func TestConfigV8_SensitiveWordsReplace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: {port: 8317}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	router.PATCH("/v8/management/config/*path", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+
+	for _, endpoint := range []string{
+		"/v8/management/config/oauth/providers/antigravity/sensitive-words-replace",
+		"/v8/management/config/oauth/providers/devin/sensitive-words-replace",
+	} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPut, endpoint, strings.NewReader(`{"You are Codex, an agent based on GPT-5.":"You are a helpful coding assistant."}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("PUT %s: status=%d body=%s", endpoint, w.Code, w.Body.String())
+		}
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "You are a helpful coding assistant.") {
+			t.Fatalf("GET %s: status=%d body=%s", endpoint, getRec.Code, getRec.Body.String())
+		}
+		delRec := httptest.NewRecorder()
+		router.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, endpoint, nil))
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("DELETE %s: status=%d body=%s", endpoint, delRec.Code, delRec.Body.String())
+		}
+	}
+
+	claudePut := httptest.NewRecorder()
+	router.ServeHTTP(claudePut, httptest.NewRequest(
+		http.MethodPut,
+		"/v8/management/config/api-keys/claude",
+		strings.NewReader(`[{"name":"claude-1","keys":[{"api-key":"sk-ant-1","cloak":{"sensitive-words-replace":{"Claude Code":"Claude"}}}] }]`),
+	))
+	if claudePut.Code != http.StatusOK {
+		t.Fatalf("PUT api-keys/claude: status=%d body=%s", claudePut.Code, claudePut.Body.String())
+	}
+}
+
+func TestConfigV8_SensitivePatternsReplace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server: {port: 8317}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router := gin.New()
+	router.GET("/v8/management/config/*path", h.ConfigV8)
+	router.PUT("/v8/management/config/*path", h.ConfigV8)
+	router.PATCH("/v8/management/config/*path", h.ConfigV8)
+	router.DELETE("/v8/management/config/*path", h.ConfigV8)
+
+	for _, endpoint := range []string{
+		"/v8/management/config/oauth/providers/antigravity/sensitive-patterns-replace",
+		"/v8/management/config/oauth/providers/devin/sensitive-patterns-replace",
+	} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPut, endpoint, strings.NewReader(`[{"pattern":"(?m)^RFC 2119[^\\n]*\\n?","replacement":""}]`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("PUT %s: status=%d body=%s", endpoint, w.Code, w.Body.String())
+		}
+		getRec := httptest.NewRecorder()
+		router.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "RFC 2119") {
+			t.Fatalf("GET %s: status=%d body=%s", endpoint, getRec.Code, getRec.Body.String())
+		}
+		delRec := httptest.NewRecorder()
+		router.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, endpoint, nil))
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("DELETE %s: status=%d body=%s", endpoint, delRec.Code, delRec.Body.String())
+		}
+	}
+
+	claudePut := httptest.NewRecorder()
+	router.ServeHTTP(claudePut, httptest.NewRequest(
+		http.MethodPut,
+		"/v8/management/config/api-keys/claude",
+		strings.NewReader(`[{"name":"claude-1","keys":[{"api-key":"sk-ant-1","cloak":{"sensitive-patterns-replace":[{"pattern":"Claude\\s+Code","replacement":"Claude"}]}}] }]`),
+	))
+	if claudePut.Code != http.StatusOK {
+		t.Fatalf("PUT api-keys/claude: status=%d body=%s", claudePut.Code, claudePut.Body.String())
 	}
 }

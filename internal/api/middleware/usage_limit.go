@@ -57,7 +57,9 @@ func usageLimitRouteIsSkipped(c *gin.Context) bool {
 	}
 
 	switch c.Request.Method + " " + c.FullPath() {
-	case "GET /v1/models",
+	case "GET /muse-code/models",
+		"GET /muse-code/config",
+		"GET /v1/models",
 		"GET /v1/models/*model",
 		"GET /v1beta/models",
 		"GET /v1beta/models/*action",

@@ -41,6 +41,7 @@ func (r *UsageReporter) ObserveOutputDeltaAt(text string, at time.Time) {
 		return
 	}
 	r.ObserveGenerationTokenAt(at)
+	r.liveAttempt.Output(len(text), at)
 	r.ttftMu.Lock()
 	defer r.ttftMu.Unlock()
 	o := &r.outputObservation

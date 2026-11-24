@@ -111,15 +111,17 @@ func TestWriterVariants(t *testing.T) {
 		resp, _ := gc.Get("API_RESPONSE")
 		l := logging.NewFileRequestLogger(true, dir, dir, 0)
 		at := time.Now()
-		if err := l.LogRequest("/v1/messages", "POST", nil, []byte("hello"), 200, nil, []byte("ok"), nil, req.([]byte), resp.([]byte), nil, nil, "12345678", at, at); err != nil {
+		captureValue, _ := gc.Get(logging.DeferredAPIResponseContextKey)
+		capture, _ := captureValue.(*logging.DeferredAPICapture)
+		if err := l.LogRequest("/v1/messages", "POST", nil, []byte("hello"), 200, nil, []byte("ok"), nil, req.([]byte), resp.([]byte), nil, capture.ResponseDiagnostics(), "12345678", at, at); err != nil {
 			t.Fatal(err)
 		}
 		r := parseOnlyFile(t, dir)
 		if len(r.Attempts) != 2 {
 			t.Fatalf("attempts %+v", r.Attempts)
 		}
-		if len(r.Attempts[1].Errors) == 0 {
-			t.Fatalf("missing attempt error: %+v", r.Attempts[1])
+		if len(r.Attempts[1].Errors) != 0 || len(r.Errors) != 1 || r.Errors[0] != "broken" {
+			t.Fatalf("local diagnostic must stay separate from upstream response: %+v", r)
 		}
 		for i, a := range r.Attempts {
 			if a.URL != fmt.Sprintf("https://upstream/%d", i+1) || string(a.Body) != fmt.Sprintf("body%d", i+1) || a.Status != 401+i || !strings.Contains(string(a.Response), fmt.Sprintf("response%d", i+1)) {

@@ -21,11 +21,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        image: [cpa, web]
+        arch: [amd64, arm64]
         include:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
             runner: ubuntu-24.04-arm
+          - image: cpa
+            file: Dockerfile
+            tag-prefix: ''
+          - image: web
+            file: Dockerfile.web
+            tag-prefix: web-
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -35,11 +43,13 @@ jobs:
       - name: Verify pinned submodules
         run: scripts/verify-submodules.sh
       - name: Set up Go
+        if: matrix.image == 'cpa'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Refresh models catalog
+        if: matrix.image == 'cpa'
         run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Generate build metadata
         shell: bash
@@ -53,25 +63,44 @@ jobs:
             echo "CPAMC_COMMIT=$(git -C web/management-center rev-parse HEAD)"
             echo "PANEL_BUILT_AT=$(git -C web/management-center show -s --format=%cI HEAD)"
             echo "BUILD_DATE=$(git show -s --format=%cI HEAD)"
+            echo "GOCACHE_HOUR=$(date -u +%Y%m%d%H)"
           } >> "$GITHUB_ENV"
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          cleanup: false
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Build and push CPA
+      # The cache is saved at most once per hour; later runs in that hour reuse the snapshot
+      # and skip the extract/save cost, recompiling only what changed since it was taken.
+      - name: Restore Go build cache
+        id: gocache
+        if: matrix.image == 'cpa'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/gocache
+          key: docker-gocache-${{ matrix.arch }}-${{ env.GOCACHE_HOUR }}
+          restore-keys: docker-gocache-${{ matrix.arch }}-
+      - name: Stamp Go build cache seed
+        if: matrix.image == 'cpa'
+        # A per-run stamp keeps BuildKit from reusing a cached seeding step on a fresh runner.
+        run: mkdir -p "$RUNNER_TEMP/gocache" && echo "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/gocache/stamp"
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: ${{ matrix.file }}
           platforms: linux/${{ matrix.arch }}
           push: true
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=cpa-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=cpa-${{ matrix.arch }}
+          build-contexts: ${{ matrix.image == 'cpa' && format('go-cache-seed={0}/gocache', runner.temp) || '' }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ github.sha }}
@@ -82,26 +111,27 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             io.cliproxyapi.cpamc.commit=${{ env.CPAMC_COMMIT }}
-          tags: ${{ env.DOCKERHUB_REPO }}:sha-${{ github.sha }}-${{ matrix.arch }}
-      - name: Build and push web panel
-        uses: docker/build-push-action@v6
+          tags: ${{ env.DOCKERHUB_REPO }}:${{ matrix.tag-prefix }}sha-${{ github.sha }}-${{ matrix.arch }}
+      - name: Extract Go build cache
+        if: matrix.image == 'cpa' && steps.gocache.outputs.cache-hit != 'true'
+        # One tarball out of the cache mount; copying the cache out file by file is far slower.
+        # A stamp, not --no-cache, busts the step: --no-cache also hands it an empty mount.
+        run: |
+          docker buildx build --builder "${{ steps.buildx.outputs.name }}" --progress plain \
+            --build-arg "STAMP=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --output "type=local,dest=$RUNNER_TEMP/gocache" - <<'EOF'
+          FROM busybox:1.37 AS pack
+          ARG STAMP
+          RUN --mount=type=cache,target=/root/.cache/go-build tar -cf /gocache.tar -C /root/.cache/go-build .
+          FROM scratch
+          COPY --from=pack /gocache.tar /
+          EOF
+      - name: Save Go build cache
+        if: matrix.image == 'cpa' && steps.gocache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
         with:
-          context: .
-          file: Dockerfile.web
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=web-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=web-${{ matrix.arch }}
-          build-args: |
-            CPAMC_COMMIT=${{ env.CPAMC_COMMIT }}
-            PANEL_BUILT_AT=${{ env.PANEL_BUILT_AT }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            io.cliproxyapi.cpamc.commit=${{ env.CPAMC_COMMIT }}
-          tags: ${{ env.DOCKERHUB_REPO }}:web-sha-${{ github.sha }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/gocache
+          key: docker-gocache-${{ matrix.arch }}-${{ env.GOCACHE_HOUR }}
 
   publish:
     needs: build
@@ -118,8 +148,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for prefix in '' 'web-'; do
-            tags=(--tag "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA")
+          publish() {
+            local prefix=$1
+            local tags=(--tag "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA")
             if [[ "$GITHUB_REF" == refs/heads/main ]]; then
               tags+=(--tag "$DOCKERHUB_REPO:${prefix}latest")
             fi
@@ -129,7 +160,11 @@ jobs:
             docker buildx imagetools create "${tags[@]}" \
               "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA-amd64" \
               "$DOCKERHUB_REPO:${prefix}sha-$GITHUB_SHA-arm64"
-          done
+          }
+          publish '' & cpa=$!
+          publish web- & web=$!
+          wait "$cpa"
+          wait "$web"
           {
             echo '### Published images'
             echo "- CPA: \`$DOCKERHUB_REPO:sha-$GITHUB_SHA\`"

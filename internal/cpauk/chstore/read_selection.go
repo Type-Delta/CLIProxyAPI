@@ -72,21 +72,22 @@ func (s *Store) rawPageSelection(ctx context.Context, q model.Query, page readSe
 		needed["key_id"] = true
 	}
 	filterColumns := map[string][]string{
-		"provider":       {"provider"},
-		"model":          {"model"},
-		"credential_id":  {"credential_id"},
-		"endpoint_class": {"endpoint_class"},
-		"auth_type":      {"auth_type"},
-		"service_tier":   {"service_tier_used", "service_tier_requested"},
-		"error_class":    {"error_class"},
-		"status_code":    {"upstream_status_code"},
-		"token_quality":  {"token_quality"},
-		"session_id":     {"session_id"},
-		"source":         {"import_batch_id"},
-		"generated":      {"generated"},
-		"success":        {"succeeded", "outcome", "upstream_error_body"},
-		"result":         {"succeeded", "outcome", "upstream_error_body"},
-		"outcome":        {"outcome", "succeeded", "upstream_error_body"},
+		"proxy_request_id": {"proxy_request_id"},
+		"provider":         {"provider"},
+		"model":            {"model"},
+		"credential_id":    {"credential_id"},
+		"endpoint_class":   {"endpoint_class"},
+		"auth_type":        {"auth_type"},
+		"service_tier":     {"service_tier_used", "service_tier_requested"},
+		"error_class":      {"error_class"},
+		"status_code":      {"upstream_status_code"},
+		"token_quality":    {"token_quality"},
+		"session_id":       {"session_id"},
+		"source":           {"import_batch_id"},
+		"generated":        {"generated"},
+		"success":          {"succeeded", "outcome", "upstream_error_body"},
+		"result":           {"succeeded", "outcome", "upstream_error_body"},
+		"outcome":          {"outcome", "succeeded", "upstream_error_body"},
 	}
 	for name := range q.Filters {
 		for _, c := range filterColumns[name] {
@@ -306,7 +307,8 @@ func buildWhere(query model.Query) (string, []any, error) {
 		}
 	}
 	columns := map[string]string{
-		"provider": "provider", "model": "model", "credential_id": "credential_id",
+		"proxy_request_id": "proxy_request_id",
+		"provider":         "provider", "model": "model", "credential_id": "credential_id",
 		"endpoint_class": "endpoint_class", "auth_type": "auth_type",
 		"service_tier": "COALESCE(service_tier_used, service_tier_requested)",
 		"error_class":  "error_class", "status_code": "upstream_status_code",

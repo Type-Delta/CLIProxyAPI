@@ -209,7 +209,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 		"start": {}, "end": {}, "time_zone": {}, "cursor": {}, "page_size": {},
 		"bucket_width": {}, "dimension": {}, "sort_by": {}, "provider": {}, "model": {},
 		"endpoint_class": {}, "auth_type": {}, "service_tier": {}, "success": {},
-		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {}, "result": {}, "source": {}, "session_id": {},
+		"error_class": {}, "status_code": {}, "token_quality": {}, "generated": {}, "result": {}, "source": {}, "session_id": {}, "proxy_request_id": {},
 	}
 	for name := range values {
 		if name == "key_id" || name == "key_ids" {
@@ -244,7 +244,7 @@ func analyticsGETQuery(values url.Values, operation model.Operation) (model.Quer
 			return model.Query{}, fmt.Errorf("page_size must be an integer")
 		}
 	}
-	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality", "source", "session_id"} {
+	for _, name := range []string{"provider", "model", "endpoint_class", "auth_type", "service_tier", "error_class", "token_quality", "source", "session_id", "proxy_request_id"} {
 		if entries, ok := values[name]; ok {
 			encoded, errEncode := json.Marshal(entries)
 			if errEncode != nil {

@@ -127,7 +127,8 @@ var allowedQueryFilters = map[Operation]map[string]string{
 		"token_quality": "strings",
 	},
 	OperationEvents: {
-		"provider": "strings", "model": "strings", "credential_id": "digests",
+		"proxy_request_id": "strings",
+		"provider":         "strings", "model": "strings", "credential_id": "digests",
 		"endpoint_class": "strings", "auth_type": "strings", "service_tier": "strings",
 		"success": "bool", "error_class": "strings", "status_code": "integers",
 		"session_id": "strings", "token_quality": "strings", "generated": "bool", "outcome": "outcome", "result": "result", "source": "strings",
@@ -519,6 +520,9 @@ func validateFilterValue(name, kind string, raw json.RawMessage) error {
 			return fmt.Errorf("filter %s must contain 1 to %d strings", name, MaxFilterValues)
 		}
 		for _, value := range values {
+			if name == "proxy_request_id" && !IsCorrelationID(value) {
+				return fmt.Errorf("filter %s contains an invalid correlation ID", name)
+			}
 			if kind == "digests" {
 				if !IsFullKeyID(value) {
 					return fmt.Errorf("filter %s contains an invalid digest", name)

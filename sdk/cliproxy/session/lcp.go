@@ -4,17 +4,18 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -114,7 +115,7 @@ func ExtractCanonicalTurns(format sdktranslator.Format, payload []byte) []Canoni
 	return normalizeCanonicalTurns(turns)
 }
 
-func inferCanonicalFormat(root gjson.Result) sdktranslator.Format {
+func inferCanonicalFormat(root ojson.Result) sdktranslator.Format {
 	if req := root.Get("request"); req.Exists() && !root.Get("contents").Exists() {
 		root = req
 	}
@@ -125,7 +126,7 @@ func inferCanonicalFormat(root gjson.Result) sdktranslator.Format {
 		return sdktranslator.FormatOpenAIResponse
 	}
 	if input := root.Get("input"); input.Exists() {
-		if input.Type == gjson.String {
+		if input.Type == ojson.String {
 			return sdktranslator.FormatInteractions
 		}
 		for _, item := range input.Array() {
@@ -142,13 +143,13 @@ func inferCanonicalFormat(root gjson.Result) sdktranslator.Format {
 	return sdktranslator.FormatOpenAI
 }
 
-func appendMessagesTurns(turns *[]CanonicalTurn, root gjson.Result, includeTopLevelSystem bool) {
+func appendMessagesTurns(turns *[]CanonicalTurn, root ojson.Result, includeTopLevelSystem bool) {
 	if includeTopLevelSystem {
 		if system := root.Get("system"); system.Exists() {
 			appendTurn(turns, "system", canonicalPartsFromJSON(system))
 		}
 	}
-	root.Get("messages").ForEach(func(_, message gjson.Result) bool {
+	root.Get("messages").ForEach(func(_, message ojson.Result) bool {
 		if !hasCanonicalTurnCapacity(turns) {
 			return false
 		}
@@ -171,7 +172,7 @@ func appendMessagesTurns(turns *[]CanonicalTurn, root gjson.Result, includeTopLe
 	})
 }
 
-func appendResponsesTurns(turns *[]CanonicalTurn, root gjson.Result) {
+func appendResponsesTurns(turns *[]CanonicalTurn, root ojson.Result) {
 	if instructions := root.Get("instructions"); instructions.Exists() {
 		appendTurn(turns, "system", canonicalPartsFromJSON(instructions))
 	}
@@ -182,11 +183,11 @@ func appendResponsesTurns(turns *[]CanonicalTurn, root gjson.Result) {
 	if !input.Exists() {
 		return
 	}
-	if input.Type == gjson.String {
+	if input.Type == ojson.String {
 		appendTurn(turns, "user", canonicalPartsFromJSON(input))
 		return
 	}
-	input.ForEach(func(_, item gjson.Result) bool {
+	input.ForEach(func(_, item ojson.Result) bool {
 		if !hasCanonicalTurnCapacity(turns) {
 			return false
 		}
@@ -216,7 +217,7 @@ func appendResponsesTurns(turns *[]CanonicalTurn, root gjson.Result) {
 	})
 }
 
-func appendGeminiTurns(turns *[]CanonicalTurn, root gjson.Result) {
+func appendGeminiTurns(turns *[]CanonicalTurn, root ojson.Result) {
 	if req := root.Get("request"); req.Exists() && !root.Get("contents").Exists() {
 		root = req
 	}
@@ -232,7 +233,7 @@ func appendGeminiTurns(turns *[]CanonicalTurn, root gjson.Result) {
 	} else if system := root.Get("system_instruction"); system.Exists() {
 		appendTurn(turns, "system", canonicalPartsFromJSON(system))
 	}
-	root.Get("contents").ForEach(func(_, content gjson.Result) bool {
+	root.Get("contents").ForEach(func(_, content ojson.Result) bool {
 		if !hasCanonicalTurnCapacity(turns) {
 			return false
 		}
@@ -250,7 +251,7 @@ func appendGeminiTurns(turns *[]CanonicalTurn, root gjson.Result) {
 	})
 }
 
-func appendInteractionTurns(turns *[]CanonicalTurn, root gjson.Result) {
+func appendInteractionTurns(turns *[]CanonicalTurn, root ojson.Result) {
 	if system := root.Get("system_instruction"); system.Exists() {
 		appendTurn(turns, "system", canonicalPartsFromJSON(system))
 	} else if system := root.Get("systemInstruction"); system.Exists() {
@@ -259,20 +260,20 @@ func appendInteractionTurns(turns *[]CanonicalTurn, root gjson.Result) {
 	appendInteractionValue(turns, root.Get("input"), "")
 }
 
-func appendInteractionValue(turns *[]CanonicalTurn, value gjson.Result, inheritedRole string) bool {
+func appendInteractionValue(turns *[]CanonicalTurn, value ojson.Result, inheritedRole string) bool {
 	if !value.Exists() {
 		return true
 	}
 	if !hasCanonicalTurnCapacity(turns) {
 		return false
 	}
-	if value.Type == gjson.JSON && value.IsArray() {
-		value.ForEach(func(_, child gjson.Result) bool {
+	if value.Type == ojson.JSON && value.IsArray() {
+		value.ForEach(func(_, child ojson.Result) bool {
 			return appendInteractionValue(turns, child, inheritedRole)
 		})
 		return hasCanonicalTurnCapacity(turns)
 	}
-	if value.Type != gjson.JSON {
+	if value.Type != ojson.JSON {
 		appendTurn(turns, defaultInteractionRole(inheritedRole), canonicalPartsFromJSON(value))
 		return hasCanonicalTurnCapacity(turns)
 	}
@@ -281,7 +282,7 @@ func appendInteractionValue(turns *[]CanonicalTurn, value gjson.Result, inherite
 		if role == "" {
 			role = inheritedRole
 		}
-		steps.ForEach(func(_, child gjson.Result) bool {
+		steps.ForEach(func(_, child ojson.Result) bool {
 			return appendInteractionValue(turns, child, role)
 		})
 		return hasCanonicalTurnCapacity(turns)
@@ -322,30 +323,30 @@ func appendTurn(turns *[]CanonicalTurn, role string, parts []CanonicalPart) {
 	if !hasCanonicalTurnCapacity(turns) || len(parts) == 0 {
 		return
 	}
-	*turns = append(*turns, CanonicalTurn{Role: role, Parts: limitCanonicalParts(nil, parts)})
+	*turns = append(*turns, CanonicalTurn{Role: strings.Clone(role), Parts: limitCanonicalParts(nil, parts)})
 }
 
 func hasCanonicalTurnCapacity(turns *[]CanonicalTurn) bool {
 	return turns != nil && len(*turns) < maxCanonicalTurns
 }
 
-func canonicalPartsFromJSON(value gjson.Result) []CanonicalPart {
+func canonicalPartsFromJSON(value ojson.Result) []CanonicalPart {
 	if !value.Exists() {
 		return nil
 	}
 	switch value.Type {
-	case gjson.String:
+	case ojson.String:
 		return []CanonicalPart{canonicalTextPart(value)}
-	case gjson.Number, gjson.True, gjson.False:
-		return []CanonicalPart{{Kind: "value", Value: value.Raw, OriginalSize: len(value.Raw)}}
-	case gjson.JSON:
+	case ojson.Number, ojson.True, ojson.False:
+		return []CanonicalPart{{Kind: "value", Value: strings.Clone(value.Raw), OriginalSize: len(value.Raw)}}
+	case ojson.JSON:
 		if isReasoningJSONPart(value) {
 			return nil
 		}
 		if value.IsArray() {
 			parts := make([]CanonicalPart, 0, maxCanonicalPartsPerTurn+1)
 			var droppedCount int
-			value.ForEach(func(_, child gjson.Result) bool {
+			value.ForEach(func(_, child ojson.Result) bool {
 				if len(parts) >= maxCanonicalPartsPerTurn {
 					droppedCount++
 					return true
@@ -359,7 +360,7 @@ func canonicalPartsFromJSON(value gjson.Result) []CanonicalPart {
 			}
 			return parts
 		}
-		if text := value.Get("text"); text.Type == gjson.String {
+		if text := value.Get("text"); text.Type == ojson.String {
 			return []CanonicalPart{canonicalTextPart(text)}
 		}
 		if content := value.Get("content"); content.Exists() {
@@ -389,32 +390,33 @@ func canonicalPartsFromJSON(value gjson.Result) []CanonicalPart {
 	}
 }
 
-func canonicalTextPart(value gjson.Result) CanonicalPart {
+func canonicalTextPart(value ojson.Result) CanonicalPart {
 	text := normalizeText(value.String(), false)
 	if len(text) > largePartThreshold {
 		return CanonicalPart{
 			Kind:         "text",
-			Value:        sparseSample(text, sparseFingerprintBytes),
+			Value:        strings.Clone(sparseSample(text, sparseFingerprintBytes)),
 			Digest:       computeHexSHA256(text),
 			OriginalSize: len(text),
 			Sampled:      true,
 		}
 	}
-	return CanonicalPart{Kind: "text", Value: text, OriginalSize: len(text)}
+	return CanonicalPart{Kind: "text", Value: strings.Clone(text), OriginalSize: len(text)}
 }
 
-func canonicalResourcePart(value gjson.Result) CanonicalPart {
+func canonicalResourcePart(value ojson.Result) CanonicalPart {
 	part := canonicalTextPart(value)
 	part.Kind = "resource"
 	return part
 }
 
-func canonicalJSONPart(kind string, value gjson.Result) CanonicalPart {
+func canonicalJSONPart(kind string, value ojson.Result) CanonicalPart {
 	raw := value.Raw
+	clonedKind := strings.Clone(kind)
 	if len(raw) > largePartThreshold {
 		return CanonicalPart{
-			Kind:         kind,
-			Value:        sparseSample(raw, sparseFingerprintBytes),
+			Kind:         clonedKind,
+			Value:        strings.Clone(sparseSample(raw, sparseFingerprintBytes)),
 			Digest:       computeHexSHA256(raw),
 			OriginalSize: len(raw),
 			Sampled:      true,
@@ -424,9 +426,10 @@ func canonicalJSONPart(kind string, value gjson.Result) CanonicalPart {
 	if errUnmarshal := json.Unmarshal([]byte(raw), &decoded); errUnmarshal == nil {
 		if encoded, errMarshal := json.Marshal(decoded); errMarshal == nil {
 			raw = string(encoded)
+			return CanonicalPart{Kind: clonedKind, Value: raw, OriginalSize: len(raw)}
 		}
 	}
-	return CanonicalPart{Kind: kind, Value: raw, OriginalSize: len(raw)}
+	return CanonicalPart{Kind: clonedKind, Value: strings.Clone(raw), OriginalSize: len(raw)}
 }
 
 func computeHexSHA256(data string) string {
@@ -486,22 +489,22 @@ func limitCanonicalPartsCount(parts []CanonicalPart, dropped int) []CanonicalPar
 	return parts
 }
 
-func isReasoningJSONPart(value gjson.Result) bool {
-	if value.Type != gjson.JSON || value.IsArray() {
+func isReasoningJSONPart(value ojson.Result) bool {
+	if value.Type != ojson.JSON || value.IsArray() {
 		return false
 	}
 	typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
 	if typ == "thinking" || typ == "reasoning" || typ == "thought" || strings.Contains(typ, "reasoning") {
 		return true
 	}
-	return value.Get("thought").Type == gjson.True && value.Get("thought").Bool()
+	return value.Get("thought").Type == ojson.True && value.Get("thought").Bool()
 }
 
 func isToolPartType(value string) bool {
 	return strings.Contains(value, "tool") || strings.Contains(value, "function_call") || value == "function"
 }
 
-func geminiToolPartKind(value gjson.Result) string {
+func geminiToolPartKind(value ojson.Result) string {
 	for _, field := range []string{"functionCall", "function_call"} {
 		if value.Get(field).Exists() {
 			return "tool:function_call"
@@ -649,6 +652,8 @@ type MerklePrefixMatcherConfig struct {
 	MaxPrefixes int
 	// NowFunc provides a mockable clock for deterministic TTL/expiration tests.
 	NowFunc func() time.Time
+	// Persistent enables the existing local KV store when it is available.
+	Persistent bool
 }
 
 // MerklePrefixMatcher stores rolling Merkle prefixes and their selected auth bindings.
@@ -656,19 +661,22 @@ type MerklePrefixMatcherConfig struct {
 // prompt is not enough evidence that two requests belong to the same conversation.
 // It is safe for concurrent use and has no background goroutine.
 type MerklePrefixMatcher struct {
-	mu            sync.Mutex
-	ttl           time.Duration
-	maxTurns      int
-	maxGroups     int
-	maxPrefixes   int
-	nowFunc       func() time.Time
-	groups        map[string]*lcpNamespace
-	lru           *list.List
-	lruElements   map[*lcpGroup]*list.Element
-	groupCount    int
-	prefixCount   int
-	accessCounter uint64
-	operations    uint64
+	mu                 sync.Mutex
+	ttl                time.Duration
+	maxTurns           int
+	maxGroups          int
+	maxPrefixes        int
+	nowFunc            func() time.Time
+	groups             map[string]*lcpNamespace
+	lru                *list.List
+	lruElements        map[*lcpGroup]*list.Element
+	groupCount         int
+	prefixCount        int
+	accessCounter      uint64
+	operations         uint64
+	persistent         bool
+	persistence        *kvstore.PersistentMap
+	persistenceStopped bool
 }
 
 type lcpNamespace struct {
@@ -730,6 +738,7 @@ func NewMerklePrefixMatcherWithConfig(cfg MerklePrefixMatcherConfig) *MerklePref
 		groups:      make(map[string]*lcpNamespace),
 		lru:         list.New(),
 		lruElements: make(map[*lcpGroup]*list.Element),
+		persistent:  cfg.Persistent,
 	}
 }
 
@@ -861,6 +870,7 @@ func (m *MerklePrefixMatcher) MatchFingerprintsWithContext(namespace string, fin
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	match, matchOK := m.matchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, m.now())
 	if !matchOK {
@@ -918,6 +928,7 @@ func (m *MerklePrefixMatcher) BindFingerprintsWithContext(namespace string, fing
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	return m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, strings.TrimSpace(authID), m.now())
 }
@@ -950,6 +961,7 @@ func (m *MerklePrefixMatcher) TouchFingerprintsWithContext(namespace string, fin
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	return m.touchLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, strings.TrimSpace(authID), m.now())
 }
@@ -980,6 +992,7 @@ func (m *MerklePrefixMatcher) RemoveFingerprintsBefore(namespace string, fingerp
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	ns := m.groups[namespace]
 	if ns == nil {
@@ -1009,6 +1022,7 @@ func (m *MerklePrefixMatcher) RemoveSessionBefore(namespace, sessionID, authID s
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
 	m.prepareLocked()
 	ns := m.groups[namespace]
 	if ns == nil {
@@ -1037,6 +1051,8 @@ func (m *MerklePrefixMatcher) InvalidateAuth(authID string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
+	m.prepareLocked()
 	for _, namespace := range m.groups {
 		for _, group := range namespace.groups {
 			if group.authID == authID {
@@ -1052,6 +1068,18 @@ func (m *MerklePrefixMatcher) Clear() {
 		return
 	}
 	m.mu.Lock()
+	m.prepareLocked()
+	for _, namespace := range m.groups {
+		for _, group := range namespace.groups {
+			m.removeGroupLocked(group)
+		}
+	}
+	m.resetIndexLocked()
+	m.persistence.Flush()
+	m.mu.Unlock()
+}
+
+func (m *MerklePrefixMatcher) resetIndexLocked() {
 	m.groups = make(map[string]*lcpNamespace)
 	m.lru = list.New()
 	m.lruElements = make(map[*lcpGroup]*list.Element)
@@ -1060,7 +1088,18 @@ func (m *MerklePrefixMatcher) Clear() {
 	// Do NOT reset accessCounter to 0. Keeping accessCounter monotonically increasing
 	// across Clear() ensures that in-flight requests with pre-clear generations cannot
 	// accidentally evict newly created post-clear bindings.
+}
+
+// Stop releases the in-memory index while retaining durable bindings for restart.
+func (m *MerklePrefixMatcher) Stop() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.persistenceStopped = true
+	m.persistence = nil
 	m.mu.Unlock()
+	m.Clear()
 }
 
 // LookupSession observes the bound authIDs for an LCP sessionID without side effects or TTL refresh.
@@ -1071,6 +1110,8 @@ func (m *MerklePrefixMatcher) LookupSession(sessionID string) (authIDs []string,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	defer func() { m.persistence.Flush() }()
+	m.prepareLocked()
 	now := m.now()
 
 	var expired []*lcpGroup
@@ -1138,6 +1179,7 @@ func (m *MerklePrefixMatcher) prepareLocked() {
 	if m.lruElements == nil {
 		m.lruElements = make(map[*lcpGroup]*list.Element)
 	}
+	m.restorePersistenceLocked()
 	m.operations++
 	if m.operations%128 == 0 {
 		m.cleanupLocked(m.now())
@@ -1187,6 +1229,7 @@ func (m *MerklePrefixMatcher) touchLocked(namespace string, fingerprints, tailFi
 		if element := m.lruElements[existing]; element != nil {
 			m.lru.MoveToBack(element)
 		}
+		m.persistGroupLocked(existing)
 		return true
 	}
 	m.bindLocked(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, authID, now)
@@ -1341,12 +1384,14 @@ func (m *MerklePrefixMatcher) addGroupLocked(group *lcpGroup) {
 		}
 		m.removeGroupLocked(oldGroup)
 	}
+	m.persistGroupLocked(group)
 }
 
 func (m *MerklePrefixMatcher) removeGroupLocked(group *lcpGroup) {
 	if group == nil {
 		return
 	}
+	m.persistence.Set(lcpPersistenceKey(group), nil, time.Time{})
 	ns := m.groups[group.namespace]
 	if ns != nil {
 		if current := ns.groups[group.key]; current == group {
@@ -1420,6 +1465,7 @@ func (m *MerklePrefixMatcher) matchLocked(namespace string, fingerprints, tailFi
 		if element := m.lruElements[best]; element != nil {
 			m.lru.MoveToBack(element)
 		}
+		m.persistGroupLocked(best)
 
 		sessionID := best.sessionID
 		parentSessionID := best.parentSessionID
@@ -1559,6 +1605,7 @@ func (m *MerklePrefixMatcher) matchCompactionLocked(ns *lcpNamespace, namespace 
 	if element := m.lruElements[best]; element != nil {
 		m.lru.MoveToBack(element)
 	}
+	m.persistGroupLocked(best)
 
 	parentSessionID := best.sessionID
 	seqKey := sequenceKey(fingerprints)

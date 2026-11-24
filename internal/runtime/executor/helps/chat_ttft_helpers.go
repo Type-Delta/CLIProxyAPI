@@ -3,7 +3,7 @@ package helps
 import (
 	"bytes"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // IsChatTokenEvent reports whether the given OpenAI-compatible Chat Completions SSE or JSON chunk
@@ -40,11 +40,11 @@ func isChatTokenEvent(payload []byte, terminalFallback bool) bool {
 	}
 
 	// Terminal error envelope fallback
-	if gjson.GetBytes(payload, "error.message").Exists() || gjson.GetBytes(payload, "error").Exists() {
+	if ojson.GetBytesNoCopy(payload, "error.message").Exists() || ojson.GetBytesNoCopy(payload, "error").Exists() {
 		return terminalFallback
 	}
 
-	choices := gjson.GetBytes(payload, "choices").Array()
+	choices := ojson.GetBytesNoCopy(payload, "choices").Array()
 	if len(choices) == 0 {
 		return false
 	}

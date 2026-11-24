@@ -24,6 +24,13 @@ func raws(es []Element) [][]byte {
 	}
 	return out
 }
+func requestRaws(r Request) [][]byte {
+	out := raws(r.Elements)
+	if r.ToolsID != "" {
+		out = append(out, r.Tools)
+	}
+	return out
+}
 func sameJSON(t testing.TB, a, b []byte) {
 	t.Helper()
 	if !reflect.DeepEqual(decode(a), decode(b)) {
@@ -87,13 +94,12 @@ func TestRequestRoundTrips(t *testing.T) {
 			if len(r.Elements) != tt.count {
 				t.Fatalf("count %d", len(r.Elements))
 			}
-			b, err := Rebuild(tt.f, r.Envelope, raws(r.Elements))
+			b, err := Rebuild(tt.f, r.Envelope, requestRaws(r))
 			if err != nil {
 				t.Fatal(err)
 			}
 			sameJSON(t, []byte(tt.body), b)
-			// Removing whitespace solely inside rebuilt transcript arrays is allowed.
-			if !strings.Contains(tt.body, "[ ") && !bytes.Equal(b, []byte(tt.body)) {
+			if !bytes.Equal(b, []byte(tt.body)) {
 				t.Fatalf("bytes changed: %s", b)
 			}
 			if r.EnvelopeID != digest(r.Envelope) {
@@ -298,7 +304,7 @@ func FuzzTranscript(f *testing.F) {
 		for _, format := range []Format{FormatUnknown, FormatOpenAIChat, FormatOpenAIResponses, FormatClaude, FormatGemini} {
 			r, err := ParseRequest(format, b)
 			if err == nil {
-				rebuilt, err := Rebuild(format, r.Envelope, raws(r.Elements))
+				rebuilt, err := Rebuild(format, r.Envelope, requestRaws(r))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -379,7 +385,7 @@ func TestSpecialWireShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebuilt, err := Rebuild(FormatOpenAIChat, req.Envelope, raws(req.Elements))
+	rebuilt, err := Rebuild(FormatOpenAIChat, req.Envelope, requestRaws(req))
 	if err != nil || !bytes.Equal(body, rebuilt) {
 		t.Fatalf("lossy rebuild %s %v", rebuilt, err)
 	}
@@ -393,5 +399,87 @@ func TestSpecialWireShapes(t *testing.T) {
 	r, err = ParseResponse(FormatGemini, []byte(`{"response":{"responseId":"g","modelVersion":"model","candidates":[{"content":{"parts":[{"text":"answer"}]}}]}}`), false)
 	if err != nil || r.ResponseID != "g" || r.Model != "model" || r.Elements[0].Role != "model" {
 		t.Fatal(r, err)
+	}
+}
+
+func TestToolsAndKiroRoundTrip(t *testing.T) {
+	cases := []struct {
+		f    Format
+		body string
+	}{
+		{FormatOpenAIChat, `{"messages" : [  {"role":"user","content":"hi"} , {"role":"assistant","content":"ok"}  ],"tools" : [{"type":"function","function":{"name":"read"}}]}`},
+		{FormatClaude, `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"read"}]}`},
+		{FormatOpenAIResponses, `{"input":[{"role":"user","content":"hi"}],"tools":[{"name":"read"}]}`},
+		{FormatGemini, `{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[]}]}}`},
+		{FormatKiro, `{"conversationState":{"history": [ {"userInputMessage":{"content":"hi","images":[{"source":{"bytes":"YWJj"}}]}} , {"assistantResponseMessage":{"content":"ok","toolUses":[{"name":"read","toolUseId":"call-1","input":{}}]}} ],"currentMessage":{"userInputMessage":{"content":"next","userInputMessageContext":{"tools":[{"toolSpecification":{"name":"read"}}],"toolResults":[{"toolUseId":"call-1","content":[{"text":"result"}]}]}}}}}`},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.f), func(t *testing.T) {
+			req := mustRequest(t, tc.f, tc.body)
+			if req.ToolsID == "" || bytes.Contains(req.Envelope, req.Tools) {
+				t.Fatal("tools not extracted")
+			}
+			for _, e := range req.Elements {
+				if bytes.Contains(e.Raw, req.Tools) {
+					t.Fatal("tools retained in element")
+				}
+			}
+			got, err := Rebuild(tc.f, req.Envelope, requestRaws(req))
+			if err != nil || string(got) != tc.body {
+				t.Fatalf("round trip: %s %v", got, err)
+			}
+			if tc.f == FormatKiro {
+				if DetectFormat("/generateAssistantResponse", []byte(tc.body)) != FormatKiro {
+					t.Fatal("format")
+				}
+				if req.Elements[0].Role != "user" || req.Elements[1].Role != "assistant" || req.Elements[2].Role != "user" || !reflect.DeepEqual(req.Elements[1].ToolNames, []string{"read"}) || !reflect.DeepEqual(req.Elements[2].ToolCallIDs, []string{"call-1"}) {
+					t.Fatalf("kiro elements: %+v", req.Elements)
+				}
+			}
+		})
+	}
+}
+
+func TestKiroCurrentConvergesWithHistory(t *testing.T) {
+	first := mustRequest(t, FormatKiro, `{"conversationState":{"currentMessage":{"userInputMessage":{"content":"hello","modelId":"m","origin":"AI_EDITOR","userInputMessageContext":{"tools":[{"name":"x"}]}}}}}`)
+	second := mustRequest(t, FormatKiro, `{"conversationState":{"history":[{"userInputMessage":{"content":"hello","modelId":"m","origin":"AI_EDITOR"}},{"assistantResponseMessage":{"content":"ok"}}],"currentMessage":{"userInputMessage":{"content":"next"}}}}`)
+	if first.Elements[0].SemanticID != second.Elements[0].SemanticID {
+		t.Fatalf("semantic IDs differ: %s %s", first.Elements[0].SemanticID, second.Elements[0].SemanticID)
+	}
+	if OccurrenceID("a", FormatKiro, RootEntryID("a", FormatKiro), first.Elements[0]) != OccurrenceID("a", FormatKiro, RootEntryID("a", FormatKiro), second.Elements[0]) {
+		t.Fatal("chain differs")
+	}
+}
+
+func TestRebuildLegacyInlineTools(t *testing.T) {
+	envelope := []byte(`{"messages":{"$cpa_transcript_v1":{"count":1,"array":true}},"tools":[{"name":"legacy"}]}`)
+	got, err := Rebuild(FormatClaude, envelope, [][]byte{[]byte(`{"role":"user","content":"hi"}`)})
+	want := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"legacy"}]}`
+	if err != nil || string(got) != want {
+		t.Fatalf("legacy rebuild %s: %v", got, err)
+	}
+}
+
+func TestKiroToolResultStatusIsSemantic(t *testing.T) {
+	a := mustRequest(t, FormatKiro, `{"conversationState":{"currentMessage":{"userInputMessage":{"content":"","userInputMessageContext":{"toolResults":[{"toolUseId":"x","status":"success","content":[{"text":"same"}]}]}}}}}`)
+	b := mustRequest(t, FormatKiro, `{"conversationState":{"currentMessage":{"userInputMessage":{"content":"","userInputMessageContext":{"toolResults":[{"toolUseId":"x","status":"error","content":[{"text":"same"}]}]}}}}}`)
+	if a.Elements[0].SemanticID == b.Elements[0].SemanticID {
+		t.Fatal("tool result status lost")
+	}
+}
+
+func TestKiroHistoryContentAndChainDeduplicate(t *testing.T) {
+	a := mustRequest(t, FormatKiro, `{"conversationState":{"history":[{"userInputMessage":{"content":"first"}},{"assistantResponseMessage":{"content":"reply"}}],"currentMessage":{"userInputMessage":{"content":"second"}}}}`)
+	b := mustRequest(t, FormatKiro, `{"conversationState":{"history":[{"userInputMessage":{"content":"first"}},{"assistantResponseMessage":{"content":"reply"}},{"userInputMessage":{"content":"second"}}],"currentMessage":{"userInputMessage":{"content":"third"}}}}`)
+	parentA, parentB := RootEntryID("actor", FormatKiro), RootEntryID("actor", FormatKiro)
+	for n := 0; n < 2; n++ {
+		if a.Elements[n].ContentID != b.Elements[n].ContentID {
+			t.Fatalf("content %d differs", n)
+		}
+		parentA = OccurrenceID("actor", FormatKiro, parentA, a.Elements[n])
+		parentB = OccurrenceID("actor", FormatKiro, parentB, b.Elements[n])
+		if parentA != parentB {
+			t.Fatalf("chain %d differs", n)
+		}
 	}
 }

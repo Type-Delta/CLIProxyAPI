@@ -500,3 +500,49 @@ func TestErrorLogSizeIncludesTranscriptPayload(t *testing.T) {
 		t.Fatalf("missing transcript payload size: %+v %v", logs, err)
 	}
 }
+
+func TestToolsRetentionAndReconstruction(t *testing.T) {
+	ctx := context.Background()
+	db := chtest.New(t)
+	s, err := store.Open(ctx, db, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing := New(s, t.TempDir(), 0, 30)
+	body := []byte(`{"conversationState":{"history":[{"userInputMessage":{"content":"hi"}}],"currentMessage":{"userInputMessage":{"content":"next","userInputMessageContext":{"tools":[{"name":"read"}]}}}}}`)
+	r := &record.Request{RequestID: "tools", StartedAt: time.Now().UTC(), URL: "/v1/messages", ActorKeyID: "a", Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`), Attempts: []record.Attempt{{Index: 1, Provider: "kiro", URL: "/generateAssistantResponse", Body: body}}}
+	if err = ing.IngestRecords(ctx, []*record.Request{r}); err != nil {
+		t.Fatal(err)
+	}
+	table := "`" + db.Database() + "`."
+	var ids, entries []string
+	if err = db.Conn().QueryRow(ctx, "SELECT content_ids,entry_ids FROM "+table+"request_contexts WHERE request_id='tools' AND attempt_index=1").Scan(&ids, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 || len(entries) != 3 || entries[2] != "" {
+		t.Fatalf("context %v %v", ids, entries)
+	}
+	var n uint64
+	if err = db.Conn().QueryRow(ctx, "SELECT count() FROM "+table+"transcript_entries WHERE content_id=?", ids[2]).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("tools entries %d: %v", n, err)
+	}
+	if err = db.Conn().Exec(ctx, "ALTER TABLE "+table+"transcript_content UPDATE first_observed_at=now()-INTERVAL 60 DAY WHERE content_id=? SETTINGS mutations_sync=2", ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.GC(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Request(ctx, db, "tools")
+	if err != nil || len(got.Attempts) != 1 || !bytes.Equal(got.Attempts[0].Body, body) {
+		t.Fatalf("rebuild: %v %v", got, err)
+	}
+	if err = db.Conn().Exec(ctx, "ALTER TABLE "+table+"request_contexts DELETE WHERE request_id='tools' AND attempt_index=1 SETTINGS mutations_sync=2"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.GC(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Conn().QueryRow(ctx, "SELECT count() FROM "+table+"transcript_content WHERE content_id=?", ids[2]).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("orphan tools %d: %v", n, err)
+	}
+}

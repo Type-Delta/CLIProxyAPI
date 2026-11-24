@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clickhouse/chtest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/ingest"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/legacylog"
@@ -19,6 +22,43 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/record"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/telemetry/store"
 )
+
+func TestTelemetryStreamErrorKeepsCommittedStatus(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("request-log=%t", enabled), func(t *testing.T) {
+			dir := t.TempDir()
+			router := gin.New()
+			router.Use(logging.GinLogrusLogger(), RequestLoggingMiddleware(logging.NewTelemetryRequestLogger(enabled, dir, "")))
+			router.POST("/v1/messages", func(c *gin.Context) {
+				if _, err := io.Copy(io.Discard, c.Request.Body); err != nil {
+					t.Fatal(err)
+				}
+				c.Header("Content-Type", "text/event-stream")
+				c.Writer.WriteHeader(http.StatusOK)
+				c.Writer.Flush()
+				c.Set("API_RESPONSE_ERROR", []*interfaces.ErrorMessage{{StatusCode: http.StatusBadRequest, Error: errors.New("stream failed")}})
+				if _, err := c.Writer.WriteString("event: error\ndata: {}\n\n"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"stream":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			paths, err := outbox.List(dir)
+			if err != nil || len(paths) != 1 {
+				t.Fatalf("outbox=%v error=%v", paths, err)
+			}
+			captured, err := outbox.Read(paths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if captured.Status != response.Code || captured.Status != http.StatusOK || len(captured.Errors) != 1 {
+				t.Fatalf("capture status=%d errors=%v, actual status=%d", captured.Status, captured.Errors, response.Code)
+			}
+		})
+	}
+}
 
 func TestCapturedRequestStreamSurvivesJSON403(t *testing.T) {
 	ctx := context.Background()

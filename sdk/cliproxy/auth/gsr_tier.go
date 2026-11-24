@@ -22,11 +22,24 @@ const (
 // GSRAllowanceTierForAuth returns the configured or provider-reported allowance
 // class. Unknown and free credentials retain the neutral base multiplier.
 func GSRAllowanceTierForAuth(auth *Auth, provider string) GSRAllowanceTier {
-	if auth == nil {
-		return GSRAllowanceUnknown
+	tier, _ := GSRAllowanceTierForAuthWithSource(auth, provider)
+	return tier
+}
+
+// GSRAllowanceTierForAuthWithSource also identifies the winning tier input.
+func GSRAllowanceTierForAuthWithSource(auth *Auth, provider string) (GSRAllowanceTier, string) {
+	if auth != nil {
+		if resolvedProvider := QuotaRecoveryProviderForAuth(auth); resolvedProvider != "" || strings.TrimSpace(auth.Attributes["usage_probe"]) != "" {
+			provider = resolvedProvider
+		}
 	}
-	if resolvedProvider := QuotaRecoveryProviderForAuth(auth); resolvedProvider != "" || strings.TrimSpace(auth.Attributes["usage_probe"]) != "" {
-		provider = resolvedProvider
+	tier, source, _ := gsrAllowanceDetails(auth, provider)
+	return tier, source
+}
+
+func gsrAllowanceDetails(auth *Auth, provider string) (GSRAllowanceTier, string, int64) {
+	if auth == nil {
+		return GSRAllowanceUnknown, "", 1
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if strings.Contains(provider, "zai") {
@@ -42,19 +55,59 @@ func GSRAllowanceTierForAuth(auth *Auth, provider string) GSRAllowanceTier {
 		stringMetadata(auth.Metadata, "gsr-tier"),
 	} {
 		if tier, ok := parseGSRAllowanceTier(provider, raw); ok {
-			return tier
+			return tier, "override", gsrAllowanceMultiplier(tier)
 		}
 	}
-	for _, raw := range []string{auth.Attributes["plan_type"], stringMetadata(auth.Metadata, "plan_type"), tierSignal(auth.Quota.Signals)} {
+	for i, raw := range []string{auth.Attributes["plan_type"], stringMetadata(auth.Metadata, "plan_type"), tierSignal(auth.Quota.Signals, provider)} {
 		if tier, ok := parseGSRProviderPlan(provider, raw); ok {
-			return tier
+			multiplier := gsrPlanMultiplier(provider, raw, tier)
+			if i == 2 {
+				return tier, "signal", multiplier
+			}
+			return tier, "plan", multiplier
 		}
 	}
-	return GSRAllowanceUnknown
+	return GSRAllowanceUnknown, "", 1
+}
+
+func gsrPlanMultiplier(provider, raw string, tier GSRAllowanceTier) int64 {
+	plan := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "plan_")
+	switch provider {
+	case "codex":
+		switch plan {
+		case "plus", "team", "business", "self_serve_business_usage_based":
+			return 1
+		case "prolite", "pro-lite", "pro_lite", "pro-100", "pro100", "self_serve_business_prolite":
+			return 10
+		case "pro", "pro-200", "pro200":
+			return 20
+		case "promax", "pro-max", "pro_max", "pro max", "pro-500", "pro500":
+			return 50
+		}
+	case "claude":
+		switch plan {
+		case "pro":
+			return 1
+		case "max", "max5", "max_5x", "max-5x", "default_claude_max_5x", "team":
+			return 5
+		case "ultra", "max20", "max_20x", "max-20x", "default_claude_max_20x":
+			return 10
+		}
+	case "zai":
+		switch plan {
+		case "lite", "standard":
+			return 1
+		case "pro", "premium":
+			return 6
+		case "max", "ultra":
+			return 14
+		}
+	}
+	return gsrAllowanceMultiplier(tier)
 }
 
 func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(raw))
+	normalized := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "plan_")
 	if normalized == "" {
 		return GSRAllowanceUnknown, false
 	}
@@ -72,7 +125,7 @@ func parseGSRProviderPlan(provider, raw string) (GSRAllowanceTier, bool) {
 			return GSRAllowanceElite, true
 		case "pro", "pro-200", "pro200":
 			return GSRAllowanceMax, true
-		case "prolite", "pro-lite", "pro_lite", "self_serve_business_prolite":
+		case "prolite", "pro-lite", "pro_lite", "pro-100", "pro100", "self_serve_business_prolite":
 			return GSRAllowancePremium, true
 		case "team", "business", "self_serve_business_usage_based":
 			return GSRAllowancePro, true
@@ -135,7 +188,10 @@ func stringMetadata(metadata map[string]any, key string) string {
 	return fmt.Sprint(value)
 }
 
-func tierSignal(signals map[string]string) string {
+func tierSignal(signals map[string]string, provider string) string {
+	if value := signals[provider+"_plan_type"]; value != "" {
+		return value
+	}
 	for key, value := range signals {
 		lower := strings.ToLower(strings.TrimSpace(key))
 		if lower == "x-codex-plan-type" || lower == "plan_type" ||

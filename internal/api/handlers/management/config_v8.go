@@ -1,16 +1,17 @@
 package management
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"reflect"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -230,9 +231,24 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	if saved, errSaved := os.ReadFile(h.configFilePath); errSaved == nil {
 		c.Header("ETag", configV8ETag(config.ComputeSourceHash(saved)))
 	}
+	prevSecretHash := ""
+	if h.cfg != nil {
+		prevSecretHash = h.cfg.RemoteManagement.SecretKey
+	}
 	h.cfg = next
+	nextSecretHash := ""
+	if next != nil {
+		nextSecretHash = next.RemoteManagement.SecretKey
+	}
+	if prevSecretHash != nextSecretHash {
+		h.authCache.invalidate()
+	}
 	snapshot := h.reloadSnapshotConfigLocked()
+	errReserve := h.syncConfigQuotaReservesLocked(c.Request.Context(), next)
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+	if errReserve != nil {
+		log.WithError(errReserve).Warn("failed to publish quota reserves after config save")
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
 }
 

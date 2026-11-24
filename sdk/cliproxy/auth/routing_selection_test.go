@@ -93,7 +93,7 @@ func TestRoutingPluginDelegatedWeightedUsesNarrowedPool(t *testing.T) {
 		return routing.Decision{Allowed: []string{"target"}}
 	}}
 	ctx := context.WithValue(context.Background(), routingPoolKey{}, pool)
-	selected, handled, err := manager.pickViaPluginScheduler(ctx, plugin, "routing-plugin", []string{"routing-plugin"}, "", cliproxyexecutor.Options{}, nil, candidates, candidates)
+	selected, handled, _, err := manager.pickViaPluginScheduler(ctx, plugin, "routing-plugin", []string{"routing-plugin"}, "", cliproxyexecutor.Options{}, nil, candidates, candidates)
 	if err != nil || !handled || selected == nil || selected.ID != "target" {
 		t.Fatalf("pick = %v, handled %v, err %v", selected, handled, err)
 	}
@@ -127,6 +127,9 @@ func TestDryRunDoesNotMoveAffinityOrSelectorState(t *testing.T) {
 	}
 	if trace.Pick < 0 || trace.Candidates[trace.Pick].ID != "dry-b" || trace.Affinity.State != routing.AffinityKept {
 		t.Fatalf("trace = %+v", trace)
+	}
+	if trace.StrategyStep == nil || trace.Candidates[trace.StrategyStep.Wanted].ID != "dry-a" {
+		t.Fatalf("strategy must explain counterfactual pick: %+v", trace.StrategyStep)
 	}
 	affinity.cache.mu.RLock()
 	after := affinity.cache.entries[cacheKey]

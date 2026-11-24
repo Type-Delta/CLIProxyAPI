@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"path/filepath"
+	"strings"
+)
 
 // Store abstracts persistence of Auth state across restarts.
 type Store interface {
@@ -16,4 +20,18 @@ type Store interface {
 	Save(ctx context.Context, auth *Auth) (string, error)
 	// Delete removes the auth record identified by id.
 	Delete(ctx context.Context, id string) error
+}
+
+// IsRuntimeStatePath reports whether a path is reserved for local state rather
+// than a credential. The default KV database and its sidecars stay local.
+func IsRuntimeStatePath(authDir, path string) bool {
+	name := strings.ToLower(filepath.Base(path))
+	if name == "kv.db" || strings.HasPrefix(name, "kv.db.") || strings.HasPrefix(name, "kv.db-") {
+		return true
+	}
+	if authDir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(authDir, path)
+	return err == nil && (rel == "state" || strings.HasPrefix(rel, "state"+string(filepath.Separator)))
 }

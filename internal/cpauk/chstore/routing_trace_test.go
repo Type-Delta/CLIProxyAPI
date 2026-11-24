@@ -17,7 +17,7 @@ func TestRoutingTraceReadContractAndRewrites(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 	events := loadFixtureEvents(t)[:2]
-	trace := json.RawMessage(`{"version":1,"mode":"local","retry_round":0,"selection":0,"decided_by":"strategy","candidates":[{"id":"` + strings.Repeat("a", 64) + `","provider":"openai"}],"pick":0}`)
+	trace := json.RawMessage(`{"version":1,"mode":"local","retry_round":0,"selection":0,"decided_by":"strategy","candidates":[{"id":"` + strings.Repeat("a", 64) + `","provider":"openai"}],"pick":0,"strategy_step":{"applied":"greedy-soonest-recovery","last":-1,"wanted":0,"weights":[{"index":0,"share":1,"weight":42,"credit":17,"recovery_source":"manual_reset"}]},"affinity":{"state":"kept","bound":0,"bound_at_ms":123,"bound_request_id":"0123456789abcdef0123456789abcdef"}}`)
 	events[0].RoutingTrace = trace
 	q := model.Query{SchemaVersion: 2, Operation: model.OperationEvents, Start: events[0].RequestedAt.Add(-time.Hour), End: events[1].RequestedAt.Add(time.Hour), TimeZone: "UTC", PageSize: 50}
 	if err := s.WriteBatch(ctx, events); err != nil {

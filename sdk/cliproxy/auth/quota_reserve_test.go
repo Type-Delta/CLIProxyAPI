@@ -8,12 +8,55 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
 
 var quotaReserveBypassID = strings.Repeat("ab", 32)
+
+func TestFableReserveDoesNotHoldOtherModels(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&refreshMockExecutor{id: "claude"})
+	auth, errRegister := manager.Register(context.Background(), &Auth{ID: "fable-reserve-isolation", Provider: "claude", Status: StatusActive, Attributes: map[string]string{AttributeQuotaReserve: `{"seven-day-fable":10}`}})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "claude-fable-5-1"}, {ID: "claude-opus-5"}, {ID: "claude-sonnet-5"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{
+		{ID: "five-hour", RemainingPercent: 99},
+		{ID: "seven-day", RemainingPercent: 21},
+		{ID: "seven-day-fable", RemainingPercent: 0, ResetAt: time.Now().Add(time.Hour)},
+	})
+	for _, model := range []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"} {
+		ctx, holder := routing.WithTraceHolder(context.Background())
+		_, _, errPick := manager.pickNext(ctx, "claude", model, cliproxyexecutor.Options{}, nil)
+		if (errPick != nil) != strings.Contains(model, "fable") {
+			t.Fatalf("pick %s with Fable-only reserve: %v", model, errPick)
+		}
+		trace := holder.Last()
+		if trace == nil || len(trace.Candidates) != 1 {
+			t.Fatalf("missing trace for %s", model)
+		}
+		if got := trace.Candidates[0].Gate; (got == routing.GateReserve) != strings.Contains(model, "fable") {
+			t.Fatalf("reserve gate for %s = %q", model, got)
+		}
+	}
+	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
+		"claude": {
+			{Name: "claude-fable-5-1", Alias: "family-only"},
+			{Name: "claude-opus-5", Alias: "fable-looking-opus"},
+		},
+	})
+	if !manager.quotaReserveHolds(auth, "", "family-only") {
+		t.Fatal("Fable alias bypassed its family reserve")
+	}
+	if manager.quotaReserveHolds(auth, "", "fable-looking-opus") {
+		t.Fatal("Opus alias was held based on its display name")
+	}
+}
 
 func TestEvaluateQuotaReservesHoldAtOrBelowReserve(t *testing.T) {
 	reset := time.Now().Add(time.Hour)
@@ -207,6 +250,48 @@ func TestQuotaReserveEditAppliesToLastObservation(t *testing.T) {
 	}
 }
 
+func TestQuotaReserveSettingEditsImmediatelyChangeRouting(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(&refreshMockExecutor{id: "claude"})
+	const model = "reserve-edit-routing"
+	for _, auth := range []*Auth{
+		{ID: "reserve-edit-primary", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"priority": "10", AttributeQuotaReserve: `{"weekly":30}`}},
+		{ID: "reserve-edit-fallback", Provider: "claude", Status: StatusActive},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatal(errRegister)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+	auth, _ := manager.GetByID("reserve-edit-primary")
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: time.Now().Add(time.Hour)}})
+	for _, test := range []struct {
+		reserve string
+		bypass  string
+		want    string
+	}{
+		{`{"weekly":30}`, "", "reserve-edit-fallback"},
+		{`{"weekly":10}`, "", "reserve-edit-primary"},
+		{`{"weekly":40}`, "", "reserve-edit-fallback"},
+		{`{"weekly":40}`, `["` + quotaReserveBypassID + `"]`, "reserve-edit-primary"},
+		{`{}`, "", "reserve-edit-primary"},
+		{`{"weekly":40}`, "", "reserve-edit-fallback"},
+	} {
+		auth, _ = manager.GetByID(auth.ID)
+		auth.Attributes[AttributeQuotaReserve] = test.reserve
+		auth.Attributes[AttributeQuotaReserveBypassKeys] = test.bypass
+		if _, errUpdate := manager.Update(context.Background(), auth); errUpdate != nil {
+			t.Fatal(errUpdate)
+		}
+		manager.RecheckQuotaReserve(auth.ID)
+		selected, _, errPick := manager.pickNext(context.Background(), "claude", model, cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.ClientKeyIDMetadataKey: quotaReserveBypassID}}, nil)
+		if errPick != nil || selected.ID != test.want {
+			t.Fatalf("reserve %s bypass %s: selected %v, error %v, want %s", test.reserve, test.bypass, selected, errPick, test.want)
+		}
+	}
+}
+
 func TestRoutingTraceNamesQuotaReserveGate(t *testing.T) {
 	const model = "quota-reserve-trace-model"
 	manager := NewManager(nil, nil, nil)
@@ -252,6 +337,45 @@ func TestRoutingTraceNamesQuotaReserveGate(t *testing.T) {
 	// A policy that also rejects the credential outlasts the reserve, so it is named instead.
 	if got := heldGate(withRequiredAuthKind(context.Background(), "oauth")); got.Gate != routing.GatePolicy || got.UntilMs != 0 {
 		t.Fatalf("policy and reserve candidate = %+v, want gate %q", got, routing.GatePolicy)
+	}
+}
+
+func TestQuotaReservePartialObservationsMergeAndExpire(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	auth, err := manager.Register(context.Background(), &Auth{ID: "partial-reserve", Provider: "claude", Status: StatusActive, Attributes: map[string]string{AttributeQuotaReserve: `{"seven-day-fable":10,"seven-day":30}`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	manager.quotaReserves().now = func() time.Time { return now }
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day-fable", RemainingPercent: 5, ResetAt: now.Add(time.Hour)}})
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day", RemainingPercent: 90}})
+	if !manager.quotaReserveHolds(auth, "", "claude-fable-5-1") || manager.quotaReserveHolds(auth, "", "claude-opus-5") {
+		t.Fatal("partial observation lost family hold or held another family")
+	}
+	auth.Attributes[AttributeQuotaReserve] = `{"seven-day-fable":4,"seven-day":30}`
+	if manager.quotaReserveHolds(auth, "", "claude-fable-5-1") {
+		t.Fatal("reserve edit did not immediately apply")
+	}
+	auth.Attributes[AttributeQuotaReserve] = `{"seven-day-fable":10,"seven-day":30}`
+	auth.Attributes[AttributeQuotaReserveBypassKeys] = `["` + quotaReserveBypassID + `"]`
+	if manager.quotaReserveHolds(auth, quotaReserveBypassID, "claude-fable-5-1") {
+		t.Fatal("bypass edit did not immediately apply")
+	}
+	now = now.Add(time.Hour)
+	if manager.quotaReserveHolds(auth, "", "claude-fable-5-1") {
+		t.Fatal("expired unreported window remained held")
+	}
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day-fable", RemainingPercent: 5, ResetAt: now.Add(time.Hour)}})
+	manager.InvalidateQuotaReserveObservation(auth.ID, []string{"seven-day-fable"})
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day", RemainingPercent: 90}})
+	if manager.quotaReserveHolds(auth, "", "claude-fable-5-1") {
+		t.Fatal("invalidated window returned on a partial read")
+	}
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day-fable", RemainingPercent: 5}})
+	manager.ApplyQuotaReserveBars(auth, []QuotaReserveBar{{ID: "seven-day-fable", RemainingPercent: 90}})
+	if manager.quotaReserveHolds(auth, "", "claude-fable-5-1") {
+		t.Fatal("new value did not replace same window")
 	}
 }
 

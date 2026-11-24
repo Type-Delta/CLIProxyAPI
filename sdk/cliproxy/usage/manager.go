@@ -35,7 +35,9 @@ type Record struct {
 	TraceID string
 	// SelectionID identifies the scheduler selection decision that produced this usage record when available.
 	SelectionID string
-	Provider    string
+	// HomeSelection carries deferred accounting for reused Home dispatches.
+	HomeSelection *HomeSelection
+	Provider      string
 	// BaseURL stores the configured upstream base URL when available.
 	BaseURL string
 	// ExecutorType stores the concrete executor type that handled the request.
@@ -121,6 +123,14 @@ type Record struct {
 // accepted upstream stream that ended without its terminal frame.
 const FailureStreamTruncatedCode = "stream_truncated"
 
+// FailureRequestScopedCode marks failures belonging to the request rather than
+// the selected credential, including local capability validation failures.
+const FailureRequestScopedCode = "request_scoped"
+
+// FailureForceCooldownCode marks failures matched by a request-scoped error rule
+// configured with a cooldown action (stop-and-cooldown or continue-and-cooldown).
+const FailureForceCooldownCode = "force_cooldown"
+
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
 	// Canceled preserves typed error identity before diagnostic serialization.
@@ -163,6 +173,8 @@ type Detail struct {
 	VideoInputTokens         *int64
 	FileInputTokens          *int64
 	CachedTextTokens         *int64
+	CachedImageTokens        *int64
+	CachedAudioTokens        *int64
 	TextOutputTokens         *int64
 	ImageOutputTokens        *int64
 	AudioOutputTokens        *int64

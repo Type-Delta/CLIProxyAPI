@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -55,6 +56,7 @@ type quotaCallOutcome struct {
 	uncacheable        bool
 	callerCanceled     bool
 	fromCache          bool
+	claudeResetGrants  *claudeResetGrantCatalog
 }
 
 func (o quotaCallOutcome) clone() quotaCallOutcome {
@@ -93,11 +95,12 @@ type quotaBackoff struct {
 // management quota page. It is owned by one Handler and is safe for concurrent
 // requests from multiple management clients.
 type apiCallQuotaCache struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	entries  map[string]quotaCacheEntry
-	flights  map[string]*quotaFlight
-	backoffs map[string]quotaBackoff
+	mu                  sync.Mutex
+	now                 func() time.Time
+	entries             map[string]quotaCacheEntry
+	flights             map[string]*quotaFlight
+	backoffs            map[string]quotaBackoff
+	claudeResetRequests map[string]time.Time
 }
 
 func newAPICallQuotaCache(now func() time.Time) *apiCallQuotaCache {
@@ -488,7 +491,7 @@ func cloneResponseHeader(headers map[string][]string) map[string][]string {
 	return cloned
 }
 
-func quotaAuthIdentityHash(auth *coreauth.Auth) string {
+func quotaAuthIdentityHash(auth *coreauth.Auth, ignoredAttributes ...string) string {
 	if auth == nil {
 		return digestQuotaKey("quota-auth:none")
 	}
@@ -503,27 +506,45 @@ func quotaAuthIdentityHash(auth *coreauth.Auth) string {
 	writeQuotaPart(&builder, auth.FileName)
 	writeQuotaPart(&builder, index)
 	writeQuotaPart(&builder, strconv.FormatUint(auth.RegistrationEpoch, 10))
-	writeQuotaStringMap(&builder, auth.Attributes)
+	attributes := auth.Attributes
+	if len(ignoredAttributes) > 0 {
+		attributes = maps.Clone(attributes)
+		for _, key := range ignoredAttributes {
+			delete(attributes, key)
+		}
+	}
+	writeQuotaStringMap(&builder, attributes)
 	return digestQuotaKey(builder.String())
 }
 
-func quotaBackoffHash(authHash, provider string) string {
+func quotaBackoffHash(authHash, provider, credentialVersion string) string {
 	var builder strings.Builder
 	writeQuotaPart(&builder, "quota-backoff-v1")
 	writeQuotaPart(&builder, authHash)
 	writeQuotaPart(&builder, strings.ToLower(strings.TrimSpace(provider)))
+	writeQuotaPart(&builder, credentialVersion)
 	return digestQuotaKey(builder.String())
 }
 
 func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *url.URL, requestProxyURL string, headers map[string]string, body string) quotaCacheKey {
 	authHash := quotaAuthIdentityHash(auth)
+	// Reserve edits change routing immediately without lifting provider backoff.
+	backoffAuthHash := quotaAuthIdentityHash(auth, coreauth.AttributeQuotaReserve, coreauth.AttributeQuotaReserveBypassKeys)
 	provider := ""
+	credentialVersion := ""
+	epoch := uint64(0)
 	if auth != nil {
 		provider = strings.ToLower(strings.TrimSpace(auth.Provider))
+		credentialVersion = strconv.FormatUint(auth.CredentialVersion, 10)
+		if h != nil && h.authManager != nil {
+			epoch = h.authManager.QuotaObservationEpoch(auth.ID)
+		}
 	}
 	var base strings.Builder
 	writeQuotaPart(&base, "quota-base-v1")
 	writeQuotaPart(&base, authHash)
+	writeQuotaPart(&base, strconv.FormatUint(epoch, 10))
+	writeQuotaPart(&base, credentialVersion)
 	writeQuotaPart(&base, strings.ToUpper(strings.TrimSpace(method)))
 	if rawURL != nil {
 		canonical := *rawURL
@@ -537,6 +558,8 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 	var builder strings.Builder
 	writeQuotaPart(&builder, "quota-request-v1")
 	writeQuotaPart(&builder, authHash)
+	writeQuotaPart(&builder, strconv.FormatUint(epoch, 10))
+	writeQuotaPart(&builder, credentialVersion)
 	writeQuotaPart(&builder, strings.ToUpper(strings.TrimSpace(method)))
 	if rawURL != nil {
 		writeQuotaPart(&builder, rawURL.String())
@@ -549,7 +572,7 @@ func buildQuotaCacheKey(h *Handler, auth *coreauth.Auth, method string, rawURL *
 		requestHash: digestQuotaKey(builder.String()),
 		baseHash:    digestQuotaKey(base.String()),
 		authHash:    authHash,
-		backoffHash: quotaBackoffHash(authHash, provider),
+		backoffHash: quotaBackoffHash(backoffAuthHash, provider, credentialVersion),
 	}
 }
 
@@ -604,6 +627,7 @@ const (
 	codexResetCreditsURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 	codexConsumeURL         = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 	kimiUsageQuotaURL       = "https://api.kimi.com/coding/v1/usages"
+	kimiAIUsageQuotaURL     = "https://api.kimi.ai/coding/v1/usages"
 	xaiWeeklyQuotaURL       = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 	xaiMonthlyQuotaURL      = "https://cli-chat-proxy.grok.com/v1/billing"
 	xaiProfileQuotaURL      = "https://api.x.ai/v1/me"
@@ -626,7 +650,7 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == http.MethodGet {
-		usageProbe := strings.ToLower(strings.TrimSpace(authAttribute(auth, "usage_probe")))
+		usageProbe := coreauth.QuotaRecoveryProviderForAuth(auth)
 		if usageProbe == "zai" && exactQuotaURL(rawURL, zaiUsageQuotaURL) {
 			return quotaRequestCacheable
 		}
@@ -653,16 +677,18 @@ func classifyQuotaRequest(auth *coreauth.Auth, method string, rawURL *url.URL, b
 			return quotaRequestCodexConsume
 		}
 	case "kiro":
-		expected, err := url.Parse(kiroUsageLimitsURL(auth))
-		if method == http.MethodGet && err == nil && rawURL.Fragment == "" && strings.EqualFold(rawURL.Scheme, expected.Scheme) && strings.EqualFold(rawURL.Host, expected.Host) && rawURL.EscapedPath() == expected.EscapedPath() {
-			actualQuery, actualErr := url.ParseQuery(rawURL.RawQuery)
-			expectedQuery, expectedErr := url.ParseQuery(expected.RawQuery)
-			if actualErr == nil && expectedErr == nil && actualQuery.Encode() == expectedQuery.Encode() {
-				return quotaRequestCacheable
+		for _, target := range []string{kiroUsageLimitsURL(auth), kiroQuotaReserveURL(auth)} {
+			expected, err := url.Parse(target)
+			if method == http.MethodGet && err == nil && rawURL.Fragment == "" && strings.EqualFold(rawURL.Scheme, expected.Scheme) && strings.EqualFold(rawURL.Host, expected.Host) && rawURL.EscapedPath() == expected.EscapedPath() {
+				actualQuery, actualErr := url.ParseQuery(rawURL.RawQuery)
+				expectedQuery, expectedErr := url.ParseQuery(expected.RawQuery)
+				if actualErr == nil && expectedErr == nil && actualQuery.Encode() == expectedQuery.Encode() {
+					return quotaRequestCacheable
+				}
 			}
 		}
 	case "kimi":
-		if method == http.MethodGet && exactQuotaURL(rawURL, kimiUsageQuotaURL) {
+		if method == http.MethodGet && exactQuotaURL(rawURL, kimiUsageQuotaURL, kimiAIUsageQuotaURL) {
 			return quotaRequestCacheable
 		}
 	case "xai":

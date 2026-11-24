@@ -3,6 +3,7 @@ package helps
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func TestKiroModelCatalogPaginationAndIsolation(t *testing.T) {
@@ -154,6 +156,10 @@ func TestKiroModelCatalogRejectsIncompleteDiscovery(t *testing.T) {
 		`{}`, `null`, `{"models":null}`, `{"models":[`,
 		`{"models":[],"nextToken":"repeated"}`,
 		`{"models":[{"modelId":"model","tokenLimits":{"maxInputTokens":-1}}]}`,
+		`{"models":[{"modelId":"model","tokenLimits":{"maxOutputTokens":"1000"}}]}`,
+		`{"models":[{"modelId":"model","tokenLimits":{"maxInputTokens":1.5}}]}`,
+		`{"models":[{}]}`, `{"models":[{"modelId":123}]}`,
+		`{"models":[],"nextToken":123}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -166,5 +172,96 @@ func TestKiroModelCatalogRejectsIncompleteDiscovery(t *testing.T) {
 				t.Fatalf("invalid catalog produced limits: %+v", got)
 			}
 		})
+	}
+}
+
+func TestKiroModelCatalogMembershipRefreshAndEmptyCatalog(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := KiroModelCatalog{nowFunc: func() time.Time { return now }}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			_, _ = io.WriteString(w, `{"models":[{"modelId":"auto","modelName":"Auto"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"models":[{"modelId":"incomplete-page"}],"nextToken":"more"}`)
+		case 3:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			_, _ = io.WriteString(w, `{"models":[]}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	request, errRequest := http.NewRequest(http.MethodGet, server.URL, nil)
+	if errRequest != nil {
+		t.Fatal(errRequest)
+	}
+	lookup := func() (map[string]KiroModel, error) {
+		return catalog.Models(t.Context(), server.Client(), "account", request)
+	}
+	models, err := lookup()
+	if err != nil || models["auto"].Name != "Auto" {
+		t.Fatalf("model without token limits was lost: %v, %v", models, err)
+	}
+	delete(models, "auto")
+	models, err = lookup()
+	if err != nil || models["auto"].Name != "Auto" || calls.Load() != 1 {
+		t.Fatal("caller mutated the cached catalog or caused a fresh lookup")
+	}
+	now = now.Add(registry.ModelsRefreshInterval)
+	models, err = lookup()
+	if err == nil || len(models) != 1 || models["auto"].Name != "Auto" {
+		t.Fatalf("partial pagination replaced the last good catalog: %v, %v", models, err)
+	}
+	_, _ = lookup()
+	if calls.Load() != 3 {
+		t.Fatal("failed discovery did not back off")
+	}
+	now = now.Add(time.Minute)
+	models, err = lookup()
+	if err != nil || models == nil || len(models) != 0 {
+		t.Fatalf("authoritative empty catalog was not retained: %v, %v", models, err)
+	}
+}
+
+func TestKiroModelCatalogRefreshDueTracksIdentityAndRetry(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	catalog := KiroModelCatalog{nowFunc: func() time.Time { return now }}
+	auth := &coreauth.Auth{ID: "account", RegistrationEpoch: 1, Metadata: map[string]any{"accessToken": "token", "profileArn": "profile"}}
+	if !catalog.RefreshDueForAuth(nil, auth) {
+		t.Fatal("unknown catalog did not require discovery")
+	}
+	request, errRequest := kiroCatalogRequest(t.Context(), auth)
+	if errRequest != nil {
+		t.Fatal(errRequest)
+	}
+	key := kiroCatalogKey{credential: kiroCatalogCredentialID(nil, auth), endpoint: request.URL.String()}
+	entry := &kiroCatalogEntry{refreshAt: now.Add(time.Minute)}
+	catalog.entries = map[kiroCatalogKey]*kiroCatalogEntry{key: entry}
+	if catalog.RefreshDueForAuth(nil, auth) {
+		t.Fatal("catalog was refreshed before its retry deadline")
+	}
+	now = now.Add(time.Minute)
+	if !catalog.RefreshDueForAuth(nil, auth) {
+		t.Fatal("catalog was not retried at its deadline")
+	}
+	entry.loading = make(chan struct{})
+	if catalog.RefreshDueForAuth(nil, auth) {
+		t.Fatal("periodic scan queued an in-flight catalog")
+	}
+	entry.loading = nil
+	entry.refreshAt = now.Add(registry.ModelsRefreshInterval)
+	for _, change := range []func(*coreauth.Auth){
+		func(a *coreauth.Auth) { a.ID = "other" },
+		func(a *coreauth.Auth) { a.RegistrationEpoch++ },
+		func(a *coreauth.Auth) { a.Metadata["profileArn"] = "other-profile" },
+		func(a *coreauth.Auth) { a.Metadata["region"] = "eu-west-1" },
+		func(a *coreauth.Auth) { a.ProxyURL = "http://127.0.0.1:1234" },
+	} {
+		other := auth.Clone()
+		change(other)
+		if !catalog.RefreshDueForAuth(nil, other) {
+			t.Fatal("changed catalog identity reused a cached account")
+		}
 	}
 }

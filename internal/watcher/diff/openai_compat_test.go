@@ -222,3 +222,9 @@ func TestOpenAICompatKeyUsesModelNameWhenAliasEmpty(t *testing.T) {
 		t.Fatalf("expected model-name fallback, got %s/%s", key, label)
 	}
 }
+
+func TestDiffOpenAICompatibilityInstructionRoleWrapper(t *testing.T) {
+	oldList := []config.OpenAICompatibility{{Name: "provider-a"}}
+	newList := []config.OpenAICompatibility{{Name: "provider-a", InstructionRoleWrapper: true}}
+	expectContains(t, DiffOpenAICompatibility(oldList, newList), "provider updated: provider-a (instruction-role-wrapper false -> true)")
+}

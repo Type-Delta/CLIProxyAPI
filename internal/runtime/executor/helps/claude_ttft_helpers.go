@@ -3,7 +3,7 @@ package helps
 import (
 	"bytes"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // IsClaudeTokenEvent reports whether an Anthropic Messages SSE chunk carries
@@ -38,11 +38,11 @@ func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 		}
 	}
 
-	eventType := gjson.GetBytes(payload, "type").String()
+	eventType := ojson.GetBytesNoCopy(payload, "type").String()
 	switch eventType {
 	// Substantive streaming block deltas
 	case "content_block_delta":
-		delta := gjson.GetBytes(payload, "delta")
+		delta := ojson.GetBytesNoCopy(payload, "delta")
 		if len(delta.Get("text").String()) > 0 {
 			return true
 		}
@@ -59,7 +59,7 @@ func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 
 	// Initial block start when populated upfront
 	case "content_block_start":
-		cb := gjson.GetBytes(payload, "content_block")
+		cb := ojson.GetBytesNoCopy(payload, "content_block")
 		if len(cb.Get("text").String()) > 0 || len(cb.Get("thinking").String()) > 0 {
 			return true
 		}
@@ -67,7 +67,7 @@ func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 
 	// Terminal completion events fallback
 	case "message_delta":
-		return terminalFallback && len(gjson.GetBytes(payload, "delta.stop_reason").String()) > 0
+		return terminalFallback && len(ojson.GetBytesNoCopy(payload, "delta.stop_reason").String()) > 0
 	case "message_stop", "error":
 		return terminalFallback
 
@@ -77,8 +77,8 @@ func isClaudeTokenEvent(payload []byte, terminalFallback bool) bool {
 
 	default:
 		// Non-streaming / complete message payload fallback
-		if gjson.GetBytes(payload, "content").IsArray() {
-			for _, block := range gjson.GetBytes(payload, "content").Array() {
+		if ojson.GetBytesNoCopy(payload, "content").IsArray() {
+			for _, block := range ojson.GetBytesNoCopy(payload, "content").Array() {
 				if len(block.Get("text").String()) > 0 || len(block.Get("thinking").String()) > 0 {
 					return true
 				}

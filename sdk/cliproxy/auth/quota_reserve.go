@@ -17,8 +17,9 @@ import (
 // A quota reserve keeps part of a credential's quota bars unused. A reserve
 // names a bar (the same bar ID CPAMC renders, e.g. "five-hour", "weekly",
 // "zai-hour-5") and the minimum remaining percent that bar may reach. When CPA
-// observes a bar at or below its reserve, the credential is withheld from
+// observes a bar at or below its reserve, applicable models are withheld from
 // routing until that bar resets, except for client keys on its bypass list.
+// Claude's Fable, Opus and Sonnet bars apply only to their model family.
 //
 // OAuth credentials store reserves in auth-file metadata ("quota_reserve",
 // "quota_reserve_bypass_keys"). Config API-key entries store them as "quota-reserve"
@@ -334,14 +335,14 @@ func (m *Manager) QuotaReserveState(authID string) (QuotaReserveState, bool) {
 
 // quotaReserveHolds reports whether the credential is held for a request from
 // the given client key ID.
-func (m *Manager) quotaReserveHolds(auth *Auth, keyID string) bool {
-	_, held := m.quotaReserveHeldUntil(auth, keyID)
+func (m *Manager) quotaReserveHolds(auth *Auth, keyID string, model ...string) bool {
+	_, held := m.quotaReserveHeldUntil(auth, keyID, model...)
 	return held
 }
 
 // quotaReserveHeldUntil is quotaReserveHolds plus when the hold releases
 // (see quotaReserveUntil); the time is zero when a blocking reset is unknown.
-func (m *Manager) quotaReserveHeldUntil(auth *Auth, keyID string) (time.Time, bool) {
+func (m *Manager) quotaReserveHeldUntil(auth *Auth, keyID string, model ...string) (time.Time, bool) {
 	if m == nil || auth == nil || m.quotaReserveTracker == nil {
 		return time.Time{}, false
 	}
@@ -351,6 +352,28 @@ func (m *Manager) quotaReserveHeldUntil(auth *Auth, keyID string) (time.Time, bo
 	t.mu.Unlock()
 	if !held {
 		return time.Time{}, false
+	}
+	if strings.EqualFold(auth.Provider, "claude") && len(model) > 0 && strings.TrimSpace(model[0]) != "" {
+		upstream := strings.ToLower(m.applyAPIKeyModelAlias(auth, m.selectionModelKeyForAuth(auth, model[0])))
+		hits := state.Hits[:0]
+		for _, hit := range state.Hits {
+			family := ""
+			switch hit.BarID {
+			case "seven-day-fable":
+				family = "fable"
+			case "seven-day-opus":
+				family = "opus"
+			case "seven-day-sonnet":
+				family = "sonnet"
+			}
+			if family == "" || strings.Contains(upstream, family) {
+				hits = append(hits, hit)
+			}
+		}
+		if len(hits) == 0 {
+			return time.Time{}, false
+		}
+		state.Until = quotaReserveUntil(hits)
 	}
 	if keyID == "" {
 		return state.Until, true
@@ -401,8 +424,11 @@ func (m *Manager) scheduleQuotaReserveCheck(authID string) {
 		return
 	}
 	auth, ok := m.GetByID(authID)
-	if !ok || auth == nil || len(QuotaReservesForAuth(auth)) == 0 {
+	if !ok || auth == nil {
 		m.clearQuotaReserveState(authID)
+		return
+	}
+	if len(QuotaReservesForAuth(auth)) == 0 {
 		return
 	}
 	t := m.quotaReserves()
@@ -436,25 +462,55 @@ func (m *Manager) scheduleQuotaReserveCheck(authID string) {
 }
 
 func (m *Manager) runQuotaReserveCheck(ctx context.Context, auth *Auth, prober QuotaReserveProber) {
+	ctx = m.CaptureQuotaObservation(ctx, auth.ID)
 	bars, errProbe := prober(ctx, auth)
 	if errProbe != nil {
 		log.WithError(errProbe).WithField("auth_id", auth.ID).Debug("quota reserve check failed")
 		return
 	}
-	m.ApplyQuotaReserveBars(auth, bars)
+	m.ApplyQuotaReserveBarsWithContext(ctx, auth, bars)
 }
 
 // ApplyQuotaReserveBars records observed bars for a credential; its held state
 // follows from them. Management quota reads call it too, so a manual refresh on
 // the quota page applies reserves immediately.
 func (m *Manager) ApplyQuotaReserveBars(auth *Auth, bars []QuotaReserveBar) {
+	m.ApplyQuotaReserveBarsWithContext(context.Background(), auth, bars)
+}
+
+// ApplyQuotaReserveBarsWithContext ignores observations superseded by a reset.
+func (m *Manager) ApplyQuotaReserveBarsWithContext(ctx context.Context, auth *Auth, bars []QuotaReserveBar) {
 	if m == nil || auth == nil || len(bars) == 0 {
+		return
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.quotaObservationCurrentLocked(ctx, auth.ID) {
 		return
 	}
 	t := m.quotaReserves()
 	t.mu.Lock()
 	_, wasHeld := t.stateLocked(auth)
-	t.observations[auth.ID] = quotaReserveObservation{bars: append([]QuotaReserveBar(nil), bars...), checkedAt: t.currentTime()}
+	now := t.currentTime()
+	previous := t.observations[auth.ID]
+	merged := make([]QuotaReserveBar, 0, len(previous.bars)+len(bars))
+	positions := make(map[string]int, len(previous.bars)+len(bars))
+	for _, bar := range previous.bars {
+		if !bar.ResetAt.IsZero() && !bar.ResetAt.After(now) {
+			continue
+		}
+		positions[bar.ID] = len(merged)
+		merged = append(merged, bar)
+	}
+	for _, bar := range bars {
+		if position, ok := positions[bar.ID]; ok {
+			merged[position] = bar
+		} else {
+			positions[bar.ID] = len(merged)
+			merged = append(merged, bar)
+		}
+	}
+	t.observations[auth.ID] = quotaReserveObservation{bars: merged, checkedAt: now}
 	state, held := t.stateLocked(auth)
 	t.mu.Unlock()
 	if held && !wasHeld {
@@ -473,6 +529,41 @@ func (m *Manager) clearQuotaReserveState(authID string) {
 	t.mu.Lock()
 	delete(t.observations, authID)
 	t.mu.Unlock()
+}
+
+// InvalidateQuotaReserveObservation forgets windows refilled by an upstream
+// manual reset. A nil list invalidates the entire observation.
+func (m *Manager) InvalidateQuotaReserveObservation(authID string, barIDs []string) {
+	if m == nil || m.quotaReserveTracker == nil {
+		return
+	}
+	t := m.quotaReserveTracker
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.lastRun, authID)
+	if barIDs == nil {
+		delete(t.observations, authID)
+		return
+	}
+	observation, ok := t.observations[authID]
+	if !ok {
+		return
+	}
+	bars := make([]QuotaReserveBar, 0, len(observation.bars))
+	for _, bar := range observation.bars {
+		reset := false
+		for _, id := range barIDs {
+			if bar.ID == id {
+				reset = true
+				break
+			}
+		}
+		if !reset {
+			bars = append(bars, bar)
+		}
+	}
+	observation.bars = bars
+	t.observations[authID] = observation
 }
 
 // RecheckQuotaReserve forgets the throttle for a credential so its next request

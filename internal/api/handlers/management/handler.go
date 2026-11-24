@@ -43,9 +43,11 @@ const attemptMaxIdleTime = 2 * time.Hour
 type Handler struct {
 	clickHouse clickHouseHandle
 
-	cfg                      *config.Config
-	configFilePath           string
-	mu                       sync.Mutex
+	cfg            *config.Config
+	configFilePath string
+	mu             sync.Mutex
+	// manualResetClaims holds one *sync.Mutex per credential ID; see lockManualResetClaim.
+	manualResetClaims        sync.Map
 	authStatusMu             sync.Mutex
 	reloadMu                 sync.Mutex
 	reloadGeneration         uint64
@@ -55,6 +57,7 @@ type Handler struct {
 	quotaCacheMu             sync.Mutex
 	quotaCache               *apiCallQuotaCache
 	authManager              *coreauth.Manager
+	managementAvailable      func() bool
 	tokenStore               coreauth.Store
 	localPassword            string
 	allowRemoteOverride      bool
@@ -75,8 +78,11 @@ type Handler struct {
 	pluginStoreHTTPClient    pluginstore.HTTPDoer
 	pluginStoreRateLimiter   *pluginstore.GitHubRateLimiter
 	pluginReleases           pluginReleaseCache
-	siwcOAuthFactory         func(*config.Config) siwcOAuthService
+	siwcOAuthFactory         func(*config.Config, string) siwcOAuthService
 	siwcCommitMu             sync.Mutex
+	authCache                managementAuthCache
+	v8AuthUploadMu           sync.Mutex
+	pluginLoginSaveMu        sync.Mutex
 }
 
 // getQuotaCache returns the handler-local quota request cache, creating it on
@@ -167,10 +173,20 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		h.mu.Unlock()
 		return
 	}
+	prevSecretHash := ""
+	if h.cfg != nil {
+		prevSecretHash = h.cfg.RemoteManagement.SecretKey
+	}
 	h.cfg = cloned
+	nextSecretHash := ""
+	if cloned != nil {
+		nextSecretHash = cloned.RemoteManagement.SecretKey
+	}
+	if prevSecretHash != nextSecretHash {
+		h.authCache.invalidate()
+	}
 	h.analyticsResponseCache = nil
 	h.mu.Unlock()
-
 }
 
 // InvalidateAnalyticsViewerSessions durably revokes viewer cookies before a
@@ -193,11 +209,31 @@ func (h *Handler) InvalidateAnalyticsViewerSessions() error {
 
 }
 
-// configSnapshot reads h.cfg under h.mu, for code that runs outside the request holding it.
+// configSnapshot returns an independent copy of h.cfg under h.mu, for code that runs outside the request holding it.
 func (h *Handler) configSnapshot() *config.Config {
+	if h == nil {
+		return nil
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.cfg
+	if h.cfg == nil {
+		return nil
+	}
+	if cloned := h.cfg.CloneForRuntime(); cloned != nil {
+		return cloned
+	}
+	copied := *h.cfg
+	return &copied
+}
+
+// pluginHostSnapshot reads h.pluginHost under h.mu.
+func (h *Handler) pluginHostSnapshot() *pluginhost.Host {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pluginHost
 }
 
 // oauthConfigWithProxy returns a configuration snapshot for an OAuth session.
@@ -214,13 +250,8 @@ func (h *Handler) oauthConfigWithProxy(proxyURL string) *config.Config {
 			SDKConfig: config.SDKConfig{ProxyURL: proxyURL},
 		}
 	}
-	cloned := cfg.CloneForRuntime()
-	if cloned == nil {
-		copied := *cfg
-		cloned = &copied
-	}
-	cloned.ProxyURL = proxyURL
-	return cloned
+	cfg.ProxyURL = proxyURL
+	return cfg
 }
 
 // isStaleConfigFileSnapshotLocked reports whether cfg was parsed from config file
@@ -235,6 +266,14 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 		return false
 	}
 	return config.ComputeSourceHash(data) != cfg.SourceHash
+}
+
+// SetManagementAvailable sets the server's gate for whether the Management API serves at all (off
+// in Home mode or without a management secret). Long-lived responses check it while they run.
+func (h *Handler) SetManagementAvailable(available func() bool) {
+	h.mu.Lock()
+	h.managementAvailable = available
+	h.mu.Unlock()
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -429,21 +468,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
 
-		// Accept either Authorization: Bearer <key> or X-Management-Key
-		var provided string
-		if ah := c.GetHeader("Authorization"); ah != "" {
-			parts := strings.SplitN(ah, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				provided = parts[1]
-			} else {
-				provided = ah
-			}
-		}
-		if provided == "" {
-			provided = c.GetHeader("X-Management-Key")
-		}
-
-		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, provided)
+		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, providedManagementKey(c))
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
@@ -457,6 +482,41 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 	}
 }
 
+// providedManagementKey reads Authorization: Bearer <key>, a bare Authorization value, or
+// X-Management-Key.
+func providedManagementKey(c *gin.Context) string {
+	var provided string
+	if ah := c.GetHeader("Authorization"); ah != "" {
+		parts := strings.SplitN(ah, " ", 2)
+		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			provided = parts[1]
+		} else {
+			provided = ah
+		}
+	}
+	if provided == "" {
+		provided = c.GetHeader("X-Management-Key")
+	}
+	return provided
+}
+
+// managementAuthState fingerprints the settings that decide management access, so long-lived
+// responses can tell when to authenticate their caller again.
+func (h *Handler) managementAuthState() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return ""
+	}
+	remote := h.cfg.RemoteManagement
+	var b strings.Builder
+	fmt.Fprintf(&b, "%t\x00%s", remote.AllowRemote, remote.SecretKey)
+	for _, key := range remote.Keys {
+		fmt.Fprintf(&b, "\x00%s\x00%s", key.Scope, key.SecretKey)
+	}
+	return b.String()
+}
+
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
@@ -468,6 +528,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 }
 
 func (h *Handler) authenticateManagementScope(clientIP string, localClient bool, provided string) (string, bool, int, string) {
+	return h.checkManagementScope(clientIP, localClient, provided, true)
+}
+
+// checkManagementScope matches a management key. With record, it is a login attempt: IP bans
+// apply and failures count toward one. Without, it re-checks a caller who already authenticated
+// (a long-lived stream) and leaves the attempt counters alone.
+func (h *Handler) checkManagementScope(clientIP string, localClient bool, provided string, record bool) (string, bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
@@ -496,7 +563,7 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	now := time.Now()
 	h.attemptsMu.Lock()
 	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
+	if record && ai != nil && !ai.blockedUntil.IsZero() {
 		if now.Before(ai.blockedUntil) {
 			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 			h.attemptsMu.Unlock()
@@ -513,6 +580,9 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	}
 
 	fail := func() {
+		if !record {
+			return
+		}
 		h.attemptsMu.Lock()
 		aip := h.failedAttempts[clientIP]
 		if aip == nil {
@@ -529,6 +599,9 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 	}
 
 	reset := func() {
+		if !record {
+			return
+		}
 		h.attemptsMu.Lock()
 		if ai := h.failedAttempts[clientIP]; ai != nil {
 			ai.count = 0
@@ -560,7 +633,7 @@ func (h *Handler) authenticateManagementScope(clientIP string, localClient bool,
 		return config.ManagementScopeFullAccess, true, 0, ""
 	}
 
-	if secretHash != "" && bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) == nil {
+	if secretHash != "" && h.authCache.verify(secretHash, provided) {
 		reset()
 		return config.ManagementScopeFullAccess, true, 0, ""
 	}

@@ -101,9 +101,10 @@ Configure `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as Actions secrets. The
 Type-Delta deployment uses the public repository `typedelta/cliproxyapi`.
 
 Pushes to `main`, version tags, and manual workflow runs build both images from
-the same checkout and its pinned CPAMC submodule. Native amd64 and arm64 jobs
-publish architecture-specific images. The final job publishes the paired
-multi-platform tags only after both architecture jobs succeed:
+the same checkout and its pinned CPAMC submodule. Each image builds in its own
+native amd64 and arm64 job, and those four jobs run in parallel and publish
+architecture-specific images. The final job publishes the paired multi-platform
+tags only after all four succeed:
 
 - CPA: `typedelta/cliproxyapi:sha-<full CPA commit>`
 - Panel: `typedelta/cliproxyapi:web-sha-<full CPA commit>`

@@ -5,5 +5,5 @@ import "embed"
 
 // Files contains the index and its Markdown companion pages.
 //
-//go:embed llms.txt management.md sql.md
+//go:embed llms.txt management.md sql.md model-availability.md
 var Files embed.FS

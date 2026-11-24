@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/livehandle"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
@@ -419,6 +420,8 @@ func isExampleAPIKeySafeModeProxyPath(path string) bool {
 		return true
 	case path == "/backend-api/codex" || strings.HasPrefix(path, "/backend-api/codex/"):
 		return true
+	case path == "/muse-code" || strings.HasPrefix(path, "/muse-code/"):
+		return true
 	default:
 		return false
 	}
@@ -556,6 +559,31 @@ func closeUnconsumedRequestOnAbort(c *gin.Context) {
 	}
 }
 
+func trackLiveRequest(c *gin.Context, principal string) {
+	ctx := c.Request.Context()
+	if coreusage.EndpointClassFromContext(ctx) == "models" {
+		c.Next()
+		return
+	}
+	id := coreusage.ProxyRequestIDFromContext(ctx)
+	method, path := coreusage.ClientRequestLineFromContext(ctx)
+	keyID := ""
+	if principal != "" {
+		keyID = config.APIKeyID(principal)
+	}
+	livehandle.Default.Start(livehandle.Request{ID: id, Endpoint: coreusage.EndpointClassFromContext(ctx), Method: method, Path: path, ReceivedAt: coreusage.RequestReceivedAtFromContext(ctx), KeyID: keyID})
+	defer func() {
+		outcome := "finished"
+		if coreusage.ClientRequestCanceled(ctx) || ctx.Err() != nil {
+			outcome = "cancelled"
+		} else if c.Writer.Status() >= 400 {
+			outcome = "failed"
+		}
+		livehandle.Default.Finish(id, outcome, c.Writer.Status())
+	}()
+	c.Next()
+}
+
 func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
@@ -563,7 +591,7 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 			if c.IsAborted() {
 				return
 			}
-			c.Next()
+			trackLiveRequest(c, "")
 			return
 		}
 
@@ -584,7 +612,11 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 			if c.IsAborted() {
 				return
 			}
-			c.Next()
+			principal := ""
+			if result != nil {
+				principal = result.Principal
+			}
+			trackLiveRequest(c, principal)
 			return
 		}
 
@@ -653,6 +685,6 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 		if c.IsAborted() {
 			return
 		}
-		c.Next()
+		trackLiveRequest(c, principal)
 	}
 }

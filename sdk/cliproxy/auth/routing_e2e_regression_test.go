@@ -97,7 +97,7 @@ func TestAffinityDoesNotEvaluateRulesWithoutTrace(t *testing.T) {
 	}
 }
 
-func TestDryRunUnpredictedStrategiesAreStillDecidedByStrategy(t *testing.T) {
+func TestDryRunWeightedStrategiesArePredictedAndDecidedByStrategy(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		selector Selector
@@ -113,7 +113,7 @@ func TestDryRunUnpredictedStrategiesAreStillDecidedByStrategy(t *testing.T) {
 			registry.GetGlobalRegistry().RegisterClient("eligible", provider, []*registry.ModelInfo{{ID: model}})
 			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("eligible") })
 			trace, err := manager.DryRunRoute(context.Background(), routing.DryRunRequest{Model: model})
-			if err != nil || trace.DecidedBy != routing.DecidedByStrategy || trace.Pick != -1 || trace.PickPredicted || trace.Tier == nil || len(trace.Tier.Pool) != 1 {
+			if err != nil || trace.DecidedBy != routing.DecidedByStrategy || trace.Pick < 0 || trace.PickPredicted != (test.name != "gsr") || trace.StrategyStep == nil || trace.Tier == nil || len(trace.Tier.Pool) != 1 {
 				t.Fatalf("trace=%+v err=%v", trace, err)
 			}
 			auth, ok := manager.GetByID("eligible")

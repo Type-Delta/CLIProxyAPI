@@ -67,6 +67,8 @@ func TestParseConfigBytes_ClaudeHeaderDefaultsOperatorOverrides(t *testing.T) {
 	cfg, err := ParseConfigBytes([]byte(`upstream:
   claude:
     header-defaults:
+      oauth-safeguard-client-identities: [" PARTNER-APP ", "", "partner-app", "another-app"]
+      native-entrypoints: [" T3-Code ", "", "t3-code", "custom-ide"]
       anthropic-beta-strip: [" cache-diagnosis-2026-04-07 ", "", "cache-diagnosis-2026-04-07"]
       anthropic-beta-append: ["context-1m-2025-08-07", " context-1m-2025-08-07 ", "advisor-tool-2026-03-01"]
       inject-diagnostics: false
@@ -76,6 +78,12 @@ func TestParseConfigBytes_ClaudeHeaderDefaultsOperatorOverrides(t *testing.T) {
 		t.Fatalf("ParseConfigBytes() error = %v", err)
 	}
 	hd := cfg.ClaudeHeaderDefaults
+	if want := []string{"partner-app", "another-app"}; !reflect.DeepEqual(hd.OAuthSafeguardClientIdentities, want) {
+		t.Fatalf("OAuthSafeguardClientIdentities = %q, want %q", hd.OAuthSafeguardClientIdentities, want)
+	}
+	if want := []string{"t3-code", "custom-ide"}; !reflect.DeepEqual(hd.NativeEntrypoints, want) {
+		t.Fatalf("NativeEntrypoints = %q, want %q", hd.NativeEntrypoints, want)
+	}
 	if want := []string{"cache-diagnosis-2026-04-07"}; !reflect.DeepEqual(hd.AnthropicBetaStrip, want) {
 		t.Fatalf("AnthropicBetaStrip = %q, want %q", hd.AnthropicBetaStrip, want)
 	}

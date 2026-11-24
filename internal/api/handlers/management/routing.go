@@ -98,12 +98,14 @@ func (h *Handler) GetRoutingCredentials(c *gin.Context) {
 }
 
 type routingDryRunInput struct {
-	Model      string            `json:"model"`
-	APIKey     string            `json:"api_key_label"`
-	ClientType string            `json:"client_type"`
-	Headers    map[string]string `json:"headers"`
-	SessionID  string            `json:"session_id"`
-	Rules      json.RawMessage   `json:"rules"`
+	SourceFormat        string            `json:"source_format"`
+	DownstreamWebsocket bool              `json:"downstream_websocket"`
+	Model               string            `json:"model"`
+	APIKey              string            `json:"api_key_label"`
+	ClientType          string            `json:"client_type"`
+	Headers             map[string]string `json:"headers"`
+	SessionID           string            `json:"session_id"`
+	Rules               json.RawMessage   `json:"rules"`
 }
 
 // PostRoutingDryRun simulates one routing decision without changing runtime state.
@@ -128,6 +130,10 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		return
 	}
 
+	if err = (routing.DryRunRequest{SourceFormat: input.SourceFormat}).ValidateSourceFormat(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "path": "source_format"})
+		return
+	}
 	cfg := h.routingConfigSnapshot()
 	keyID, found, ambiguous := routingAPIKeyID(cfg, input.APIKey)
 	if ambiguous {
@@ -167,12 +173,14 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		headers.Add(name, value)
 	}
 	trace, err := h.authManager.DryRunRoute(c.Request.Context(), routing.DryRunRequest{
-		Model:      input.Model,
-		KeyID:      keyID,
-		ClientType: input.ClientType,
-		Headers:    headers,
-		SessionID:  input.SessionID,
-		Rules:      draft,
+		SourceFormat:        input.SourceFormat,
+		DownstreamWebsocket: input.DownstreamWebsocket,
+		Model:               input.Model,
+		KeyID:               keyID,
+		ClientType:          input.ClientType,
+		Headers:             headers,
+		SessionID:           input.SessionID,
+		Rules:               draft,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "routing dry run failed"})
@@ -193,9 +201,19 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 			}
 		}
 	}
+	service, _ := h.analyticsServiceForRead()
+	identityProvider, _ := service.(interface {
+		CredentialID(provider, authIndex, authID string) (*string, error)
+	})
 	if trace != nil {
 		for index := range trace.Candidates {
-			trace.Candidates[index].Label = labels[trace.Candidates[index].ID]
+			candidate := &trace.Candidates[index]
+			candidate.Label = labels[candidate.ID]
+			if identityProvider != nil && trace.Affinity != nil && trace.Affinity.Bound == index {
+				if id, errIdentity := identityProvider.CredentialID(candidate.Provider, candidate.AuthIndex, candidate.ID); errIdentity == nil && id != nil {
+					candidate.AnalyticsID = *id
+				}
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"trace": trace, "warnings": warnings})
@@ -231,21 +249,7 @@ func routingAPIKeyID(cfg *config.Config, label string) (id string, found, ambigu
 	return id, found, false
 }
 
-func routingCredentialLabel(auth *coreauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if label := strings.TrimSpace(authAttribute(auth, "label")); label != "" {
-		return label
-	}
-	if label := strings.TrimSpace(auth.Label); label != "" {
-		return label
-	}
-	if provider := strings.TrimSpace(auth.Provider); provider != "" {
-		return provider
-	}
-	return auth.ID
-}
+func routingCredentialLabel(auth *coreauth.Auth) string { return coreauth.CredentialLabel(auth) }
 
 func routingCredentialPriority(auth *coreauth.Auth) int {
 	if auth == nil {

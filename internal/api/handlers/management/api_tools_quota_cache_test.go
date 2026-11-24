@@ -19,21 +19,26 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // quotaProxy is an HTTP proxy so tests exercise the same transport selection
 // used by APICall while keeping provider traffic local and observable.
 type quotaProxy struct {
-	server *httptest.Server
-	count  atomic.Int64
-	mu     sync.Mutex
-	seen   []string
-	status int
-	header http.Header
-	body   string
-	gate   <-chan struct{}
+	server  *httptest.Server
+	count   atomic.Int64
+	mu      sync.Mutex
+	seen    []string
+	status  int
+	header  http.Header
+	body    string
+	gate    <-chan struct{}
+	started chan<- struct{}
 }
 
 func newQuotaProxy(t *testing.T) *quotaProxy {
@@ -43,9 +48,12 @@ func newQuotaProxy(t *testing.T) *quotaProxy {
 		p.count.Add(1)
 		p.mu.Lock()
 		p.seen = append(p.seen, r.Method+" "+r.URL.String()+" "+r.Header.Get("X-Test-Parameter"))
-		status, header, body, gate := p.status, p.header.Clone(), p.body, p.gate
+		status, header, body, gate, started := p.status, p.header.Clone(), p.body, p.gate, p.started
 		p.mu.Unlock()
 		if gate != nil {
+			if started != nil {
+				started <- struct{}{}
+			}
 			<-gate
 		}
 		for key, values := range header {
@@ -573,11 +581,12 @@ func TestAPICallClaudeResetGrantReadsShareUsageBackoff(t *testing.T) {
 func TestAPICallClaudeResetInvalidatesQuotaAndGrantReads(t *testing.T) {
 	proxy := newQuotaProxy(t)
 	h := quotaHandler(proxy)
+	proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"grants":[{"id":"selected","clears":["five_hour","seven_day"]}]}}`)
 	for _, target := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
 		quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
 	}
 	proxy.setResponse(http.StatusOK, nil, `{"result":"reset"}`)
-	quotaCall(t, h, proxy, "credential-a-claude", http.MethodPost, "https://api.anthropic.com/api/organizations/11111111-2222-3333-4444-555555555555/reset_rate_limits", "same", `{"program":"cedar_ember"}`)
+	quotaCall(t, h, proxy, "credential-a-claude", http.MethodPost, "https://api.anthropic.com/api/organizations/11111111-2222-3333-4444-555555555555/reset_rate_limits", "same", `{"program":"cedar_ember","grant_id":"selected","request_id":"reset-cache"}`)
 	proxy.setResponse(http.StatusOK, nil, `{"fresh":true}`)
 	for _, target := range []string{claudeUsageQuotaURL, claudeResetGrantsQuotaURL} {
 		response := quotaCall(t, h, proxy, "credential-a-claude", http.MethodGet, target, "same", "")
@@ -590,6 +599,120 @@ func TestAPICallClaudeResetInvalidatesQuotaAndGrantReads(t *testing.T) {
 	}
 }
 
+func TestAPICallManualResetImmediatelyRecoversCredentialQuota(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		model    string
+		target   string
+		data     string
+	}{
+		{"claude", "claude-sonnet-4-5", "https://api.anthropic.com/api/organizations/11111111-2222-3333-4444-555555555555/reset_rate_limits", `{"program":"cedar_ember","grant_id":"selected","request_id":"manual-reset"}`},
+		{"codex", "gpt-5.5", codexConsumeURL, `{}`},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			var inferenceCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				inferenceCalls.Add(1)
+				if test.provider == "claude" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"id":"msg_reset","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+				} else {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reset\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			if test.provider == "claude" {
+				h.authManager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(h.cfg))
+			} else {
+				h.authManager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(h.cfg))
+			}
+			authID := "credential-a-" + test.provider
+			barID := "weekly"
+			if test.provider == "claude" {
+				barID = "seven-day"
+			}
+			auth, _ := h.authManager.GetByID(authID)
+			auth.Attributes = map[string]string{coreauth.AttributeQuotaReserve: fmt.Sprintf(`{%q:30}`, barID), "base_url": upstream.URL, "api_key": "test-key"}
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+			if test.provider == "claude" {
+				proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"grants":[{"id":"selected","clears":["five_hour","seven_day"]}]}}`)
+				quotaCall(t, h, proxy, authID, http.MethodGet, claudeResetGrantsQuotaURL, "same", "", true)
+			}
+			h.authManager.ApplyQuotaReserveBars(auth, []coreauth.QuotaReserveBar{{ID: barID, RemainingPercent: 0, ResetAt: time.Now().Add(time.Hour)}})
+			registry.GetGlobalRegistry().RegisterClient(authID, test.provider, []*registry.ModelInfo{{ID: test.model}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+			current, _ := h.authManager.GetByID(authID)
+			h.authManager.MarkResult(context.Background(), coreauth.Result{AuthID: authID, Provider: test.provider, Model: test.model, CredentialVersion: current.CredentialVersion, CredentialScope: true, Error: &coreauth.Error{HTTPStatus: 429, Code: "credential_quota", Message: "quota exhausted"}})
+			before, _ := h.authManager.GetByID(authID)
+			if !before.Quota.Exceeded || before.Quota.Reason != "credential_quota" {
+				t.Fatalf("expected credential quota before reset, got %+v", before.Quota)
+			}
+			proxy.setResponse(http.StatusOK, nil, `{"result":"reset"}`)
+			quotaCall(t, h, proxy, authID, http.MethodPost, test.target, "same", test.data)
+			after, _ := h.authManager.GetByID(authID)
+			if after.Quota.Exceeded || after.Unavailable || !after.NextRetryAfter.IsZero() || after.Status != coreauth.StatusActive {
+				t.Fatalf("credential still blocked after successful reset: quota %+v unavailable %v retry %v status %s", after.Quota, after.Unavailable, after.NextRetryAfter, after.Status)
+			}
+			if got := registry.GetGlobalRegistry().GetModelCount(test.model); got != 1 {
+				t.Fatalf("registry availability after reset = %d, want 1", got)
+			}
+			payload := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`, test.model))
+			format := sdktranslator.FormatClaude
+			if test.provider == "codex" {
+				payload = []byte(fmt.Sprintf(`{"model":%q,"input":"hi"}`, test.model))
+				format = sdktranslator.FormatOpenAIResponse
+			}
+			if _, errExecute := h.authManager.Execute(context.Background(), []string{test.provider}, cliproxyexecutor.Request{Model: test.model, Payload: payload}, cliproxyexecutor.Options{SourceFormat: format}); errExecute != nil {
+				t.Fatalf("request immediately after reset: %v", errExecute)
+			}
+			if inferenceCalls.Load() != 1 {
+				t.Fatalf("inference upstream calls %d, want one immediate request", inferenceCalls.Load())
+			}
+		})
+	}
+}
+
+func TestAPICallClaudeResetRefusalKeepsCooldown(t *testing.T) {
+	for _, result := range []string{"cooldown", "ineligible", "unavailable", "unknown"} {
+		t.Run(result, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			const authID = "credential-a-claude"
+			if _, errApply := h.authManager.ApplyProviderQuotaReport(context.Background(), authID, true, time.Now().Add(time.Hour)); errApply != nil {
+				t.Fatal(errApply)
+			}
+			proxy.setResponse(http.StatusOK, nil, fmt.Sprintf(`{"result":%q}`, result))
+			quotaCall(t, h, proxy, authID, http.MethodPost, "https://api.anthropic.com/api/organizations/test/reset_rate_limits", "", `{}`)
+			auth, _ := h.authManager.GetByID(authID)
+			if !auth.Quota.Exceeded || !auth.Unavailable {
+				t.Fatal("refused reset cleared cooldown")
+			}
+		})
+	}
+}
+
+func TestAPICallClaudeNotLimitedRecoversCredential(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	const authID = "credential-a-claude"
+	proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"grants":[{"id":"selected","clears":["five_hour","seven_day"]}]}}`)
+	quotaCall(t, h, proxy, authID, http.MethodGet, claudeResetGrantsQuotaURL, "", "", true)
+	if _, errApply := h.authManager.ApplyProviderQuotaReport(context.Background(), authID, true, time.Now().Add(time.Hour)); errApply != nil {
+		t.Fatal(errApply)
+	}
+	proxy.setResponse(http.StatusOK, nil, `{"result":"not_limited"}`)
+	quotaCall(t, h, proxy, authID, http.MethodPost, "https://api.anthropic.com/api/organizations/test/reset_rate_limits", "", `{"program":"cedar_ember","grant_id":"selected","request_id":"not-limited"}`)
+	auth, _ := h.authManager.GetByID(authID)
+	if auth.Quota.Exceeded || auth.Unavailable || auth.Status != coreauth.StatusActive {
+		t.Fatal("upstream not_limited left credential blocked")
+	}
+}
+
 func TestAPICallQuotaRefresh429BackoffDoesNotBlockOtherCredentials(t *testing.T) {
 	proxy := newQuotaProxy(t)
 	h := quotaHandler(proxy)
@@ -599,6 +722,34 @@ func TestAPICallQuotaRefresh429BackoffDoesNotBlockOtherCredentials(t *testing.T)
 	quotaCall(t, h, proxy, "credential-b-claude", http.MethodGet, target, "same", "")
 	if got := proxy.count.Load(); got != 2 {
 		t.Fatalf("provider call count = %d, want each credential to have an independent backoff", got)
+	}
+}
+
+func TestAPICallReserveEditPreservesProviderBackoff(t *testing.T) {
+	for _, attribute := range []string{coreauth.AttributeQuotaReserve, coreauth.AttributeQuotaReserveBypassKeys} {
+		t.Run(attribute, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			const authID = "credential-a-claude"
+			proxy.setResponse(http.StatusTooManyRequests, http.Header{"Retry-After": []string{"120"}}, `{"error":"slow down"}`)
+			quotaCall(t, h, proxy, authID, http.MethodGet, claudeUsageQuotaURL, "same", "")
+			auth, _ := h.authManager.GetByID(authID)
+			if auth.Attributes == nil {
+				auth.Attributes = make(map[string]string)
+			}
+			if attribute == coreauth.AttributeQuotaReserve {
+				auth.Attributes[attribute] = `{"seven-day":20}`
+			} else {
+				auth.Attributes[attribute] = `["` + strings.Repeat("ab", 32) + `"]`
+			}
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				t.Fatal(errUpdate)
+			}
+			response := quotaCall(t, h, proxy, authID, http.MethodGet, claudeUsageQuotaURL, "same", "")
+			if response.StatusCode != http.StatusTooManyRequests || proxy.count.Load() != 1 {
+				t.Fatalf("reserve edit bypassed provider backoff: status=%d calls=%d", response.StatusCode, proxy.count.Load())
+			}
+		})
 	}
 }
 
@@ -856,6 +1007,141 @@ func TestAPICallQuotaRefreshCachedDatePreservesServerClockOffset(t *testing.T) {
 		if errParse != nil || date.Sub(now) != 5*time.Second {
 			t.Fatalf("cached Date = %v, error = %v; want server offset +5s at %v", date, errParse, now)
 		}
+	}
+	if got := proxy.count.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1", got)
+	}
+}
+
+func TestManualResetRejectsEarlierInFlightQuotaRead(t *testing.T) {
+	for _, tc := range []struct{ provider, model, usage, reset, data, bar, body string }{
+		{"claude", "claude-sonnet-4-5", claudeUsageQuotaURL, "https://api.anthropic.com/api/organizations/test/reset_rate_limits", `{"program":"cedar_ember","grant_id":"selected","request_id":"in-flight-reset"}`, "seven-day", `{"seven_day":{"utilization":100,"resets_at":"2099-01-01T00:00:00Z"}}`},
+		{"codex", "gpt-5.5", codexUsageQuotaURL, codexConsumeURL, `{}`, "weekly", `{"rate_limit":{"allowed":false,"secondary_window":{"used_percent":100,"reset_at":4070908800,"limit_window_seconds":604800}}}`},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			authID := "credential-a-" + tc.provider
+			auth, _ := h.authManager.GetByID(authID)
+			auth.Attributes = map[string]string{coreauth.AttributeQuotaReserve: fmt.Sprintf(`{%q:30}`, tc.bar)}
+			auth, _ = h.authManager.Update(context.Background(), auth)
+			if tc.provider == "claude" {
+				proxy.setResponse(http.StatusOK, nil, `{"cedar_ember":{"grants":[{"id":"selected","clears":["five_hour","seven_day"]}]}}`)
+				quotaCall(t, h, proxy, authID, http.MethodGet, claudeResetGrantsQuotaURL, "", "", true)
+			}
+			registry.GetGlobalRegistry().RegisterClient(authID, tc.provider, []*registry.ModelInfo{{ID: tc.model}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+			h.authManager.ApplyQuotaReserveBars(auth, []coreauth.QuotaReserveBar{{ID: tc.bar, RemainingPercent: 0, ResetAt: time.Now().Add(time.Hour)}})
+			if _, err := h.authManager.ApplyProviderQuotaReport(context.Background(), authID, true, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			started, release, done := make(chan struct{}, 1), make(chan struct{}), make(chan quotaCallOutcome, 1)
+			var releaseOnce sync.Once
+			releaseRead := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(releaseRead)
+			proxy.setResponse(http.StatusOK, nil, tc.body)
+			proxy.mu.Lock()
+			proxy.gate, proxy.started = release, started
+			proxy.mu.Unlock()
+			go func() {
+				done <- h.executeAPICall(context.Background(), http.MethodGet, tc.usage, "", auth, "", nil, "")
+			}()
+			<-started
+			proxy.mu.Lock()
+			proxy.gate, proxy.started = nil, nil
+			proxy.mu.Unlock()
+			proxy.setResponse(http.StatusOK, nil, `{"result":"reset"}`)
+			reset := h.executeAPICall(context.Background(), http.MethodPost, tc.reset, "", auth, "", nil, tc.data)
+			if !reset.successfulResponse() {
+				t.Fatalf("reset failed: %+v", reset)
+			}
+			check := func() {
+				current, _ := h.authManager.GetByID(authID)
+				if current.Quota.Exceeded || current.Unavailable {
+					t.Fatalf("credential remains blocked: %+v", current)
+				}
+				if _, held := h.authManager.QuotaReserveState(authID); held {
+					t.Fatal("reserve remains held")
+				}
+			}
+			check()
+			releaseRead()
+			if outcome := <-done; !outcome.successfulResponse() {
+				t.Fatalf("usage failed: %+v", outcome)
+			}
+			check()
+		})
+	}
+}
+
+func TestDirectResetInvalidatesCachedReserveRead(t *testing.T) {
+	for _, tc := range []struct {
+		provider, usage, reset, data string
+		headers                      map[string]string
+	}{
+		{"claude", claudeUsageQuotaURL, "https://api.anthropic.com/api/organizations/test/reset_rate_limits", `{}`, quotaReserveClaudeHeaders},
+		{"codex", codexUsageQuotaURL, codexConsumeURL, `{}`, quotaReserveCodexHeaders},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			proxy := newQuotaProxy(t)
+			h := quotaHandler(proxy)
+			auth, _ := h.authManager.GetByID("credential-a-" + tc.provider)
+			proxy.setResponse(http.StatusOK, nil, `{"before":true}`)
+			if _, err := h.quotaReserveFetch(context.Background(), auth, tc.usage, tc.headers); err != nil {
+				t.Fatal(err)
+			}
+			proxy.setResponse(http.StatusOK, nil, `{"result":"reset"}`)
+			outcome := h.executeAPICall(context.Background(), http.MethodPost, tc.reset, "", auth, "", nil, tc.data)
+			if !outcome.successfulResponse() {
+				t.Fatalf("reset failed: %+v", outcome)
+			}
+			proxy.setResponse(http.StatusOK, nil, `{"after":true}`)
+			got, err := h.quotaReserveFetch(context.Background(), auth, tc.usage, tc.headers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != `{"after":true}` {
+				t.Fatalf("reserve probe used stale cached response: %s", got)
+			}
+		})
+	}
+}
+
+func TestCoreResetChangesCachedReserveReadGeneration(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	auth, _ := h.authManager.GetByID("credential-a-claude")
+	proxy.setResponse(http.StatusOK, nil, `{"before":true}`)
+	if _, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.authManager.ApplyProviderQuotaReset(context.Background(), auth.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	proxy.setResponse(http.StatusOK, nil, `{"after":true}`)
+	got, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"after":true}` {
+		t.Fatalf("reserve probe used pre-reset cache: %s", got)
+	}
+}
+
+func TestCoreResetPreservesQuotaReadBackoff(t *testing.T) {
+	proxy := newQuotaProxy(t)
+	h := quotaHandler(proxy)
+	auth, _ := h.authManager.GetByID("credential-a-claude")
+	proxy.setResponse(http.StatusTooManyRequests, http.Header{"Retry-After": []string{"180"}}, `{"error":"limited"}`)
+	if _, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders); err == nil {
+		t.Fatal("expected rate limit")
+	}
+	if _, err := h.authManager.ApplyProviderQuotaReset(context.Background(), auth.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	proxy.setResponse(http.StatusOK, nil, `{"after":true}`)
+	if _, err := h.quotaReserveFetch(context.Background(), auth, claudeUsageQuotaURL, quotaReserveClaudeHeaders); err == nil {
+		t.Fatal("reset cleared rate-limit backoff")
 	}
 	if got := proxy.count.Load(); got != 1 {
 		t.Fatalf("provider calls = %d, want 1", got)

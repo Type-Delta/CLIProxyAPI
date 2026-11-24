@@ -87,6 +87,11 @@ func isClaudeOAuthScope403(err error) bool {
 		strings.Contains(msg, "user:office")
 }
 
+// ReportPrepareFailure records a credential whose request auth preparation failed.
+func (e *ClaudeExecutor) ReportPrepareFailure(ctx context.Context, auth *cliproxyauth.Auth, model string, err error) {
+	_ = helps.PublishAttemptFailure(ctx, e, model, auth, err)
+}
+
 func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil || !e.ShouldPrepareRequestAuth(auth) {
 		return auth, nil

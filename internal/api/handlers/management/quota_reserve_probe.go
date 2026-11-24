@@ -106,8 +106,8 @@ func (h *Handler) quotaReserveFetch(ctx context.Context, auth *coreauth.Auth, ta
 
 // applyQuotaReserveFromQuotaRead evaluates reserves from a management quota read so a
 // quota-page refresh updates routing without waiting for the next request.
-func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
-	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil || len(coreauth.QuotaReservesForAuth(auth)) == 0 {
+func (h *Handler) applyQuotaReserveFromQuotaRead(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, body []byte) {
+	if h == nil || h.authManager == nil || auth == nil || parsedURL == nil {
 		return
 	}
 	var (
@@ -116,7 +116,7 @@ func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL 
 	)
 	switch coreauth.QuotaRecoveryProviderForAuth(auth) {
 	case "claude":
-		if !exactQuotaURL(parsedURL, claudeUsageQuotaURL) {
+		if !exactQuotaURL(parsedURL, claudeUsageQuotaURL, claudeResetGrantsQuotaURL) {
 			return
 		}
 		bars, err = claudeQuotaReserveBars(body)
@@ -144,7 +144,7 @@ func (h *Handler) applyQuotaReserveFromQuotaRead(auth *coreauth.Auth, parsedURL 
 		return
 	}
 	if err == nil {
-		h.authManager.ApplyQuotaReserveBars(auth, bars)
+		h.authManager.ApplyQuotaReserveBarsWithContext(ctx, auth, bars)
 	}
 }
 
@@ -193,9 +193,8 @@ func claudeQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	root := gjson.ParseBytes(body)
 	var fable gjson.Result
 	for _, limit := range root.Get("limits").Array() {
-		model := strings.ToLower(strings.TrimSpace(limit.Get("scope.model.display_name").String()))
-		if !strings.EqualFold(strings.TrimSpace(limit.Get("kind").String()), "weekly_scoped") ||
-			(model != "fable" && model != "fable 5") || limit.Get("percent").Type != gjson.Number {
+		if !isClaudeFableScope(limit.Get("kind").String(), limit.Get("scope.model.display_name").String()) ||
+			limit.Get("percent").Type != gjson.Number {
 			continue
 		}
 		if limit.Get("is_active").Bool() {
@@ -217,7 +216,7 @@ func claudeQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	}
 	bars := make([]coreauth.QuotaReserveBar, 0, len(windows))
 	for _, window := range windows {
-		if window.key == "iguana_necktie" && fable.Exists() {
+		if window.key == "iguana_necktie" && (fable.Exists() || claudeHasLegacyCloudCreditWindow(body)) {
 			continue
 		}
 		value := root.Get(window.key)
@@ -246,6 +245,10 @@ var quotaReserveNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 // codexQuotaReserveBars mirrors buildCodexQuotaWindows: five-hour and weekly or
 // monthly bars for the standard, code-review, and each additional allowance.
 func codexQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
+	return codexQuotaReserveBarsAt(body, time.Now())
+}
+
+func codexQuotaReserveBarsAt(body []byte, observedAt time.Time) ([]coreauth.QuotaReserveBar, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode Codex usage response: invalid JSON")
 	}
@@ -254,7 +257,6 @@ func codexQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	const weekSeconds = 604800
 	const minMonthSeconds = 28 * 24 * 60 * 60
 	const maxMonthSeconds = 31 * 24 * 60 * 60
-	now := time.Now()
 	bars := make([]coreauth.QuotaReserveBar, 0, 6)
 
 	seconds := func(window gjson.Result) (float64, bool) {
@@ -300,7 +302,7 @@ func codexQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 		reset := quotaReserveResetFromValue(firstGJSON(window, "reset_at", "resetAt"))
 		if reset.IsZero() {
 			if after := firstGJSON(window, "reset_after_seconds", "resetAfterSeconds"); after.Type == gjson.Number && after.Float() >= 0 {
-				reset = now.Add(time.Duration(after.Float() * float64(time.Second))).UTC()
+				reset = observedAt.Add(time.Duration(after.Float() * float64(time.Second))).UTC()
 			}
 		}
 		remaining := 0.0
@@ -364,6 +366,9 @@ func zaiQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 	}
 	bars := make([]coreauth.QuotaReserveBar, 0, len(response.Data.Limits))
 	for index, limit := range response.Data.Limits {
+		if limit.Percentage == nil {
+			continue
+		}
 		id := fmt.Sprintf("zai-window-%d", index)
 		switch limit.Unit {
 		case 3:
@@ -371,7 +376,7 @@ func zaiQuotaReserveBars(body []byte) ([]coreauth.QuotaReserveBar, error) {
 		case 6:
 			id = fmt.Sprintf("zai-week-%d", limit.Number)
 		}
-		bar := coreauth.QuotaReserveBar{ID: id, RemainingPercent: clampRemaining(100 - limit.Percentage)}
+		bar := coreauth.QuotaReserveBar{ID: id, RemainingPercent: clampRemaining(100 - *limit.Percentage)}
 		if limit.NextResetTime > 0 {
 			bar.ResetAt = time.UnixMilli(limit.NextResetTime).UTC()
 		}

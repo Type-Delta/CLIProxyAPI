@@ -18,6 +18,8 @@ func (s *Server) registerManagementV8Routes() {
 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
 		c.Set(management.ConfigV8ContextKey, true)
 	})
+	v8.GET("/live-requests", s.mgmt.GetLiveRequests)
+	v8.GET("/live-requests/stream", s.mgmt.StreamLiveRequests)
 	v8.GET("/overview", s.mgmt.GetManagementOverview)
 	v8.GET("/session", s.mgmt.GetManagementSession)
 	v8.GET("/management-keys", s.mgmt.ListManagementKeys)
@@ -50,6 +52,8 @@ func (s *Server) registerManagementV8Routes() {
 	analytics.GET("/dimensions", s.mgmt.GetAnalyticsDimensions)
 	analytics.GET("/events", s.mgmt.GetAnalyticsEvents)
 	analytics.GET("/events/:attempt_id", s.mgmt.GetAnalyticsEvent)
+	analytics.GET("/attempts/:attempt_id", s.mgmt.GetAnalyticsEvent)
+	analytics.GET("/attempts/:attempt_id/headers", s.mgmt.GetAnalyticsHeaders)
 	analytics.GET("/pricing", s.mgmt.GetAnalyticsPricing)
 	analytics.GET("/pricing/catalog-providers", s.mgmt.GetAnalyticsPricingCatalogProviders)
 	analytics.PUT("/pricing", s.mgmt.PutAnalyticsPricing)
@@ -98,6 +102,7 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/logs/requests/:id", s.mgmt.GetRequestLogByID)
 	v8.GET("/observability/usage/api-keys", s.mgmt.GetAPIKeyUsage)
 	v8.GET("/observability/usage/queue", s.mgmt.GetUsageQueue)
+	v8.GET("/observability/requests/in-flight", s.mgmt.GetInFlightRequests)
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.POST("/credentials", s.mgmt.UploadAuthFileV8)

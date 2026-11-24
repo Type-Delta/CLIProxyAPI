@@ -3,18 +3,15 @@ package executor
 import (
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/claudecapture"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
-
-var claudeOAuthSafeguardUserAgentPattern = regexp.MustCompile(`(?i)^claude-cli/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk/[0-9]+\.[0-9]+\.[0-9]+)?\)$`)
 
 type claudeOAuthSafeguardError struct {
 	statusErr
@@ -105,7 +102,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 		return nil
 	}
 	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
-	if !claudeOAuthSafeguardUserAgentPattern.MatchString(userAgent) {
+	if !helps.ValidClaudeCodeUserAgent(userAgent) {
 		return s.reject(
 			fmt.Sprintf("Claude OAuth safeguard flagged this request because Claude expects User-Agent to be 'claude-cli/X.X.X' but received '%s'.", userAgent),
 			"client User-Agent does not match claude-cli/X.X.X",
@@ -119,7 +116,7 @@ func (s *claudeOAuthSafeguard) checkIncoming(source sdktranslator.Format, header
 	}
 	if !detection.NativeClient {
 		return s.reject(
-			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, or claude-desktop); received %q.", detection.Entrypoint),
+			fmt.Sprintf("Claude OAuth safeguard requires a supported Claude Code client entrypoint (cli, sdk, sdk-cli, sdk-ts, sdk-py, claude-vscode, claude-desktop, or a configured custom identity); received %q.", detection.Entrypoint),
 			"client entrypoint is not supported for native Claude Code requests",
 		)
 	}
@@ -179,8 +176,8 @@ func (s *claudeOAuthSafeguard) checkOutbound(req *http.Request, body []byte, cou
 		return errShape
 	}
 	if !countTokens {
-		userID := gjson.GetBytes(body, "metadata.user_id").String()
-		if !helps.IsValidUserID(userID) || req.Header.Get("X-Claude-Code-Session-Id") != gjson.Get(userID, "session_id").String() {
+		userID := ojson.GetBytes(body, "metadata.user_id").String()
+		if !helps.IsValidUserID(userID) || req.Header.Get("X-Claude-Code-Session-Id") != ojson.Get(userID, "session_id").String() {
 			return s.reject("Claude OAuth safeguard rejected outbound session identity", "Claude OAuth safeguard rejected outbound session identity")
 		}
 	}
@@ -188,11 +185,11 @@ func (s *claudeOAuthSafeguard) checkOutbound(req *http.Request, body []byte, cou
 }
 
 func (s *claudeOAuthSafeguard) checkBodyShape(body []byte, countTokens bool) error {
-	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() ||
-		gjson.GetBytes(body, "model").Type != gjson.String || !gjson.GetBytes(body, "messages").IsArray() {
+	if !ojson.ValidBytes(body) || !ojson.ParseBytes(body).IsObject() ||
+		ojson.GetBytes(body, "model").Type != ojson.String || !ojson.GetBytes(body, "messages").IsArray() {
 		return s.reject("Claude OAuth safeguard rejected outbound body shape", "Claude OAuth safeguard rejected outbound body shape")
 	}
-	if !countTokens && gjson.GetBytes(body, "metadata.user_id").Type != gjson.String {
+	if !countTokens && ojson.GetBytes(body, "metadata.user_id").Type != ojson.String {
 		return s.reject("Claude OAuth safeguard requires native session metadata", "Claude OAuth safeguard requires native session metadata")
 	}
 	return nil

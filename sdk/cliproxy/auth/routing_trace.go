@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type routingCapture struct {
 	trace       *routing.Trace
 	indexes     map[string]int
 	eligibility authSelectionEligibility
+	headers     http.Header
 }
 
 func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (context.Context, *routingCapture) {
@@ -42,7 +44,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	if last := holder.Last(); last != nil {
 		trace.Selection = last.Selection + 1
 	}
-	capture := &routingCapture{trace: trace, indexes: make(map[string]int)}
+	capture := &routingCapture{trace: trace, indexes: make(map[string]int), headers: opts.Headers.Clone()}
 	if m.HomeEnabled() {
 		trace.Mode = routing.ModeHome
 		trace.DecidedBy = routing.DecidedByHome
@@ -73,7 +75,7 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	default:
 		trace.Strategy = "custom"
 	}
-	eligibility := m.eligibilityForRequest(ctx, opts)
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
 	capture.eligibility = eligibility
 	withoutReserve := eligibility
 	withoutReserve.quotaReserve = nil
@@ -94,8 +96,8 @@ func (m *Manager) beginRoutingCapture(ctx context.Context, providers []string, m
 	for _, a := range auths {
 		clone := a.Clone()
 		c := routing.Candidate{ID: a.ID, Provider: a.Provider, Priority: authPriority(a), AuthIndex: clone.EnsureIndex()}
-		blocked, reason, until := isAuthBlockedForModel(a, m.selectionModelForAuth(a, model), now)
-		expiresAt, hasExpiry := a.AccessTokenExpirationTime()
+		blocked, reason, until := isAuthBlockedForModelForRequest(ctx, a, m.selectionModelForAuth(a, model), now, opts.Headers)
+		expiresAt, hasExpiry := a.AccessTokenExpirationTimeForRequest(ctx, opts.Headers)
 		expired := hasExpiry && !expiresAt.IsZero() && !expiresAt.After(now)
 		switch {
 		case a.Disabled || reason == blockReasonDisabled:
@@ -152,6 +154,9 @@ func finishRoutingCapture(ctx context.Context, capture *routingCapture, selected
 			capture.indexes[selected.ID] = i
 		}
 		t.Pick = i
+		if t.StrategyStep != nil && t.StrategyStep.Wanted < 0 {
+			t.StrategyStep.Wanted = i
+		}
 		if t.DecidedBy == routing.DecidedByNone {
 			t.DecidedBy = routing.DecidedByStrategy
 		}
@@ -240,8 +245,8 @@ func captureRevalidatedGate(ctx context.Context, id string, auth *Auth, model st
 		return
 	}
 	now := time.Now()
-	blocked, reason, until := isAuthBlockedForModel(auth, m.selectionModelForAuth(auth, model), now)
-	expiresAt, hasExpiry := auth.AccessTokenExpirationTime()
+	blocked, reason, until := isAuthBlockedForModelForRequest(ctx, auth, m.selectionModelForAuth(auth, model), now, c.headers)
+	expiresAt, hasExpiry := auth.AccessTokenExpirationTimeForRequest(ctx, c.headers)
 	expired := hasExpiry && !expiresAt.IsZero() && !expiresAt.After(now)
 	withoutReserve := c.eligibility
 	withoutReserve.quotaReserve = nil
@@ -278,7 +283,7 @@ func (e authSelectionEligibility) setRejectedGate(candidate *routing.Candidate, 
 	if e.quotaReserve == nil || !withoutReserve.allows(auth) {
 		return
 	}
-	if until, held := e.quotaReserve.quotaReserveHeldUntil(auth, e.clientKeyID); held {
+	if until, held := e.quotaReserve.quotaReserveHeldUntil(auth, e.clientKeyID, e.requestModel); held {
 		candidate.Gate = routing.GateReserve
 		if !until.IsZero() {
 			candidate.UntilMs = until.UnixMilli()
@@ -348,6 +353,12 @@ func captureAffinity(ctx context.Context, state, bound string) {
 		return
 	}
 	c.trace.Affinity.State = state
+	if state == routing.AffinityNew && bound == "" {
+		c.trace.Affinity.Bound = -1
+		c.trace.Affinity.BoundAtMs = 0
+		c.trace.Affinity.BoundRequestID = ""
+		c.trace.Affinity.AgeMs = 0
+	}
 	if bound != "" {
 		i, ok := c.indexes[bound]
 		if !ok {
@@ -391,4 +402,18 @@ func recordExceptionalRouting(ctx context.Context, mode, decidedBy string, auth 
 	}
 	holder.Set(trace)
 	return routing.WithTrace(ctx, trace)
+}
+
+func captureAffinityBinding(ctx context.Context, cache *SessionCache, key string) {
+	c, _ := ctx.Value(routingCaptureKey{}).(*routingCapture)
+	if c == nil || c.trace.Affinity == nil {
+		return
+	}
+	_, at, requestID, ok := cache.LookupBinding(key)
+	if !ok || at.IsZero() {
+		return
+	}
+	c.trace.Affinity.BoundAtMs = at.UnixMilli()
+	c.trace.Affinity.BoundRequestID = requestID
+	c.trace.Affinity.AgeMs = max(0, time.Since(at).Milliseconds())
 }
