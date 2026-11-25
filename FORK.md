@@ -1651,13 +1651,13 @@ The bundled panel (CPAMC `a0d3fa2`) adds the quota reserve editor to the auth-fi
 
 Codex alpha-search selection carries the same config-client key hash as ordinary execution, so quota-reserve bypass keys can use held credentials.
 
-Codex continuity applies reserves and bypass keys before candidate construction. Muse relay actions preserve native config-key identity for bypass eligibility. Terminal pool-cooldown reporting also uses `m.eligibilityForRequest`, so reserve-held credentials cannot suppress Retry-After for the usable pool.
+Codex continuity applies reserves and bypass keys before candidate construction. Muse relay actions preserve native config-key identity for bypass eligibility. When no credential can serve a request, pool cooldown errors include known quota reserve release times in `reset_time` and `Retry-After`. A credential with multiple timed blocks contributes the time when its last block clears. The pool reports the earliest such recovery across credentials that can serve the request after recovery, regardless of routing priority or positive weight.
 
 **Implementation evidence:** `sdk/cliproxy/auth/conductor_pool_cooldown_test.go`. `sdk/cliproxy/auth/conductor_selection.go`. `sdk/cliproxy/auth/quota_reserve.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{quota_reserve_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets. `internal/api/server_routes.go` reuses `RequestClientKeyID` from `sdk/api/handlers/handlers.go`; `internal/api/server_codex_search_reserve_test.go` exercises authenticated HTTP through the real Codex executor and reserve selection.
 
-**Recorded validation:** `sdk/cliproxy/auth/conductor_pool_cooldown_test.go`, `TestPoolCooldownTerminalErrorIgnoresReserveHeldCredential`, covers reserve-aware terminal pool reporting in `earliestPoolCooldownForModelAt`.  On 2026-11-18, `sdk/cliproxy/auth/conductor_selection.go` retains model-aware reserve/bypass eligibility and scheduler bypass while held; client identity reaches Codex search and Muse. Reserve edit/reset/partial-bar, alpha-search HTTP, Muse HTTP and continuity eligibility tests pass.
+**Recorded validation:** `TestExecuteModelCooldownIncludesQuotaReserve` and `TestPoolCooldownTerminalErrorIncludesReserveHeldCredential` cover reset reporting before and after an upstream attempt, including reserve bypass and overlapping cooldowns. On 2026-11-18, reserve edit, reset, partial-bar, alpha-search HTTP, Muse HTTP and continuity eligibility tests passed.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-25
 
 ### DL039 — Streaming keep-alives before the first upstream chunk
 

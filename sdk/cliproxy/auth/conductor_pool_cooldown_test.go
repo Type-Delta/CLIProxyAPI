@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -458,9 +459,7 @@ func TestExecutePoolCooldownIncludesTransientNonCooldownBlock(t *testing.T) {
 	assertIssue7521PoolCooldownError(t, errExec, "last credential rate limited", shortTransient)
 }
 
-// A credential held back by its quota reserve is unavailable to keys without a
-// bypass, so it must not suppress the pool Retry-After on the terminal 429.
-func TestPoolCooldownTerminalErrorIgnoresReserveHeldCredential(t *testing.T) {
+func TestPoolCooldownTerminalErrorIncludesReserveHeldCredential(t *testing.T) {
 	target := newIssue7521Auth("pool-reserve-target")
 	held := newIssue7521Auth("pool-reserve-held")
 	held.Attributes[AttributeQuotaReserve] = `{"weekly":30}`
@@ -473,19 +472,107 @@ func TestPoolCooldownTerminalErrorIgnoresReserveHeldCredential(t *testing.T) {
 					t.Fatalf("reserve-held credential was selected")
 				}
 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
-				return cliproxyexecutor.Response{}, customStatusError{code: http.StatusTooManyRequests, msg: "target rate limited"}
+				return cliproxyexecutor.Response{}, newIssue7521Upstream429("target rate limited", 2*time.Hour)
 			},
 		},
 	}
 	m := newIssue7521Manager(t, nil, exec, target, held)
 	stored, _ := m.GetByID(held.ID)
-	m.ApplyQuotaReserveBars(stored, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: time.Now().Add(2 * time.Hour)}})
+	m.ApplyQuotaReserveBars(stored, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: time.Now().Add(time.Hour)}})
 
 	_, err := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: issue7521PoolModel}, cliproxyexecutor.Options{})
-	if _, ok := err.(*poolCooldownTerminalError); !ok {
-		t.Fatalf("err = %T %v, want *poolCooldownTerminalError", err, err)
-	}
-	if got := SafeResponseHeaders(err).Get("Retry-After"); got == "" {
-		t.Fatalf("terminal 429 lacks Retry-After")
+	assertIssue7521PoolCooldownError(t, err, "target rate limited", time.Hour)
+}
+
+func TestExecuteModelCooldownIncludesQuotaReserve(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cooldown     time.Duration
+		bypass       bool
+		reserveOnly  bool
+		unknownReset bool
+		zeroWeight   bool
+		want         time.Duration
+	}{
+		{name: "reserve resets first", want: time.Hour},
+		{name: "reserve and later cooldown on same credential", cooldown: 3 * time.Hour, want: 2 * time.Hour},
+		{name: "reserve ends before cooldown and credential still recovers first", cooldown: 90 * time.Minute, want: 90 * time.Minute},
+		{name: "cooldown ends before reserve", cooldown: 30 * time.Minute, want: time.Hour},
+		{name: "only credential held by reserve", reserveOnly: true, want: time.Hour},
+		{name: "unknown reserve deadline", unknownReset: true, want: 2 * time.Hour},
+		{name: "zero weight credential excluded", zeroWeight: true, want: 2 * time.Hour},
+		{name: "reserve bypass", bypass: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quota := newIssue7521Auth("model-cooldown-quota")
+			held := newIssue7521Auth("model-cooldown-reserve")
+			quota.Attributes[AttributeWeight] = "100"
+			held.Attributes[AttributeWeight] = "1"
+			if test.zeroWeight {
+				held.Attributes[AttributeWeight] = "0"
+			}
+			held.Attributes[AttributeQuotaReserve] = `{"weekly":30}`
+			held.Attributes[AttributeQuotaReserveBypassKeys] = `["` + quotaReserveBypassID + `"]`
+			exec := &customStreamMockExecutor{
+				identifier: "claude",
+				mockCustomErrorExecutor: mockCustomErrorExecutor{
+					identifier: "claude",
+					executeFn: func(_ context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						if !test.bypass || a.ID != held.ID {
+							t.Fatalf("unexpected upstream attempt with %s", a.ID)
+						}
+						return cliproxyexecutor.Response{}, nil
+					},
+				},
+			}
+			credentials := []*Auth{held}
+			cooldowns := map[string]time.Duration{held.ID: test.cooldown}
+			if !test.reserveOnly {
+				credentials = append(credentials, quota)
+				cooldowns[quota.ID] = 2 * time.Hour
+			}
+			m := newIssue7521Manager(t, &WeightedRoundRobinSelector{}, exec, credentials...)
+			ctx := context.Background()
+			for id, cooldown := range cooldowns {
+				if cooldown > 0 {
+					m.MarkResult(ctx, Result{
+						AuthID: id, Provider: "claude", Model: issue7521PoolModel,
+						RetryAfter: &cooldown, CredentialScope: true,
+						Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"},
+					})
+				}
+			}
+			stored, _ := m.GetByID(held.ID)
+			reserveReset := time.Now().Add(time.Hour)
+			if test.unknownReset {
+				reserveReset = time.Time{}
+			}
+			m.ApplyQuotaReserveBars(stored, []QuotaReserveBar{{ID: "weekly", RemainingPercent: 20, ResetAt: reserveReset}})
+			opts := cliproxyexecutor.Options{}
+			if test.bypass {
+				opts.Metadata = map[string]any{cliproxyexecutor.ClientKeyIDMetadataKey: quotaReserveBypassID}
+			}
+
+			_, err := m.Execute(ctx, []string{"claude"}, cliproxyexecutor.Request{Model: issue7521PoolModel}, opts)
+			if test.bypass {
+				if err != nil {
+					t.Fatalf("bypass request: %v", err)
+				}
+				return
+			}
+			var cooldownErr *modelCooldownError
+			if !errors.As(err, &cooldownErr) {
+				t.Fatalf("error = %v, want model cooldown", err)
+			}
+			body := cooldownErr.Error()
+			resetTime, errParse := time.ParseDuration(ojson.Get(body, "error.reset_time").String())
+			if errParse != nil || (resetTime-test.want).Abs() > time.Second {
+				t.Fatalf("reset_time = %v, want near %s, response = %s", resetTime, test.want, body)
+			}
+			resetSeconds := ojson.Get(body, "error.reset_seconds").Int()
+			if got := SafeResponseHeaders(err).Get("Retry-After"); got != strconv.FormatInt(resetSeconds, 10) {
+				t.Fatalf("Retry-After = %q, want %d", got, resetSeconds)
+			}
+		})
 	}
 }

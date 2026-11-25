@@ -3936,19 +3936,17 @@ func selectorExcludesZeroWeight(selector Selector) bool {
 	return false
 }
 
-// earliestPoolCooldownForModelAt scans the model's candidate credentials with
-// the same filters selection uses. It reports:
-//   - earliest: the earliest active timed cooldown recovery instant
-//   - hasUnblocked: true when at least one eligible candidate is still available
-//   - ok: true when no candidate is available and at least one is in a timed cooldown
-func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, now time.Time) (earliest time.Time, hasUnblocked bool, ok bool) {
+// earliestPoolCooldownForModelAt finds the first recovery in a blocked pool
+// with a quota cooldown or a timed reserve hold. reserveFirst indicates that
+// the first credential to recover is currently held by a reserve.
+func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, now time.Time) (earliest time.Time, hasUnblocked bool, reserveFirst bool) {
 	if m == nil {
 		return time.Time{}, false, false
 	}
 	excludeZeroWeight := selectorExcludesZeroWeight(m.Selector())
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	eligibility := m.eligibilityForRequest(ctx, opts, model)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, p := range providers {
@@ -3959,8 +3957,7 @@ func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers 
 	registryRef := registry.GetGlobalRegistry()
 	trimmedModel := strings.TrimSpace(model)
 
-	totalCandidates := 0
-	cooling := 0
+	hasCooldown := false
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
 			continue
@@ -3992,26 +3989,38 @@ func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers 
 		if trimmedModel != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
-		totalCandidates++
 		checkModel := m.selectionModelForAuth(candidate, model)
 		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, opts.Headers)
+		if blocked && (reason == blockReasonDisabled || !next.After(now)) {
+			continue
+		}
+		until, held := m.quotaReserveHeldUntil(candidate, eligibility.clientKeyID, model)
+		if held {
+			if !until.After(now) {
+				continue
+			}
+			blocked = true
+			hasCooldown = true
+			if until.After(next) {
+				next = until
+			}
+		}
 		if !blocked {
 			return time.Time{}, true, false
 		}
 		if reason == blockReasonCooldown {
-			cooling++
+			hasCooldown = true
 		}
 		// Count every timed auto-recovery toward the pool's earliest reset,
 		// including transient non-cooldown blocks (e.g. a short capacity 429),
 		// matching how selection computes the earliest availability.
-		if reason != blockReasonDisabled && !next.IsZero() && next.After(now) {
-			if earliest.IsZero() || next.Before(earliest) {
-				earliest = next
-			}
+		if earliest.IsZero() || next.Before(earliest) || (next.Equal(earliest) && reserveFirst && !held) {
+			earliest = next
+			reserveFirst = held
 		}
 	}
-	if totalCandidates > 0 && cooling > 0 && !earliest.IsZero() {
-		return earliest, false, true
+	if hasCooldown {
+		return earliest, false, reserveFirst
 	}
 	return time.Time{}, false, false
 }
@@ -4038,26 +4047,37 @@ func (m *Manager) annotatePoolCooldownTerminalErrorAt(ctx context.Context, provi
 	if m == nil || lastErr == nil {
 		return lastErr
 	}
-	if statusCodeFromError(lastErr) != http.StatusTooManyRequests {
-		return lastErr
-	}
+	var cooldown *modelCooldownError
+	isSelectionCooldown := errors.As(lastErr, &cooldown) && cooldown != nil
 	var marker interface{ IsModelCooldown() bool }
-	if errors.As(lastErr, &marker) && marker != nil && marker.IsModelCooldown() {
+	if !isSelectionCooldown && errors.As(lastErr, &marker) && marker != nil && marker.IsModelCooldown() {
 		return lastErr
 	}
-	var existing *poolCooldownTerminalError
-	if errors.As(lastErr, &existing) && existing != nil {
+	isUpstream429 := !isSelectionCooldown && statusCodeFromError(lastErr) == http.StatusTooManyRequests
+	if !isUpstream429 && (!(isSelectionCooldown || isAuthUnavailableError(lastErr) || isAuthNotFoundError(lastErr)) || !m.hasHeldQuotaReserve()) {
 		return lastErr
 	}
-	deadline, hasUnblocked, ok := m.earliestPoolCooldownForModelAt(ctx, providers, model, opts, now)
+	deadline, hasUnblocked, reserveFirst := m.earliestPoolCooldownForModelAt(ctx, providers, model, opts, now)
 	if hasUnblocked {
 		return lastErr
 	}
-	if !ok && !selectionCooldownDeadline.IsZero() && selectionCooldownDeadline.After(now) {
-		deadline = selectionCooldownDeadline
-		ok = true
+	if !isUpstream429 {
+		if !reserveFirst {
+			return lastErr
+		}
+		resetIn := deadline.Sub(now)
+		if isSelectionCooldown {
+			if resetIn >= cooldown.resetIn {
+				return lastErr
+			}
+			return newModelCooldownErrorForCandidates(cooldown.model, cooldown.provider, resetIn, cooldown.cause, cooldown.claudeCooldown, nil)
+		}
+		return newModelCooldownErrorForCandidates(model, "", resetIn, errors.Unwrap(lastErr), false, nil)
 	}
-	if !ok {
+	if deadline.IsZero() && selectionCooldownDeadline.After(now) {
+		deadline = selectionCooldownDeadline
+	}
+	if deadline.IsZero() {
 		return lastErr
 	}
 	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline}
