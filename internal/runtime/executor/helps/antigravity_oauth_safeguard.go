@@ -14,9 +14,11 @@ var userAgentProduct = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(?:/[a-zA-
 // AntigravityOAuthClientAllowed matches native clients and configured User-Agent
 // products. Text inside User-Agent comments does not identify a client.
 func AntigravityOAuthClientAllowed(userAgent string, identities []string) bool {
-	if antigravitycapture.IsNativeUserAgent(userAgent) {
-		return true
-	}
+	return antigravitycapture.IsNativeUserAgent(userAgent) || AntigravityOAuthClientConfigured(userAgent, identities)
+}
+
+// AntigravityOAuthClientConfigured requires an explicit incoming identity.
+func AntigravityOAuthClientConfigured(userAgent string, identities []string) bool {
 	if len(identities) == 0 {
 		return false
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -83,13 +84,22 @@ func (e *AntigravityExecutor) checkAntigravityOAuthIncoming(auth *cliproxyauth.A
 	if err != nil || profile == nil {
 		return err
 	}
-	if opts.SourceFormat.String() != "antigravity" {
-		return rejectAntigravityOAuth("use a native Antigravity inference endpoint (/v1internal)")
+	if opts.SourceFormat != sdktranslator.FormatAntigravity && opts.SourceFormat != sdktranslator.FormatGemini {
+		return rejectAntigravityOAuth("use a native Antigravity inference endpoint (/v1internal) or a Gemini inference endpoint (/v1beta)")
 	}
 	if len(opts.Headers.Values("User-Agent")) != 1 {
 		return rejectAntigravityOAuth("exactly one incoming User-Agent header is required")
 	}
-	if !helps.AntigravityOAuthClientAllowed(opts.Headers.Get("User-Agent"), e.cfg.Antigravity.OAuthSafeguardClientIdentities) {
+	userAgent := opts.Headers.Get("User-Agent")
+	identities := e.cfg.Antigravity.OAuthSafeguardClientIdentities
+	if opts.SourceFormat == sdktranslator.FormatGemini {
+		allowGeminiSDK := e.cfg.Antigravity.OAuthSafeguardAllowGeminiSDK
+		sdkAllowed := (allowGeminiSDK == nil || *allowGeminiSDK) &&
+			helps.AntigravityOAuthClientConfigured(userAgent, []string{"google-genai-sdk"})
+		if !sdkAllowed && !helps.AntigravityOAuthClientConfigured(userAgent, identities) {
+			return rejectAntigravityOAuth("incoming User-Agent is not allowed for Gemini inference (/v1beta)")
+		}
+	} else if !helps.AntigravityOAuthClientAllowed(userAgent, identities) {
 		return rejectAntigravityOAuth("incoming User-Agent is not allowed by the Antigravity client identities")
 	}
 	if !profile.MatchesContentType(opts.Headers) {
@@ -102,7 +112,14 @@ func (e *AntigravityExecutor) checkAntigravityOAuthIncoming(auth *cliproxyauth.A
 	if !ojson.ValidBytes(payload) {
 		return rejectAntigravityOAuth("the incoming request must be valid JSON")
 	}
-	if reason := helps.AntigravityOAuthEnvelopeMismatch(ojson.NewDoc(payload), countTokens, profile.EnvelopeUserAgent); reason != "" {
+	doc := ojson.NewDoc(payload)
+	if opts.SourceFormat == sdktranslator.FormatGemini {
+		if !doc.Get("contents").IsArray() {
+			return rejectAntigravityOAuth("incoming Gemini contents must be an array")
+		}
+		return nil
+	}
+	if reason := helps.AntigravityOAuthEnvelopeMismatch(doc, countTokens, profile.EnvelopeUserAgent); reason != "" {
 		return rejectAntigravityOAuth("incoming " + reason)
 	}
 	return nil

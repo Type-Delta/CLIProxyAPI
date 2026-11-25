@@ -78,3 +78,13 @@ func TestCaptureEnvironmentUsesPrivateHome(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeResponseErrorReportsReasonWithoutProviderBody(t *testing.T) {
+	body := []byte(`{"error":{"message":"private provider detail","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"TOS_VIOLATION","metadata":{"appeal_url":"private appeal link"}}]}}`)
+	if got := probeResponseError(http.StatusForbidden, body).Error(); got != "Google refused the private Antigravity reference probe with HTTP 403 (TOS_VIOLATION)" {
+		t.Fatalf("unexpected reference failure: %q", got)
+	}
+	if got := probeResponseError(http.StatusTooManyRequests, body).Error(); got != "Google refused the private Antigravity reference probe with HTTP 429" {
+		t.Fatalf("unexpected reference failure: %q", got)
+	}
+}
