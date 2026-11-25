@@ -2464,6 +2464,13 @@ Routing tab and the event "Routing decision" section. Detail and exports include
 ordinary event lists omit it. Without ClickHouse, analytics and trace capture are unavailable,
 while routing rules and dry runs remain usable.
 
+Dry runs return a `result` with the projected inference status, response body,
+error class, retry delay, and predicted credential. Error projection reuses CPA's
+selection and HTTP error formatting, including the earliest known quota reserve
+release. The trace still explains the decision. A scheduler that CPA cannot
+evaluate locally returns an unknown result. The public model availability guide
+documents the result fields.
+
 Dry runs accept optional `source_format`; `openai-image` selects the native Images API credential track independently of the model name or client User-Agent. Omitted input preserves text-route behavior. Invalid formats return HTTP 400 with `path: "source_format"`. Live selection, trace gates, GSR refresh, and dry-run affinity checks use the same request-aware SIWC eligibility. Native image calls use the outer OAuth token even when the nested SIWC token has a different expiry. `sdk/cliproxy/auth/routing_siwc_merge_test.go` covers buffered/streaming generations and edits, both expiry directions, rules, and affinity; `internal/api/handlers/management/routing_test.go` covers format validation. Embedded routing docs describe the input.
 
 Codex continuity candidates use reserve-aware eligibility, pins, exclusions, zero-weight gates and retry limits. Existing eligible affinity wins before rule narrowing; rules use ready-pool fall-through, or the recoverable quota pool when none is ready, and mixed-provider targets cannot become invalid Codex candidates.

@@ -1,7 +1,6 @@
 package management
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -9,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routing"
 )
@@ -172,7 +173,7 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 	for name, value := range input.Headers {
 		headers.Add(name, value)
 	}
-	trace, err := h.authManager.DryRunRoute(c.Request.Context(), routing.DryRunRequest{
+	req := routing.DryRunRequest{
 		SourceFormat:        input.SourceFormat,
 		DownstreamWebsocket: input.DownstreamWebsocket,
 		Model:               input.Model,
@@ -181,11 +182,13 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 		Headers:             headers,
 		SessionID:           input.SessionID,
 		Rules:               draft,
-	})
+	}
+	projection, err := h.authManager.DryRunRouteWithProjection(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "routing dry run failed"})
 		return
 	}
+	trace := projection.Trace
 	labels := make(map[string]string)
 	credentialIDs := make(map[string]struct{})
 	for _, auth := range h.authManager.List() {
@@ -216,7 +219,8 @@ func (h *Handler) PostRoutingDryRun(c *gin.Context) {
 			}
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"trace": trace, "warnings": warnings})
+	result := handlers.NewBaseAPIHandlers(&cfg.SDKConfig, h.authManager).ProjectRoutingDryRunResult(req, projection)
+	c.JSON(http.StatusOK, gin.H{"result": result, "trace": trace, "warnings": warnings})
 }
 
 func (h *Handler) routingConfigSnapshot() *config.Config {

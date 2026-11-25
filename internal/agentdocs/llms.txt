@@ -6,7 +6,7 @@ Paths are relative to the base URL you were given. Management and telemetry call
 
 ## Commonly used
 
-- [Check model availability](/llms/model-availability.md): Dry-run a request without upstream inference; interpret eligibility, candidate gates and prediction limits.
+- [Check model availability](/llms/model-availability.md): Read a dry run's projected response, retry delay and credential without calling the upstream provider.
 
 ## Management
 

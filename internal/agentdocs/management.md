@@ -137,7 +137,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `POST /v8/management/routing/model-definitions/refresh` | Refresh model catalogs immediately | No body; returns catalog status, sources and `changed_providers`; invalid sources return 400, refresh failures return 502 |
 | `POST /v8/management/models/refresh` | Refresh model catalogs immediately | Alias of `/routing/model-definitions/refresh` |
 | `GET /v8/management/routing/credentials` | List secret-free routable credentials | Returns `credentials` with `cooldowns`, `observed_at`, `client_types`; covers config API keys and OAuth; IDs are Auth.ID, not analytics HMAC IDs |
-| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, `source_format` (`"openai-image"` simulates the native Images API; invalid values return 400 with `path:"source_format"`), draft `rules`; returns `trace`, `warnings` |
+| `POST /v8/management/routing/dry-run` | Simulate routing without changing runtime state | JSON required nonblank `model`, otherwise 400 with `path:"model"`; optional `api_key_label`, `client_type`, `headers`, `session_id`, `source_format` (`"openai-image"` simulates the native Images API; invalid values return 400 with `path:"source_format"`), draft `rules`; returns `result`, `trace`, `warnings` |
 
 ## Observability
 
@@ -240,7 +240,7 @@ curl -sS -X POST "$CPA_BASE/v8/management/routing/dry-run" \
   --data '{"model":"MODEL_FROM_REQUEST","session_id":"codex:SESSION_ID_FROM_REQUEST","client_type":"codex"}'
 ```
 
-Use the exact canonical session ID, including its source prefix and any `:agent:` suffix; resolve a bare user ID with the [SQL session recipe](sql.md#session-xb12345-intermittently-received-403). Optional `api_key_label` must match a configured client-key label. Add actual request `headers` to reproduce header rules. Draft `rules` replace saved rules for this simulation only. Inspect `trace.candidates`, rules, affinity, pick and decider. Routing gates outrank affinity, which outranks the strategy, which outranks custom rules. Rules cannot override disabled, cooldown, quota or model gates.
+Use the exact canonical session ID, including its source prefix and any `:agent:` suffix; resolve a bare user ID with the [SQL session recipe](sql.md#session-xb12345-intermittently-received-403). Optional `api_key_label` must match a configured client-key label. Add actual request `headers` to reproduce header rules. Draft `rules` replace saved rules for this simulation only. Read `result` for the projected inference status, body, credential, error class, and retry delay. Use `trace.candidates`, rules, affinity, pick and decider to explain that result. See [model availability](model-availability.md#read-the-result) for the response fields. Routing gates outrank affinity, which outranks the strategy, which outranks custom rules. Rules cannot override disabled, cooldown, quota or model gates.
 
 ### Why was request X routed to credential Y?
 

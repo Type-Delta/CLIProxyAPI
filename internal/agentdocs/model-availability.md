@@ -29,11 +29,28 @@ jq -n --arg model "$CPA_MODEL" '{model: $model}' |
     --data-binary @-
 ```
 
-The minimum body is `{"model":"MODEL_FROM_REQUEST"}`. A successful simulation
-returns HTTP 200 with `trace` and `warnings`, even when no credential can serve
-the model. Inspect the trace before reporting availability.
+The minimum body is `{"model":"MODEL_FROM_REQUEST"}`. The management endpoint
+returns HTTP 200 for a completed simulation, including when inference would
+fail. Read `result.status` for the projected inference status.
 
 ## Read the result
+
+Start with `result`. Use `trace` when you need to explain the decision.
+
+| Field | Meaning |
+| --- | --- |
+| `result.success` | `true` when CPA expects to route the request locally, `false` when CPA predicts a local error, or `null` when the outcome depends on a scheduler the dry run cannot evaluate. |
+| `result.status` | Projected HTTP status, such as `200`, `400`, or `429`. |
+| `result.body` | The string `"success"` on a routable request, or a string containing the projected OpenAI-compatible JSON error body. Parse the string as JSON on failure to read fields such as `error.reset_time`. |
+| `result.retry_after` | Projected `Retry-After` in seconds. A cooldown uses the earliest known time an eligible credential can recover, including quota reserve releases. |
+| `result.credential` | Object with `id` and `label` when CPA can predict a specific credential. |
+| `result.error_class` | CPA's machine-readable error class, such as `model_cooldown`, `auth_not_found`, or `model_not_found`. |
+
+Fields with unknown or inapplicable values are `null`. A request can be locally
+routable with a null credential if live routing would refresh quota before
+choosing one. An older CPA may return only `trace` and `warnings`.
+
+### Explain the decision
 
 All candidate references are zero-based indexes into `trace.candidates`.
 

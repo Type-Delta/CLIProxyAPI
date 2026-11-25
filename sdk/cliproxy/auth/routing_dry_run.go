@@ -17,8 +17,25 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
+// DryRunProjection carries the routing trace and any predicted local selection error.
+type DryRunProjection struct {
+	Trace     *routing.Trace
+	Model     string
+	Providers []string
+	Error     error
+}
+
 // DryRunRoute evaluates a hypothetical request without advancing routing state.
 func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*routing.Trace, error) {
+	projection, err := m.DryRunRouteWithProjection(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return projection.Trace, nil
+}
+
+// DryRunRouteWithProjection predicts the local routing outcome without advancing state.
+func (m *Manager) DryRunRouteWithProjection(ctx context.Context, req routing.DryRunRequest) (*DryRunProjection, error) {
 	if err := req.ValidateSourceFormat(); err != nil {
 		return nil, err
 	}
@@ -26,7 +43,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
 	}
 	if m.HomeEnabled() {
-		return &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeDryRun, DecidedBy: routing.DecidedByHome, Pick: -1, Candidates: []routing.Candidate{}}, nil
+		return &DryRunProjection{Trace: &routing.Trace{Version: routing.TraceVersion, Mode: routing.ModeDryRun, DecidedBy: routing.DecidedByHome, Pick: -1, Candidates: []routing.Candidate{}}}, nil
 	}
 	model := strings.TrimSpace(req.Model)
 	initial := thinking.ParseSuffix(model)
@@ -62,12 +79,14 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		headers.Set("X-Session-ID", req.SessionID)
 		primaryID, fallbackID = extractExplicitSessionIDs(headers, nil, metadata)
 	}
-	opts := cliproxyexecutor.Options{Headers: headers, Metadata: metadata, SourceFormat: sdktranslator.FromString(req.SourceFormat)}
+	sourceFormat := sdktranslator.FromString(strings.ToLower(strings.TrimSpace(req.SourceFormat)))
+	opts := cliproxyexecutor.Options{Headers: headers, Metadata: metadata, SourceFormat: sourceFormat}
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx, _ = routing.WithTraceHolder(ctx)
 	ctx, capture := m.beginRoutingCapture(ctx, providers, model, opts, nil)
 	trace := capture.trace
 	trace.Mode = routing.ModeDryRun
+	projection := &DryRunProjection{Trace: trace, Model: model, Providers: providers}
 	m.mu.RLock()
 	selector := m.selector
 	strategyModel := selectionArgForSelector(selector, model)
@@ -81,7 +100,11 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 			continue
 		}
 		if c.Gate == "" {
-			eligible = append(eligible, a.Clone())
+			if _, ok := m.executorLocked(executorKeyFromAuth(a)); ok {
+				eligible = append(eligible, a.Clone())
+			} else {
+				trace.Candidates[capture.indexes[a.ID]].Gate = routing.GatePolicy
+			}
 		}
 		if affinityEnabled && (affinity.rebindOnQuotaOnly || affinity.rebindOnNever) && !a.Disabled && eligibility.allows(a) &&
 			(strings.TrimSpace(model) == "" || m.authSupportsRouteModel(registry.GetGlobalRegistry(), a, model)) {
@@ -110,7 +133,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		ctx = context.WithValue(ctx, routingPoolKey{}, &routingPool{decide: rules.Decide, attrs: attrs})
 	}
 	var heldBinding string
-	refusedBinding := false
+	var refusedBinding *Error
 	keptPick := -1
 	if affinityEnabled {
 		selector = affinity.fallback
@@ -151,7 +174,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 					break
 				}
 				if affinity.rebindOnNever && (identity == primaryID || (!isSubagent && !isFork)) {
-					refusedBinding = true
+					refusedBinding = affinity.unavailableBoundAuthError(preserveCtx, affinityCandidates, model, entry.authID, time.Now())
 					break
 				}
 				if (identity == primaryID || (!isSubagent && !isFork)) && affinity.shouldPreserveBindingWhenUnavailable(preserveCtx, affinityCandidates, model, entry.authID, time.Now()) {
@@ -165,9 +188,10 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 			}
 		}
 	}
-	if refusedBinding {
+	if refusedBinding != nil {
 		trace.Error = "no_eligible"
-		return trace, nil
+		projection.Error = refusedBinding
+		return projection, nil
 	}
 	keptRules := trace.Rules
 	if rules != nil && rules.Len() > 0 {
@@ -204,8 +228,11 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 			trace.DecidedBy = routing.DecidedByAffinity
 		} else {
 			trace.Error = "no_eligible"
+			if len(providers) > 0 {
+				projection.Error = m.dryRunSelectionError(ctx, trace, providers, model, opts, legacy)
+			}
 		}
-		return trace, nil
+		return projection, nil
 	}
 	if heldBinding != "" {
 		captureAffinity(ctx, routing.AffinityHeld, heldBinding)
@@ -222,7 +249,7 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 			trace.PickPredicted = true
 			trace.DecidedBy = routing.DecidedByAffinity
 		}
-		return trace, nil
+		return projection, nil
 	}
 	strategyProvider := provider
 	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
@@ -253,7 +280,61 @@ func (m *Manager) DryRunRoute(ctx context.Context, req routing.DryRunRequest) (*
 		trace.PickPredicted = true
 		trace.DecidedBy = routing.DecidedByAffinity
 	}
-	return trace, nil
+	return projection, nil
+}
+
+// dryRunSelectionError uses the same availability and terminal error builders as live selection.
+func (m *Manager) dryRunSelectionError(ctx context.Context, trace *routing.Trace, providers []string, model string, opts cliproxyexecutor.Options, legacy bool) error {
+	legacy = legacy || m.hasPluginScheduler() || isQuotaRecoverySelector(m.Selector()) || !m.useSchedulerFastPath()
+	eligibility := m.eligibilityForRequest(ctx, opts, model)
+	m.mu.RLock()
+	selector := m.selector
+	reg := registry.GetGlobalRegistry()
+	candidates := make([]*Auth, 0, len(trace.Candidates))
+	executorProviders := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		key := canonicalSchedulingProvider(provider)
+		if _, ok := m.executorLocked(key); ok {
+			executorProviders = append(executorProviders, key)
+		}
+	}
+	for _, candidate := range trace.Candidates {
+		a := m.auths[candidate.ID]
+		if a == nil || a.Disabled || !eligibility.allows(a) {
+			continue
+		}
+		if _, ok := m.executorLocked(executorKeyFromAuth(a)); !ok {
+			continue
+		}
+		if m.routeAwareSelectionRequired(a, model) || requestAwareCredSelectionRequired(ctx, a, opts.Headers) {
+			legacy = true
+		}
+		if m.authSupportsRouteModel(reg, a, model) {
+			candidates = append(candidates, a)
+		}
+	}
+
+	now := time.Now()
+	var selectionErr error
+	switch {
+	case len(candidates) == 0:
+		selectionErr = &Error{Code: "auth_not_found", Message: "no auth available"}
+	case legacy:
+		provider := "mixed"
+		if _, bareWeighted := selector.(*WeightedRoundRobinSelector); !bareWeighted && len(providers) == 1 {
+			provider = canonicalSchedulingProvider(providers[0])
+		}
+		_, _, selectionErr = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, false, opts.Headers)
+	default:
+		// The scheduler may synthesize a different error for mixed providers.
+		// Run its availability check on a private index.
+		local := newAuthScheduler(selector)
+		local.weightedSelector = nil
+		local.rebuild(candidates)
+		_, _, selectionErr = local.pickMixed(context.Background(), executorProviders, model, opts, nil)
+	}
+	m.mu.RUnlock()
+	return m.annotatePoolCooldownTerminalErrorAt(ctx, providers, model, opts, selectionErr, time.Time{}, now)
 }
 
 func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*Auth, providers []string, provider, model, strategyModel string, legacy, preferWS bool) (*routing.StrategyStep, *strategySimulation) {
