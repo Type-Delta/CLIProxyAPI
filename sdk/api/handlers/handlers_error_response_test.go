@@ -423,6 +423,21 @@ func TestBuildErrorResponseBodyWithError_RequestTimeoutIsServerError(t *testing.
 	}
 }
 
+func TestBuildErrorResponseBodyWithAntigravitySafeguardRefusal(t *testing.T) {
+	err := &coreauth.Error{
+		Code:       coreauth.ErrorCodeAntigravitySafeguardRejected,
+		HTTPStatus: http.StatusForbidden,
+		Message:    "Antigravity OAuth safeguard rejected request: incoming User-Agent is not allowed",
+	}
+	var got ErrorResponse
+	if errDecode := json.Unmarshal(BuildErrorResponseBodyWithError(http.StatusForbidden, err.Message, err), &got); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if got.Error.Code != coreauth.ErrorCodeAntigravitySafeguardRejected || got.Error.Type != "permission_error" || got.Error.Message != err.Message {
+		t.Fatalf("unexpected safeguard response: %+v", got.Error)
+	}
+}
+
 func TestBuildErrorResponseBody_CompactsPrettyPrintedJSON(t *testing.T) {
 	prettyJSON := "{\n  \"error\": {\n    \"code\": 500,\n    \"message\": \"Internal error encountered.\",\n    \"status\": \"INTERNAL\"\n  }\n}"
 	body := BuildErrorResponseBody(http.StatusInternalServerError, prettyJSON)

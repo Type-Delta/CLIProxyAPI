@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -132,6 +133,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
 	case http.StatusForbidden:
 		errType = "permission_error"
 		code = "insufficient_quota"
+		var classified interface{ ErrorCode() string }
+		if errors.As(err, &classified) && classified.ErrorCode() == coreauth.ErrorCodeAntigravitySafeguardRejected {
+			code = coreauth.ErrorCodeAntigravitySafeguardRejected
+		}
 	case http.StatusTooManyRequests:
 		errType = "rate_limit_error"
 		code = "rate_limit_exceeded"

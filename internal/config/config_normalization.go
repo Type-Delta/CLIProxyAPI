@@ -65,8 +65,8 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	if cfg == nil {
 		return
 	}
-	cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities = normalizeClaudeEntrypointNames(cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities)
-	cfg.ClaudeHeaderDefaults.NativeEntrypoints = normalizeClaudeEntrypointNames(cfg.ClaudeHeaderDefaults.NativeEntrypoints)
+	cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities = normalizeClientIdentities(cfg.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities)
+	cfg.ClaudeHeaderDefaults.NativeEntrypoints = normalizeClientIdentities(cfg.ClaudeHeaderDefaults.NativeEntrypoints)
 	cfg.ClaudeHeaderDefaults.AnthropicBetaStrip = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaStrip)
 	cfg.ClaudeHeaderDefaults.AnthropicBetaAppend = normalizeClaudeBetaNames(cfg.ClaudeHeaderDefaults.AnthropicBetaAppend)
 	mode := strings.ToLower(strings.TrimSpace(cfg.ClaudeHeaderDefaults.ClientRequestID))
@@ -86,9 +86,9 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
 }
 
-// normalizeClaudeEntrypointNames trims and lowercases entrypoint names,
+// normalizeClientIdentities trims and lowercases client names,
 // dropping empty and duplicate entries while keeping the configured order.
-func normalizeClaudeEntrypointNames(names []string) []string {
+func normalizeClientIdentities(names []string) []string {
 	if len(names) == 0 {
 		return nil
 	}
@@ -439,13 +439,14 @@ func NormalizeSensitivePatternsReplace(in []SensitivePatternRule) []SensitivePat
 	return out
 }
 
-// SanitizeAntigravity normalizes Antigravity sensitive-word settings.
+// SanitizeAntigravity normalizes Antigravity safeguard and sensitive-word settings.
 func (cfg *Config) SanitizeAntigravity() {
 	if cfg == nil {
 		return
 	}
 	cfg.Antigravity.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Antigravity.SensitiveWordsReplace)
 	cfg.Antigravity.SensitivePatternsReplace = NormalizeSensitivePatternsReplace(cfg.Antigravity.SensitivePatternsReplace)
+	cfg.Antigravity.OAuthSafeguardClientIdentities = normalizeClientIdentities(cfg.Antigravity.OAuthSafeguardClientIdentities)
 }
 
 // SanitizeDevin normalizes Devin sensitive-word settings.

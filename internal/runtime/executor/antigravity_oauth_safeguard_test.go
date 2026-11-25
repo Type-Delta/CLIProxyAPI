@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/MoeForge/moego/ojson"
@@ -13,6 +14,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"gopkg.in/yaml.v3"
 )
 
 func TestAntigravityOAuthSafeguard(t *testing.T) {
@@ -56,6 +58,57 @@ func TestAntigravityOAuthSafeguard(t *testing.T) {
 		}
 		if got := httpReq.Header.Get("User-Agent"); got != ua {
 			t.Fatalf("outbound User-Agent = %q, want captured value", got)
+		}
+	})
+
+	t.Run("custom incoming client identity", func(t *testing.T) {
+		custom := *cfg
+		if err := yaml.Unmarshal([]byte("oauth-safeguard-client-identities: [t3code, t3-code]"), &custom.Antigravity); err != nil {
+			t.Fatal(err)
+		}
+		executor := NewAntigravityExecutor(&custom)
+		executor.referenceLoader = loadReference
+		client := opts
+		client.Headers = opts.Headers.Clone()
+		client.Headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0) t3code/0.0.15 Chrome/136.0.7103.93 Electron/36.3.2")
+		if err := exec.checkAntigravityOAuthIncoming(auth, req, client, false); err == nil || !strings.Contains(err.Error(), "incoming User-Agent") {
+			t.Fatalf("expected User-Agent rejection, got %v", err)
+		}
+		if err := executor.checkAntigravityOAuthIncoming(auth, req, client, false); err != nil {
+			t.Fatalf("configured client rejected: %v", err)
+		}
+		translated := client
+		translated.SourceFormat = sdktranslator.FormatOpenAI
+		if err := executor.checkAntigravityOAuthIncoming(auth, req, translated, false); err == nil || !strings.Contains(err.Error(), "native Antigravity inference endpoint") {
+			t.Fatalf("expected native endpoint rejection, got %v", err)
+		}
+		malformed := req
+		malformed.Payload = []byte(`{"request":{"contents":[]}}`)
+		if err := executor.checkAntigravityOAuthIncoming(auth, malformed, client, false); err == nil {
+			t.Fatal("configured client bypassed envelope validation")
+		}
+		for _, rejectedUA := range []string{
+			"Mozilla/5.0 (t3code/0.0.15)",
+			"not-t3code/0.0.15",
+			"t3code-foreign/0.0.15",
+		} {
+			client.Headers.Set("User-Agent", rejectedUA)
+			if err := executor.checkAntigravityOAuthIncoming(auth, req, client, false); err == nil {
+				t.Errorf("unconfigured User-Agent %q passed", rejectedUA)
+			}
+		}
+		client.Headers.Set("User-Agent", "T3-Code/1.0.0-nightly")
+		if err := executor.checkAntigravityOAuthIncoming(auth, req, client, false); err != nil {
+			t.Fatalf("configured case-insensitive product rejected: %v", err)
+		}
+		client.Headers.Add("User-Agent", ua)
+		if err := executor.checkAntigravityOAuthIncoming(auth, req, client, false); err == nil {
+			t.Fatal("duplicate User-Agent headers passed")
+		}
+		outbound := auth.Clone()
+		outbound.Attributes = map[string]string{"header:User-Agent": "t3code/0.0.15"}
+		if _, _, err := executor.buildGenerationRequestDoc(t.Context(), outbound, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "", nil); err == nil {
+			t.Fatal("configured client identity altered the outbound User-Agent policy")
 		}
 	})
 

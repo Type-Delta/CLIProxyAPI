@@ -3302,12 +3302,19 @@ Flash on that catalog, and native Gemini token counting returned a count.
 
 `oauth.providers.antigravity.oauth-safeguard` is off by default. When
 enabled, CPA rejects inference on a local direct Google Antigravity OAuth
-credential unless the request uses the native endpoint, an Antigravity
-client User-Agent, and the Cloud Code JSON envelope. CPA checks the final
+credential unless the request uses the native endpoint, an allowed incoming
+User-Agent, and the Cloud Code JSON envelope. CPA checks the final
 destination, bearer token, project, software headers, and body after payload
 rules. A refusal returns a request-scoped 403 and does not cool the
 credential. Guarded SDK requests use the typed inference methods. Custom
 upstream endpoints and Home dispatch are outside the guard's scope.
+
+`oauth.providers.antigravity.oauth-safeguard-client-identities` adds incoming
+User-Agent product names such as `t3code`. Matching ignores case and the
+product's version. Native format, private reference, and outbound validation
+still apply. CPAMC exposes the list under Config → Advanced → Antigravity.
+Local safeguard refusals use `antigravity_oauth_safeguard_rejected` and
+distinguish an unrecognized User-Agent from a non-native request format.
 
 CPA installs Google's Antigravity CLI in a private reference directory
 using the official release manifest and SHA-512 checksum. A probe runs the
@@ -3347,8 +3354,12 @@ reference on startup, completed a guarded live Gemini request, and kept
 the same active profile after restart. Capture tests cover token and
 project binding, successful response validation, the daily update
 boundary, and rollback after a failed candidate.
+The custom-identity regression covers a T3 Code User-Agent fixture, a
+non-native request format, a malformed envelope, and an outbound header
+override. The v8 management test saves the identity list and reloads it
+with case and duplicate entries normalized.
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-25
 
 ### DL081 — Codex stream outage recovery
 

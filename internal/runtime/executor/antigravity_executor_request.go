@@ -29,6 +29,10 @@ type antigravityOAuthSafeguardError struct{ statusErr }
 
 func (antigravityOAuthSafeguardError) IsRequestScoped() bool { return true }
 
+func (antigravityOAuthSafeguardError) ErrorCode() string {
+	return cliproxyauth.ErrorCodeAntigravitySafeguardRejected
+}
+
 type antigravityReferenceUnavailableError struct{ statusErr }
 
 func (antigravityReferenceUnavailableError) IsCredentialScoped() bool { return true }
@@ -79,9 +83,14 @@ func (e *AntigravityExecutor) checkAntigravityOAuthIncoming(auth *cliproxyauth.A
 	if err != nil || profile == nil {
 		return err
 	}
-	if opts.SourceFormat.String() != "antigravity" || len(opts.Headers.Values("User-Agent")) != 1 ||
-		!antigravitycapture.IsNativeUserAgent(opts.Headers.Get("User-Agent")) {
-		return rejectAntigravityOAuth("a native Antigravity request and User-Agent are required")
+	if opts.SourceFormat.String() != "antigravity" {
+		return rejectAntigravityOAuth("use a native Antigravity inference endpoint (/v1internal)")
+	}
+	if len(opts.Headers.Values("User-Agent")) != 1 {
+		return rejectAntigravityOAuth("exactly one incoming User-Agent header is required")
+	}
+	if !helps.AntigravityOAuthClientAllowed(opts.Headers.Get("User-Agent"), e.cfg.Antigravity.OAuthSafeguardClientIdentities) {
+		return rejectAntigravityOAuth("incoming User-Agent is not allowed by the Antigravity client identities")
 	}
 	if !profile.MatchesContentType(opts.Headers) {
 		return rejectAntigravityOAuth("the incoming Content-Type does not match the Antigravity reference")

@@ -49,12 +49,16 @@ func TestConfigV8SharedUpstreamRoundTrip(t *testing.T) {
 		t.Fatalf("custom identities did not round trip: %s", got)
 	}
 	request(http.MethodPatch, "analytics", `{"queue-capacity":1024}`, http.StatusOK)
+	request(http.MethodPatch, "oauth/providers/antigravity", `{"oauth-safeguard":true,"oauth-safeguard-client-identities":[" T3Code ","t3code","t3-code"]}`, http.StatusOK)
 	loaded, errLoad := config.LoadConfig(file)
 	if errLoad != nil {
 		t.Fatal(errLoad)
 	}
 	if got := loaded.ClaudeHeaderDefaults.OAuthSafeguardClientIdentities; len(got) != 2 || got[0] != "partner-app" || got[1] != "another-app" {
 		t.Fatalf("persisted custom identities = %q", got)
+	}
+	if got := loaded.Antigravity.OAuthSafeguardClientIdentities; !loaded.Antigravity.OAuthSafeguard || len(got) != 2 || got[0] != "t3code" || got[1] != "t3-code" {
+		t.Fatalf("persisted Antigravity safeguard identities = %q", got)
 	}
 	if loaded.Codex.StreamBootstrapBuffering || loaded.AuthAutoRefreshWorkers != 3 || loaded.ClaudeHeaderDefaults.Timezone != "Asia/Singapore" || loaded.ForAPIKey().ClaudeHeaderDefaults.Timezone != "Asia/Singapore" || !loaded.ClaudeHeaderDefaults.OAuthSafeguard || loaded.Analytics.StorageTimeZone != "Asia/Bangkok" || loaded.Analytics.QueueCapacity != 1024 {
 		t.Fatal("management write lost shared upstream values")

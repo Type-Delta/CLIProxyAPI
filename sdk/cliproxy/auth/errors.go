@@ -38,6 +38,9 @@ const ErrorCodeAntigravityTargetUnavailable = "antigravity_target_unavailable"
 // ErrorCodeAntigravityReferenceUnavailable marks a local safeguard setup failure.
 const ErrorCodeAntigravityReferenceUnavailable = "antigravity_reference_unavailable"
 
+// ErrorCodeAntigravitySafeguardRejected identifies a local OAuth safeguard refusal.
+const ErrorCodeAntigravitySafeguardRejected = "antigravity_oauth_safeguard_rejected"
+
 // ErrorCodeStreamTruncated marks locally synthesized failures for accepted
 // upstream streams that ended without a terminal frame. The public status
 // stays 502, but the credential must not cool and the generation must not be

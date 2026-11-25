@@ -267,6 +267,9 @@ type AntigravityConfig struct {
 	// OAuthSafeguard restricts direct Google OAuth inference to native requests.
 	OAuthSafeguard bool `yaml:"oauth-safeguard,omitempty" json:"oauth-safeguard,omitempty"`
 
+	// OAuthSafeguardClientIdentities allows additional incoming User-Agent products.
+	OAuthSafeguardClientIdentities []string `yaml:"oauth-safeguard-client-identities,omitempty" json:"oauth-safeguard-client-identities,omitempty"`
+
 	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 
