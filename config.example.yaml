@@ -1376,7 +1376,9 @@ oauth:
 
     # Antigravity provider behavior.
     antigravity:
-      # oauth-safeguard: false       # capture a private Antigravity CLI reference and require matching native OAuth requests
+      # oauth-safeguard: false       # capture a private Antigravity CLI reference and validate requests using Google OAuth
+      # oauth-safeguard-allow-gemini-sdk: true  # allows T3 Code's Gemini API-key mode without a custom identity
+      # oauth-safeguard-client-identities: ["t3code"]  # optional: additional incoming User-Agent products on Gemini and native routes
                                     # bootstrapping the reference requires a current consumer Antigravity OAuth credential
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"

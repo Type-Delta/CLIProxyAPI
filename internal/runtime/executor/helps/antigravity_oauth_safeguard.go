@@ -5,8 +5,62 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/antigravitycapture"
 )
+
+var userAgentProduct = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(?:/[a-zA-Z0-9][a-zA-Z0-9._+-]*)?$`)
+
+// AntigravityOAuthClientAllowed matches native clients and configured User-Agent
+// products. Text inside User-Agent comments does not identify a client.
+func AntigravityOAuthClientAllowed(userAgent string, identities []string) bool {
+	return antigravitycapture.IsNativeUserAgent(userAgent) || AntigravityOAuthClientConfigured(userAgent, identities)
+}
+
+// AntigravityOAuthClientConfigured requires an explicit incoming identity.
+func AntigravityOAuthClientConfigured(userAgent string, identities []string) bool {
+	if len(identities) == 0 {
+		return false
+	}
+	var products strings.Builder
+	depth := 0
+	escaped := false
+	for _, ch := range userAgent {
+		switch {
+		case escaped:
+			escaped = false
+		case ch == '\\' && depth > 0:
+			escaped = true
+		case ch == '(':
+			if depth == 0 {
+				products.WriteByte(' ')
+			}
+			depth++
+		case ch == ')':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case depth == 0:
+			products.WriteRune(ch)
+		}
+	}
+	if depth != 0 {
+		return false
+	}
+	for _, product := range strings.Fields(products.String()) {
+		if !userAgentProduct.MatchString(product) {
+			continue
+		}
+		name, _, _ := strings.Cut(product, "/")
+		for _, identity := range identities {
+			if strings.EqualFold(name, strings.TrimSpace(identity)) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func AntigravityOAuthEnvelopeMismatch(doc *ojson.Doc, countTokens bool, envelopeUserAgent string) string {
 	if !doc.Get("request.contents").IsArray() {

@@ -94,6 +94,7 @@ func capture(ctx context.Context, binary, version string, credential Credential)
 	proxy := &captureProxy{
 		ctx: ctx, tls: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 		version: version, credential: credential, transport: transport, profiles: make(chan Profile, 1),
+		failures: make(chan error, 1),
 	}
 	server := &http.Server{Handler: proxy}
 	go func() { _ = server.Serve(listener) }()
@@ -128,11 +129,18 @@ func capture(ctx context.Context, binary, version string, credential Credential)
 		if childCtx.Err() != nil {
 			return Profile{}, childCtx.Err()
 		}
+		select {
+		case failure := <-proxy.failures:
+			return Profile{}, failure
+		default:
+		}
 		return Profile{}, fmt.Errorf("private Antigravity CLI probe exited unsuccessfully: %w", err)
 	}
 	select {
 	case profile := <-proxy.profiles:
 		return profile, nil
+	case failure := <-proxy.failures:
+		return Profile{}, failure
 	default:
 		return Profile{}, errors.New("private Antigravity CLI completed without a validated OAuth inference request")
 	}
@@ -166,6 +174,7 @@ type captureProxy struct {
 	credential Credential
 	transport  http.RoundTripper
 	profiles   chan Profile
+	failures   chan error
 }
 
 func (p *captureProxy) ServeHTTP(w http.ResponseWriter, connect *http.Request) {
@@ -259,10 +268,10 @@ func (p *captureProxy) forward(conn io.Writer, req *http.Request, host string) b
 	}
 	log.Debugf("Antigravity reference upstream response: host=%s status=%d inference=%t", host, resp.StatusCode, inference)
 	defer resp.Body.Close()
-	if inference && resp.StatusCode == http.StatusOK {
+	if inference {
 		const maxProbeResponse = 1 << 20
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeResponse+1))
-		if err != nil || len(body) > maxProbeResponse || !completedProbe(body) {
+		if err != nil || len(body) > maxProbeResponse {
 			return false
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -270,13 +279,31 @@ func (p *captureProxy) forward(conn io.Writer, req *http.Request, host string) b
 		resp.TransferEncoding = nil
 		resp.Header.Del("Transfer-Encoding")
 		resp.Header.Del("Content-Length")
-		select {
-		case p.profiles <- profile:
-		default:
+		if resp.StatusCode != http.StatusOK {
+			select {
+			case p.failures <- probeResponseError(resp.StatusCode, body):
+			default:
+			}
+		} else if completedProbe(body) {
+			select {
+			case p.profiles <- profile:
+			default:
+			}
 		}
 	}
 	resp.Proto, resp.ProtoMajor, resp.ProtoMinor, resp.Close = "HTTP/1.1", 1, 1, true
 	return resp.Write(conn) == nil
+}
+
+func probeResponseError(status int, body []byte) error {
+	if status == http.StatusForbidden {
+		for _, detail := range ojson.GetBytesNoCopy(body, "error.details").Array() {
+			if detail.Get("@type").Str == "type.googleapis.com/google.rpc.ErrorInfo" && detail.Get("reason").Str == "TOS_VIOLATION" {
+				return errors.New("Google refused the private Antigravity reference probe with HTTP 403 (TOS_VIOLATION)")
+			}
+		}
+	}
+	return fmt.Errorf("Google refused the private Antigravity reference probe with HTTP %d", status)
 }
 
 func completedProbe(body []byte) bool {

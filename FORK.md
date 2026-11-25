@@ -3309,12 +3309,25 @@ Flash on that catalog, and native Gemini token counting returned a count.
 
 `oauth.providers.antigravity.oauth-safeguard` is off by default. When
 enabled, CPA rejects inference on a local direct Google Antigravity OAuth
-credential unless the request uses the native endpoint, an Antigravity
-client User-Agent, and the Cloud Code JSON envelope. CPA checks the final
+credential unless the request uses an allowed incoming User-Agent and a
+valid native Cloud Code or Gemini request. CPA checks the final
 destination, bearer token, project, software headers, and body after payload
 rules. A refusal returns a request-scoped 403 and does not cool the
 credential. Guarded SDK requests use the typed inference methods. Custom
 upstream endpoints and Home dispatch are outside the guard's scope.
+
+`oauth.providers.antigravity.oauth-safeguard-client-identities` adds incoming
+User-Agent product names such as `t3code`. Matching ignores case and the
+product's version. Native Cloud Code also accepts built-in Antigravity
+identities. Gemini requests on `/v1beta` accept `google-genai-sdk` by default.
+T3 Code's Antigravity adapter in Gemini API-key mode sends that product,
+which is shared by other Gemini SDK clients. Set
+`oauth-safeguard-allow-gemini-sdk: false` to require an explicit custom
+identity for those requests.
+The private reference and final outbound Cloud Code checks apply to both
+routes. CPAMC exposes the list under Config → Advanced → Antigravity.
+Local refusals use `antigravity_oauth_safeguard_rejected` and report which
+check failed.
 
 CPA installs Google's Antigravity CLI in a private reference directory
 using the official release manifest and SHA-512 checksum. A probe runs the
@@ -3354,8 +3367,24 @@ reference on startup, completed a guarded live Gemini request, and kept
 the same active profile after restart. Capture tests cover token and
 project binding, successful response validation, the daily update
 boundary, and rollback after a failed candidate.
+The custom-identity regression covers a T3 Code User-Agent fixture, a
+non-native request format, a malformed envelope, and an outbound header
+override. The v8 management test saves the identity list and reloads it
+with case and duplicate entries normalized.
+The Gemini regression checks opt-in matching, translated inline images
+and tool declarations, native outbound headers and envelope, and tool-call
+translation back to the client. The attempted live reference capture with
+the production OAuth credential reached Google and returned
+`403 TOS_VIOLATION`; the updater reports that reason without saving a
+reference or logging the provider body.
+Against a local Cloud Code fixture, the T3 Code Antigravity adapter and
+the standalone Antigravity CLI streamed through CPA. Hydrogen text and
+Neon image requests carried the captured upstream headers, and a native
+Neon image request and an explicitly allowed Gemini token count passed.
+An unlisted Gemini client received 403. Both clients completed a scripted
+game file write and sent the resulting tool response back through CPA.
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-25
 
 ### DL081 — Codex stream outage recovery
 
