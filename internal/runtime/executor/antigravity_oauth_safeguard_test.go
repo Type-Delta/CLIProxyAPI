@@ -101,7 +101,7 @@ func TestAntigravityOAuthSafeguard(t *testing.T) {
 		if err := exec.checkAntigravityOAuthIncoming(auth, req, opts, false); err != nil {
 			t.Fatal(err)
 		}
-		httpReq, body, err := exec.buildGenerationRequestDoc(t.Context(), auth, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "", nil)
+		httpReq, body, err := exec.buildRequestDoc(t.Context(), auth, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +159,7 @@ func TestAntigravityOAuthSafeguard(t *testing.T) {
 		}
 		outbound := auth.Clone()
 		outbound.Attributes = map[string]string{"header:User-Agent": "t3code/0.0.15"}
-		if _, _, err := executor.buildGenerationRequestDoc(t.Context(), outbound, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "", nil); err == nil {
+		if _, _, err := executor.buildRequestDoc(t.Context(), outbound, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", ""); err == nil {
 			t.Fatal("configured client identity altered the outbound User-Agent policy")
 		}
 	})
@@ -228,7 +228,7 @@ func TestAntigravityOAuthSafeguard(t *testing.T) {
 	t.Run("outbound authentication override refused", func(t *testing.T) {
 		custom := auth.Clone()
 		custom.Attributes = map[string]string{"header:Authorization": "Bearer different-token"}
-		_, _, err := exec.buildGenerationRequestDoc(t.Context(), custom, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "", nil)
+		_, _, err := exec.buildRequestDoc(t.Context(), custom, "test-token", req.Model, ojson.NewDoc(req.Payload), true, "", "")
 		var reject antigravityOAuthSafeguardError
 		if !errors.As(err, &reject) {
 			t.Fatalf("expected safeguard rejection, got %v", err)
@@ -256,7 +256,7 @@ func TestAntigravityOAuthSafeguard(t *testing.T) {
 		doc := ojson.NewDoc(req.Payload)
 		executor := NewAntigravityExecutor(&filtered)
 		executor.referenceLoader = loadReference
-		_, _, err := executor.buildGenerationRequestDoc(ctx, auth, "test-token", req.Model, doc, true, "", "", nil)
+		_, _, err := executor.buildRequestDoc(ctx, auth, "test-token", req.Model, doc, true, "", "")
 		var reject antigravityOAuthSafeguardError
 		if !errors.As(err, &reject) || doc.Get("request.contents").Exists() {
 			t.Fatalf("final filter or guard did not run: %v", err)

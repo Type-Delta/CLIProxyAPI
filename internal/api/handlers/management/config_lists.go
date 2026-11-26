@@ -2,7 +2,9 @@ package management
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/MoeForge/moego/json"
@@ -317,9 +319,7 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		c.JSON(400, gin.H{"error": errValidate.Error()})
 		return
 	}
-	h.cfg.APIKeys = entries
-	setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
-	h.persistLocked(c)
+	h.saveAPIKeysLocked(c, entries)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	data, errRead := c.GetRawData()
@@ -442,9 +442,7 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		c.JSON(400, gin.H{"error": errValidate.Error()})
 		return
 	}
-	h.cfg.APIKeys = entries
-	setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
-	h.persistLocked(c)
+	h.saveAPIKeysLocked(c, entries)
 }
 
 func apiKeyStringValue(value *string) string {
@@ -517,12 +515,35 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	idxStr := c.Query("index")
 	var idx int
 	if _, errScan := fmt.Sscanf(idxStr, "%d", &idx); errScan == nil && idx >= 0 && idx < len(h.cfg.APIKeys) {
-		h.cfg.APIKeys = append(h.cfg.APIKeys[:idx], h.cfg.APIKeys[idx+1:]...)
-		setAPIKeyRevisionHeaders(c, apiKeyRevision(h.cfg.APIKeys), false)
-		h.persistLocked(c)
+		entries := append([]config.APIKeyEntry(nil), h.cfg.APIKeys[:idx]...)
+		entries = append(entries, h.cfg.APIKeys[idx+1:]...)
+		h.saveAPIKeysLocked(c, entries)
 		return
 	}
 	c.JSON(400, gin.H{"error": "missing or invalid index"})
+}
+
+func (h *Handler) saveAPIKeysLocked(c *gin.Context, entries []config.APIKeyEntry) {
+	if c.FullPath() != "/v8/management/api-keys" {
+		h.cfg.APIKeys = entries
+		setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
+		h.persistLocked(c)
+		return
+	}
+	next := h.cfg.CloneForRuntime()
+	next.APIKeys = entries
+	if err := config.SaveConfigPreserveCommentsIfCurrent(h.configFilePath, next, h.cfg.SourceHash, true); err != nil {
+		if errors.Is(err, config.ErrConfigFileChanged) {
+			c.JSON(http.StatusConflict, gin.H{"error": "config_changed"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
+		return
+	}
+	h.cfg = next
+	setAPIKeyRevisionHeaders(c, apiKeyRevision(entries), false)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), h.reloadSnapshotConfigLocked())
 }
 
 func decodeAPIKeyRequestRevision(data []byte) string {

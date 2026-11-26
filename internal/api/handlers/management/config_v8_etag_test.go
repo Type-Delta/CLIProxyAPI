@@ -64,7 +64,7 @@ func TestConfigV8ETagIfMatch(t *testing.T) {
 	// fenced by the same precondition instead of merging blindly.
 	recorder := do(http.MethodPatch, "/v8/management/config", `{"server":{"port":8319}}`, `"stale"`)
 	wantStatus(recorder, http.StatusPreconditionFailed)
-	if string(fileBytes()) != raw {
+	if config.ComputeSourceHash(fileBytes()) != cfg.SourceHash {
 		t.Fatal("stale PATCH changed the file")
 	}
 	// PATCH with the current ETag goes through and returns the new one.
@@ -192,5 +192,91 @@ func TestConfigV8ETagIfMatch(t *testing.T) {
 	wantStatus(missing, http.StatusNotFound)
 	if got := missing.Header().Get("ETag"); got != "" {
 		t.Fatalf("404 ETag=%q want empty", got)
+	}
+}
+
+func TestConfigV8YAMLStructuredKeyValidators(t *testing.T) {
+	const route = "/v8/management/config.yaml"
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	initial := "config-version: 8\nserver: {port: 8317}\naccess:\n  api-keys:\n    - key: limited\n      limits: {max-requests: 10}\n"
+	if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	h := &Handler{cfg: cfg, configFilePath: path}
+	router.PUT(route, h.ConfigV8)
+
+	snapshot, err := config.ReadConfigFileSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial = string(snapshot.Bytes())
+	otherWrite := strings.Replace(initial, "max-requests: 10", "max-requests: 20", 1)
+	current, err := config.WriteConfigFileCAS(path, snapshot, []byte(otherWrite))
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentConfig, err := config.ParseConfigBytes(current.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentKeyRevision := apiKeyRevision(currentConfig.APIKeys)
+	staleKeyRevision := apiKeyRevision(cfg.APIKeys)
+	staleDocument := strings.Replace(initial, "8317", "8318", 1)
+	updatedDocument := strings.Replace(otherWrite, "max-requests: 20", "max-requests: 30", 1)
+
+	for _, tc := range []struct {
+		name, body, fileValidator, keyValidator, errorCode string
+		status                                             int
+	}{
+		{"stale client sends only a port change", staleDocument, "", "", "structured_api_keys_required", http.StatusConflict},
+		{"stale file validator", updatedDocument, configV8ETag(snapshot.SourceHash()), currentKeyRevision, "precondition_failed", http.StatusPreconditionFailed},
+		{"stale key revision", staleDocument, configV8ETag(current.SourceHash()), staleKeyRevision, "config_revision_mismatch", http.StatusConflict},
+		{"both current", updatedDocument, configV8ETag(current.SourceHash()), currentKeyRevision, "", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, current.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			h.cfg = cfg
+			url := route
+			if tc.keyValidator != "" {
+				url += "?config_revision=" + tc.keyValidator
+			}
+			req := httptest.NewRequest(http.MethodPut, url, strings.NewReader(tc.body))
+			if tc.fileValidator != "" {
+				req.Header.Set("If-Match", tc.fileValidator)
+			}
+			if tc.keyValidator != "" {
+				req.Header.Set(apiKeyContractHeader, apiKeyContractV1)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != tc.status || (tc.errorCode != "" && !strings.Contains(response.Body.String(), tc.errorCode)) {
+				t.Fatalf("status=%d want %d, body=%s", response.Code, tc.status, response.Body)
+			}
+			if tc.errorCode == "config_revision_mismatch" {
+				if got := response.Header().Get("ETag"); got != configV8ETag(current.SourceHash()) {
+					t.Errorf("key conflict returned file ETag %q", got)
+				}
+				if got := response.Header().Get("X-CPA-Config-Revision"); got != currentKeyRevision {
+					t.Errorf("key conflict returned key revision %q", got)
+				}
+			}
+			saved, err := config.ReadConfigFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.status != http.StatusOK && string(saved) != otherWrite {
+				t.Fatal("rejected write changed the other writer's config")
+			}
+			if tc.status == http.StatusOK && !strings.Contains(string(saved), "max-requests: 30") {
+				t.Fatal("accepted write did not apply the new cap")
+			}
+		})
 	}
 }

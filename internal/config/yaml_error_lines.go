@@ -2,7 +2,7 @@ package config
 
 import (
 	"errors"
-	"regexp"
+	"github.com/MoeForge/moego/regexp"
 	"strconv"
 	"strings"
 

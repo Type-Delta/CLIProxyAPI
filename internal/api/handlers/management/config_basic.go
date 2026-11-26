@@ -1,6 +1,7 @@
 package management
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +27,13 @@ const (
 func (h *Handler) GetConfig(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Referrer-Policy", "no-referrer")
-	if h == nil || h.cfg == nil {
+	if h == nil {
+		c.JSON(200, gin.H{})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
 		c.JSON(200, gin.H{})
 		return
 	}
@@ -106,32 +113,33 @@ func WriteConfig(path string, data []byte) error {
 	if errPrepare != nil {
 		return errPrepare
 	}
-
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return err
-	}
-	if len(doc.Content) > 0 && config.IsV8ConfigLayout(doc.Content[0]) {
-		var err error
-		data, _, err = config.NormalizeConfigLayout(data, true)
-		if err != nil {
-			return err
-		}
-	}
-	data = config.NormalizeCommentIndentation(data)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	doc, err := config.DecodeFirstConfigDocument(data)
 	if err != nil {
 		return err
 	}
-	if _, errWrite := f.Write(data); errWrite != nil {
-		_ = f.Close()
-		return errWrite
+	var commented []config.ArchivedV8Section
+	if config.IsV8ConfigLayout(doc.Content[0]) {
+		normalized, _, sections, errNorm := config.NormalizeConfigLayoutSilent(data, true)
+		if errNorm != nil {
+			return errNorm
+		}
+		if errValidate := config.ValidateConfigSave(data, normalized); errValidate != nil {
+			return errValidate
+		}
+		data, commented = normalized, sections
 	}
-	if errSync := f.Sync(); errSync != nil {
-		_ = f.Close()
-		return errSync
+	onDisk, err := config.ReadConfigFileSnapshot(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		err = config.CreateConfigFile(path, data)
+	case err == nil:
+		_, err = config.WriteConfigFileCAS(path, onDisk, data)
 	}
-	return f.Close()
+	if err != nil {
+		return err
+	}
+	config.WarnUnrecognizedV8Sections(commented)
+	return nil
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
@@ -195,7 +203,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
 // It preserves comments and original formatting/styles.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
-	data, err := os.ReadFile(h.configFilePath)
+	data, err := config.ReadConfigFile(h.configFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})

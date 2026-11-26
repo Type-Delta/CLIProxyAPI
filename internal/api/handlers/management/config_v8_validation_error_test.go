@@ -1,7 +1,7 @@
 package management
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +16,7 @@ import (
 func TestConfigV8ValidationErrorsPointIntoTheBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := "config-version: 8\nserver: {port: 8317}\n"
+	raw := "config-version: 8\nserver: {port: 8317, server-id: 161e28b2-e721-408e-aabd-8f72f0404164}\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}

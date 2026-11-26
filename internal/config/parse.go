@@ -12,15 +12,56 @@ import (
 // ParseConfigBytes parses a YAML configuration payload into Config and applies the same
 // in-memory normalizations as LoadConfigOptional, without persisting any changes to disk.
 func ParseConfigBytes(data []byte) (*Config, error) {
-	if len(data) == 0 {
-		return nil, fmt.Errorf("config payload is empty")
+	parsed, err := validateStartupConfig(data, false)
+	if err != nil {
+		return nil, err
 	}
-	if errValidate := ValidateRoutingRulesYAML(data); errValidate != nil {
-		return nil, errValidate
+	if errHash := parsed.hashManagementSecret(); errHash != nil {
+		return nil, errHash
 	}
+	if errKeys := parsed.cfg.RemoteManagement.NormalizeKeys(); errKeys != nil {
+		return nil, errKeys
+	}
+	parsed.cfg.sanitizeStartupConfig()
+	return parsed.cfg, nil
+}
 
-	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
-		return nil, errValidate
+// ParsePreparedConfigBytes loads the exact snapshot returned by upload preparation
+// and records its hash without reopening or rewriting the local mirror. A nil
+// snapshot is the optional standby result returned by upload preparation.
+func ParsePreparedConfigBytes(data []byte) (*Config, error) {
+	if data == nil {
+		return standbyConfig(), nil
+	}
+	cfg, errParse := ParseConfigBytes(data)
+	if errParse != nil {
+		return nil, errParse
+	}
+	cfg.SourceHash = ComputeSourceHash(data)
+	return cfg, nil
+}
+
+type startupConfig struct {
+	cfg  *Config
+	docs []*yaml.Node
+}
+
+func standbyConfig() *Config {
+	cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig(), Analytics: DefaultAnalyticsConfig(), ClickHouse: DefaultClickHouseConfig()}
+	cfg.NormalizePluginsConfig()
+	cfg.NormalizeClaudeConfig()
+	return cfg
+}
+
+// Decode errors and malformed YAML weights keep optional deployments in standby.
+// Runtime validation errors (including bcrypt's byte limit) still fail startup.
+func validateStartupConfig(data []byte, optional bool) (*startupConfig, error) {
+	docs, err := decodeConfigStream(data)
+	if err == nil && len(docs) == 0 {
+		err = fmt.Errorf("config payload is empty")
+	}
+	if err == nil {
+		err = validateCredentialWeightsNode(docs[0].Content[0])
 	}
 
 	var cfg Config
@@ -30,6 +71,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.Analytics = DefaultAnalyticsConfig()
+	cfg.ClickHouse = DefaultClickHouseConfig()
 	cfg.Analytics = DefaultAnalyticsConfig()
 	cfg.ClickHouse = DefaultClickHouseConfig()
 	cfg.RedisUsageQueueRetentionSeconds = 60
@@ -46,13 +89,23 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err == nil {
+		err = docs[0].Decode(&cfg)
+	}
+	if err != nil {
+		if optional {
+			return &startupConfig{cfg: standbyConfig()}, nil
+		}
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
-	if errValidate := cfg.ClickHouse.Validate(); errValidate != nil {
+
+	if errValidate := ValidateRoutingRulesYAML(data); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := cfg.ValidateRoutingRules(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ClickHouse.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
@@ -86,17 +139,18 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	}
 
-	if err := cfg.RemoteManagement.NormalizeKeys(); err != nil {
-		return nil, err
+	if errValidate := cfg.ValidateAPIKeyLimits(); errValidate != nil {
+		return nil, errValidate
 	}
-
-	// Hash remote management key if plaintext is detected (nested), but do NOT persist.
-	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
-		hashed, errHash := bcrypt.GenerateFromPassword([]byte(cfg.RemoteManagement.SecretKey), bcrypt.DefaultCost)
-		if errHash != nil {
-			return nil, fmt.Errorf("hash remote management key: %w", errHash)
-		}
-		cfg.RemoteManagement.SecretKey = string(hashed)
+	if errValidate := cfg.ValidateCredentialLabels(); errValidate != nil {
+		return nil, errValidate
+	}
+	cfg.NormalizeProviderSelectorFields()
+	if errValidate := cfg.ValidateProviderSelectorFields(); errValidate != nil {
+		return nil, errValidate
+	}
+	if secret := cfg.RemoteManagement.SecretKey; len(secret) > 72 && !looksLikeBcrypt(secret) {
+		return nil, fmt.Errorf("hash remote management key: %w", bcrypt.ErrPasswordTooLong)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -136,6 +190,15 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, errResolvePluginsDir
 	}
 
+	keys := cfg.RemoteManagement
+	keys.Keys = append([]ManagementKey(nil), keys.Keys...)
+	if errKeys := keys.normalizeKeys(false); errKeys != nil {
+		return nil, errKeys
+	}
+	return &startupConfig{cfg: &cfg, docs: docs}, nil
+}
+
+func (cfg *Config) sanitizeStartupConfig() {
 	// Apply the same sanitization pipeline.
 	cfg.SanitizeGeminiKeys()
 	cfg.SanitizeInteractionsKeys()
@@ -155,5 +218,17 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
 
-	return &cfg, nil
+}
+
+func (p *startupConfig) hashManagementSecret() error {
+	secret := p.cfg.RemoteManagement.SecretKey
+	if secret == "" || looksLikeBcrypt(secret) {
+		return nil
+	}
+	hashed, errHash := hashSecret(secret)
+	if errHash != nil {
+		return fmt.Errorf("hash remote management key: %w", errHash)
+	}
+	p.cfg.RemoteManagement.SecretKey = hashed
+	return nil
 }

@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestAntigravityWireModel(t *testing.T) {
 		{"legacy catalog", high, "low", high, "low", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			doc := ojson.NewDocString("{}")
+			doc := ojson.NewDocString(`{"request":{"generationConfig":{}}}`)
 			if tc.effort != "" {
 				_ = doc.Set(path, tc.effort)
 			}
@@ -49,7 +50,22 @@ func TestAntigravityWireModel(t *testing.T) {
 				groupedInfo.AntigravityThinking = &group
 				selected = &groupedInfo
 			}
-			got, err := AntigravityWireModel(doc, tc.model, selected)
+			ctx := context.Background()
+			auth := &cliproxyauth.Auth{ID: t.Name(), Provider: "antigravity"}
+			if selected != nil {
+				selected.ID = tc.model
+				reg := registry.GetGlobalRegistry()
+				reg.RegisterClient(auth.ID, "antigravity", []*registry.ModelInfo{selected})
+				t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+			}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity}
+			req := cliproxyexecutor.Request{Model: tc.model, Payload: doc.Bytes()}
+			model := SelectAntigravityRequestModel(ctx, nil, auth, tc.model, tc.model, "antigravity", req.Payload, opts, false)
+			var err error
+			if selected != nil {
+				err = ApplyAntigravityRequestThinkingDoc(doc, req, opts, model)
+			}
+			got := model.ID
 			if err != nil || got != tc.wantID || doc.Get(path).Str != tc.wantEffort {
 				t.Fatalf("wire model=%q effort=%q error=%v", got, doc.Get(path).Str, err)
 			}
@@ -73,11 +89,11 @@ func TestAntigravityThinkingUsesSelectedAccount(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: model, Payload: []byte(`{"request":{"generationConfig":{"thinking_config":{"thinking_level":"LOW","include_thoughts":true}}}}`)}
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity}
 	doc := ojson.NewDoc(req.Payload)
-	low := AntigravityGroupedModel(&cliproxyauth.Auth{ID: "agy-qa-low"}, model, opts)
+	low := SelectAntigravityRequestModel(t.Context(), nil, &cliproxyauth.Auth{ID: "agy-qa-low"}, model, model, "antigravity", req.Payload, opts, false)
 	if err := ApplyAntigravityRequestThinkingDoc(doc, req, opts, low); err != nil {
 		t.Fatal(err)
 	}
-	wire, err := AntigravityWireModel(doc, model, low)
+	wire, err := low.ID, low.Err
 	if err != nil || wire != model+"-low" || thinking.ExtractTranslatedReasoningEffort(doc.Bytes(), "antigravity") != "low" {
 		t.Fatalf("wire=%q body=%s error=%v", wire, doc.String(), err)
 	}
@@ -85,7 +101,7 @@ func TestAntigravityThinkingUsesSelectedAccount(t *testing.T) {
 		!doc.Get("request.generationConfig.thinkingConfig.includeThoughts").Bool() {
 		t.Fatalf("thinking aliases were not normalized: %s", doc.String())
 	}
-	high := AntigravityGroupedModel(&cliproxyauth.Auth{ID: "agy-qa-high"}, model, opts)
+	high := SelectAntigravityRequestModel(t.Context(), nil, &cliproxyauth.Auth{ID: "agy-qa-high"}, model, model, "antigravity", req.Payload, opts, false)
 	var unavailable *cliproxyauth.Error
 	if err := ApplyAntigravityRequestThinkingDoc(ojson.NewDoc(req.Payload), req, opts, high); !errors.As(err, &unavailable) ||
 		unavailable.Code != cliproxyauth.ErrorCodeAntigravityTargetUnavailable {

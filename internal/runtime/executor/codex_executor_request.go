@@ -72,6 +72,17 @@ func translateCodexRequestPairWithUpdateIntentContext(ctx context.Context, from,
 // Codex backend accepts; smaller integers are rejected with invalid_request_error.
 const codexMinOutputTokens = 16
 
+// shouldPreserveFullCodexOpenAIInclude reports whether the target Codex upstream
+// is a non-ChatGPT OpenAI Responses API endpoint (SIWC or custom codex-api-key)
+// that should preserve the full official OpenAI ResponseIncludable set in
+// addition to Codex's opt-in output.encrypted_content.
+func shouldPreserveFullCodexOpenAIInclude(ctx context.Context, auth *cliproxyauth.Auth, baseURL string, headers http.Header) bool {
+	if !codexUseSIWCForRequest(ctx, auth, headers) && !codexAuthUsesAPIKey(auth) {
+		return false
+	}
+	return !helps.IsChatGPTCodexBackendBaseURL(baseURL)
+}
+
 // normalizeCodexOutputBudgetDoc raises small positive integer output budgets to the
 // Codex minimum. It judges the translated payload (max_output_tokens) rather than the
 // client payload so every source format and budget field (max_tokens,
@@ -196,6 +207,9 @@ func (e *CodexExecutor) cacheHelperDoc(ctx context.Context, from sdktranslator.F
 	if doc != nil {
 		rawJSON = doc.Bytes()
 	}
+	if errMarker := helps.ValidateCodexSessionInstructionMarker(rawJSON, from); errMarker != nil {
+		return nil, nil, errMarker
+	}
 	wireBody := rawJSON
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&
 		!codexAuthUsesAPIKey(auth) && !codexUseSIWCForRequest(ctx, auth, headers) &&
@@ -315,10 +329,14 @@ func decodeCodexUpstreamResponse(resp *http.Response) error {
 }
 
 // doCodexRequest captures each dispatch and retries a rejected zstd body once without rerunning payload rules.
-func (e *CodexExecutor) doCodexRequest(client *http.Client, auth *cliproxyauth.Auth, req *http.Request, upstreamBody []byte, prepareHeaders func(*http.Request), responseReady func(*http.Response)) (*http.Response, error) {
+func (e *CodexExecutor) doCodexRequest(client *http.Client, auth *cliproxyauth.Auth, req *http.Request, upstreamBody []byte, prepareHeaders func(*http.Request), responseReady func(*http.Response), instructionTurn ...helps.CodexInstructionTurn) (*http.Response, error) {
 	alignCodexContentEncoding(req)
 	compressed := req.Header.Get("Content-Encoding") == "zstd"
 	ctx := req.Context()
+	logBody := upstreamBody
+	if len(instructionTurn) > 0 {
+		logBody = instructionTurn[0].LogBody(upstreamBody)
+	}
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID, authLabel = auth.ID, auth.Label
@@ -329,7 +347,7 @@ func (e *CodexExecutor) doCodexRequest(client *http.Client, auth *cliproxyauth.A
 			URL:       request.URL.String(),
 			Method:    request.Method,
 			Headers:   request.Header.Clone(),
-			Body:      upstreamBody,
+			Body:      logBody,
 			Provider:  e.Identifier(),
 			AuthID:    authID,
 			AuthLabel: authLabel,

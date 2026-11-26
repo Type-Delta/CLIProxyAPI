@@ -261,7 +261,7 @@ func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
 	if cfg == nil || cfg.SourceHash == "" || h.configFilePath == "" {
 		return false
 	}
-	data, errRead := os.ReadFile(h.configFilePath)
+	data, errRead := config.ReadConfigFile(h.configFilePath)
 	if errRead != nil {
 		return false
 	}
@@ -468,7 +468,8 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
 
-		scope, allowed, statusCode, errMsg := h.authenticateManagementScope(clientIP, localClient, providedManagementKey(c))
+		snapshot := h.managementAuthSnapshot()
+		scope, allowed, statusCode, errMsg := h.checkManagementScopeWithSnapshot(snapshot, clientIP, localClient, providedManagementKey(c), true)
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
@@ -477,6 +478,11 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		if scope == config.ManagementScopeReadOnly && !readOnlyManagementRoute(c) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "read-only management key"})
 			return
+		}
+		if c.Request.Method != http.MethodOptions {
+			setHeader := func(id string) { c.Header(ServerIDHeader, id) }
+			setHeader(snapshot.serverID)
+			c.Set(managementIdentityKey, managementIdentity{id: snapshot.serverID, setHeader: setHeader})
 		}
 		c.Next()
 	}
@@ -517,6 +523,30 @@ func (h *Handler) managementAuthState() string {
 	return b.String()
 }
 
+type managementAuthConfig struct {
+	allowRemote bool
+	secretHash  string
+	serverID    string
+	keys        []config.ManagementKey
+}
+
+func (h *Handler) managementAuthSnapshot() managementAuthConfig {
+	if h == nil {
+		return managementAuthConfig{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return managementAuthConfig{}
+	}
+	return managementAuthConfig{
+		allowRemote: h.cfg.RemoteManagement.AllowRemote,
+		secretHash:  h.cfg.RemoteManagement.SecretKey,
+		serverID:    h.cfg.ServerID,
+		keys:        append([]config.ManagementKey(nil), h.cfg.RemoteManagement.Keys...),
+	}
+}
+
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
@@ -538,26 +568,18 @@ func (h *Handler) checkManagementScope(clientIP string, localClient bool, provid
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
+	return h.checkManagementScopeWithSnapshot(h.managementAuthSnapshot(), clientIP, localClient, provided, record)
+}
+
+func (h *Handler) checkManagementScopeWithSnapshot(cfg managementAuthConfig, clientIP string, localClient bool, provided string, record bool) (string, bool, int, string) {
+	const maxFailures = 5
+	const banDuration = 30 * time.Minute
 	if h == nil {
 		return "", false, http.StatusForbidden, "remote management disabled"
 	}
-
-	h.mu.Lock()
-	cfg := h.cfg
-	var (
-		allowRemote bool
-		secretHash  string
-		keys        []config.ManagementKey
-	)
-	if cfg != nil {
-		allowRemote = cfg.RemoteManagement.AllowRemote
-		secretHash = cfg.RemoteManagement.SecretKey
-		keys = append([]config.ManagementKey(nil), cfg.RemoteManagement.Keys...)
-	}
-	h.mu.Unlock()
-	if h.allowRemoteOverride {
-		allowRemote = true
-	}
+	allowRemote := cfg.allowRemote || h.allowRemoteOverride
+	secretHash := cfg.secretHash
+	keys := cfg.keys
 	envSecret := h.envSecret
 
 	now := time.Now()

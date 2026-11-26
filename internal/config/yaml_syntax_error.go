@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
-	"regexp"
+	"strings"
+
+	"github.com/MoeForge/moego/regexp"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -20,11 +22,15 @@ const MaxYAMLErrorDetailBytes = 1 << 20
 // or the start of the enclosing block, but never past the problem, so it is the
 // lower bound when searching for the shortest line prefix that fails the same way.
 func DescribeYAMLSyntaxError(body []byte, err error) string {
-	match := yamlSyntaxPrefix.FindStringSubmatch(err.Error())
+	message := err.Error()
+	const firstDocument = "parse config document 1: "
+	syntax := strings.TrimPrefix(message, firstDocument)
+	wrapper := message[:len(message)-len(syntax)]
+	match := yamlSyntaxPrefix.FindStringSubmatch(syntax)
 	if match == nil || len(body) > MaxYAMLErrorDetailBytes {
 		return err.Error()
 	}
-	problem := err.Error()[len(match[0]):]
+	problem := syntax[len(match[0]):]
 	// ends[i] is the offset just past line i+1, ended by any break yaml.v3
 	// counts: LF, CR, CRLF, NEL, LS, or PS.
 	var ends []int
@@ -66,5 +72,5 @@ func DescribeYAMLSyntaxError(body []byte, err error) string {
 			low = middle + 1
 		}
 	}
-	return "yaml: line " + strconv.Itoa(high) + ": " + problem
+	return wrapper + "yaml: line " + strconv.Itoa(high) + ": " + problem
 }

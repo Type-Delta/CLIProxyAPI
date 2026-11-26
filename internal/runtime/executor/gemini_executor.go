@@ -531,6 +531,9 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 			reporter.ObserveResponseModel(line)
 			rawPayload := helps.JSONPayload(line)
+			if len(rawPayload) > 0 && len(pendingFilterPayload) > 0 && !ojson.ValidBytes(rawPayload) {
+				continue
+			}
 			if len(rawPayload) > 0 && len(pendingFilterPayload) > 0 {
 				flushed := pendingFilterPayload
 				pendingFilterPayload = nil
@@ -579,7 +582,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 			return
 		}
-		if len(pendingFilterPayload) > 0 {
+		if scanner.Err() == nil && len(pendingFilterPayload) > 0 {
 			if !guardAndEmitPayload(pendingFilterPayload) {
 				return
 			}
@@ -1311,7 +1314,7 @@ func capGeminiMaxOutputTokensDoc(doc *ojson.Doc, modelName string) bool {
 	if limit <= 0 {
 		limit = modelInfo.MaxCompletionTokens
 	}
-	if limit <= 0 || maxOut.Int() <= int64(limit) {
+	if limit <= 0 || maxOut.Num <= float64(limit) {
 		return false
 	}
 	return doc.Set("generationConfig.maxOutputTokens", limit) == nil

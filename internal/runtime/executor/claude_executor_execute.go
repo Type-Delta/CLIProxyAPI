@@ -126,6 +126,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
 		rebuildMidSystemMessagesToTopLevelDoc(doc)
 	}
+	advisorState := e.stripForeignClaudeAdvisorBlocksDoc(ctx, auth, apiKey, doc)
 
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
@@ -294,6 +295,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	extraBetas, _ = extractAndRemoveBetasDoc(doc)
 	bodyForUpstream := doc.Bytes()
+	advisorState.FilterUnknownIDsFromFinalBody(bodyForUpstream)
 	body = bodyForUpstream
 	bodyForTranslation := bodyForUpstream
 	if cchSigning || resignNativeCCH {
@@ -492,6 +494,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			reporter.PublishFailureWithDetail(ctx, helps.ParseClaudeUsage(data), errRefusal)
 			return resp, errRefusal
 		}
+	}
+	advisorState.RecordAccepted()
+	if upstreamStream {
+		advisorState.RecordResponseSSE(data)
+	} else {
+		advisorState.RecordResponseJSON(data)
 	}
 	data = e.restoreResponseModel(data, req.Model)
 	helps.RecordClaudeWebSearchResultsContext(ctx, webSearchSessionKey, data, webSearchTTL, webSearchLimit)

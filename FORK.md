@@ -30,6 +30,8 @@ The authenticated management API exposes current limited-key consumption through
 
 `PATCH /v8/management/api-keys` creates, rotates, and re-limits one key in a single call using the configuration revision; `PUT` and `DELETE` use the same revisioned contract. The existing `/v0/management/api-keys` payloads remain available for compatibility. The v8 endpoint resolves the target from an in-range `index`, then from `old` or `match`, and otherwise appends a new entry, so a body that carries only `new` creates a key instead of failing. Its `limits` field distinguishes three states: omitted preserves the existing limits, an explicit `null` clears them, and an object replaces them as a whole. An object that resolves to no caps is stored as no limits, which keeps the key a bare string in `config.yaml`; a reset cadence without a cap counts as no caps, because a cadence alone enforces nothing and the usage tracker ignores it. An out-of-range index, a blank key on create, a `limits` value that is neither an object nor `null`, and an invalid cap or cadence return `400` with a descriptive message and leave the configuration unchanged. Key selection through `old` or `match` compares trimmed key strings. The v8 configuration document also returns an `ETag`, and writes accept an optional `If-Match` against the on-disk hash, adding stale-write protection without replacing the fork's revisioned key contract.
 
+The v8 key handlers save the accepted key revision against the same config file hash held by the handler. An intervening file write returns `409`. Whole-document v8 saves use the keys from the same on-disk snapshot used for file CAS. On generic config routes, `If-Match` checks the file ETag. Whole-document key changes use the `config_revision` query parameter for the structured-key revision. Dedicated key routes still accept their key revision in `If-Match`.
+
 Key management now reports a deterministic configuration revision and each row's full SHA-256 key ID. Revisioned clients mutate by configuration index plus the expected revision, so duplicate raw keys remain independently editable and stale writes return `409`. Full-YAML writes from older panels that would flatten structured limits or unknown key fields are rejected rather than silently losing them. Authorized administrators can still retrieve raw keys, but management clients are expected to conceal them until an explicit per-row reveal; analytics and logs use only key IDs. Weak-key warnings identify short or predictable configured secrets by config index, label, and short key ID without logging their values.
 
 The TUI API Keys tab accepts mixed bare and structured key representations and displays each limited key's request and token usage, reset cadence, and reset time, including keys that have configured limits but no recorded usage. Adding and editing a key use a four-field form covering the key, the request cap, the token cap in millions, and a reset-cadence selector; limits stay optional, and blank caps with a cadence of never clear the limits, while a cadence without a cap is rejected in the form. Rows carry their original position in the configured list, so editing or deleting a row targets that entry even when the list contains blank entries. The tab keeps keys masked and keeps the confirmed per-key usage reset action, which is now available for every key with configured limits.
@@ -44,7 +46,7 @@ The `/muse-code` group shares request admission: model/config discovery GETs are
 
 **Recorded validation:** On 2026-11-18, `internal/api/server_routes.go` attaches admission to inference, Realtime and new Muse actions; discovery stays exempt, trusted token accounting and state/KV exclusions remain; usage-limit, structured-key/TUI HTTP, runtime-state and Muse limit tests pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL002 — Two-service web-console Docker deployment
 
@@ -66,11 +68,13 @@ The fork's Docker publishing workflow builds CPA and the Nginx panel in four par
 
 The shared Codex Live media fixture includes loopback candidates and filters out non-loopback addresses for client and upstream peers. The audio and data-channel bridge test also restricts its relay API and asserts that client and relay offers contain candidates and only loopback addresses. This keeps tests independent of host and container interface routing while leaving production ICE candidate selection unchanged.
 
-**Implementation evidence:** `internal/client/codex/live/media_test.go`. `newTestWebRTCAPI`, `completeOffer`, and `TestPionMediaRelayBridgesAudioAndDataChannel` share the fixture.
+**Implementation evidence:** `internal/client/codex/live/media_test.go`. `newTestWebRTCAPI`, `completeOffer`, and `TestPionMediaRelayBridgesAudioAndDataChannel` share the fixture. The bridge uses the upstream media relay factory and limiter, then confines both Pion peers to loopback.
 
 **Recorded validation:** `go test -count=3 -run TestPionMediaRelayBridgesAudioAndDataChannel ./internal/client/codex/live` passes on a runner where the unmodified test failed three consecutive times while every peer remained in the WebRTC `connecting` state. The updated bridge passes with `-count=3`, and the full live-media package passes with `-count=1`. Restoring default peer settings through a Go overlay fails the new offer assertion.
 
-**Last updated:** 2026-10-31
+The merged bridge and other selected media relay tests pass against loopback-only ICE offers.
+
+**Last updated:** 2026-11-26
 
 ### DL004 — Pinned Type-Delta management client
 
@@ -420,7 +424,7 @@ configuration hot reload without restarting the proxy.
 The management API accepts labels when creating, rotating, or editing a key;
 omitting the field preserves the current label and sending an empty string
 clears it. Config-index and revision checks remain the authority for writes, so
-a stale label edit is rejected without changing another key. Secret-free
+a stale label edit is rejected without changing another key. Whole-document v8 saves compare key labels against the on-disk keys used for the file transaction. Secret-free
 `key-identities` and analytics key catalogs expose the configured label for UI
 joins while raw keys remain concealed. Duplicate labels are rejected during
 configuration loading and all full or partial key mutations. The TUI and
@@ -459,7 +463,7 @@ The watcher parser carries labels through its expanded return contract; structur
 
 **Recorded validation:** On 2026-11-18, `internal/config/api_key_entry.go` preserves exact inbound-key labels and SHA-256 identity; management, analytics catalog, reload diff and TUI paths still consume them. Label validation and revisioned TUI HTTP journeys pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL014 — Shared management quota refresh protection
 
@@ -713,8 +717,7 @@ commit `a2eaf19e53f96b321dc51d25d6d7316c9222ecef` (CPAMC DL043).
 
 HTTP 429 and 5xx responses still cool down request routing, but they no longer
 remove the affected model from registry-backed client model lists. A
-credential-scoped 429 also keeps sibling models listed when it propagates
-credential quota state. Disabled credentials remain hidden and the temporary
+credential-scoped 429 or 5xx also keeps sibling models listed. The projection uses the credential-level retry deadline for blocking and the matching recorded error for list visibility. An active credential-wide terminal block hides sibling models even when an older model failure normally stays listed. Its visibility deadline ends with the credential-wide block. Disabled credentials remain hidden and the temporary
 failure normalization does not apply to terminal errors such as 401, 403, or
 404. Registry publication keeps `transient` as a list-preserving reason while
 the merged `credential_quota` accounting correction avoids counting the same
@@ -733,7 +736,9 @@ credentials blocked by transient upstream failures in a separate "error
 backoff" summary next to the quota cooldown summary, so mixed outage windows
 are no longer misread as missing failover.
 
-**Last updated:** 2026-11-18
+`TestCredentialRetryKeepsSiblingModelsListed` checks the failing and sibling routes after 429, 503, and 403. It also overlaps a model-only 503 with a credential-wide 403 and verifies list visibility, blocked scheduling, and projection expiry.
+
+**Last updated:** 2026-11-26
 
 ### DL018 — OpenAI-compatible providers receive downstream request headers
 
@@ -999,6 +1004,8 @@ newer routing state.
 
 Credential retry, quota-force, independent-force and non-quota deadlines compose with shared and model-scoped provider quota layers. Persistence includes the scoped independent layer and all deadline equality checks, so recovery or restart cannot erase a shorter independent service failure. Terminal TOS deactivation survives quota recovery; the pool-wide protective pause remains opt-in with a zero default.
 
+Credential refresh keeps independent fork cooldown state alongside upstream’s separately persisted non-auth deadlines. TOS suspension still takes precedence over request-error classification and later quota observations.
+
 **Implementation evidence:** `sdk/cliproxy/auth/conductor_cooldown.go`. `sdk/cliproxy/auth/{conductor_cooldown.go,conductor_lifecycle.go,cooldown_state.go,quota_observation.go,provider_quota_models.go,quota_reserve.go}`,
 `internal/api/handlers/management/{api_tools.go,usage_probe.go,quota_reconcile.go,quota_reserve_probe.go,plugin_quota.go,config_v8.go,config_auth_index.go}`,
 `internal/pluginhost/quota_provider.go`, and the CPAMC quota adapters under
@@ -1024,7 +1031,7 @@ and updated quota cards at desktop and mobile sizes with synthetic management
 responses, exactly one claim and no blanket reset. A disposable Docker container
 serves the panel and authenticated APIs with a matching packaged panel digest.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL023 — Retry rounds cover transport and status-less failures
 
@@ -1034,11 +1041,13 @@ Typed transport errors, including `*url.Error`, `net.Error`, and the EOF family,
 
 Transport and status-less failures keep their retry-round eligibility beside credential retry deadlines and bounded continuity. Cancellation and permanent TLS failures remain ineligible for transport retry.
 
+Upstream’s typed transient transport failures participate in these rounds. Explicit request stops, credential termination, cancellation, and TLS verification or record-header failures exit the round classifier.
+
 **Implementation evidence:** `sdk/cliproxy/auth/conductor_selection.go`. `sdk/cliproxy/auth/conductor_selection.go` (`isRequestRetryRoundError`, `credentialRetryRoundStateEligible`), `sdk/cliproxy/auth/conductor_cooldown.go`, and `sdk/cliproxy/auth/conductor_transport_retry_test.go`, including `TestTLSRecordHeaderErrorsDoNotRetry` and `TestManagerOversizedUTLSRecordDoesNotRetry`.
 
 **Recorded validation:** On 2026-11-18, `sdk/cliproxy/auth/conductor_selection.go` retains transport/status-less retry eligibility and permanent TLS/cancellation exclusions beside continuity. Existing retry-round, no-cooldown transport and real malformed-uTLS-handshake regressions pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 
 ### DL024 — Plaintext collaboration metadata for optimized Codex calls
@@ -1201,7 +1210,7 @@ Independent final council review approved the requested scope at 9.5/10 and 9/10
 
 Cloaked Claude cross-model refusal fallbacks follow upstream's explicit opt-in `upstream.claude.server-side-fallback`, default false. Explicit caller and payload fallbacks remain authoritative. Opus 5.5 to Opus 4.8 and Fable 5.1 to Opus 5 are injected only when opted in before user payload rules; later model rewrites do not rerun built-ins. Actual serving models and fallback transitions remain visible in usage and translated responses. The measured fallback client tuple is CLI 2.1.321, SDK 0.128.0 and Node v26.12.1; the fork's coherent identity, alias migration, monotonic profile and CAS design remain intact. `TestClaudeFallbackPayloadBarrierMergedPaths` checks 13 cases through Execute and ExecuteStream, including model rewrites, explicit overrides, filtered fallbacks, final beta headers and one rule evaluation.
 
-Claude uses native `output_config.format` for structured output. Identity, billing preparation and prompt-cache cleanup run before final payload rules on execute, stream and token-count paths; only beta-header extraction, signing, serialization and read-only validation follow. Explicit payload-configured prompt-cache fields survive.
+Claude uses native `output_config.format` for structured output and respects native caller output caps. Credential-bound advisor cleanup precedes payload rules. Advisor tracking reads the final body without changing it. Identity, billing preparation and prompt-cache cleanup run before final payload rules on execute, stream and token-count paths; only beta-header extraction, signing, serialization and read-only validation follow. Explicit payload-configured prompt-cache fields survive.
 
 **Implementation evidence:** `internal/runtime/executor/claude_executor_execute.go`. `internal/claudecapture/`,
 `internal/runtime/executor/claude_oauth_safeguard.go`, Claude executor paths,
@@ -1234,7 +1243,7 @@ one existing credential returned revoked-token 401 and another returned account
 rate-limit 429. Neither credential was refreshed or changed. The full Go suite,
 canonical panel Docker build, and disposable server build pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL026 — Hosted images on standard Responses and metadata-only Lite requests
 
@@ -1246,11 +1255,13 @@ Existing caller tools and tool choices, `image_gen` namespace tools, Spark/free 
 
 Ordered literal/RE2 replacements read and write the same private effects document as defaults and overrides, before final filters. They join the retained operation plan, including role and explicit-path targets, so automatic-image cleanup precedes the single final commit without reevaluating rules or restoring filtered tools.
 
+Supported SIWC and API-key Responses targets preserve upstream’s expanded `include` values before the payload-rule evaluation. Native Codex image eligibility continues to use the effective request headers and the prepared body.
+
 **Implementation evidence:** `internal/runtime/executor/helps/payload_helpers.go`. `internal/runtime/executor/helps/{codex_hosted_images.go,codex_hosted_images_test.go,payload_helpers.go,payload_finalizer.go,payload_rule_plan.go,payload_image_plan_test.go}`, `internal/runtime/executor/codex_executor_request.go`, `internal/runtime/executor/codex_executor_{execute,stream}.go`, `internal/runtime/executor/codex_websockets_{execute,stream}.go`, `internal/runtime/executor/codex_executor_imagegen_test.go`, and `internal/runtime/executor/payload_barrier_test.go`.
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/payload_helpers.go` evaluates automatic-image effects privately, retracts only an unclaimed automatic tool, then commits retained operations once. Replacement is inside that plan; HTTP/WS image, Lite precedence, empty-tools and one-evaluation tests pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 
 ### DL027 — Quota report persistence releases the manager lock during store I/O
@@ -1379,11 +1390,13 @@ Kiro explicitly pins Responses system/developer items to the top-level Claude sy
 
 Shared Claude translators produce native structured-output schemas, but Kiro folds `output_config.format` JSON schemas into system prompt guidance before wire translation and local token estimation. Chat, Responses and native Messages inputs share that preparation in both stream modes. Ordinary and forced Kiro registration use the executor-wrapper helper. Shared media translation does not expand Kiro adapter media support.
 
+Kiro still shares Claude Messages translation for OpenAI, Responses, Gemini and Interactions input before it builds the AWS request. Gemini camel-case and snake-case generation settings and Interactions reasoning settings have adapter coverage in `kiro_system_items_test.go`.
+
 **Implementation evidence:** `internal/runtime/executor/kiro_executor.go`. `internal/auth/kiro/`, `sdk/auth/kiro.go`, `internal/api/handlers/management/auth_files_kiro_oauth.go`, `internal/runtime/executor/kiro_{executor,translator}.go`, `sdk/cliproxy/service_{auth,executors,models}.go`, `internal/runtime/executor/kiro_system_items_test.go`, `web/management-center/src/{features/oauth,features/quota/providers/kiro,services/api/kiroQuota.ts}`, and the bundled management assets.
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/kiro_executor.go` restores schema prompt guidance before Kiro translation; shared Responses top-level system conversion remains, and service registration wraps Kiro executors. OAuth/auth, real wire schema/system-item and wrapper-registration tests pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL031 — Single-pass CPAUK model timeseries aggregation
 
@@ -1633,11 +1646,13 @@ failures. Each run made only two cached quota calls and completed all 24 request
 
 Credentials that only carry a `usage-probe` (for example Z.AI or OpenCode Go under `openai-compatibility`) remain unsupported there by design: they are API-key credentials, which `oauth-excluded-models` does not apply to. The bundled panel (CPAMC `5647a51`) therefore leaves them out of the OAuth excluded-models and model-alias pickers, and also carries the plan-weighted quota summary update.
 
+Kiro retains credential-scoped discovery. The addition of canonical `copilot/<id>` and `devin/<id>` static definitions leaves the Kiro channel available under its existing IDs.
+
 **Implementation evidence:** `internal/registry/model_definitions.go`, `internal/registry/model_definitions_test.go`, the CPAMC gitlink, and the bundled management assets.
 
 **Recorded validation:** a CPA built from this checkout returned the 18 Claude models for `kiro`, and still returned `400` for `openai-compatible-zai`; through CDP, both OAuth editors listed only OAuth providers and Kiro loaded the Claude catalog.
 
-**Last updated:** 2026-10-14
+**Last updated:** 2026-11-26
 
 ### DL038 — Per-credential quota reserves
 
@@ -1653,11 +1668,13 @@ Codex alpha-search selection carries the same config-client key hash as ordinary
 
 Codex continuity applies reserves and bypass keys before candidate construction. Muse relay actions preserve native config-key identity for bypass eligibility. When no credential can serve a request, pool cooldown errors include known quota reserve release times in `reset_time` and `Retry-After`. A credential with multiple timed blocks contributes the time when its last block clears. The pool reports the earliest such recovery across credentials that can serve the request after recovery, regardless of routing priority or positive weight.
 
+Antigravity credits retries honor the original request’s rejected credentials and quota-reserve eligibility alongside upstream’s target-model checks. Exceptional routing still records the credits decision. Optional post-refresh balance reads follow lifecycle cancellation. Cancellation or replacement releases the refresh slot, and an old task cannot publish into a new credential registration.
+
 **Implementation evidence:** `sdk/cliproxy/auth/conductor_pool_cooldown_test.go`. `sdk/cliproxy/auth/conductor_selection.go`. `sdk/cliproxy/auth/quota_reserve.go`, `sdk/cliproxy/auth/{conductor_selection.go,conductor_cooldown.go}`, `sdk/api/handlers/handlers.go`, `internal/api/handlers/management/{quota_reserve_probe.go,auth_files_fields.go,api_tools.go,auth_files.go}`, `internal/config/{config_types.go,vertex_compat.go,credential_labels.go}`, `internal/watcher/synthesizer/{config.go,file.go}`, their tests, the CPAMC gitlink, and the bundled management assets. `internal/api/server_routes.go` reuses `RequestClientKeyID` from `sdk/api/handlers/handlers.go`; `internal/api/server_codex_search_reserve_test.go` exercises authenticated HTTP through the real Codex executor and reserve selection.
 
-**Recorded validation:** `TestExecuteModelCooldownIncludesQuotaReserve` and `TestPoolCooldownTerminalErrorIncludesReserveHeldCredential` cover reset reporting before and after an upstream attempt, including reserve bypass and overlapping cooldowns. On 2026-11-18, reserve edit, reset, partial-bar, alpha-search HTTP, Muse HTTP and continuity eligibility tests passed.
+**Recorded validation:** The post-refresh credits fixture holds an HTTP response body past the former response timeout, cancels the lifecycle, and verifies that the next lifecycle can immediately publish a balance. `TestExecuteModelCooldownIncludesQuotaReserve` and `TestPoolCooldownTerminalErrorIncludesReserveHeldCredential` cover reset reporting before and after an upstream attempt, including reserve bypass and overlapping cooldowns. On 2026-11-18, reserve edit, reset, partial-bar, alpha-search HTTP, Muse HTTP and continuity eligibility tests passed.
 
-**Last updated:** 2026-11-25
+**Last updated:** 2026-11-26
 
 ### DL039 — Streaming keep-alives before the first upstream chunk
 
@@ -1913,6 +1930,8 @@ matrix target, including the macOS and Windows runners without Docker, downloads
 
 Runtime Docker images compile the panel source supplied in their build context with Bun 1.4.3 and generate the compatibility manifest from the supplied `CPAMC_COMMIT`; CI verifies clean submodule pins before those builds. The separate canonical builder enforces its own clean-tree contract.
 
+The PR workflow builds the canonical panel bundle before the server and keeps the upstream Solaris cross-build.
+
 **Implementation evidence:** `internal/api/server_management.go`. `internal/managementasset/{bundle.go,bundle_test.go}`,
 `internal/api/{server_management.go,server_routes.go,server_middleware.go,server_management_assets_test.go}`,
 `scripts/build-management-center.sh`, `Dockerfile`, `Dockerfile.web`, `Dockerfile.management`,
@@ -1921,7 +1940,7 @@ Runtime Docker images compile the panel source supplied in their build context w
 
 **Recorded validation:** On 2026-11-18, `internal/api/server_management.go` retains missing-bundle 503 and gated embedded GET/HEAD assets. Canonical builder, Docker/release asset flow and gitignore remain; asset/traversal/safe-mode/missing-bundle tests pass. Bundle revision validation is excluded as requested.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL051 — Freeze closed days in overview activity
 
@@ -1999,6 +2018,8 @@ Upstream direct-plugin TTFT uses first-packet fallback and protocol-aware events
 
 Substantive source observations occur before Antigravity zero-output buffering, preserving qualified first-batch exclusion, generation timing and bounded arrival evidence.
 
+Vertex’s Imagen stream path keeps the upstream single-response framing and tracks source reads before the Imagen conversion, for both API-key and service-account credentials.
+
 **Implementation evidence:** `internal/runtime/executor/helps/output_observation.go`. `sdk/cliproxy/usage/output_timing.go`,
 `internal/runtime/executor/helps/output_observation.go`,
 `internal/runtime/executor/helps/kiro_generation_body.go`,
@@ -2007,7 +2028,7 @@ Substantive source observations occur before Antigravity zero-output buffering, 
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/output_observation.go` and Kiro/source-reader observers retain matched first-batch exclusion and bounded arrival evidence before new Antigravity buffering. Model qualification, accounting/export/viewer and observer tests remain and pass; timing contract files are unchanged.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL053 — Guarded historical arrival-rate estimates
 
@@ -2228,7 +2249,9 @@ OpenAI-compatible stream executors. `internal/runtime/executor/{gemini_vertex_ex
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/usage_helpers.go` retains once-only failures, original cancellation cause, partial detail and observed upstream status. Native image, Claude Thread, Vertex/AI Studio/xAI partial-usage and collector outcome tests remain; executor/analytics suites and focused races pass.
 
-**Last updated:** 2026-11-18
+After delivering a translated Claude SSE error, the conductor retains the corresponding provider failure even when the downstream client closes in response to that frame. AI Studio's HTTP and relay stream fixtures exercise the ordering. Antigravity queues an in-band failure and its buffered usage before the conductor receives the error, including during bootstrap. The test holds downstream acknowledgement until after a usage queue fence.
+
+**Last updated:** 2026-11-26
 
 ### DL059 — Quota window history and hourly collection
 
@@ -2407,6 +2430,8 @@ Upstream bounded deferred response capture when full request logging is off comp
 
 Legacy-log ingestion accepts the old response layout and upstream labeled headers/body while preserving SSE bytes. Local request diagnostics remain separate from upstream attempts in ClickHouse capture; plain file-log and no-DSN modes retain their contracts.
 
+Codex request capture still runs for each HTTP dispatch, including the plaintext fallback after a compression rejection. Session instruction redaction applies to both captured attempts.
+
 **Implementation evidence:** `internal/telemetry/legacylog/legacylog.go`. `internal/clickhouse/`, `internal/config/clickhouse.go`,
 `internal/telemetry/{record,outbox,ingest,transcript,store,legacylog}`,
 `internal/logging/{telemetry_*.go,global_logger.go,log_dir_cleaner.go}`,
@@ -2431,7 +2456,7 @@ Legacy-log ingestion accepts the old response layout and upstream labeled header
 
 Before the route fix, authenticated schema/query requests returned 503 in plain mode. Mode tests now verify all three telemetry routes return 404 without a DSN, real ClickHouse schema/query/health return 200, and DSN reloads preserve startup route availability. The configured agent-doc inventory parity test passes. Disconnect fixtures install their database handle before route registration; the conversation fixture expects plain-mode 404s, and fixtures wait for ingestion startup before cleanup.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL061 — Rule-based routing, routing traces, and routing dry run
 
@@ -2567,6 +2592,8 @@ checksummed `0001` unchanged so existing server-mode databases keep starting.
 
 The embedded maintained-route inventory includes the observational in-flight count GET and documents Muse discovery exemptions and action admission.
 
+The inventory covers the authenticated server-ID read, its response header, and native Copilot OAuth on the existing v8 OAuth routes.
+
 **Implementation evidence:** `internal/api/server_agentdocs.go`. `internal/agentdocs/{docs.go,llms.txt,management.md,sql.md,model-availability.md}`,
 `internal/api/server_agentdocs.go`, the shared availability predicate in
 `internal/api/server_management.go`, and discovery/route wiring in
@@ -2577,7 +2604,7 @@ and `internal/telemetry/ingest/fixes_test.go`.
 
 **Recorded validation:** On 2026-11-18, `internal/api/server_agentdocs.go` still advertises/serves embedded GET/HEAD docs behind the shared availability gate. Inventory adds U8's in-flight read and Muse policy; route parity, safe-mode/auth-failure hints and real restricted-SQL examples pass.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL063 — Restarts never serve an empty OAuth model catalog
 
@@ -2611,13 +2638,13 @@ Kiro registration passes through the executor-wrapper helper on ordinary and for
 
 The fork's plugin examples use `/v8` module names, require `CLIProxyAPI/v8 v8.0.0`, and replace that dependency with the repository root. Each builds against the checkout it ships in rather than downloading a published SDK. The example generator writes the same module path. Upstream supplies matching v8 paths in two examples; the remaining examples still need the fork correction. The `claude-web-search-router` and `codex-service-tier` module graphs combine upstream's moego dependency with local root and moego replacements.
 
-The nested module graphs retain local v8 replacements and reconcile moego dependencies and sums required by migrated SDK imports.
+The nested module graphs retain their local v8 replacements and reconcile dependencies and sums with moego `v0.1.0-alpha.5`. All 22 plugin modules and the realtime example build.
 
 **Implementation evidence:** `examples/plugin/claude-web-search-router/go/go.mod`. `examples/plugin/*/go/go.mod` and the reconciled `claude-web-search-router` and `codex-service-tier` `go.sum` files, `examples/realtime-openai-go/go.mod`, `examples/plugin/scripts/generate_examples.py`, and `examples/plugin/README.md`.
 
 **Recorded validation:** On 2026-11-18, `examples/plugin/claude-web-search-router/go/go.mod` and the other nested module graphs retain local v8 replacements and reconciled moego dependencies/sums; generator/docs still agree. All 22 plugin modules plus realtime compile with go test -mod=readonly -run '^$' ./....
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL065 — ClickHouse query, ingest, and storage efficiency
 
@@ -2682,12 +2709,12 @@ are `TestS1ReportParity`, `TestS2MixedReadParity`,
 
 ### DL066 — Scoped management keys
 
-**Last updated:** 2026-11-19
+**Last updated:** 2026-11-26
 
 Additional `management.keys` credentials have explicit `full-access` or `read-only`
 scopes. Legacy, environment, and local passwords retain full access. Startup, config
 uploads, comment-preserving persistence, and reloads validate metadata and hash plaintext
-keys. The v8 session endpoint reports the authenticated scope; full-access key CRUD
+keys. Startup hashing shares the locked server-ID transaction and checks the full YAML stream before upload. Scoped key CRUD compares the file snapshot before saving, and scoped authentication reads the keys and server ID from the same snapshot. Read-only keys may read `GET /v8/management/server/server-id`. The v8 session endpoint reports the authenticated scope; full-access key CRUD
 returns only IDs, names, and scopes. Ordinary JSON config reads redact scoped-key hashes.
 
 Read-only management uses an explicit v8 allowlist for analytics and quota observation,
@@ -2753,22 +2780,13 @@ read-only overview counts, opaque usage identities, plugin YAML secrets, log sec
 spoofing, and denied logging mutations. Desktop and mobile browser checks cover the
 Dashboard, Logs Viewer, and Management Center Info with no privileged preloads.
 
+Scoped-key startup, unsafe upload, handler lifecycle, and read-only server-ID route tests pass.
+
 ### DL067 — Config YAML syntax errors report their line
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
-`PUT /v8/management/config.yaml` and the other v8 config writes return the YAML parser's message
-as `message` when the request body is not valid YAML, alongside the unchanged
-`"error": "invalid_body"` code. Upstream returned only the code, so neither the management panel
-nor a script editing the config could see what was wrong or where. gopkg.in/yaml.v3 v3.0.1 can't
-be trusted for the line: depending on the problem it counts from zero, omits the line on line 1,
-or reports the start of the enclosing block. Its line is never past the problem, though, so the
-fork takes the shortest line prefix of the body that fails with the same message, starting at
-yaml.v3's line. Bodies over 1 MiB skip the search and keep yaml.v3's message. Lines in later
-validation errors are covered by DL069. Proposed upstream on the
-`fix/v8-config-error-messages` branch; drop this entry if upstream accepts it.
-
-Config authentication-cache invalidation composes with line-aware syntax errors before writes; invalid YAML still leaves the configuration unchanged.
+Invalid YAML in v8 config writes returns `invalid_body` with upstream's document-numbered parser message. For a first-document syntax error, the fork searches for the shortest input prefix that produces the same error to correct missing lines and lines that point at the enclosing block. Later documents keep the parser's own diagnostic. Bodies over 1 MiB skip line correction. DL069 covers typed validation errors in syntactically valid input.
 
 **Implementation evidence:** `internal/config/yaml_syntax_error.go`. `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
 and the `invalid_body` response in `internal/api/handlers/management/config_v8.go`.
@@ -2781,9 +2799,11 @@ unchanged. A real server built from fork `main` reported the line for an unclose
 a one-line body. An earlier version used a table of yaml.v3 parser messages and reported the
 enclosing block's line for several of them.
 
+The merged HTTP regression covers missing-line, dedent, one-line, and later-document parser errors. The stored config bytes remain unchanged on rejection.
+
 ### DL068 — Unknown v8 config fields are named at their own line
 
-**Last updated:** 2026-11-03
+**Last updated:** 2026-11-26
 
 `ValidateV8Config` decodes a flattened legacy copy of the v8 document strictly. Flattening moves
 every known v8 field out of its section, so a typo such as `server.hots` stays behind under
@@ -2793,7 +2813,7 @@ fork maps each strict-decode error back to the node in the `ValidateV8Config` in
 a `*yaml.TypeError`. Below a leftover v8 section it reports every unknown key
 (`line 6: field hots not found`), and elsewhere it reports the key at its input line. Keys that
 flattening or API-key expansion generated have no position, so their value's line is used. The
-flattened tree keeps input positions because its nodes are copies of the parsed input. Proposed
+flattened tree keeps input positions because its nodes are copies of the parsed input. Full-stream shape validation and v8 archiving run alongside this strict decode without archiving known fork fields. Proposed
 upstream with DL067; drop this entry if upstream accepts it.
 
 **Implementation evidence:** `internal/config/yaml_error_lines.go` (`describeV8DecodeError`) and
@@ -2808,7 +2828,7 @@ in the fork-only `clickhouse` section.
 
 ### DL069 — Config validation errors point at the submitted field
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 The v8 config handler validates its re-encoded document, so upstream's `invalid_config` line
 references ignored the body's comments, blank lines, and indentation. A type error on line 11 of
@@ -2823,7 +2843,7 @@ the submitted body's aliases, so this holds when normalization removes the ancho
 collection nested in one of the same kind on one line is named one level too deep. Documents
 over 1 MiB keep yaml.v3's message, as for DL067. Proposed upstream with DL067; drop this entry if upstream accepts it.
 
-Whole-document PUT diagnostics use the original submitted bytes, while PATCH diagnostics retain path-only context alongside management authentication-cache invalidation.
+Whole-document PUT diagnostics map typed errors back to the submitted bytes before the compare-and-swap. PATCH and sub-path diagnostics use paths in the candidate first document.
 
 **Implementation evidence:** `internal/api/handlers/management/config_v8.go`. `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
 and its use after `ParseConfigBytes` and `ValidateV8Config` in
@@ -2835,6 +2855,8 @@ historical spellings, a mapping where a list belongs, block-valued unknown field
 (including one whose anchor normalization removes), merge keys, and user values containing `line N:`. Any case expecting no line fails if one
 appears. Run against the previous fork version, eight of these cases failed. HTTP statuses, error
 codes, and the bytes written for valid saves are unchanged.
+
+The HTTP type and unknown-field validation regression passes with server ID generation accounted for in its fixture.
 
 ### DL070 — Routing strategy explanations and affinity provenance
 
@@ -3007,13 +3029,15 @@ The Kiro management model-definition list also uses discovered registrations.
 
 Case-only Kiro aliases retain discovered metadata, and credential-local identity matches suppress global alias fallback. Provider-scoped lookup can enrich metadata but cannot advertise or grant access to an undiscovered Kiro model; registration uses the executor wrapper.
 
+Kiro discovery supplies the catalog before the shared registration code applies account exclusions, OAuth aliases, and prefixes. Native Copilot registration has its own catalog owner.
+
 **Implementation evidence:** `internal/runtime/executor/helps/kiro_models.go`. `internal/runtime/executor/helps/kiro_models.go`,
 `sdk/cliproxy/kiro_models.go`, `sdk/cliproxy/service_models.go`,
 `internal/registry/model_definitions.go`, and their Kiro regression tests.
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/kiro_models.go` retains authenticated, paginated credential-scoped membership, cache/fences and metadata enrichment. Case-only/local aliases preserve case-only mappings and credential-local identity precedence. Discovery/failure/empty/removal/profile/proxy and wrapper tests remain and pass, including focused races.
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-26
 
 ### DL073 — Reject forced hosted web search on Chat Completions routes
 
@@ -3132,6 +3156,8 @@ attempt.
 
 Executor preparation failures still report a local credential attempt through `PrepareFailureReporter` for execute, stream and Home paths, with original model identity and no invented upstream status. Token counts remain excluded.
 
+The Home preparer reports upstream project-discovery 401 and 429 responses using the effective credential. The executor’s local failure hook skips those already reported errors. Local Antigravity cooldown-store unavailability records a failed attempt before dispatch.
+
 **Implementation evidence:** `internal/runtime/executor/helps/usage_helpers.go`. `internal/runtime/executor/helps/usage_helpers.go`
 (`PublishAttemptFailure`), the Claude, Codex, Antigravity, Meta and xAI execute/stream/WebSocket files,
 `sdk/cliproxy/auth/{conductor.go,conductor_execution.go,conductor_home_execution.go}`,
@@ -3140,7 +3166,9 @@ Executor preparation failures still report a local credential attempt through `P
 
 **Recorded validation:** On 2026-11-18, `internal/runtime/executor/helps/usage_helpers.go` remains called for all documented local refusals; execute/stream/Home conductor preparation failures still use PrepareFailureReporter, counts do not. Exactly-once/source-hop/no-upstream-status and model identity regressions remain and pass normally and with race detection.
 
-**Last updated:** 2026-11-18
+The local credential refusal and Home project-discovery tests verify one usage record per failed attempt.
+
+**Last updated:** 2026-11-26
 
 ### DL077 — Live proxy request monitoring
 
@@ -3287,8 +3315,7 @@ definitions list a group only by effort variants, excluding all of those
 entries also removes the group. Individual effort exclusions still apply
 within enabled groups. Catalogs without groups keep their existing behavior.
 Model cooldowns are recorded against the wire model that returned the limit.
-The account catalog and its group information are saved together so the
-same routes can be restored after a restart.
+The public route hints retain declared efforts, timestamps, and route fingerprints across restarts. Request preparation uses the upstream credential-scoped catalog to obtain the combined wire ID, enum, output cap, and search capability for the effective effort. An implicit group default and the effort encoded in a combined public ID both use that catalog. Public group routes also support split wire IDs and older combined catalogs. The selected wire ID is checked for model-level cooldown before translation and token refresh.
 
 The authenticated native `/v1internal:generateContent`,
 `/v1internal:streamGenerateContent`, and `/v1internal:countTokens` endpoints
@@ -3301,7 +3328,7 @@ and does not expose these native endpoints.
 **Implementation evidence:** `sdk/auth/antigravity_models.go`,
 `sdk/cliproxy/antigravity_thinking_models.go`,
 `internal/runtime/executor/helps/antigravity_thinking.go`,
-the Antigravity executor, and the native HTTP handlers.
+the Antigravity executor, `internal/runtime/executor/antigravity_thinking_groups_review_test.go`, and the native HTTP handlers.
 
 **Recorded validation:** account-scoped effort selection, native thinking
 field aliases, native SSE framing, and quota admission have regression
@@ -3309,7 +3336,7 @@ coverage. Live consumer catalogs advertised combined wire IDs. Split and
 combined client requests completed against Claude Sonnet 5.5 and Gemini 3.8
 Flash on that catalog, and native Gemini token counting returned a count.
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-26
 
 ### DL080 — Antigravity OAuth request safeguard
 
@@ -3353,8 +3380,7 @@ creates the reference on demand, and `--antigravity-capture-update`
 forces a fresh capture. Docker Compose persists the reference in its own
 volume. Enterprise-only credentials cannot bootstrap the consumer CLI
 reference. The guard accepts compatible CLI, Hub, and legacy request
-shapes, and uses the captured CLI User-Agent as the default upstream
-value. It compares observable request properties and does not authenticate
+shapes. It uses the captured CLI User-Agent and envelope identity for guarded inference. Other requests use upstream defaults. An explicit non-positive Antigravity idle-connection limit disables idle reuse. It compares observable request properties and does not authenticate
 the incoming client executable.
 
 **Implementation evidence:**
@@ -3390,12 +3416,11 @@ Neon image request and an explicitly allowed Gemini token count passed.
 An unlisted Gemini client received 403. Both clients completed a scripted
 game file write and sent the resulting tool response back through CPA.
 
-**Last updated:** 2026-11-25
+**Last updated:** 2026-11-26
 
 ### DL081 — Codex stream outage recovery
 
-CPA keeps a replayable Codex turn open across overload, transient capacity rejections, and
-upstream disconnects before any response event has been forwarded. Recovery uses the normal
+CPA keeps a replayable local Codex turn open across overload, transient capacity rejections, and upstream disconnects before any response event has been forwarded. Request termination, cancellation, credential-scoped stops and continuation-proof failures take precedence. Home uses its advertised bounded continuity protocol. Recovery uses the normal
 credential selector and starts new sweeps outside the ordinary retry round and maximum wait
 settings. Sweeps are cancellable, use a jittered delay of at least one second, and honor
 eligible credential cooldowns and upstream retry hints. A direct HTTP or WebSocket 429 with
@@ -3419,7 +3444,7 @@ reading ahead at the terminal event so closing the response body can finish with
 for another transport read. WebSocket tests cover a reset immediately after upgrade and
 preserve close-code handling when the upstream close arrives behind queued output.
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-26
 
 ## Sync Checklist
 

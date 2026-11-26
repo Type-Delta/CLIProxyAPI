@@ -76,6 +76,7 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `GET /v8/management/observability/requests/in-flight` | Read standalone in-flight counts and oldest start time | No params; read-only keys allowed; empty in Home mode |
 | `GET /v8/management/storage` | Read storage size breakdown | No params |
 | `GET /v8/management/server/latest-version` | Read latest release information | No params |
+| `GET /v8/management/server/server-id` | Read this deployment’s configured or generated UUID | Read-only keys permitted. Response includes `server-id` and `X-CPA-Server-ID`. |
 | `POST /v8/management/requests/api-call` | Make a credential-authenticated upstream HTTP call | JSON `method`, `url`; optional `auth_index`, `header`, `data`, `proxy_url`, `force_refresh`; `$TOKEN$` in header values substitutes upstream token |
 
 ## Telemetry
@@ -180,7 +181,7 @@ Both live-request endpoints include `session` when known, the first eight hex ch
 | `POST /v8/management/credentials/verify` | Verify a credential with a minimal inference request | JSON `name`, optional `model`; uses an isolated session and a minimal 1-token prompt |
 | `GET /v8/management/credentials/siwc/status` | Read local SIWC credential status | Alias of `/oauth/siwc/status`; query `name` or `auth_index`; no upstream requests |
 | `POST /v8/management/oauth/import` | Import Vertex service account | Query `provider=vertex`; multipart `file` |
-| `GET /v8/management/oauth/auth-url` | Start built-in or plugin OAuth | Required query `provider`; optional provider-specific login params; returns `url`, `state` |
+| `GET /v8/management/oauth/auth-url` | Start built-in or plugin OAuth | Required query `provider`; optional provider-specific login params (supports native Copilot); returns `url`, `state` |
 | `POST /v8/management/oauth/auth-url` | Start built-in or plugin OAuth | JSON provider and login options; supports targeted recovery using `name` or `auth_index` and optional `verify` |
 | `POST /v8/management/oauth/siwc/bind` | Bind SIWC to an existing Codex OAuth credential | JSON `name`; standalone mode and local file-backed credentials required |
 | `GET /v8/management/oauth/siwc/status` | Read local SIWC credential status | Query `name` or `auth_index`; returns `status`: `off`, `valid`, or `invalid`; no refresh or inference request |

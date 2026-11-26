@@ -37,6 +37,10 @@ func (m RemoteManagement) HasKeys() bool {
 
 // NormalizeKeys validates before hashing so invalid scopes cannot gain access.
 func (m *RemoteManagement) NormalizeKeys() error {
+	return m.normalizeKeys(true)
+}
+
+func (m *RemoteManagement) normalizeKeys(hash bool) error {
 	ids := make(map[string]bool, len(m.Keys))
 	for i := range m.Keys {
 		key := &m.Keys[i]
@@ -47,6 +51,15 @@ func (m *RemoteManagement) NormalizeKeys() error {
 		}
 		ids[key.ID] = true
 		if !looksLikeBcrypt(key.SecretKey) {
+			if strings.HasPrefix(key.SecretKey, "$2a$") || strings.HasPrefix(key.SecretKey, "$2b$") || strings.HasPrefix(key.SecretKey, "$2y$") {
+				return fmt.Errorf("invalid management key hash at index %d", i)
+			}
+			if len(key.SecretKey) > 72 {
+				return fmt.Errorf("hash management key at index %d: %w", i, bcrypt.ErrPasswordTooLong)
+			}
+			if !hash {
+				continue
+			}
 			hashed, err := hashSecret(key.SecretKey)
 			if err != nil {
 				return fmt.Errorf("hash management key at index %d: %w", i, err)
@@ -59,67 +72,60 @@ func (m *RemoteManagement) NormalizeKeys() error {
 	return nil
 }
 
-// prepareManagementKeysYAML replaces only the effective list, retaining surrounding
-// comments and refusing aliases that would leave plaintext credentials elsewhere.
-func prepareManagementKeysYAML(data []byte, keys []ManagementKey) ([]byte, error) {
-	if len(keys) == 0 {
-		return data, nil
+// PrepareManagementKeysYAML validates and hashes scoped keys for raw config writes.
+func PrepareManagementKeysYAML(data []byte) ([]byte, error) {
+	docs, err := decodeConfigStream(data)
+	if err != nil || len(docs) == 0 {
+		return data, err
 	}
-	var source Config
-	if err := yaml.Unmarshal(data, &source); err != nil {
+	var cfg Config
+	if errDecode := docs[0].Decode(&cfg); errDecode != nil {
+		return nil, errDecode
+	}
+	original := append([]ManagementKey(nil), cfg.RemoteManagement.Keys...)
+	if errKeys := cfg.RemoteManagement.NormalizeKeys(); errKeys != nil {
+		return nil, errKeys
+	}
+	result, err := renderScopedManagementKeys(data, docs, original, cfg.RemoteManagement.Keys)
+	if err != nil {
 		return nil, err
 	}
+	if errSave := ValidateConfigSave(data, result); errSave != nil {
+		return nil, errSave
+	}
+	return result, nil
+}
+
+func renderScopedManagementKeys(data []byte, docs []*yaml.Node, original, keys []ManagementKey) ([]byte, error) {
 	changed := false
-	for i := range keys {
-		if source.RemoteManagement.Keys[i].SecretKey != keys[i].SecretKey {
+	for i, key := range keys {
+		if original[i].SecretKey != key.SecretKey {
 			changed = true
+			break
 		}
 	}
 	if !changed {
 		return data, nil
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	root := expandConfigAliases(doc.Content[0])
+	doc := deepCopyNode(docs[0])
+	root := doc.Content[0]
 	section := "remote-management"
-	if yamlPath(root, "management.keys") != nil {
+	if effectiveConfigValue(root, "management", "keys") != nil {
 		section = "management"
 	}
-	node := yamlPath(root, section+".keys")
-	if node == nil {
+	effective := effectiveConfigValue(root, section, "keys")
+	if effective == nil || effective.Kind != yaml.SequenceNode || len(effective.Content) != len(keys) {
 		return nil, fmt.Errorf("management keys missing")
 	}
+	list := detachedConfigNode(effective)
 	for i, key := range keys {
-		secret := yamlPath(node.Content[i], "secret-key")
-		if secret == nil {
-			return nil, fmt.Errorf("management key secret missing")
-		}
-		secret.Value = key.SecretKey
-		secret.Tag = "!!str"
-	}
-	doc.Content[0] = root
-	result, err := yaml.Marshal(&doc)
-	if err != nil {
-		return nil, err
-	}
-	for _, key := range source.RemoteManagement.Keys {
-		if !looksLikeBcrypt(key.SecretKey) && yamlScalarExists(&doc, key.SecretKey) {
-			return nil, fmt.Errorf("plaintext management key remains elsewhere in config")
+		if original[i].SecretKey != key.SecretKey {
+			setConfigScalar(list.Content[i], []string{"secret-key"}, key.SecretKey)
 		}
 	}
-	return result, nil
-}
-
-// PrepareManagementKeysYAML validates and hashes scoped keys for raw config writes.
-func PrepareManagementKeysYAML(data []byte) ([]byte, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	if err := cfg.RemoteManagement.NormalizeKeys(); err != nil {
-		return nil, err
-	}
-	return prepareManagementKeysYAML(data, cfg.RemoteManagement.Keys)
+	setConfigScalar(root, []string{section, "keys"}, "")
+	target := effectiveConfigValue(root, section, "keys")
+	target.Kind, target.Tag, target.Value, target.Content = list.Kind, list.Tag, list.Value, list.Content
+	target.Style = list.Style
+	return encodeConfigDocument(doc, data, docs)
 }

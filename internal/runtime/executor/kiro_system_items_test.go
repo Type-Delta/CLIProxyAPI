@@ -1,13 +1,14 @@
 package executor
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -73,6 +74,35 @@ func TestKiroResponsesLateSystemItemsRemainSeparate(t *testing.T) {
 			}
 			if got := payload.ConversationState.CurrentMessage.UserInputMessage.Content; got != "second" {
 				t.Errorf("current user content = %q, want second", got)
+			}
+		})
+	}
+}
+
+func TestKiroGeminiAndInteractionsUseSharedClaudeTranslation(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	for _, tc := range []struct {
+		name, request, thinking string
+		source                  sdktranslator.Format
+	}{
+		{"Gemini camel case", `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":4096,"thinkingConfig":{"thinkingBudget":0}}}`, "disabled", sdktranslator.FormatGemini},
+		{"Gemini snake case", `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generation_config":{"max_output_tokens":4096,"thinking_config":{"thinking_budget":0}}}`, "disabled", sdktranslator.FormatGemini},
+		{"Interactions", `{"input":"hello","generation_config":{"max_output_tokens":4096,"thinking_level":"auto"}}`, "adaptive", sdktranslator.FormatInteractions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := cliproxyexecutor.Request{Model: model, Payload: []byte(tc.request)}
+			opts := cliproxyexecutor.Options{SourceFormat: tc.source}
+			claude := kiroRequestPayload(req, opts)
+			if maxTokens := ojson.GetBytes(claude, "max_tokens").Int(); maxTokens != 4096 ||
+				ojson.GetBytes(claude, "thinking.type").String() != tc.thinking {
+				t.Fatalf("Claude translation lost generation settings: %s", claude)
+			}
+			wire, err := buildKiroPayload(model, claude, "", "translation-fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ojson.GetBytes(wire, "conversationState.currentMessage.userInputMessage.content").String(); got != "hello" {
+				t.Fatalf("Kiro wire user content = %q, want hello", got)
 			}
 		})
 	}

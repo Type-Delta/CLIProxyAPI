@@ -28,7 +28,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if p == nil {
 		return
 	}
-	if !Enabled() || !UsageStatisticsEnabled() {
+	selectionID := strings.TrimSpace(record.SelectionID)
+	if selectionID == "" {
+		selectionID = coreusage.SelectionIDFromContext(ctx)
+	}
+	// Home scheduler completion feedback is needed even when local statistics are disabled.
+	if !Enabled() || (!UsageStatisticsEnabled() && (selectionID == "" || record.HomeSelection == nil)) {
 		return
 	}
 
@@ -172,6 +177,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AccountingVersion:     coreusage.TokenAccountingSchemaVersion,
 		TokenBreakdown:        usageDetail.TokenBreakdown,
 		Provider:              provider,
+		BaseURL:               record.BaseURL,
+		AuthID:                record.AuthID,
 		ExecutorType:          executorType,
 		Model:                 modelName,
 		Alias:                 aliasName,
@@ -182,6 +189,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		AccessProvider:        accessProvider,
 		RequestID:             requestID,
 		ExecutionID:           executionID,
+		SelectionID:           selectionID,
 		HomeSelection:         record.HomeSelection,
 		TraceID:               traceID,
 		SessionID:             sessionID,
@@ -218,6 +226,8 @@ type queuedUsageDetail struct {
 	AccountingVersion     int                         `json:"accounting_version"`
 	TokenBreakdown        coreusage.TokenBreakdown    `json:"token_breakdown"`
 	Provider              string                      `json:"provider"`
+	BaseURL               string                      `json:"base_url,omitempty"`
+	AuthID                string                      `json:"auth_id,omitempty"`
 	ExecutorType          string                      `json:"executor_type"`
 	Model                 string                      `json:"model"`
 	Alias                 string                      `json:"alias"`
@@ -228,6 +238,7 @@ type queuedUsageDetail struct {
 	AccessProvider        string                      `json:"access_provider,omitempty"`
 	RequestID             string                      `json:"request_id"`
 	ExecutionID           string                      `json:"execution_id,omitempty"`
+	SelectionID           string                      `json:"selection_id,omitempty"`
 	HomeSelection         *coreusage.HomeSelection    `json:"home_selection,omitempty"`
 	TraceID               string                      `json:"trace_id,omitempty"`
 	SessionID             string                      `json:"session_id,omitempty"`

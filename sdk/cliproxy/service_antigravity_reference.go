@@ -79,7 +79,7 @@ func antigravityReferenceCredentials(auths []*coreauth.Auth, defaultProxy string
 		if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {
 			continue
 		}
-		if base := resolveAntigravityModelBaseURL(auth); base != "" {
+		if base := antigravityModelBaseURLs(auth)[0]; base != "" {
 			address, err := url.Parse(base)
 			if err != nil || !antigravitycapture.IsDirectURL(address) {
 				continue

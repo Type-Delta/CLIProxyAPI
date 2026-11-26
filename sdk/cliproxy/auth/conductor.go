@@ -51,6 +51,13 @@ type PrepareFailureReporter interface {
 	ReportPrepareFailure(ctx context.Context, auth *Auth, model string, err error)
 }
 
+// HomePluginRequestAuthPreparer lets a credential provider also prepare auth
+// that a Home-selected plugin will consume without running the provider executor.
+type HomePluginRequestAuthPreparer interface {
+	RequestAuthPreparer
+	ShouldPrepareHomePluginRequestAuth(auth *Auth) bool
+}
+
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
@@ -152,6 +159,10 @@ type pluginSchedulerState interface {
 	HasScheduler() bool
 }
 
+type pluginSchedulerPriorityPool interface {
+	SchedulerWantsAllPriorityCandidates() bool
+}
+
 // StoppableSelector is an optional interface for selectors that hold resources.
 // Selectors that implement this interface will have Stop called during shutdown.
 type StoppableSelector interface {
@@ -211,7 +222,7 @@ type Manager struct {
 	executors                 map[string]ProviderExecutor
 	executorRevisions         map[string]uint64
 	selector                  Selector
-	hook                      Hook
+	hook                      *hookChain
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
@@ -229,7 +240,8 @@ type Manager struct {
 	authChangeWatchers     map[string]map[chan struct{}]struct{}
 	scheduler              *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
-	pluginScheduler PluginScheduler
+	pluginScheduler     PluginScheduler
+	homePluginExecutors HomePluginExecutorResolver
 	// quotaRecoveryRefresher synchronously refreshes provider quota before
 	// recovery-aware (GSR) selection. It must report the observation through
 	// the manager so CPAMC and routing share the same cached state.
@@ -282,10 +294,14 @@ type Manager struct {
 	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
 	refreshJobs map[string]*authRefreshJob
 
-	requestPrepareLocks sync.Map
-	// refreshLocks serializes credential refresh per auth ID so concurrent
-	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
+	// refreshLocks serializes credential refresh and request-auth preparation
+	// per auth ID so concurrent refreshes, 401 recoveries, and preparations do
+	// not race the same credential.
 	refreshLocks sync.Map
+	// homePrepareMu guards homePrepareFlights for coalescing concurrent Home
+	// snapshot preparations without reading or mutating local auth state.
+	homePrepareMu      sync.Mutex
+	homePrepareFlights map[string]*homeAuthPrepareFlight
 	// persistLocks serializes disk persistence per auth ID and guards against out-of-order writes.
 	persistLocks sync.Map
 	// authMutationLocks coordinate credential mutations without blocking unrelated readers.
@@ -312,12 +328,13 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		executors:             make(map[string]ProviderExecutor),
 		executorRevisions:     make(map[string]uint64),
 		selector:              selector,
-		hook:                  hook,
+		hook:                  &hookChain{primary: hook},
 		auths:                 make(map[string]*Auth),
 		authEpochs:            make(map[string]uint64),
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),
 		homeRuntimeAuthOwners: make(map[string]map[string]*HomeDispatchSelection),
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
+		homePrepareFlights:    make(map[string]*homeAuthPrepareFlight),
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
 	}

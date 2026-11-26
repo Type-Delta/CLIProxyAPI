@@ -1,8 +1,8 @@
 package management
 
 import (
+	"errors"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +33,7 @@ func readOnlyManagementRoute(c *gin.Context) bool {
 		return false
 	}
 	switch path {
-	case "/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors",
+	case "/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/server/server-id", "/observability/logs", "/observability/logs/errors",
 		"/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys",
 		"/plugins/:id/quota", "/session", "/capabilities", "/api-keys", "/storage", "/credentials", "/credentials/models",
 		"/routing/model-definitions/:channel", "/routing/credentials", "/telemetry/health", "/telemetry/schema",
@@ -73,7 +73,7 @@ func (h *Handler) writeManagementKey(c *gin.Context, patch bool) {
 	defer h.mu.Unlock()
 	// Read the persisted model before editing: h.cfg can include runtime-owned fields
 	// or lag a disk change. The ordinary config writer preserves unrelated settings.
-	next, ok := h.loadManagementWriteConfigLocked(c)
+	next, onDisk, ok := h.loadManagementWriteConfigLocked(c)
 	if !ok {
 		return
 	}
@@ -111,7 +111,7 @@ func (h *Handler) writeManagementKey(c *gin.Context, patch bool) {
 	} else {
 		next.RemoteManagement.Keys = append(next.RemoteManagement.Keys, entry)
 	}
-	if !h.saveManagementKeysLocked(c, next) {
+	if !h.saveManagementKeysLocked(c, onDisk, next) {
 		return
 	}
 	c.JSON(http.StatusOK, entry)
@@ -120,14 +120,14 @@ func (h *Handler) writeManagementKey(c *gin.Context, patch bool) {
 func (h *Handler) DeleteManagementKey(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	next, ok := h.loadManagementWriteConfigLocked(c)
+	next, onDisk, ok := h.loadManagementWriteConfigLocked(c)
 	if !ok {
 		return
 	}
 	for i, key := range next.RemoteManagement.Keys {
 		if key.ID == c.Param("id") {
 			next.RemoteManagement.Keys = append(next.RemoteManagement.Keys[:i], next.RemoteManagement.Keys[i+1:]...)
-			if h.saveManagementKeysLocked(c, next) {
+			if h.saveManagementKeysLocked(c, onDisk, next) {
 				c.JSON(http.StatusOK, gin.H{"status": "ok"})
 			}
 			return
@@ -136,33 +136,28 @@ func (h *Handler) DeleteManagementKey(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{"error": "management key not found"})
 }
 
-func (h *Handler) loadManagementWriteConfigLocked(c *gin.Context) (*config.Config, bool) {
-	raw, err := os.ReadFile(h.configFilePath)
+func (h *Handler) loadManagementWriteConfigLocked(c *gin.Context) (*config.Config, *config.ConfigFileSnapshot, bool) {
+	onDisk, err := config.ReadConfigFileSnapshot(h.configFilePath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
-		return nil, false
+		return nil, nil, false
 	}
-	next, err := config.ParseConfigBytes(raw)
+	next, err := config.ParseConfigBytes(onDisk.Bytes())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
-		return nil, false
+		return nil, nil, false
 	}
-	return next, true
+	return next, onDisk, true
 }
 
-func (h *Handler) saveManagementKeysLocked(c *gin.Context, next *config.Config) bool {
-	raw, err := os.ReadFile(h.configFilePath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed"})
-		return false
-	}
-	raw, _, err = config.NormalizeConfigLayout(raw, true)
+func (h *Handler) saveManagementKeysLocked(c *gin.Context, onDisk *config.ConfigFileSnapshot, next *config.Config) bool {
+	raw, _, commented, err := config.NormalizeConfigLayoutSilent(onDisk.Bytes(), true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
 		return false
 	}
-	var doc yaml.Node
-	if yaml.Unmarshal(raw, &doc) != nil || len(doc.Content) == 0 {
+	doc, err := config.DecodeFirstConfigDocument(raw)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config"})
 		return false
 	}
@@ -203,11 +198,22 @@ func (h *Handler) saveManagementKeysLocked(c *gin.Context, next *config.Config) 
 	} else {
 		management.Content = append(management.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "keys"}, &keys)
 	}
-	raw, err = yaml.Marshal(&doc)
-	if err != nil || WriteConfig(h.configFilePath, raw) != nil {
+	raw, err = config.ReplaceFirstConfigDocument(raw, doc)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed"})
 		return false
 	}
+	saved, errSave := config.WriteConfigFileCAS(h.configFilePath, onDisk, raw)
+	if errors.Is(errSave, config.ErrConfigFileChanged) {
+		c.JSON(http.StatusConflict, gin.H{"error": "config_changed"})
+		return false
+	}
+	if errSave != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed"})
+		return false
+	}
+	config.WarnUnrecognizedV8Sections(commented)
+	next.SourceHash = saved.SourceHash()
 	next.Home = h.cfg.Home
 	h.cfg = next
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), h.reloadSnapshotConfigLocked())

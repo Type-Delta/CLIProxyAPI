@@ -1,11 +1,11 @@
 package management
 
 import (
-	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"gopkg.in/yaml.v3"
@@ -52,15 +52,14 @@ func trimETag(value string) string {
 }
 
 func guardAPIKeyRevision(c *gin.Context, current []config.APIKeyEntry, bodyRevision string) bool {
-	return guardAPIKeyRevisionMode(c, current, bodyRevision, apiKeyContractEnabled(c))
+	return guardAPIKeyRevisionMode(c, current, requestAPIKeyRevision(c, bodyRevision), apiKeyContractEnabled(c), "")
 }
 
 func guardRequiredAPIKeyRevision(c *gin.Context, current []config.APIKeyEntry, bodyRevision string) bool {
-	return guardAPIKeyRevisionMode(c, current, bodyRevision, true)
+	return guardAPIKeyRevisionMode(c, current, requestAPIKeyRevision(c, bodyRevision), true, "")
 }
 
-func guardAPIKeyRevisionMode(c *gin.Context, current []config.APIKeyEntry, bodyRevision string, required bool) bool {
-	want := requestAPIKeyRevision(c, bodyRevision)
+func guardAPIKeyRevisionMode(c *gin.Context, current []config.APIKeyEntry, want string, required bool, fileETag string) bool {
 	if want == "" {
 		if !required {
 			return false
@@ -74,6 +73,9 @@ func guardAPIKeyRevisionMode(c *gin.Context, current []config.APIKeyEntry, bodyR
 	currentRevision := apiKeyRevision(current)
 	if want != currentRevision {
 		setAPIKeyRevisionHeaders(c, currentRevision, false)
+		if fileETag != "" {
+			c.Header("ETag", fileETag)
+		}
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "config_revision_mismatch",
 			"message": "The API-key configuration changed. Reload it before saving.",
@@ -144,6 +146,10 @@ func (h *Handler) guardConfigYAMLAPIKeyMutationLocked(c *gin.Context, candidate 
 	if h.cfg != nil {
 		current = h.cfg.APIKeys
 	}
+	return guardConfigYAMLAPIKeyMutation(c, current, candidate, requestAPIKeyRevision(c, ""), "")
+}
+
+func guardConfigYAMLAPIKeyMutation(c *gin.Context, current, candidate []config.APIKeyEntry, revision, fileETag string) bool {
 	if sameAPIKeyEntries(current, candidate) {
 		return false
 	}
@@ -154,7 +160,7 @@ func (h *Handler) guardConfigYAMLAPIKeyMutationLocked(c *gin.Context, candidate 
 	if guardLegacyStructuredAPIKeyMutation(c, current, candidate) {
 		return true
 	}
-	return guardAPIKeyRevision(c, current, "")
+	return guardAPIKeyRevisionMode(c, current, revision, apiKeyContractEnabled(c), fileETag)
 }
 
 func decodeConfigYAMLAPIKeys(candidateYAML []byte) ([]config.APIKeyEntry, bool) {

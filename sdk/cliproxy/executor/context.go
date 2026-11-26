@@ -91,18 +91,17 @@ func UpstreamAttempted(ctx context.Context) bool {
 	return ok && tracker != nil && tracker.attempted.Load()
 }
 
-// SetUpstreamAttemptModel records a model selected after credential admission.
+// SetUpstreamAttemptModel records a provider-selected model for this attempt.
 func SetUpstreamAttemptModel(ctx context.Context, model string) {
-	if ctx == nil || model == "" {
-		return
-	}
-	if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok {
-		tracker.model.Store(&model)
+	if ctx != nil {
+		if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok {
+			tracker.model.Store(&model)
+		}
 	}
 }
 
-// UpstreamAttemptModel returns the late-selected model, or the caller's fallback.
-func UpstreamAttemptModel(ctx context.Context, fallback string) string {
+// UpstreamAttemptModel reports the provider-selected model, if any.
+func UpstreamAttemptModel(ctx context.Context) string {
 	if ctx != nil {
 		if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok {
 			if model := tracker.model.Load(); model != nil {
@@ -110,7 +109,7 @@ func UpstreamAttemptModel(ctx context.Context, fallback string) string {
 			}
 		}
 	}
-	return fallback
+	return ""
 }
 
 // WithLocalWebsocketTurnTracker installs a tracker that records when a downstream

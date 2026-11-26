@@ -20,13 +20,13 @@ func TestManagementScopedKeysOnlyStartupAndRouteSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{RemoteManagement: config.RemoteManagement{Keys: []config.ManagementKey{{ID: "viewer", Name: "Viewer", SecretKey: string(hash), Scope: config.ManagementScopeReadOnly}}}}
+	cfg := &config.Config{ServerID: testServerID, RemoteManagement: config.RemoteManagement{Keys: []config.ManagementKey{{ID: "viewer", Name: "Viewer", SecretKey: string(hash), Scope: config.ManagementScopeReadOnly}}}}
 	s := newTestServerWithConfig(t, cfg)
 	if !s.managementRoutesEnabled.Load() || !s.managementRoutesRegistered.Load() {
 		t.Fatal("keys-only management disabled")
 	}
 	safeGET := map[string]bool{}
-	for _, path := range []string{"/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/observability/logs", "/observability/logs/errors", "/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys", "/session", "/capabilities", "/api-keys", "/storage", "/credentials", "/credentials/models", "/routing/model-definitions/:channel", "/routing/credentials", "/telemetry/health", "/telemetry/schema", "/analytics/health", "/analytics/summary", "/analytics/timeseries", "/analytics/dimensions", "/analytics/events", "/analytics/events/:attempt_id", "/analytics/attempts/:attempt_id", "/analytics/pricing", "/analytics/pricing/catalog-providers", "/analytics/providers", "/analytics/quotas", "/analytics/quota-history", "/analytics/keys", "/analytics/leaderboard", "/analytics/query", "/plugins/:id/quota"} {
+	for _, path := range []string{"/observability/requests/in-flight", "/live-requests", "/live-requests/stream", "/overview", "/server/latest-version", "/server/server-id", "/observability/logs", "/observability/logs/errors", "/observability/logs/errors/:name", "/observability/logs/requests/:id", "/observability/usage/api-keys", "/session", "/capabilities", "/api-keys", "/storage", "/credentials", "/credentials/models", "/routing/model-definitions/:channel", "/routing/credentials", "/telemetry/health", "/telemetry/schema", "/analytics/health", "/analytics/summary", "/analytics/timeseries", "/analytics/dimensions", "/analytics/events", "/analytics/events/:attempt_id", "/analytics/attempts/:attempt_id", "/analytics/pricing", "/analytics/pricing/catalog-providers", "/analytics/providers", "/analytics/quotas", "/analytics/quota-history", "/analytics/keys", "/analytics/leaderboard", "/analytics/query", "/plugins/:id/quota"} {
 		safeGET["/v8/management"+path] = true
 	}
 	safePOST := map[string]bool{}
@@ -60,6 +60,15 @@ func TestManagementScopedKeysOnlyStartupAndRouteSecurity(t *testing.T) {
 	}
 	if denied < 100 {
 		t.Fatalf("too few registered mutation/secret routes covered: %d", denied)
+	}
+	identity := httptest.NewRequest("GET", "/v8/management/server/server-id", nil)
+	identity.RemoteAddr = "127.0.0.1:1234"
+	identity.Header.Set("Authorization", "Bearer viewer-secret")
+	idResponse := httptest.NewRecorder()
+	s.engine.ServeHTTP(idResponse, identity)
+	if idResponse.Code != http.StatusOK || idResponse.Header().Get(testServerIDHeader) != testServerID ||
+		idResponse.Body.String() != `{"server-id":"`+testServerID+`"}` {
+		t.Fatalf("read-only server ID: %d %s", idResponse.Code, idResponse.Body)
 	}
 	readLive := httptest.NewRequest("GET", "/v8/management/live-requests", nil)
 	readLive.RemoteAddr = "127.0.0.1:1234"

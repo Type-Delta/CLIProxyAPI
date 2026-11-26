@@ -1,7 +1,7 @@
 package config
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +76,7 @@ func TestManagementKeysValidationFailsClosed(t *testing.T) {
 		if _, err := ParseConfigBytes(raw); err == nil {
 			t.Fatalf("accepted %s", fields)
 		}
-		if _, err := prepareConfigForUpload(raw); err == nil {
+		if _, err := PrepareConfigBytesForUploadWithOptional(raw, false); err == nil {
 			t.Fatalf("upload accepted %s", fields)
 		}
 	}

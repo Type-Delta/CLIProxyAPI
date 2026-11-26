@@ -72,6 +72,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
 	doc := ojson.NewDoc(body)
+	if shouldPreserveFullCodexOpenAIInclude(ctx, auth, baseURL, opts.Headers) {
+		originalTranslated = helps.PreserveCodexOpenAIResponsesInclude(originalTranslated, originalPayload, from)
+		helps.PreserveCodexOpenAIResponsesIncludeDoc(doc, req.Payload, from)
+	}
 	normalizeCodexOutputBudgetDoc(doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
@@ -123,10 +127,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex executor", doc, isCompat, targetModel, baseURL)
 
+	sessionInstructions, errSession := helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, nil, nil, codexCompactionSummaryFromContext(ctx))
+	if errSession != nil {
+		return nil, errSession
+	}
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, upstreamBody, err := e.cacheHelperDoc(ctx, from, url, req, doc, auth, opts.Headers)
 	if err != nil {
 		return nil, err
+	}
+	if errFinal := sessionInstructions.CheckFinal(upstreamBody); errFinal != nil {
+		return nil, errFinal
 	}
 	body = upstreamBody
 	upstreamModel := strings.TrimSpace(doc.Get("model").String())
@@ -160,7 +171,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			bootstrapStart = nowCodexBootstrap()
 		}
 	}
-	httpResp, err := e.doCodexRequest(httpClient, auth, httpReq, upstreamBody, prepareHeaders, responseReady)
+	httpResp, err := e.doCodexRequest(httpClient, auth, httpReq, upstreamBody, prepareHeaders, responseReady, sessionInstructions)
 	if err != nil {
 		return nil, err
 	}
