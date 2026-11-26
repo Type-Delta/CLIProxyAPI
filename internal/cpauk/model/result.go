@@ -453,6 +453,7 @@ type ModelLeaderboardRow struct {
 	Rank           int      `json:"rank"`
 	Model          string   `json:"model"`
 	Value          float64  `json:"value"`
+	KeyID          *string  `json:"key_id,omitempty"`
 	Providers      *int64   `json:"providers,omitempty"`
 	Attempts       *int64   `json:"attempts,omitempty"`
 	Failed         *int64   `json:"failed,omitempty"`

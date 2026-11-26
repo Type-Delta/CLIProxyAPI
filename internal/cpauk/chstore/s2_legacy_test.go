@@ -356,7 +356,7 @@ func (s *Store) s2LegacyModelLeaderboard(ctx context.Context, query model.Query)
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return model.ModelLeaderboard{}, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
-	raw, err := s.s2LegacyRawSelection(ctx, query, "model", "provider", "succeeded", "session_digest", "output_tokens", "reasoning_tokens", "accounting_schema", "output_timing", "outcome")
+	raw, err := s.s2LegacyRawSelection(ctx, query, "model", "provider", "succeeded", "session_digest", "key_id", "latency_ms", "output_tokens", "reasoning_tokens", "accounting_schema", "output_timing", "outcome")
 	if err != nil {
 		return model.ModelLeaderboard{}, err
 	}
@@ -369,12 +369,31 @@ func (s *Store) s2LegacyModelLeaderboard(ctx context.Context, query model.Query)
  arraySort(groupArrayIf(generated,eligible AND accounting_schema!='raw-fallback-v1' AND generated>0)) AS talkative,
  sumIf(reasoning_tokens,eligible AND accounting_schema!='raw-fallback-v1' AND generated>0) AS reasoning,
  sumIf(generated,eligible AND accounting_schema!='raw-fallback-v1' AND generated>0) AS generated_total FROM evidence GROUP BY model),
+ session_keys AS (
+ SELECT model,assumeNotNull(session_digest) AS session_digest,key_id,sum(latency_ms) AS key_latency
+ FROM evidence WHERE session_digest IS NOT NULL AND session_digest!=''
+ GROUP BY model,session_digest,key_id),
+ session_totals AS (
+ SELECT model,assumeNotNull(session_digest) AS session_digest,sum(latency_ms) AS latency,toInt64(count()) AS samples
+ FROM evidence WHERE session_digest IS NOT NULL AND session_digest!=''
+ GROUP BY model,session_digest),
+ marathon AS (
+ SELECT totals.model,
+ tupleElement(arrayElement(arraySort(x -> tuple(-tupleElement(x,1),tupleElement(x,2)),groupArray((totals.latency,totals.session_digest,totals.samples,keys.key_id))),1),1) AS latency,
+ tupleElement(arrayElement(arraySort(x -> tuple(-tupleElement(x,1),tupleElement(x,2)),groupArray((totals.latency,totals.session_digest,totals.samples,keys.key_id))),1),3) AS samples,
+ tupleElement(arrayElement(arraySort(x -> tuple(-tupleElement(x,1),tupleElement(x,2)),groupArray((totals.latency,totals.session_digest,totals.samples,keys.key_id))),1),4) AS key_id,
+ toUInt8(1) AS has_marathon
+ FROM session_totals AS totals
+ INNER JOIN (SELECT model,session_digest,argMin(key_id,tuple(-key_latency,key_id)) AS key_id FROM session_keys GROUP BY model,session_digest) AS keys
+ ON totals.model=keys.model AND totals.session_digest=keys.session_digest
+ GROUP BY totals.model),
  awards AS (
- SELECT 'most_used' AS metric,model,toFloat64(sessions) AS value,sessions AS tie,providers,CAST(NULL AS Nullable(Int64)) AS attempts,CAST(NULL AS Nullable(Int64)) AS failed,CAST(NULL AS Nullable(Int64)) AS samples,CAST(NULL AS Nullable(Float64)) AS share FROM stats WHERE sessions>0
- UNION ALL SELECT 'most_reliable',model,toFloat64(attempts-failed)/attempts,attempts,NULL,attempts,failed,NULL,NULL FROM stats WHERE attempts>=200
- UNION ALL SELECT 'speed',model,arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70))),toInt64(length(speeds)),NULL,attempts-failed,NULL,toInt64(length(speeds)),NULL FROM stats WHERE length(speeds)>0 AND arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70)))>=80
- UNION ALL SELECT 'most_talkative',model,toFloat64(arrayElement(talkative,toUInt64(ceil(length(talkative)*0.95)))),toInt64(length(talkative)),NULL,NULL,NULL,toInt64(length(talkative)),least(1.,toFloat64(reasoning)/generated_total) FROM stats WHERE length(talkative)>0
- ) SELECT metric,model,value,providers,attempts,failed,samples,share FROM awards ORDER BY metric,value DESC,tie DESC,model LIMIT 6 BY metric`
+ SELECT 'most_used' AS metric,model,toFloat64(sessions) AS value,sessions AS tie,providers,CAST(NULL AS Nullable(Int64)) AS attempts,CAST(NULL AS Nullable(Int64)) AS failed,CAST(NULL AS Nullable(Int64)) AS samples,CAST(NULL AS Nullable(Float64)) AS share,CAST(NULL AS Nullable(String)) AS key_id FROM stats WHERE sessions>0
+ UNION ALL SELECT 'most_reliable',model,toFloat64(attempts-failed)/attempts,attempts,NULL,attempts,failed,NULL,NULL,CAST(NULL AS Nullable(String)) FROM stats WHERE attempts>=200
+ UNION ALL SELECT 'speed',model,arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70))),toInt64(length(speeds)),NULL,attempts-failed,NULL,toInt64(length(speeds)),NULL,CAST(NULL AS Nullable(String)) FROM stats WHERE length(speeds)>0 AND arrayElement(speeds,toUInt64(ceil(length(speeds)*0.70)))>=80
+ UNION ALL SELECT 'most_talkative',model,toFloat64(arrayElement(talkative,toUInt64(ceil(length(talkative)*0.95)))),toInt64(length(talkative)),NULL,NULL,NULL,toInt64(length(talkative)),least(1.,toFloat64(reasoning)/generated_total),CAST(NULL AS Nullable(String)) FROM stats WHERE length(talkative)>0
+ UNION ALL SELECT 'marathon',model,toFloat64(latency),samples,NULL,NULL,NULL,samples,CAST(NULL AS Nullable(Float64)),key_id FROM marathon
+ ) SELECT metric,model,value,providers,attempts,failed,samples,share,key_id FROM awards ORDER BY metric,value DESC,tie DESC,model LIMIT 6 BY metric`
 	rows, err := s.db.Conn().Query(ctx, statement, raw.Args...)
 	if err != nil {
 		return model.ModelLeaderboard{}, fmt.Errorf("query model leaderboard: %w", err)
@@ -382,14 +401,14 @@ func (s *Store) s2LegacyModelLeaderboard(ctx context.Context, query model.Query)
 	defer func() { _ = rows.Close() }()
 	result := model.ModelLeaderboard{Start: query.Start, End: query.End, Awards: []model.ModelLeaderboardAward{}}
 	indices := map[string]int{}
-	for _, metric := range []string{"most_used", "most_reliable", "speed", "most_talkative"} {
+	for _, metric := range []string{"most_used", "most_reliable", "speed", "most_talkative", "marathon"} {
 		indices[metric] = len(result.Awards)
 		result.Awards = append(result.Awards, model.ModelLeaderboardAward{Metric: metric, Rows: []model.ModelLeaderboardRow{}})
 	}
 	for rows.Next() {
 		var metric string
 		var row model.ModelLeaderboardRow
-		if err := rows.Scan(&metric, &row.Model, &row.Value, &row.Providers, &row.Attempts, &row.Failed, &row.Samples, &row.ReasoningShare); err != nil {
+		if err := rows.Scan(&metric, &row.Model, &row.Value, &row.Providers, &row.Attempts, &row.Failed, &row.Samples, &row.ReasoningShare, &row.KeyID); err != nil {
 			return model.ModelLeaderboard{}, err
 		}
 		award := &result.Awards[indices[metric]]

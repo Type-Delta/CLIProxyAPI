@@ -111,6 +111,16 @@ Keep full key IDs and credential IDs in POST bodies, never URL parameters. For c
 | `POST /v8/management/analytics/query` | Run a structured analytics query | JSON common query; operations `summary`, `timeseries`, `dimensions`, `events`, `leaderboard`, `activity`, `analysis`, `model_cost_series`, `model_leaderboard` |
 | `GET /v8/management/analytics/query` | Conditionally read structured analytics | Header `X-Analytics-Query`; optional `If-None-Match`; no URL params |
 
+The v2 `model_leaderboard` operation returns awards in order: `most_used`,
+`most_reliable`, `speed`, `most_talkative`, and `marathon`. Marathon ranks each
+model's longest session by the sum of its event latency in milliseconds, including
+all outcomes. Its rows include the event count as `samples` and the `key_id` with
+the largest latency sum in that session. Equal key sums use the lexically smallest
+key ID; equal session sums for a model use the lexically smallest session digest.
+The response does not expose session identifiers. Marathon contains at most six
+rows, ranked by value descending, then sample count descending, then model name
+ascending.
+
 ## Analytics maintenance and sharing
 
 | Method and path | Purpose | Key parameters |

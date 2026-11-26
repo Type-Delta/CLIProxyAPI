@@ -57,17 +57,17 @@ func c2r2AwardRows(t *testing.T, result model.ModelLeaderboard, metric string) [
 	return nil
 }
 
-func TestModelLeaderboardEmptyStoreAlwaysHasFourEmptyAwards(t *testing.T) {
+func TestModelLeaderboardEmptyStoreAlwaysHasFiveEmptyAwards(t *testing.T) {
 	t.Parallel()
 	database := c2r2NewLeaderboardStore(t)
 	result, err := database.ModelLeaderboard(context.Background(), c2r2LeaderboardQuery())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Awards) != 4 {
+	if len(result.Awards) != 5 {
 		t.Fatalf("awards = %d", len(result.Awards))
 	}
-	wantMetrics := []string{"most_used", "most_reliable", "speed", "most_talkative"}
+	wantMetrics := []string{"most_used", "most_reliable", "speed", "most_talkative", "marathon"}
 	for index, award := range result.Awards {
 		if award.Metric != wantMetrics[index] || award.Rows == nil || len(award.Rows) != 0 {
 			t.Fatalf("award %d = %+v", index, award)
@@ -77,7 +77,7 @@ func TestModelLeaderboardEmptyStoreAlwaysHasFourEmptyAwards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"start":"2026-10-01T00:00:00Z","end":"2026-10-08T00:00:00Z","awards":[{"metric":"most_used","rows":[]},{"metric":"most_reliable","rows":[]},{"metric":"speed","rows":[]},{"metric":"most_talkative","rows":[]}]}`
+	want := `{"start":"2026-10-01T00:00:00Z","end":"2026-10-08T00:00:00Z","awards":[{"metric":"most_used","rows":[]},{"metric":"most_reliable","rows":[]},{"metric":"speed","rows":[]},{"metric":"most_talkative","rows":[]},{"metric":"marathon","rows":[]}]}`
 	if string(encoded) != want {
 		t.Fatalf("empty leaderboard JSON = %s", encoded)
 	}
@@ -265,6 +265,48 @@ func TestModelLeaderboardExcludesRawOutputFallbackFromTalkative(t *testing.T) {
 	}
 	if rows := c2r2AwardRows(t, result, "speed"); len(rows) != 0 {
 		t.Fatalf("raw fallback speed = %+v", rows)
+	}
+}
+
+func TestModelLeaderboardMarathonSelectsLongestSessionAndKey(t *testing.T) {
+	t.Parallel()
+	database := c2r2NewLeaderboardStore(t)
+	alphaFirst := c2r2LeaderboardEvent(1, "alpha", "provider-a", true)
+	alphaFirst.SessionDigest, alphaFirst.KeyID, alphaFirst.LatencyMS = c2r2Session("a"), strings.Repeat("f", 64), 100
+	alphaSecond := c2r2LeaderboardEvent(2, "alpha", "provider-a", false)
+	alphaSecond.SessionDigest, alphaSecond.KeyID, alphaSecond.LatencyMS, alphaSecond.Outcome = c2r2Session("a"), strings.Repeat("a", 64), 100, "failed"
+	alphaOther := c2r2LeaderboardEvent(3, "alpha", "provider-a", true)
+	alphaOther.SessionDigest, alphaOther.KeyID, alphaOther.LatencyMS = c2r2Session("b"), strings.Repeat("b", 64), 200
+	beta := c2r2LeaderboardEvent(4, "beta", "provider-a", true)
+	beta.SessionDigest, beta.KeyID, beta.LatencyMS = c2r2Session("c"), strings.Repeat("c", 64), 200
+	noSession := c2r2LeaderboardEvent(5, "no-session", "provider-a", true)
+	noSession.LatencyMS = 999
+	gammaFirst := c2r2LeaderboardEvent(6, "gamma", "provider-a", true)
+	gammaFirst.SessionDigest, gammaFirst.KeyID, gammaFirst.LatencyMS = c2r2Session("d"), strings.Repeat("a", 64), 10
+	gammaSecond := c2r2LeaderboardEvent(7, "gamma", "provider-a", false)
+	gammaSecond.SessionDigest, gammaSecond.KeyID, gammaSecond.LatencyMS = c2r2Session("d"), strings.Repeat("f", 64), 140
+	c2r2WriteLeaderboardEvents(t, database, []model.Event{alphaFirst, alphaSecond, alphaOther, beta, noSession, gammaFirst, gammaSecond})
+
+	result, err := database.ModelLeaderboard(context.Background(), c2r2LeaderboardQuery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := c2r2AwardRows(t, result, "marathon")
+	if len(rows) != 3 || rows[0].Model != "alpha" || rows[1].Model != "beta" || rows[2].Model != "gamma" {
+		t.Fatalf("marathon rows = %+v", rows)
+	}
+	if rows[0].Value != 200 || rows[0].Samples == nil || *rows[0].Samples != 2 || rows[0].KeyID == nil || *rows[0].KeyID != strings.Repeat("a", 64) {
+		t.Fatalf("alpha marathon row = %+v", rows[0])
+	}
+	if rows[1].Value != 200 || rows[1].Samples == nil || *rows[1].Samples != 1 || rows[1].KeyID == nil || *rows[1].KeyID != strings.Repeat("c", 64) {
+		t.Fatalf("beta marathon row = %+v", rows[1])
+	}
+	if rows[2].Value != 150 || rows[2].Samples == nil || *rows[2].Samples != 2 || rows[2].KeyID == nil || *rows[2].KeyID != strings.Repeat("f", 64) {
+		t.Fatalf("gamma marathon row = %+v", rows[2])
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), "session_digest") || strings.Contains(string(encoded), "session_id") {
+		t.Fatalf("marathon response leaked session identity: %s, %v", encoded, err)
 	}
 }
 

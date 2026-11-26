@@ -158,6 +158,7 @@ func TestPostAnalyticsModelLeaderboardDispatches(t *testing.T) {
 		{Metric: "most_reliable", Rows: []model.ModelLeaderboardRow{}},
 		{Metric: "speed", Rows: []model.ModelLeaderboardRow{}},
 		{Metric: "most_talkative", Rows: []model.ModelLeaderboardRow{}},
+		{Metric: "marathon", Rows: []model.ModelLeaderboardRow{}},
 	}}}
 	handler := &Handler{analytics: &analyticsHandlerService{reader: reader, state: model.StateReady}}
 	body := `{"schema_version":2,"operation":"model_leaderboard","range":{"preset":"last_n_days","n":7},"time_zone":"UTC"}`
@@ -175,7 +176,7 @@ func TestPostAnalyticsModelLeaderboardDispatches(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Awards) != 4 || response.Start.IsZero() || response.End.IsZero() {
+	if len(response.Awards) != 5 || response.Start.IsZero() || response.End.IsZero() {
 		t.Fatalf("leaderboard response = %+v", response)
 	}
 }

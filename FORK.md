@@ -1840,21 +1840,25 @@ the same key.
 
 ### DL049 — Model leaderboard and privacy-preserving session digests
 
-CPAUK accepts the v2 `model_leaderboard` analytics operation and returns four fixed awards in
-one response: distinct sessions used, request reliability, P70 qualified arrival throughput, and P95
-generated tokens per successful attempt. Every award is global across keys, providers, and
-credentials, contains at most six contiguous ranks, and returns an empty row array when no model
-qualifies. Reliability requires at least 200 upstream attempts; speed requires a P70 of at least
-80 tokens per second and includes only successful attempts with qualified arrival evidence.
+CPAUK accepts the v2 `model_leaderboard` analytics operation and returns five fixed awards in
+one response: distinct sessions used, request reliability, P70 qualified arrival throughput, P95
+generated tokens per successful attempt, and the longest per-session processing time (marathon).
+Every award is global across keys, providers, and credentials, contains at most six contiguous
+ranks, and returns an empty row array when no model qualifies. Reliability requires at least 200
+upstream attempts; speed requires a P70 of at least 80 tokens per second and includes only
+successful attempts with qualified arrival evidence.
 
-CPAMC renders these four fixed award headers and descriptions before the ranking query finishes,
+Marathon groups events by model and non-empty session digest, sums all event latency including
+failures, and reports the session key with the largest latency share, breaking ties lexically.
+Equal session sums select the lexically smallest digest, which is not returned in the response.
+
+CPAMC renders the five fixed award headers and descriptions before the ranking query finishes,
 with neutral skeletons replacing the ranking decorations until data arrives, and reserved podium
 and runners-up space for empty or partial results. The range chip reserves its localized dates,
 pending mascot images show the family lab logo. Loaded mascot images use block layout to
 fit the same inner frame without inline baseline overflow; rank medals remain unclipped.
 Speed Maniac states its P70 qualification
 floor of 80 tok/s in every supported locale.
-The existing four-award contract supplies the card order and count without an additional API.
 The shared skeleton uses distinct theme-derived gradient colors, including White and Light
 themes whose hover and tertiary backgrounds are identical, and respects reduced-motion settings.
 
@@ -1869,15 +1873,17 @@ the event is stamped `raw-fallback-v1`; those attempts are excluded from most_ta
 the raw output's relationship to reasoning is provider-dependent. The same events still count
 toward the other awards.
 
-**Implementation evidence:** `internal/cpauk/{collector,model,store}`, `internal/cpauk/service.go`,
-and `internal/api/handlers/management/analytics.go`.
+**Implementation evidence:** `internal/cpauk/{collector,model,store,chstore}`,
+`internal/cpauk/service.go`, and `internal/api/handlers/management/analytics.go`.
 
 **Recorded validation:** On 2026-11-13, the analytics/storage/config audit passes all 18 tested
 packages against real isolated ClickHouse databases. Sanitizer and leaderboard regressions cover
 serialized display IDs and digests, qualification floors, distinct provider sessions, six-row ranks,
 inclusive reasoning and raw-fallback exclusions. Management handlers and focused API checks pass.
+On 2026-11-26, SQLite and real ClickHouse marathon regressions cover session and key selection,
+failed attempts, ranking ties, and session identity exclusion.
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-26
 
 ### DL050 — Management panel bundle is build output; mascots ship as separate assets
 

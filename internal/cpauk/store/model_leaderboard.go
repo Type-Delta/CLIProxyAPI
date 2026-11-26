@@ -17,6 +17,7 @@ const modelLeaderboardSpeedFloor = 80.0
 
 type modelLeaderboardStats struct {
 	sessions       map[string]struct{}
+	marathon       map[string]*modelLeaderboardSession
 	providers      map[string]struct{}
 	attempts       int64
 	failed         int64
@@ -25,12 +26,18 @@ type modelLeaderboardStats struct {
 	reasoningTotal int64
 }
 
+type modelLeaderboardSession struct {
+	latency    int64
+	samples    int64
+	keyLatency map[string]int64
+}
+
 type modelLeaderboardCandidate struct {
 	row model.ModelLeaderboardRow
 	tie int64
 }
 
-// ModelLeaderboard derives all four awards from one pass over raw events in
+// ModelLeaderboard derives all five awards from one pass over raw events in
 // the requested window. Historic events without a session digest still count
 // toward reliability, speed, and talkative metrics.
 func (s *SQLiteStore) ModelLeaderboard(ctx context.Context, query model.Query) (model.ModelLeaderboard, error) {
@@ -49,7 +56,7 @@ func (s *SQLiteStore) ModelLeaderboard(ctx context.Context, query model.Query) (
 	if !s.retentionCutoff.IsZero() && query.Start.Before(s.retentionCutoff) {
 		return model.ModelLeaderboard{}, RetainedRangeError{Cutoff: s.retentionCutoff}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT model,provider,succeeded,session_digest,
+	rows, err := s.db.QueryContext(ctx, `SELECT model,provider,succeeded,session_digest,key_id,latency_ms,
 output_tokens,reasoning_tokens,accounting_schema,output_timing,outcome FROM events `+where+` AND model <> ''`, arguments...)
 	if err != nil {
 		return model.ModelLeaderboard{}, fmt.Errorf("query model leaderboard events: %w", err)
@@ -60,14 +67,16 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing,outcome FROM even
 		var modelName, provider, accountingSchema string
 		var succeeded bool
 		var sessionDigest, outputTiming, outcome sql.NullString
+		var keyID string
+		var latency int64
 		var output, reasoning int64
-		if err := rows.Scan(&modelName, &provider, &succeeded, &sessionDigest, &output, &reasoning,
+		if err := rows.Scan(&modelName, &provider, &succeeded, &sessionDigest, &keyID, &latency, &output, &reasoning,
 			&accountingSchema, &outputTiming, &outcome); err != nil {
 			return model.ModelLeaderboard{}, fmt.Errorf("scan model leaderboard event: %w", err)
 		}
 		item := stats[modelName]
 		if item == nil {
-			item = &modelLeaderboardStats{sessions: map[string]struct{}{}, providers: map[string]struct{}{}}
+			item = &modelLeaderboardStats{sessions: map[string]struct{}{}, marathon: map[string]*modelLeaderboardSession{}, providers: map[string]struct{}{}}
 			stats[modelName] = item
 		}
 		item.attempts++
@@ -77,6 +86,14 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing,outcome FROM even
 		item.providers[provider] = struct{}{}
 		if sessionDigest.Valid && sessionDigest.String != "" {
 			item.sessions[sessionDigest.String] = struct{}{}
+			session := item.marathon[sessionDigest.String]
+			if session == nil {
+				session = &modelLeaderboardSession{keyLatency: map[string]int64{}}
+				item.marathon[sessionDigest.String] = session
+			}
+			session.latency += latency
+			session.samples++
+			session.keyLatency[keyID] += latency
 		}
 		if succeeded && outcome.String != "canceled" && outputTiming.Valid {
 			var timing model.OutputTiming
@@ -106,6 +123,7 @@ output_tokens,reasoning_tokens,accounting_schema,output_timing,outcome FROM even
 			modelAwardReliable(stats),
 			modelAwardSpeed(stats),
 			modelAwardTalkative(stats),
+			modelAwardMarathon(stats),
 		},
 	}, nil
 }
@@ -186,6 +204,40 @@ func modelAwardTalkative(stats map[string]*modelLeaderboardStats) model.ModelLea
 		}})
 	}
 	return finishModelAward("most_talkative", candidates)
+}
+
+func modelAwardMarathon(stats map[string]*modelLeaderboardStats) model.ModelLeaderboardAward {
+	candidates := make([]modelLeaderboardCandidate, 0, len(stats))
+	for name, item := range stats {
+		var bestDigest string
+		var bestSession *modelLeaderboardSession
+		for digest, session := range item.marathon {
+			if bestSession == nil || session.latency > bestSession.latency ||
+				(session.latency == bestSession.latency && digest < bestDigest) {
+				bestDigest, bestSession = digest, session
+			}
+		}
+		if bestSession == nil {
+			continue
+		}
+		keyID := marathonSessionKey(bestSession)
+		candidates = append(candidates, modelLeaderboardCandidate{tie: bestSession.samples, row: model.ModelLeaderboardRow{
+			Model: name, Value: float64(bestSession.latency), Samples: &bestSession.samples, KeyID: &keyID,
+		}})
+	}
+	return finishModelAward("marathon", candidates)
+}
+
+func marathonSessionKey(session *modelLeaderboardSession) string {
+	var selected string
+	var selectedLatency int64
+	selectedSet := false
+	for keyID, latency := range session.keyLatency {
+		if !selectedSet || latency > selectedLatency || (latency == selectedLatency && keyID < selected) {
+			selected, selectedLatency, selectedSet = keyID, latency, true
+		}
+	}
+	return selected
 }
 
 func finishModelAward(metric string, candidates []modelLeaderboardCandidate) model.ModelLeaderboardAward {
