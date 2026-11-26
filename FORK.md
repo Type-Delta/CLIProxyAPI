@@ -3465,6 +3465,31 @@ Project-specific checks every upstream sync runs, in addition to the full test s
 
 This is an append-only decision record, newest first, with one entry per upstream sync. It explains past integrations but does not by itself establish a current divergence; use the Divergence Log for that. Sync with upstream only when the user explicitly asks. Do not edit past entries.
 
+### 2026-11-26 - Merge upstream `main` at `38fe92950`
+
+Target: `upstream/main` at `38fe929502f19f7cce03c69c19aacddf30f1ef5e`.
+Parents: fork `e4f38fa2907a167826eeb192e7ce5a5e2793a8d8` and upstream `38fe929502f19f7cce03c69c19aacddf30f1ef5e`. Merged 271 upstream commits since the previous `base`, without rebasing or squashing. The panel pin advances from CPAMC `af5255f43723f27c783def1c857c20726cf4dcf5` to `ad31e018d1367309ca56fc1982f2e18deb6a1ea6`, its two-parent sync through upstream `3866a16878b04c19627ef0db06a33f5cd79878cf`, 40 incoming commits.
+
+User decisions: follow upstream and drop GPT-6.1 Terra from the built-in catalog; deployments that still use it need an operator-defined route. Adopt canonical `devin/<id>` IDs without a bare-ID alias. Adopt upstream `server.server-id` generation and persistence with the locked config transactions, wired into scoped-key hashing, upload checks, structured-key revisioning and YAML diagnostics; read-only scoped keys may read the server ID. Adopt native Copilot; the panel adopts upstream's provider cards with Copilot.
+
+Other decisions: Antigravity grouped effort uses upstream's credential-scoped catalog and request preparation, while the fork keeps public routes, split and combined wire IDs, exclusions, native endpoints and wire-model accounting (DL079). The Antigravity capture guard keeps the captured CLI identity on guarded local direct inference and checks the final outbound request; other paths use upstream defaults, including the idle-pool option. Terminal TOS state and the default-off pool pause remain. DL081 local Codex recovery stays, with upstream's explicit stops, cancellation, continuation-proof errors and credential-scoped stops taking precedence; the reserve-aware cooldown and 15-second overload fallback remain. DL067's line correction composes with upstream's document-numbered parser message. DL017 keeps models listed during temporary 429/5xx while routing uses upstream deadlines. Adopt upstream native Claude output caps, Vertex cap removal and Responses `include` handling before the single final payload application. Home scheduler continuity stays gated on Home protocol 1 or later. No divergence was retired and no CPAUK migration arrived.
+
+Integration repairs: whole-document config saves compare client keys against the same on-disk snapshot used for the file CAS, so a stale save cannot restore an older key cap. Generic config routes treat `If-Match` as the file validator and read the key revision from `config_revision`. An active credential-wide terminal error hides sibling models even when an older per-model 503 exists. Antigravity reads credential capabilities using the resolved default effort. An in-band Antigravity stream failure queues its usage before the error reaches the conductor. The optional post-refresh credits read uses lifecycle cancellation instead of upstream's response deadline. Scoped and structured key handlers use file snapshots, and config uploads validate the whole YAML stream. Nested example modules keep local v8 replacements.
+
+Validation:
+
+- Two independent reviews covered all 81 divergence entries and the AGENTS.md rules over the merged files; their six merge-introduced findings are fixed with regressions, including 20/20 repeats of the Antigravity in-band test.
+- In a clean clone with the rebuilt canonical bundle, `go test -p 2 ./... -count=1` passes 134 packages including `TestBundledArtifactIsValid`. The two failures are the pre-merge `TestReferenceUpdateAndRollback` under umask 0002 and the `TestResponsesLateInterruptDoesNotPoisonNextCreate` timeout; both reproduce on `e4f38fa29`. `go vet ./...` and the server build pass.
+- Paid live checks on a plain-mode merged binary pass Chat Completions and Claude Messages, buffered and streaming, through Claude OAuth, Codex OAuth and the Z.ai OpenAI-compatible provider, plus Codex Responses. The DL026 metadata-only Lite request receives the injected image tool and returns a PNG; the explicit header-Lite control sends no image tool. Plain mode writes file request logs and serves no telemetry routes. The server ID route returns the UUID persisted in config.yaml.
+- A ClickHouse-mode server against a disposable ClickHouse applies its 10 migrations, restarts as a no-op, imports local logs, and captures a live inference into analytics, request capture and agent SQL.
+- The runtime and web images build, and the disposable web Compose stack serves the panel, proxy and server ID route. A config API round trip preserves client-key labels, limits and comments. Browser QA of the panel is recorded in the CPAMC Merge History.
+- Temporary servers, containers, images, clones and credential copies were removed after verification.
+
+Limits:
+
+- No populated analytics database was migrated; no new migration arrived. Kiro accounts are disabled, so Kiro's shared translation is covered by fixtures only. No CLIProxyAPIHome instance was available to certify the new scheduler-continuity and executor-plugin fields. Firefox, WebKit and native macOS/Windows were not checked.
+- Pre-existing issues left for separate work: a generic config PATCH can turn a structured key into a bare string without a key revision; some upstream translator paths use raw `ojson.SetRawBytes`; shared replay helpers sit in `internal/runtime/executor/`; three files still import `encoding/json`; Devin's local token estimate ignores payload rules.
+
 ### 2026-11-18 - Merge upstream `main` at `a5e8f69e5`
 
 Target: `upstream/main` at `a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`.
