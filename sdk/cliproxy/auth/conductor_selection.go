@@ -423,7 +423,11 @@ func (m *Manager) prepareRuleAffinityRecovery(ctx context.Context, provider, mod
 		return ctx, nil, err
 	}
 	available = narrowRoutingPool(ctx, available)
-	info := quotaRecoveryFallbackInfoForAuths(highestPriorityAuths(available), provider, model)
+	recoveryPool := available
+	if appliedRoutingPool(ctx) == nil {
+		recoveryPool = highestPriorityAuths(available)
+	}
+	info := quotaRecoveryFallbackInfoForAuths(recoveryPool, provider, model)
 	info.refreshTried = preparation.refreshTried
 	info.refreshError = preparation.refreshError
 	if info.missing > 0 {
@@ -1747,6 +1751,14 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	return selected, true, nil
 }
 
+func (m *Manager) pickDelegatedRulePool(ctx context.Context, strategy schedulerStrategy, provider, model string, opts cliproxyexecutor.Options, eligible []*Auth) (*Auth, error) {
+	var selector Selector = &FillFirstSelector{}
+	if strategy == schedulerStrategyRoundRobin {
+		selector = &m.scheduler.ruleRoundRobin
+	}
+	return pickRoutingStrategy(selectorContextForAvailableAuths(ctx, selector, model), selector, provider, model, opts, eligible)
+}
+
 func clearSchedulerSelectionID(meta map[string]any) {
 	if len(meta) == 0 {
 		return
@@ -1867,6 +1879,9 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	if pool, _ := ctx.Value(routingPoolKey{}).(*routingPool); pool != nil {
 		if affinity, ok := m.Selector().(*SessionAffinitySelector); ok {
 			delegate := affinityDelegate(func(delegateCtx context.Context, eligible []*Auth) (*Auth, error) {
+				if appliedRoutingPool(delegateCtx) != nil {
+					return m.pickDelegatedRulePool(delegateCtx, strategy, providerKey, model, opts, eligible)
+				}
 				allowed := make(map[string]struct{}, len(eligible))
 				for _, auth := range eligible {
 					allowed[auth.ID] = struct{}{}
@@ -1902,7 +1917,12 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 			ruleCandidates = positiveWeightAuths(ruleCandidates)
 		}
 		narrowed := narrowRoutingPool(ctx, ruleCandidates)
-		if pool.lastNarrowed || weighted {
+		if pool.lastNarrowed {
+			selected, err := m.pickDelegatedRulePool(ctx, strategy, providerKey, model, opts, narrowed)
+			keepSelectionID = err == nil && selected != nil
+			return selected, true, excluded, err
+		}
+		if weighted {
 			allowed := make(map[string]struct{}, len(narrowed))
 			for _, auth := range narrowed {
 				allowed[auth.ID] = struct{}{}
@@ -3146,7 +3166,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
 				selectorAuths = positiveWeightAuths(selectorAuths)
 			}
-			selectorAuths = highestPriorityAuths(narrowRoutingPool(selectorCtx, selectorAuths))
+			selectorAuths = narrowRoutingPool(selectorCtx, selectorAuths)
 		}
 		if isGSR && gsrInfo.missing > 0 {
 			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
@@ -3169,7 +3189,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if accountingAuths != nil {
 			selectorCtx = context.WithValue(selectorCtx, weightedAccountingPoolKey{}, accountingAuths)
 		}
-		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickRoutingStrategy(selectorCtx, selector, provider, model, opts, selectorAuths)
 		if errPick != nil {
 			if isAuthNotFoundError(errPick) {
 				if errAvailable != nil {
@@ -3796,7 +3816,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
 				selectorAuths = positiveWeightAuths(selectorAuths)
 			}
-			selectorAuths = highestPriorityAuths(narrowRoutingPool(selectorCtx, selectorAuths))
+			selectorAuths = narrowRoutingPool(selectorCtx, selectorAuths)
 		}
 		if isGSR && gsrInfo.missing > 0 {
 			selectorCtx = withQuotaRecoveryFallbackInfo(selectorCtx, gsrInfo)
@@ -3844,7 +3864,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 				selectorCtx = context.WithValue(selectorCtx, weightedTransportProviderKey{}, singleProvider)
 			}
 		}
-		selected, errPick = selector.Pick(selectorCtx, selectionProvider, selectionArgForSelector(selector, model), opts, selectorAuths)
+		selected, errPick = pickRoutingStrategy(selectorCtx, selector, selectionProvider, model, opts, selectorAuths)
 		if errPick != nil {
 			if isAuthNotFoundError(errPick) {
 				if errAvailable != nil {

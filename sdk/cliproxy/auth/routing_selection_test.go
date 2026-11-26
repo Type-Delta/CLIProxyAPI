@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -90,12 +91,14 @@ func TestRoutingPluginDelegatedWeightedUsesNarrowedPool(t *testing.T) {
 				t.Fatal("zero-weight credential passed the rule gate")
 			}
 		}
-		return routing.Decision{Allowed: []string{"target"}}
+		return routing.Decision{Allowed: []string{"high", "target"}}
 	}}
 	ctx := context.WithValue(context.Background(), routingPoolKey{}, pool)
-	selected, handled, _, err := manager.pickViaPluginScheduler(ctx, plugin, "routing-plugin", []string{"routing-plugin"}, "", cliproxyexecutor.Options{}, nil, candidates, candidates)
-	if err != nil || !handled || selected == nil || selected.ID != "target" {
-		t.Fatalf("pick = %v, handled %v, err %v", selected, handled, err)
+	for _, want := range []string{"high", "target", "high"} {
+		selected, handled, _, err := manager.pickViaPluginScheduler(ctx, plugin, "routing-plugin", []string{"routing-plugin"}, "", cliproxyexecutor.Options{}, nil, candidates, candidates)
+		if err != nil || !handled || selected == nil || selected.ID != want {
+			t.Fatalf("pick = %v, handled %v, err %v, want %q", selected, handled, err, want)
+		}
 	}
 }
 
@@ -433,5 +436,69 @@ func TestRoutingTraceAttachedBeforePreparationAndExecution(t *testing.T) {
 	}
 	if executor.prepared == nil || executor.prepared != executor.executed || executor.executed != holder.Last() || executor.executed.Candidates[executor.executed.Pick].ID != "execute-auth" {
 		t.Fatalf("prepared=%p executed=%p holder=%p", executor.prepared, executor.executed, holder.Last())
+	}
+}
+
+func TestAppliedRoutingRuleIgnoresPriorityAndConfiguredWeight(t *testing.T) {
+	for _, kind := range []string{"weighted", "quota recovery"} {
+		t.Run(kind, func(t *testing.T) {
+			for _, affinityOn := range []bool{false, true} {
+				t.Run(fmt.Sprintf("affinity=%t", affinityOn), func(t *testing.T) {
+					const provider, model = "cross-tier-provider", "gpt-cross-tier"
+					var selector Selector = &WeightedRoundRobinSelector{}
+					if kind == "quota recovery" {
+						selector = &GreedySoonestRecoverySelector{}
+					}
+					if affinityOn {
+						affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: selector, TTL: time.Hour})
+						t.Cleanup(affinity.Stop)
+						selector = affinity
+					}
+					m := NewManager(nil, selector, nil)
+					exec := &routingTraceExecutor{schedulerTestExecutor: schedulerTestExecutor{provider: provider}}
+					m.RegisterExecutor(exec)
+					cfg, err := internalconfig.ParseConfigBytes([]byte("routing:\n  rules:\n    - when: { model: { match: 'gpt-*' } }\n      route-to: [cross-high, cross-low]\n"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.SetConfig(cfg)
+					for _, a := range []*Auth{
+						{ID: "cross-high", Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "10", "weight": "1000000"}},
+						{ID: "cross-low", Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "-10", "weight": "2"}},
+						{ID: "cross-outside", Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "20"}},
+					} {
+						a.Quota = QuotaState{NextRecoverAt: time.Now().Add(time.Hour).Truncate(time.Minute)}
+						if _, err := m.Register(WithSkipPersist(context.Background()), a); err != nil {
+							t.Fatal(err)
+						}
+						registry.GetGlobalRegistry().RegisterClient(a.ID, provider, []*registry.ModelInfo{{ID: model}})
+						t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(a.ID) })
+					}
+					for _, want := range []string{"cross-high", "cross-low", "cross-high", "cross-low"} {
+						dry, err := m.DryRunRoute(context.Background(), routing.DryRunRequest{Model: model})
+						if err != nil || !dry.PickPredicted || dry.Pick < 0 || dry.Candidates[dry.Pick].ID != want || len(dry.Tier.Pool) != 2 || !dry.Tier.RulePool {
+							t.Fatalf("dry run want %q, got %+v, err=%v", want, dry, err)
+						}
+						if len(dry.StrategyStep.Weights) != 2 || dry.StrategyStep.Weights[0].Share != 0.5 || dry.StrategyStep.Weights[1].Share != 0.5 {
+							t.Fatalf("dry run weights: %+v", dry.StrategyStep.Weights)
+						}
+						ctx, holder := routing.WithTraceHolder(context.Background())
+						picked, _, _, err := m.pickNextMixed(ctx, []string{provider}, model, cliproxyexecutor.Options{}, nil)
+						live := holder.Last()
+						if err != nil || live == nil || live.Pick < 0 || live.Candidates[live.Pick].ID != want || len(live.Tier.Pool) != 2 || !live.Tier.RulePool {
+							t.Fatalf("live want %q, got %+v, err=%v", want, live, err)
+						}
+						if picked == nil || authPriority(picked) == 0 || authWeight(picked) == 1 {
+							t.Fatalf("selection must return the original credential, got %+v", picked)
+						}
+					}
+					ctx, _ := routing.WithTraceHolder(context.Background())
+					_, err = m.Execute(ctx, []string{provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+					if err != nil || exec.executed == nil || !exec.executed.Tier.RulePool {
+						t.Fatalf("execution trace = %+v, err=%v", exec.executed, err)
+					}
+				})
+			}
+		})
 	}
 }

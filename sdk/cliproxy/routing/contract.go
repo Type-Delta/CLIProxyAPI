@@ -221,10 +221,11 @@ type RuleTrace struct {
 	Status  string `json:"status"`
 }
 
-// TierStep is the strategy input: the highest priority tier of the (possibly narrowed) pool.
+// TierStep is the strategy input after credential priority or custom-rule selection.
 type TierStep struct {
 	Priority int   `json:"priority"`
 	Pool     []int `json:"pool"`
+	RulePool bool  `json:"rule_pool,omitempty"`
 }
 
 // AffinityStep records the session-affinity outcome.

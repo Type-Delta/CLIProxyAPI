@@ -214,16 +214,10 @@ func captureRoutingDecision(ctx context.Context, decision routing.Decision, auth
 		}
 	}
 	c.trace.Rules = step
-	tier := highestPriorityAuths(auths)
-	if len(tier) > 0 {
-		stepTier := &routing.TierStep{Priority: authPriority(tier[0]), Pool: make([]int, 0)}
-		for _, a := range tier {
-			if i, ok := c.indexes[a.ID]; ok {
-				stepTier.Pool = append(stepTier.Pool, i)
-			}
-		}
-		c.trace.Tier = stepTier
+	if decision.Allowed == nil {
+		auths = highestPriorityAuths(auths)
 	}
+	captureRoutingTier(ctx, auths)
 }
 
 // captureRevalidatedGate updates a candidate after a quota refresh; m.mu must be held.
@@ -310,7 +304,10 @@ func captureRoutingTier(ctx context.Context, auths []*Auth) {
 	if len(auths) == 0 {
 		return
 	}
-	tier := &routing.TierStep{Priority: authPriority(auths[0]), Pool: make([]int, 0)}
+	tier := &routing.TierStep{Pool: make([]int, 0), RulePool: appliedRoutingPool(ctx) != nil}
+	if !tier.RulePool {
+		tier.Priority = authPriority(auths[0])
+	}
 	for _, auth := range auths {
 		if i, ok := c.indexes[auth.ID]; ok {
 			tier.Pool = append(tier.Pool, i)
@@ -325,9 +322,12 @@ func captureAffinityRules(ctx context.Context, eligible []*Auth) {
 	if capture == nil {
 		return
 	}
-	if pool, _ := ctx.Value(routingPoolKey{}).(*routingPool); pool == nil {
+	pool, _ := ctx.Value(routingPoolKey{}).(*routingPool)
+	if pool == nil {
 		return
 	}
+	copyPool := *pool
+	ctx = context.WithValue(ctx, routingPoolKey{}, &copyPool)
 	previousTier := capture.trace.Tier
 	narrowRoutingPool(ctx, eligible)
 	capture.trace.Tier = previousTier

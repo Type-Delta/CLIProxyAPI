@@ -61,7 +61,7 @@ All candidate references are zero-based indexes into `trace.candidates`.
 | `trace.error` | `no_eligible` means this simulated request has no eligible route. Inspect candidate gates and affinity to learn why. |
 | `trace.candidates[].gate` | Missing or empty means that candidate passed local eligibility checks. A nonempty value explains exclusion. Passing gates alone does not guarantee selection. |
 | `trace.candidates[].until_ms` | Expected recovery time for a cooldown, quota or reserve gate, as Unix milliseconds; absent or zero means unknown. |
-| `trace.tier.pool` | Candidate indexes in the final eligible priority/transport pool. Useful when the exact pick cannot be predicted. |
+| `trace.tier.pool` | Candidate indexes the strategy can pick from after transport preference. With `trace.tier.rule_pool: true`, the picker uses eligible custom-rule targets across tiers with equal configured weights. |
 | `trace.rules`, `trace.affinity` | Rule and session-binding decisions that can narrow or block routing. |
 | `trace.decided_by` | Layer that determined the selection. `home` means local simulation cannot determine availability. |
 | `warnings` | Draft or saved-rule problems such as unknown credential targets. Review these before drawing a conclusion. |

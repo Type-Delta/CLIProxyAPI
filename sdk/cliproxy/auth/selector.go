@@ -1118,7 +1118,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
-	key := provider + ":" + canonicalModelLookupKey(model)
+	key := ruleStrategyKey(ctx, provider+":"+canonicalModelLookupKey(model))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lastPicked == nil {
@@ -1221,7 +1221,7 @@ func (s *GreedySoonestRecoverySelector) Pick(ctx context.Context, provider, mode
 			return nil, err
 		}
 	}
-	key := strings.ToLower(strings.TrimSpace(provider)) + ":" + canonicalModelKey(model)
+	key := ruleStrategyKey(ctx, strings.ToLower(strings.TrimSpace(provider))+":"+canonicalModelKey(model))
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2154,9 +2154,13 @@ func (s *SessionAffinitySelector) pickFallback(ctx context.Context, provider, mo
 	if delegate, ok := ctx.Value(affinityDelegateKey{}).(affinityDelegate); ok {
 		return delegate(ctx, available)
 	}
-	available = highestPriorityAuths(available)
-	captureRoutingTier(ctx, available)
-	return s.pickWithAffinityReservation(ctx, provider, model, opts, available, nil, reservation)
+	strategyAuths := routingStrategyAuths(ctx, available)
+	captureRoutingTier(ctx, strategyAuths)
+	picked, err := s.pickWithAffinityReservation(ctx, provider, model, opts, strategyAuths, nil, reservation)
+	if picked != nil && appliedRoutingPool(ctx) != nil {
+		picked = pickSchedulerAuthByID(available, picked.ID)
+	}
+	return picked, err
 }
 
 // Pick selects an auth with session affinity when possible.
@@ -2167,7 +2171,7 @@ func (s *SessionAffinitySelector) pickFallback(ctx context.Context, provider, mo
 // An established binding outranks credential priority: a bound credential that is still
 // available is reused even when a higher-priority credential recovers. Credential priority
 // applies to cold bindings, requests without a session, and genuine bound-credential
-// failover, so the fallback selector only ever receives the highest available priority tier.
+// failover unless a custom rule supplies the fallback pool.
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)

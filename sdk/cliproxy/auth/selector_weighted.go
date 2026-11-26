@@ -104,7 +104,7 @@ func (s *WeightedRoundRobinSelector) reserveForRequest(ctx context.Context, prov
 		}
 		pool, errAvailable := getSelectorAvailableAuthsAcrossPriorities(explanationCtx, positiveWeightAuths(auths), provider, model, time.Now())
 		if errAvailable == nil {
-			pool = highestPriorityAuths(narrowRoutingPool(explanationCtx, pool))
+			pool = routingStrategyAuths(explanationCtx, narrowRoutingPool(explanationCtx, pool))
 			pool = preferCodexWebsocketAuths(ctx, transportProvider, pool)
 			transport := ""
 			if cliproxyexecutor.DownstreamWebsocket(ctx) && transportProvider == "codex" && len(pool) > 0 {
@@ -113,7 +113,7 @@ func (s *WeightedRoundRobinSelector) reserveForRequest(ctx context.Context, prov
 					transport = "ws"
 				}
 			}
-			step, simulation := s.weightedStrategySimulation(capture, key, inferredWeightedPoolPriority(pool), transport, pool)
+			step, simulation := s.weightedStrategySimulation(capture, ruleStrategyKey(explanationCtx, key), inferredWeightedPoolPriority(pool), transport, pool)
 			if wanted := simulation.next(); wanted != nil {
 				step.Wanted = capture.candidateIndex(wanted)
 			}
@@ -124,6 +124,7 @@ func (s *WeightedRoundRobinSelector) reserveForRequest(ctx context.Context, prov
 	authID := ""
 	transportClass := ""
 	if bound == nil {
+		key = ruleStrategyKey(ctx, key)
 		var errAvailable error
 		available, errAvailable = getSelectorAvailableAuths(ctx, positiveWeightAuths(auths), provider, model, time.Now())
 		if errAvailable != nil {
@@ -396,6 +397,9 @@ func (s *WeightedRoundRobinSelector) reservePoolScoped(route string, priority in
 	defer s.mu.Unlock()
 	if len(captureCtx) > 0 && captureCtx[0] != nil {
 		if capture, _ := captureCtx[0].Value(routingCaptureKey{}).(*routingCapture); capture != nil {
+			if appliedRoutingPool(captureCtx[0]) != nil {
+				captureRoutingTier(captureCtx[0], available)
+			}
 			step, simulation := s.weightedStrategySimulationLocked(capture, route, priority, transportClass, available)
 			if wanted := simulation.next(); wanted != nil {
 				step.Wanted = capture.candidateIndex(wanted)

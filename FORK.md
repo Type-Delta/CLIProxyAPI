@@ -2464,13 +2464,14 @@ DL070 extends these traces with strategy factors, read-only weighted predictions
 
 `routing.rules[]` adds ordered custom rules: a condition tree (`all`, `any`, `not`) over the
 requested model, client API-key label, request header, and detected client type, plus `route-to`
-credential IDs (`Auth.ID`). Selection follows a fixed precedence stack, weakest first: custom
-rules (a lower matching rule wins), routing strategy (priority tier, then the configured picker),
-session affinity (an eligible binding wins), and the routing gate (disabled, cooldown, quota,
-quota reserve, unsupported model, retry round, tried in this round, weight, pins and policies). Rules narrow the
-gate-passed pool across all priority tiers after the affinity check; a rule whose targets are all
-blocked falls through to the next matching rule above it, and no applicable rule keeps the full
-pool. Requests a rule narrows take the legacy selection path, so the indexed scheduler never picks
+credential IDs (`Auth.ID`). The routing gate first checks eligibility, including cooldowns,
+quota reserves, policies, and non-positive weights under weighted round robin. Eligible
+session bindings take precedence. For a fresh selection, the last matching rule with
+eligible targets supplies the strategy pool across all priority tiers. The picker uses a
+uniform configured weight for those targets, retaining strategy-specific factors such as
+quota recovery. With no applicable rule, the picker uses the highest eligible priority tier
+and ordinary weights. Rule-selected strategy state is separate from ordinary strategy
+state. Dry runs and live traces identify the rule-selected pool with `tier.rule_pool`. Requests a rule narrows take the legacy selection path, so the indexed scheduler never picks
 outside the narrowed pool. Rules never override pins, credential policies, the Antigravity
 paid-credits fallback, plugin-handled picks, or Home dispatch; in Home mode rules are ignored with
 a warning. Rules-only config changes do not recreate the selector, so affinity caches survive.

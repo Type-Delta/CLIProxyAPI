@@ -278,8 +278,9 @@ routing:
   # GSR falls back to round-robin for that request and logs a warning. The normal
   # model, priority, cooldown, credential-policy, and session-affinity filters
   # still apply; GSR resumes when the pool has complete recovery data.
-  # Routing rules only narrow eligible credentials; the last eligible match wins.
-  # Precedence: rules < strategy/priority < eligible session affinity < routing gate.
+  # The last matching rule with eligible targets supplies the strategy pool.
+  # Its eligible targets compete across tiers with equal configured weights.
+  # Routing gates and eligible session bindings take precedence.
   # In Home mode, local routing rules are ignored.
   # rules:
   #   - name: "Claude Opus to preferred credentials"

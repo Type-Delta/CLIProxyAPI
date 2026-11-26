@@ -213,7 +213,7 @@ func (m *Manager) DryRunRouteWithProjection(ctx context.Context, req routing.Dry
 	if preferWS && !legacy && m.useSchedulerFastPath() {
 		tierCandidates = preferWebsocketAuths(ctx, provider, tierCandidates)
 	}
-	tier := highestPriorityAuths(tierCandidates)
+	tier := routingStrategyAuths(ctx, tierCandidates)
 	if preferWS {
 		if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
 			tier = preferWebsocketAuths(ctx, provider, tier)
@@ -237,10 +237,7 @@ func (m *Manager) DryRunRouteWithProjection(ctx context.Context, req routing.Dry
 	if heldBinding != "" {
 		captureAffinity(ctx, routing.AffinityHeld, heldBinding)
 	}
-	trace.Tier = &routing.TierStep{Priority: authPriority(tier[0])}
-	for _, a := range tier {
-		trace.Tier.Pool = append(trace.Tier.Pool, capture.indexes[a.ID])
-	}
+	captureRoutingTier(ctx, tier)
 	sort.Slice(tier, func(i, j int) bool { return tier[i].ID < tier[j].ID })
 	trace.DecidedBy = routing.DecidedByStrategy
 	if m.hasPluginScheduler() {
@@ -257,7 +254,7 @@ func (m *Manager) DryRunRouteWithProjection(ctx context.Context, req routing.Dry
 		// even with one provider or an affinity wrapper.
 		strategyProvider = "mixed"
 	}
-	step, sim := m.dryRunStrategy(capture, selector, tier, providers, strategyProvider, model, strategyModel, legacy, preferWS)
+	step, sim := m.dryRunStrategy(ctx, capture, selector, tier, providers, strategyProvider, model, strategyModel, legacy, preferWS)
 	trace.StrategyStep = step
 	if step != nil {
 		for range 10 {
@@ -337,7 +334,7 @@ func (m *Manager) dryRunSelectionError(ctx context.Context, trace *routing.Trace
 	return m.annotatePoolCooldownTerminalErrorAt(ctx, providers, model, opts, selectionErr, time.Time{}, now)
 }
 
-func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*Auth, providers []string, provider, model, strategyModel string, legacy, preferWS bool) (*routing.StrategyStep, *strategySimulation) {
+func (m *Manager) dryRunStrategy(ctx context.Context, c *routingCapture, selector Selector, tier []*Auth, providers []string, provider, model, strategyModel string, legacy, preferWS bool) (*routing.StrategyStep, *strategySimulation) {
 	if weighted, ok := selector.(*WeightedRoundRobinSelector); ok {
 		transport := ""
 		if preferWS {
@@ -346,7 +343,7 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 				transport = "ws"
 			}
 		}
-		return weighted.weightedStrategySimulation(c, provider+":"+canonicalModelLookupKey(model), authPriority(tier[0]), transport, tier)
+		return weighted.weightedStrategySimulation(c, ruleStrategyKey(ctx, provider+":"+canonicalModelLookupKey(model)), authPriority(tier[0]), transport, tier)
 	}
 	if !legacy && m.useSchedulerFastPath() && m.scheduler != nil {
 		// Build ready views privately, including deadlines that have expired since the
@@ -386,7 +383,7 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 	last := ""
 	var state smoothWeightedState
 	halfLife := time.Duration(0)
-	key := provider + ":" + canonicalModelLookupKey(strategyModel)
+	key := ruleStrategyKey(ctx, provider+":"+canonicalModelLookupKey(strategyModel))
 	switch s := selector.(type) {
 	case *RoundRobinSelector:
 		s.mu.Lock()
@@ -394,14 +391,14 @@ func (m *Manager) dryRunStrategy(c *routingCapture, selector Selector, tier []*A
 		s.mu.Unlock()
 	case *GreedySoonestRecoverySelector:
 		halfLife = s.recoveryHalfLife()
-		key = strings.ToLower(strings.TrimSpace(provider)) + ":" + canonicalModelKey(strategyModel)
+		key = ruleStrategyKey(ctx, strings.ToLower(strings.TrimSpace(provider))+":"+canonicalModelKey(strategyModel))
 		s.mu.Lock()
 		state = cloneSmoothState(s.states[key])
 		fallback := s.fallback
 		s.mu.Unlock()
 		if fallback != nil {
 			fallback.mu.Lock()
-			last = fallback.lastPicked[provider+":"+canonicalModelLookupKey(strategyModel)]
+			last = fallback.lastPicked[ruleStrategyKey(ctx, provider+":"+canonicalModelLookupKey(strategyModel))]
 			fallback.mu.Unlock()
 		}
 	case *FillFirstSelector:

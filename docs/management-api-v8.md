@@ -125,6 +125,9 @@ Pinned requests account against the eligible pool before pinning, within the
 pinned credential's priority tier and transport class, even when session affinity
 is disabled. Pinned and ordinary requests share the same weighted credits. A
 lower-priority binding never shifts the request ratio among higher-priority credentials.
+When a custom routing rule supplies candidates, the strategy uses its eligible targets
+across priority tiers with equal configured weights and separate picker state.
+Dry runs mark this pool with `trace.tier.rule_pool`.
 
 Settled credits are capped at ±32 times the eligible pool total, so request
 ratios are approximate rather than guaranteed. While reservations are in flight,

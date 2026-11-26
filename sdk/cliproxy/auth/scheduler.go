@@ -48,6 +48,7 @@ type authScheduler struct {
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
 	weightedSelector    *WeightedRoundRobinSelector
+	ruleRoundRobin      RoundRobinSelector
 	providers           map[string]*providerScheduler
 	authProviders       map[string]string
 	authGenerations     map[string]scheduledGenerationMeta

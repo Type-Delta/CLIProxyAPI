@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"maps"
+	"strconv"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -59,6 +61,7 @@ type routingPool struct {
 	needsClient  bool
 	clientLoaded bool
 	lastNarrowed bool
+	applied      int
 }
 
 func (m *Manager) routingPoolForRequest(ctx context.Context, model string, opts cliproxyexecutor.Options) *routingPool {
@@ -100,6 +103,7 @@ func narrowRoutingPool(ctx context.Context, auths []*Auth) []*Auth {
 	}
 	decision := pool.decide(pool.attrs, ids)
 	pool.lastNarrowed = decision.Allowed != nil
+	pool.applied = decision.Applied
 	if decision.Allowed == nil {
 		captureRoutingDecision(ctx, decision, auths)
 		return auths
@@ -116,4 +120,55 @@ func narrowRoutingPool(ctx context.Context, auths []*Auth) []*Auth {
 	}
 	captureRoutingDecision(ctx, decision, narrowed)
 	return narrowed
+}
+
+func appliedRoutingPool(ctx context.Context) *routingPool {
+	if ctx != nil {
+		if pool, _ := ctx.Value(routingPoolKey{}).(*routingPool); pool != nil && pool.lastNarrowed {
+			return pool
+		}
+	}
+	return nil
+}
+
+func ruleStrategyKey(ctx context.Context, key string) string {
+	if pool := appliedRoutingPool(ctx); pool != nil {
+		return "\x00rule/" + strconv.Itoa(pool.applied) + "/" + key
+	}
+	return key
+}
+
+// routingStrategyAuths prepares selection-only copies for a rule-selected pool.
+// All weights are equal inputs to the picker. The original auth is used for execution.
+func routingStrategyAuths(ctx context.Context, auths []*Auth) []*Auth {
+	if appliedRoutingPool(ctx) == nil {
+		return highestPriorityAuths(auths)
+	}
+	normalized := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if authPriority(auth) == 0 && authWeight(auth) == 1 {
+			normalized = append(normalized, auth)
+			continue
+		}
+		candidate := *auth
+		candidate.Attributes = maps.Clone(auth.Attributes)
+		if candidate.Attributes == nil {
+			candidate.Attributes = make(map[string]string, 1)
+		}
+		delete(candidate.Attributes, "priority")
+		candidate.Attributes[AttributeWeight] = "1"
+		normalized = append(normalized, &candidate)
+	}
+	return normalized
+}
+
+func pickRoutingStrategy(ctx context.Context, selector Selector, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	if _, affinity := selector.(*SessionAffinitySelector); affinity {
+		return selector.Pick(ctx, provider, selectionArgForSelector(selector, model), opts, auths)
+	}
+	picked, err := selector.Pick(ctx, provider, selectionArgForSelector(selector, model), opts, routingStrategyAuths(ctx, auths))
+	if picked != nil && appliedRoutingPool(ctx) != nil {
+		picked = pickSchedulerAuthByID(auths, picked.ID)
+	}
+	return picked, err
 }

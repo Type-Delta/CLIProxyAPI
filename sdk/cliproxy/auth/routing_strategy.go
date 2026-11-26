@@ -189,6 +189,9 @@ func captureStrategyPick(ctx context.Context, strategy string, pool []*Auth, mod
 	if c == nil {
 		return
 	}
+	if appliedRoutingPool(ctx) != nil {
+		captureRoutingTier(ctx, pool)
+	}
 	step, sim := strategyStep(c, strategy, pool, model, halfLife, last, state, prepared...)
 	if picked == nil {
 		picked = sim.next()
