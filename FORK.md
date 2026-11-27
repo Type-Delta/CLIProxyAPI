@@ -2785,11 +2785,11 @@ Scoped-key startup, unsafe upload, handler lifecycle, and read-only server-ID ro
 
 ### DL067 — Config YAML syntax errors report their line
 
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-27
 
-Invalid YAML in v8 config writes returns `invalid_body` with upstream's document-numbered parser message. For a first-document syntax error, the fork searches for the shortest input prefix that produces the same error to correct missing lines and lines that point at the enclosing block. Later documents keep the parser's own diagnostic. Bodies over 1 MiB skip line correction. DL069 covers typed validation errors in syntactically valid input.
+Invalid YAML in v8 config writes returns `invalid_body` with upstream's document-numbered parser message. For a first-document syntax error, the fork searches for the shortest input prefix that produces the same error to correct missing lines and lines that point at the enclosing block. Later documents keep the parser's own diagnostic. Bodies over 1 MiB skip line correction. DL069 covers typed validation errors in syntactically valid input. Upstream closed the proposal, router-for-me/CLIProxyAPI#7223, unmerged on 2026-11-26 in a backlog cleanup, so the fork keeps this change.
 
-**Implementation evidence:** `internal/config/yaml_syntax_error.go`. `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
+**Implementation evidence:** `DescribeYAMLSyntaxError` in `internal/config/yaml_syntax_error.go`
 and the `invalid_body` response in `internal/api/handlers/management/config_v8.go`.
 
 **Recorded validation:** On 2026-11-03, `yaml_syntax_error_test.go` covers dedents after
@@ -2804,7 +2804,7 @@ The merged HTTP regression covers missing-line, dedent, one-line, and later-docu
 
 ### DL068 — Unknown v8 config fields are named at their own line
 
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-27
 
 `ValidateV8Config` decodes a flattened legacy copy of the v8 document strictly. Flattening moves
 every known v8 field out of its section, so a typo such as `server.hots` stays behind under
@@ -2814,8 +2814,8 @@ fork maps each strict-decode error back to the node in the `ValidateV8Config` in
 a `*yaml.TypeError`. Below a leftover v8 section it reports every unknown key
 (`line 6: field hots not found`), and elsewhere it reports the key at its input line. Keys that
 flattening or API-key expansion generated have no position, so their value's line is used. The
-flattened tree keeps input positions because its nodes are copies of the parsed input. Full-stream shape validation and v8 archiving run alongside this strict decode without archiving known fork fields. Proposed
-upstream with DL067; drop this entry if upstream accepts it.
+flattened tree keeps input positions because its nodes are copies of the parsed input. Full-stream shape validation and v8 archiving run alongside this strict decode without archiving known fork fields. Upstream
+closed the proposal unmerged, as for DL067.
 
 **Implementation evidence:** `internal/config/yaml_error_lines.go` (`describeV8DecodeError`) and
 the `ValidateV8Config` decode call in `internal/config/config_v8.go`.
@@ -2829,7 +2829,7 @@ in the fork-only `clickhouse` section.
 
 ### DL069 — Config validation errors point at the submitted field
 
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-27
 
 The v8 config handler validates its re-encoded document, so upstream's `invalid_config` line
 references ignored the body's comments, blank lines, and indentation. A type error on line 11 of
@@ -2842,11 +2842,11 @@ or merge key also get only the path, because their line is the anchor's, while t
 original keeps its line; they are found from
 the submitted body's aliases, so this holds when normalization removes the anchor's own field. Without a column, a
 collection nested in one of the same kind on one line is named one level too deep. Documents
-over 1 MiB keep yaml.v3's message, as for DL067. Proposed upstream with DL067; drop this entry if upstream accepts it.
+over 1 MiB keep yaml.v3's message, as for DL067. Upstream closed the proposal unmerged, as for DL067.
 
 Whole-document PUT diagnostics map typed errors back to the submitted bytes before the compare-and-swap. PATCH and sub-path diagnostics use paths in the candidate first document.
 
-**Implementation evidence:** `internal/api/handlers/management/config_v8.go`. `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
+**Implementation evidence:** `DescribeYAMLErrorLines` in `internal/config/yaml_error_lines.go`
 and its use after `ParseConfigBytes` and `ValidateV8Config` in
 `internal/api/handlers/management/config_v8.go`.
 
